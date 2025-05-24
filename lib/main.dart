@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'providers/app_provider.dart';
 import 'screens/home_screen.dart';
 import 'package:workmanager/workmanager.dart';
@@ -9,6 +10,10 @@ import 'services/background_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // تحميل ملف .env
+  await dotenv.load(fileName: ".env");
+  
   // تهيئة SQLite FFI
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
