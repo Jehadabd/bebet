@@ -12,7 +12,11 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
   // تحميل ملف .env
-  await dotenv.load(fileName: ".env");
+  try {
+    await dotenv.load(fileName: ".env");
+  } catch (e) {
+    print('خطأ في تحميل ملف .env: $e');
+  }
   
   // تهيئة SQLite FFI
   sqfliteFfiInit();

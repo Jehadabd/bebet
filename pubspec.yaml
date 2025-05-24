@@ -38,5 +38,10 @@ flutter:
   uses-material-design: true
   assets:
     - assets/fonts/Amiri-Regular.ttf
+    - .env
+
+flutter_dotenv:
+  file: .env
+  merge_with: flutter_config
 
   # ... rest of the file remains unchanged ... 
