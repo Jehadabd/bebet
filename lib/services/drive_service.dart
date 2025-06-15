@@ -18,6 +18,7 @@ class DriveService {
   );
   final _storage = const FlutterSecureStorage();
   static const _folderName = 'تقارير دفتر ديوني';
+  static const _reportFileName = 'سجل الديون.pdf';
 
   // OAuth 2.0 Desktop credentials from environment variables
   String get _clientIdString => dotenv.env['GOOGLE_CLIENT_ID'] ?? '';
@@ -231,7 +232,69 @@ class DriveService {
   }
 
   Future<void> uploadDailyReport(File reportFile) async {
-    final fileName = '${DateTime.now().toIso8601String().split('T')[0]}.pdf';
-    await uploadFile(reportFile, fileName);
+    try {
+      final client = await _getAuthenticatedClient();
+      final driveApi = drive.DriveApi(client);
+      final folderId = await _getFolderId();
+
+      // البحث عن الملف الموجود
+      final existingFiles = await driveApi.files.list(
+        q: "name = '$_reportFileName' and '$folderId' in parents and trashed = false",
+        spaces: 'drive',
+      );
+
+      if (existingFiles.files?.isNotEmpty ?? false) {
+        // تحديث الملف الموجود
+        final fileId = existingFiles.files!.first.id;
+        final media = drive.Media(reportFile.openRead(), await reportFile.length());
+        await driveApi.files.update(
+          drive.File()..name = _reportFileName,
+          fileId!,
+          uploadMedia: media,
+        );
+      } else {
+        // إنشاء ملف جديد إذا لم يكن موجوداً
+        final driveFile = drive.File()
+          ..name = _reportFileName
+          ..parents = [folderId!];
+        final media = drive.Media(reportFile.openRead(), await reportFile.length());
+        await driveApi.files.create(
+          driveFile,
+          uploadMedia: media,
+        );
+      }
+    } catch (e) {
+      // إذا كان الخطأ بسبب انتهاء صلاحية التوكن، جدد التوكن وأعد المحاولة مرة واحدة
+      if (e.toString().contains('invalid_token')) {
+        final client = await _getAuthenticatedClient(forceRefresh: true);
+        final driveApi = drive.DriveApi(client);
+        final folderId = await _getFolderId();
+        final existingFiles = await driveApi.files.list(
+          q: "name = '$_reportFileName' and '$folderId' in parents and trashed = false",
+          spaces: 'drive',
+        );
+
+        if (existingFiles.files?.isNotEmpty ?? false) {
+          final fileId = existingFiles.files!.first.id;
+          final media = drive.Media(reportFile.openRead(), await reportFile.length());
+          await driveApi.files.update(
+            drive.File()..name = _reportFileName,
+            fileId!,
+            uploadMedia: media,
+          );
+        } else {
+          final driveFile = drive.File()
+            ..name = _reportFileName
+            ..parents = [folderId!];
+          final media = drive.Media(reportFile.openRead(), await reportFile.length());
+          await driveApi.files.create(
+            driveFile,
+            uploadMedia: media,
+          );
+        }
+      } else {
+        throw Exception('فشل رفع الملف: $e');
+      }
+    }
   }
 } 

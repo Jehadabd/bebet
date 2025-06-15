@@ -76,7 +76,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                     const SizedBox(height: 8),
                     _buildInfoRow(
                       'الدين الحالي',
-                      '${widget.customer.currentTotalDebt.toStringAsFixed(2)} ريال',
+                      '${widget.customer.currentTotalDebt.toStringAsFixed(2)} دينار',
                       valueColor: widget.customer.currentTotalDebt > 0
                           ? Colors.red
                           : Colors.green,
@@ -112,17 +112,30 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
               decoration: const InputDecoration(
                 labelText: 'المبلغ',
                 hintText: 'أدخل المبلغ',
+                suffixText: 'دينار',
+                prefixIcon: Icon(Icons.attach_money),
               ),
-              keyboardType: TextInputType.numberWithOptions(decimal: true),
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
               inputFormatters: [
                 FilteringTextInputFormatter.allow(RegExp(r'^[0-9]*\.?[0-9]*')),
+                LengthLimitingTextInputFormatter(10),
               ],
               validator: (value) {
                 if (value == null || value.isEmpty) {
                   return 'الرجاء إدخال المبلغ';
                 }
-                if (double.tryParse(value) == null) {
+                final number = double.tryParse(value);
+                if (number == null) {
                   return 'الرجاء إدخال رقم صحيح';
+                }
+                if (number <= 0) {
+                  return 'يجب أن يكون المبلغ أكبر من صفر';
+                }
+                if (number > 1000000000) {
+                  return 'المبلغ أكبر من الحد المسموح به';
+                }
+                if (!_isDebt && number > widget.customer.currentTotalDebt) {
+                  return 'المبلغ المدخل أكبر من الدين الحالي';
                 }
                 return null;
               },

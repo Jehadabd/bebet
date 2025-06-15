@@ -1,32 +1,46 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'providers/app_provider.dart';
 import 'screens/home_screen.dart';
-import 'package:workmanager/workmanager.dart';
-import 'services/background_service.dart';
+import 'screens/main_screen.dart';
+import 'screens/product_entry_screen.dart';
+import 'screens/create_invoice_screen.dart';
+import 'screens/edit_invoices_screen.dart';
+import 'screens/edit_products_screen.dart';
+import 'screens/installers_list_screen.dart';
+import 'screens/inventory_screen.dart';
+import 'services/password_service.dart';
+import 'screens/password_setup_screen.dart';
+import 'screens/printer_settings_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
   // تحميل ملف .env
   try {
-    await dotenv.load(fileName: ".env");
+    await dotenv.load();
   } catch (e) {
     print('خطأ في تحميل ملف .env: $e');
   }
   
-  // تهيئة SQLite FFI
+  // تهيئة sqflite_common_ffi على ويندوز فقط
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
-
-  runApp(const MyApp());
+  
+  // Check if passwords are set
+  final passwordService = PasswordService();
+  final bool passwordsSet = await passwordService.arePasswordsSet();
+  
+  runApp(MyApp(initialRoute: passwordsSet ? '/' : '/password_setup'));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final String initialRoute;
+
+  const MyApp({super.key, required this.initialRoute});
 
   @override
   Widget build(BuildContext context) {
@@ -76,7 +90,19 @@ class MyApp extends StatelessWidget {
           Locale('ar', 'SA'),
         ],
         locale: const Locale('ar', 'SA'),
-        home: const HomeScreen(),
+        routes: {
+          '/': (context) => const MainScreen(),
+          '/password_setup': (context) => const PasswordSetupScreen(),
+          '/printer_settings': (context) => const PrinterSettingsScreen(),
+          '/debt_register': (context) => const HomeScreen(),
+          '/product_entry': (context) => const ProductEntryScreen(),
+          '/create_invoice': (context) => const CreateInvoiceScreen(),
+          '/edit_invoices': (context) => const EditInvoicesScreen(),
+          '/edit_products': (context) => const EditProductsScreen(),
+          '/installers': (context) => const InstallersListScreen(),
+          '/inventory': (context) => const InventoryScreen(),
+        },
+        initialRoute: initialRoute,
       ),
     );
   }

@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import '../models/customer.dart';
 import '../models/transaction.dart';
+import '../models/invoice.dart';
 import '../services/database_service.dart';
 import '../services/drive_service.dart';
 import '../services/pdf_service.dart';
@@ -171,5 +172,9 @@ class AppProvider with ChangeNotifier {
     await _drive.signOut();
     _isDriveSignedInSync = false;
     notifyListeners();
+  }
+
+  Future<List<Invoice>> getAllInvoices() async {
+    return await _db.getAllInvoices();
   }
 } 

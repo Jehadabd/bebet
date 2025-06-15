@@ -5,6 +5,7 @@ import '../providers/app_provider.dart';
 import '../models/customer.dart';
 import 'customer_details_screen.dart';
 import 'add_customer_screen.dart';
+import 'saved_invoices_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -159,6 +160,18 @@ class _HomeScreenState extends State<HomeScreen> {
                           }
                         : null,
                   ),
+                  IconButton(
+                    icon: const Icon(Icons.receipt_long),
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => const SavedInvoicesScreen(),
+                        ),
+                      );
+                    },
+                    tooltip: 'الفواتير المحفوظة',
+                  ),
                 ],
               );
             },
@@ -200,16 +213,77 @@ class _HomeScreenState extends State<HomeScreen> {
           );
         },
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => const AddCustomerScreen(),
-            ),
-          );
-        },
-        child: const Icon(Icons.add),
+      floatingActionButton: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          FloatingActionButton(
+            heroTag: 'add_customer',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const AddCustomerScreen(),
+                ),
+              );
+            },
+            tooltip: 'إضافة عميل جديد',
+            child: const Icon(Icons.person_add),
+          ),
+          const SizedBox(width: 10),
+          FloatingActionButton(
+            heroTag: 'main_debt',
+            onPressed: () {
+              // Already on main screen, maybe refresh or show a message
+            },
+            tooltip: 'سجل الديون',
+            child: const Icon(Icons.book),
+          ),
+          const SizedBox(width: 10),
+          FloatingActionButton(
+            heroTag: 'add_product',
+            onPressed: () {
+              Navigator.pushNamed(context, '/add_product');
+            },
+            tooltip: 'إدخال بضاعة',
+            child: const Icon(Icons.add_box),
+          ),
+          const SizedBox(width: 10),
+          FloatingActionButton(
+            heroTag: 'installers',
+            onPressed: () {
+              Navigator.pushNamed(context, '/installers');
+            },
+            tooltip: 'المؤسسين',
+            child: const Icon(Icons.engineering),
+          ),
+          const SizedBox(width: 10),
+          FloatingActionButton(
+            heroTag: 'create_invoice',
+            onPressed: () {
+              Navigator.pushNamed(context, '/create_invoice');
+            },
+            tooltip: 'إنشاء قائمة',
+            child: const Icon(Icons.playlist_add),
+          ),
+          const SizedBox(width: 10),
+          FloatingActionButton(
+            heroTag: 'edit_invoices',
+            onPressed: () {
+              Navigator.pushNamed(context, '/edit_invoices');
+            },
+            tooltip: 'تعديل القوائم',
+            child: const Icon(Icons.edit_note),
+          ),
+          const SizedBox(width: 10),
+          FloatingActionButton(
+            heroTag: 'edit_products',
+            onPressed: () {
+              Navigator.pushNamed(context, '/edit_products');
+            },
+            tooltip: 'تعديل البضاعة',
+            child: const Icon(Icons.edit),
+          ),
+        ],
       ),
     );
   }
@@ -236,7 +310,7 @@ class CustomerListTile extends StatelessWidget {
           customer.phone ?? 'لا يوجد رقم هاتف',
         ),
         trailing: Text(
-          '${customer.currentTotalDebt.toStringAsFixed(2)} ريال',
+          '${customer.currentTotalDebt.toStringAsFixed(2)} دينار',
           style: TextStyle(
             color: customer.currentTotalDebt > 0
                 ? Colors.red

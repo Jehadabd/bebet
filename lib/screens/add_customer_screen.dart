@@ -17,6 +17,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
   final _phoneController = TextEditingController();
   final _noteController = TextEditingController();
   final _initialDebtController = TextEditingController();
+  final _addressController = TextEditingController();
 
   @override
   void dispose() {
@@ -24,6 +25,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
     _phoneController.dispose();
     _noteController.dispose();
     _initialDebtController.dispose();
+    _addressController.dispose();
     super.dispose();
   }
 
@@ -34,6 +36,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
         phone: _phoneController.text.isEmpty ? null : _phoneController.text,
         generalNote: _noteController.text.isEmpty ? null : _noteController.text,
         currentTotalDebt: double.tryParse(_initialDebtController.text) ?? 0.0,
+        address: _addressController.text.isEmpty ? null : _addressController.text,
       );
 
       await context.read<AppProvider>().addCustomer(customer);
@@ -74,15 +77,30 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
               decoration: const InputDecoration(
                 labelText: 'رقم الهاتف',
                 hintText: 'أدخل رقم الهاتف (اختياري)',
+                prefixText: '+964 ',
               ),
               keyboardType: TextInputType.phone,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(10),
+              ],
               validator: (value) {
-                if (value != null && value.isNotEmpty && !RegExp(r'^\d+$').hasMatch(value)) {
-                  return 'الرجاء إدخال أرقام فقط';
+                if (value != null && value.isNotEmpty) {
+                  if (!RegExp(r'^\d{10}$').hasMatch(value)) {
+                    return 'الرجاء إدخال رقم هاتف صحيح (10 أرقام)';
+                  }
                 }
                 return null;
               },
+              textInputAction: TextInputAction.next,
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: TextEditingController(),
+              decoration: const InputDecoration(
+                labelText: 'العنوان',
+                hintText: 'أدخل عنوان العميل (اختياري)',
+              ),
               textInputAction: TextInputAction.next,
             ),
             const SizedBox(height: 16),
@@ -91,14 +109,22 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
               decoration: const InputDecoration(
                 labelText: 'الدين المبدئي',
                 hintText: 'أدخل الدين المبدئي (اختياري)',
+                suffixText: 'دينار',
               ),
-              keyboardType: TextInputType.numberWithOptions(decimal: true),
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
               inputFormatters: [
                 FilteringTextInputFormatter.allow(RegExp(r'^[0-9]*\.?[0-9]*')),
+                LengthLimitingTextInputFormatter(10),
               ],
               validator: (value) {
-                if (value != null && value.isNotEmpty && double.tryParse(value) == null) {
-                  return 'الرجاء إدخال رقم صحيح';
+                if (value != null && value.isNotEmpty) {
+                  final number = double.tryParse(value);
+                  if (number == null) {
+                    return 'الرجاء إدخال رقم صحيح';
+                  }
+                  if (number < 0) {
+                    return 'لا يمكن إدخال قيمة سالبة';
+                  }
                 }
                 return null;
               },

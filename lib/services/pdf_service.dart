@@ -46,7 +46,7 @@ class PdfService {
             pw.Center(
               child: pw.Text(
                 'لا توجد تحديثات اليوم',
-                style: pw.TextStyle(fontSize: 16),
+                style: const pw.TextStyle(fontSize: 16),
               ),
             )
           else
@@ -55,29 +55,26 @@ class PdfService {
               data: <List<String>>[
                 // Header
                 [
-                  'ملاحظات',
-                  'إجمالي الدين',
-                  'رقم الهاتف',
-                  'الاسم',
+                  'المبلغ المطلوب أو الدين',
+                  'العنوان',
+                  'اسم العميل',
                 ],
                 // Data
                 ...customers.map((customer) => [
-                      customer.generalNote ?? '-',
-                      customer.currentTotalDebt.toStringAsFixed(2),
-                      customer.phone ?? '-',
-                      customer.name,
-                    ]),
+                  customer.currentTotalDebt.toStringAsFixed(2),
+                  customer.address ?? '-',
+                  customer.name,
+                ]),
               ],
               headerStyle: pw.TextStyle(
                 fontWeight: pw.FontWeight.bold,
                 fontSize: 14,
               ),
-              cellStyle: pw.TextStyle(fontSize: 12),
+              cellStyle: const pw.TextStyle(fontSize: 12),
               cellAlignments: {
-                0: pw.Alignment.centerRight,
-                1: pw.Alignment.center,
-                2: pw.Alignment.center,
-                3: pw.Alignment.centerRight,
+                2: pw.Alignment.centerRight,
+                1: pw.Alignment.centerRight,
+                0: pw.Alignment.center,
               },
               headerDecoration: const pw.BoxDecoration(
                 color: PdfColors.grey300,
@@ -86,6 +83,11 @@ class PdfService {
                 color: PdfColors.black,
                 width: 1,
               ),
+              columnWidths: {
+                2: const pw.FlexColumnWidth(3),
+                1: const pw.FlexColumnWidth(2),
+                0: const pw.FlexColumnWidth(1),
+              },
             ),
           pw.SizedBox(height: 20),
           pw.Container(
@@ -102,7 +104,7 @@ class PdfService {
             child: pw.Text(
               'تم إنشاء هذا التقرير تلقائياً بواسطة تطبيق دفتر ديوني',
               textAlign: pw.TextAlign.center,
-              style: pw.TextStyle(
+              style: const pw.TextStyle(
                 color: PdfColors.grey,
                 fontSize: 10,
               ),

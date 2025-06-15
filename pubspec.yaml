@@ -11,28 +11,41 @@ dependencies:
     sdk: flutter
   flutter_localizations:
     sdk: flutter
-  cupertino_icons: ^1.0.2
-  sqflite: ^2.3.0
-  sqflite_common_ffi: ^2.3.2
-  path_provider: ^2.1.1
-  googleapis: ^11.0.0
+  cupertino_icons: ^1.0.6
+  sqflite: ^2.4.2
+  sqflite_common_ffi: ^2.3.0
+  path: ^1.8.3
+  path_provider: ^2.0.11
+  url_launcher: ^6.2.1
   google_sign_in: ^6.1.5
-  googleapis_auth: ^1.4.1
-  flutter_secure_storage: ^9.0.0
-  pdf: ^3.10.7
+  google_api_availability: ^3.0.0
+  googleapis: ^11.0.0
+  extension_google_sign_in_as_googleapis_auth: ^2.0.0
+  file_picker: ^6.0.0
+  permission_handler: ^12.0.0+1
+  flutter_dotenv: ^5.1.0
+  pdf: ^3.10.4
   printing: ^5.11.1
-  intl: ^0.19.0
+  intl: ^0.20.2
   provider: ^6.1.1
   http: ^1.1.0
   font_awesome_flutter: ^10.7.0
-  url_launcher: ^6.1.10
   workmanager: ^0.5.1
-  flutter_dotenv: ^5.1.0
+  flutter_secure_storage: ^9.0.0
+  share_plus: ^7.2.1
+  shared_preferences: ^2.2.2
+  image: ^4.1.4
+  esc_pos_utils_plus: ^2.0.4
+  flutter_esc_pos_network: ^1.0.3
+  print_bluetooth_thermal: ^1.1.6
+  win32: ^5.14.0
+  ffi: ^2.1.2
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^2.0.0
+  flutter_launcher_icons: ^0.13.1
 
 flutter:
   uses-material-design: true
@@ -43,5 +56,13 @@ flutter:
 flutter_dotenv:
   file: .env
   merge_with: flutter_config
+
+flutter_icons:
+  android: true
+  ios: true
+  windows:
+    generate: true
+    image_path: "assets/icon/app_icon.png"
+  image_path: "assets/icon/app_icon.png"
 
   # ... rest of the file remains unchanged ... 
