@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:debt_book/models/printer_device.dart'; // Import the new PrinterDevice model
+import 'package:alnaser/models/printer_device.dart'; // Import the new PrinterDevice model
 
 class SettingsManager {
   static const _keyDefaultPrinter = 'default_printer';

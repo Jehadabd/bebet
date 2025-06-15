@@ -5,8 +5,8 @@ import 'package:ffi/ffi.dart'; // FFI utility functions and extension methods
 import 'package:pdf/pdf.dart';
 import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart'; // Changed to esc_pos_utils_plus
 import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart'; // Keep for Bluetooth
-import 'package:debt_book/models/printer_device.dart';
-import 'package:debt_book/services/settings_manager.dart';
+import 'package:alnaser/models/printer_device.dart';
+import 'package:alnaser/services/settings_manager.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_esc_pos_network/flutter_esc_pos_network.dart'; // New import for Wi-Fi/LAN printing
 import 'package:win32/win32.dart'; // Import for Windows API calls
@@ -32,8 +32,8 @@ class PrintingService {
   }
 
   // --- Wi-Fi/LAN Printers ---
-  Future<void> printWithWifiPrinter(String ipAddress, List<int> commands) async {
-    final printer = PrinterNetworkManager(ipAddress, port: 9100);
+  Future<void> printWithWifiPrinter(String ipAddress, List<int> commands, {int port = 9100}) async {
+    final printer = PrinterNetworkManager(ipAddress, port: port);
     final PosPrintResult res = await printer.connect();
 
     if (res == PosPrintResult.success) {
@@ -56,12 +56,18 @@ class PrintingService {
       return [];
     }
 
-    final List<BluetoothInfo> listResult = await PrintBluetoothThermal.pairedBluetooths;
-    return listResult.map((b) => PrinterDevice(
-      name: b.name.isNotEmpty ? b.name : 'Unknown Device',
-      address: b.macAdress,
-      connectionType: PrinterConnectionType.bluetooth,
-    )).toList();
+    try {
+      final List<BluetoothInfo> listResult = await PrintBluetoothThermal.pairedBluetooths;
+      return listResult.where((b) => b.macAdress != null && b.macAdress.isNotEmpty).map((b) => PrinterDevice(
+        name: b.name.isNotEmpty ? b.name : 'Unknown Device',
+        address: b.macAdress!,
+        connectionType: PrinterConnectionType.bluetooth,
+      )).toList();
+    } catch (e) {
+      print('Error finding Bluetooth printers: $e');
+      // Optionally, you could throw a custom exception or log to a crash reporting service
+      return [];
+    }
   }
 
   Future<void> printWithBluetoothPrinter(String macAddress, List<int> commands) async {
@@ -139,7 +145,7 @@ class PrintingService {
         break;
       case PrinterConnectionType.wifi:
         if (escPosCommands != null) {
-          await printWithWifiPrinter(defaultPrinter.address, escPosCommands);
+          await printWithWifiPrinter(defaultPrinter.address, escPosCommands, port: defaultPrinter.port ?? 9100);
         } else {
           print('ESC/POS commands are required for Wi-Fi printer.');
         }

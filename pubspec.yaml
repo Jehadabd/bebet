@@ -40,6 +40,7 @@ dependencies:
   print_bluetooth_thermal: ^1.1.6
   win32: ^5.14.0
   ffi: ^2.1.2
+  flutter_nsd: ^1.6.0
 
 dev_dependencies:
   flutter_test:

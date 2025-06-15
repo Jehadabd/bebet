@@ -6,6 +6,7 @@ class PrinterDevice {
   final PrinterConnectionType connectionType;
   final String? productId;
   final String? vendorId;
+  final int? port;
 
   PrinterDevice({
     required this.name,
@@ -13,6 +14,7 @@ class PrinterDevice {
     required this.connectionType,
     this.productId,
     this.vendorId,
+    this.port,
   });
 
   // دوال لتحويل النموذج من وإلى JSON لحفظه بسهولة
@@ -22,6 +24,7 @@ class PrinterDevice {
     'connectionType': connectionType.name,
     'productId': productId,
     'vendorId': vendorId,
+    'port': port,
   };
 
   factory PrinterDevice.fromJson(Map<String, dynamic> json) => PrinterDevice(
@@ -30,5 +33,6 @@ class PrinterDevice {
     connectionType: PrinterConnectionType.values.byName(json['connectionType']),
     productId: json['productId'],
     vendorId: json['vendorId'],
+    port: json['port'],
   );
 } 
