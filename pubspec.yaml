@@ -1,4 +1,4 @@
-name: debt_book
+name: alnaser
 description: A debt management application for businesses.
 publish_to: 'none'
 version: 1.0.0+1
@@ -62,7 +62,7 @@ flutter_icons:
   ios: true
   windows:
     generate: true
-    image_path: "assets/icon/app_icon.png"
-  image_path: "assets/icon/app_icon.png"
+    image_path: "assets/icon/photo_2025-06-13_19-07-33.jpg"
+  image_path: "assets/icon/photo_2025-06-13_19-07-33.jpg"
 
   # ... rest of the file remains unchanged ... 
