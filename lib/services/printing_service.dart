@@ -189,7 +189,7 @@ class PrintingService {
         ) != 0) {
           for (int i = 0; i < pcReturned.value; i++) {
             final printerInfo = pPrinterEnum.elementAt(i).ref;
-            final name = printerInfo.pPrinterName.toDartString();
+            final name = printerInfo.pPrinterName == nullptr ? 'Unknown Printer' : printerInfo.pPrinterName.toDartString();
             // For system printers, the address might not be directly available or meaningful
             // We can use the name as the identifier for now.
             printers.add(PrinterDevice(

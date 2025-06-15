@@ -64,6 +64,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       _paymentType = widget.existingInvoice!.paymentType; // Load payment type
       _totalAmountController.text = widget.existingInvoice!.totalAmount.toString();
       _paidAmountController.text = widget.existingInvoice!.amountPaidOnInvoice.toString(); // Load amount paid
+      _discount = widget.existingInvoice!.discount; // Load discount
 
       // Load invoice items
       _loadInvoiceItems();
