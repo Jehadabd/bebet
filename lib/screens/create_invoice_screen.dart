@@ -11,6 +11,12 @@ import '../models/transaction.dart';
 import '../models/customer.dart';
 import '../models/installer.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:alnaser/models/printer_device.dart';
+import 'package:alnaser/services/printing_service.dart';
+import 'dart:io';
+import 'package:intl/intl.dart';
+import 'dart:async';
+import 'dart:io';
 
 class CreateInvoiceScreen extends StatefulWidget {
   final Invoice? existingInvoice;
@@ -50,6 +56,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   List<InvoiceItem> _invoiceItems = [];
 
   final DatabaseService _db = DatabaseService();
+  PrinterDevice? _selectedPrinter;
+  final PrintingService _printingService = PrintingService();
 
   @override
   void initState() {
@@ -296,15 +304,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
        if (_paymentType == 'دين') {
          extraMsg = '\nتمت إضافة ${debt.toStringAsFixed(2)} دينار كدين للعميل لأن الفاتورة ${currentTotalAmount.toStringAsFixed(2)} - خصم ${_discount.toStringAsFixed(2)} - مسدد ${paid.toStringAsFixed(2)}';
        }
-       if (mounted) {
-         ScaffoldMessenger.of(context).showSnackBar(
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
            SnackBar(
              content: Text('تم حفظ الفاتورة بنجاح$extraMsg'),
-             backgroundColor: Colors.green,
-           ),
-         );
-         Navigator.pop(context);
-       }
+            backgroundColor: Colors.green,
+          ),
+        );
+        Navigator.pop(context);
+      }
     } catch (e) {
       // نستخدم رسالة الخطأ المفهومة التي جاءت مع الاستثناء من DatabaseService
       String errorMessage = 'حدث خطأ عند حفظ الفاتورة: ${e.toString()}'; // رسالة افتراضية
@@ -479,56 +487,99 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     return pdf;
   }
 
-  // دالة عرض معاينة الطباعة
+  Future<String> _saveInvoicePdf(pw.Document pdf, String customerName, DateTime invoiceDate) async {
+    // تنظيف اسم العميل ليكون صالحًا كاسم ملف
+    final safeCustomerName = customerName.replaceAll(RegExp(r'[^\w\u0600-\u06FF]+'), '_');
+    final formattedDate = DateFormat('yyyy-MM-dd').format(invoiceDate);
+    final fileName = '${safeCustomerName}_$formattedDate.pdf';
+    final directory = Directory('${Platform.environment['USERPROFILE']}/Documents/invoices');
+    if (!await directory.exists()) {
+      await directory.create(recursive: true);
+    }
+    final filePath = '${directory.path}/$fileName';
+    final file = File(filePath);
+    await file.writeAsBytes(await pdf.save());
+    return filePath;
+  }
+
   Future<void> _printInvoice() async {
     final pdf = await _generateInvoicePdf();
-    final prefs = await SharedPreferences.getInstance();
-    final defaultPrinterId = prefs.getString('defaultPrinterId');
-    final defaultPrinterName = prefs.getString('defaultPrinterName');
-
-    if (defaultPrinterId != null) {
-      try {
-        final bool printed = await Printing.directPrintPdf(
-          printer: Printer(url: defaultPrinterId, name: defaultPrinterName ?? defaultPrinterId),
-          onLayout: (PdfPageFormat format) => pdf.save(),
-        );
-        if (printed) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('تم إرسال الفاتورة إلى الطابعة الافتراضية: ${defaultPrinterName ?? defaultPrinterId}')),
-            );
-          }
-        } else {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('فشل الطباعة المباشرة، جاري عرض نافذة الطباعة.')),
-            );
-          }
-          await Printing.layoutPdf(
-            onLayout: (PdfPageFormat format) => pdf.save(),
-          );
-        }
-      } catch (e) {
-        print('Error during direct print: $e');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('حدث خطأ أثناء الطباعة المباشرة: ${e.toString()}، جاري عرض نافذة الطباعة.')),
-          );
-        }
-        await Printing.layoutPdf(
-          onLayout: (PdfPageFormat format) => pdf.save(),
-        );
-      }
-    } else {
+    if (Platform.isWindows) {
+      final filePath = await _saveInvoicePdf(pdf, _customerNameController.text, _selectedDate);
+      await Process.start('cmd', ['/c', 'start', '/min', '', filePath, '/p']);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('لم يتم تعيين طابعة افتراضية. جاري عرض نافذة الطباعة.')),
+          SnackBar(content: Text('تم حفظ الفاتورة وإرسالها للطابعة مباشرة!')),
         );
       }
-      await Printing.layoutPdf(
-        onLayout: (PdfPageFormat format) => pdf.save(),
-      );
+      return;
     }
+    if (Platform.isAndroid) {
+      if (_selectedPrinter == null) {
+        List<PrinterDevice> printers = [];
+        final bluetoothPrinters = await _printingService.findBluetoothPrinters();
+        final systemPrinters = await _printingService.findSystemPrinters();
+        printers = [...bluetoothPrinters, ...systemPrinters];
+        if (printers.isEmpty) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('لا توجد طابعات متاحة.')),
+            );
+          }
+          return;
+        }
+        final selected = await showDialog<PrinterDevice>(
+          context: context,
+          builder: (context) {
+            return AlertDialog(
+              title: const Text('اختر الطابعة'),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: printers.length,
+                  itemBuilder: (context, index) {
+                    final printer = printers[index];
+                    return ListTile(
+                      title: Text(printer.name),
+                      subtitle: Text(printer.connectionType.name),
+                      onTap: () => Navigator.of(context).pop(printer),
+                    );
+                  },
+                ),
+              ),
+            );
+          },
+        );
+        if (selected == null) return;
+        setState(() {
+          _selectedPrinter = selected;
+        });
+      }
+      if (_selectedPrinter != null) {
+        try {
+          await _printingService.printData(
+            await pdf.save(),
+            printerDevice: _selectedPrinter,
+            escPosCommands: null,
+          );
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('تم إرسال الفاتورة إلى الطابعة: ${_selectedPrinter!.name}')),
+            );
+          }
+        } catch (e) {
+          print('Error during print: $e');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('حدث خطأ أثناء الطباعة: ${e.toString()}')),
+            );
+          }
+        }
+      }
+      return;
+    }
+    // ... منطق المنصات الأخرى (إن وجد) ...
   }
 
   @override
@@ -998,8 +1049,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   children: [
                     Expanded(
                       child: ElevatedButton(
-                        onPressed: _saveInvoice,
-                        child: const Text('حفظ الفاتورة'),
+                  onPressed: _saveInvoice,
+                  child: const Text('حفظ الفاتورة'),
                       ),
                     ),
                     const SizedBox(width: 12),

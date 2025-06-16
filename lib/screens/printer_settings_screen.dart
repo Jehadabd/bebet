@@ -5,6 +5,8 @@ import 'package:alnaser/services/printing_service.dart';
 import 'package:alnaser/services/settings_manager.dart';
 import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart';
 import 'package:flutter_nsd/flutter_nsd.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'dart:io';
 
 class PrinterSettingsScreen extends StatefulWidget {
   const PrinterSettingsScreen({super.key});
@@ -17,7 +19,7 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
   final PrintingService _printingService = PrintingService();
   final SettingsManager _settingsManager = SettingsManager();
   final FlutterNsd _flutterNsd = FlutterNsd();
-  late StreamSubscription<NsdServiceInfo> _nsdSubscription;
+  StreamSubscription<NsdServiceInfo>? _nsdSubscription;
 
   PrinterDevice? _defaultPrinter;
   PrinterConnectionType _selectedConnectionType = PrinterConnectionType.system;
@@ -79,7 +81,7 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
 
   @override
   void dispose() {
-    _nsdSubscription.cancel();
+    _nsdSubscription?.cancel();
     _flutterNsd.stopDiscovery();
     super.dispose();
   }
@@ -113,6 +115,22 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
     _discoverPrinters(); // Discover printers based on the loaded type
   }
 
+  Future<bool> _requestBluetoothPermissions() async {
+    // اطلب أذونات البلوتوث والموقع
+    final bluetoothStatus = await Permission.bluetooth.request();
+    final locationStatus = await Permission.locationWhenInUse.request();
+    if (bluetoothStatus.isGranted && locationStatus.isGranted) {
+      return true;
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('يجب منح أذونات البلوتوث والموقع لاكتشاف الطابعات.')),
+        );
+      }
+      return false;
+    }
+  }
+
   Future<void> _discoverPrinters() async {
     if (mounted) {
       setState(() {
@@ -130,7 +148,29 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
           });
         }
       } else if (_selectedConnectionType == PrinterConnectionType.bluetooth) {
-        // Ensure Bluetooth is enabled before discovering
+        if (!Platform.isAndroid) {
+          if (mounted) {
+            setState(() {
+              _isLoading = false;
+            });
+          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('اكتشاف طابعات البلوتوث متاح فقط على أندرويد.')),
+          );
+          return;
+        }
+        // اطلب الأذونات فقط على أندرويد
+        final hasPermissions = await _requestBluetoothPermissions();
+        if (!hasPermissions) {
+          if (mounted) {
+            setState(() {
+              _discoveredPrinters = [];
+              _isLoading = false;
+            });
+          }
+          return;
+        }
+        // تأكد من تشغيل البلوتوث
         if (await PrintBluetoothThermal.bluetoothEnabled == false) {
           print('Bluetooth is off. Please turn on Bluetooth.');
           if (mounted) {
@@ -139,11 +179,11 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
             );
             setState(() {
               _discoveredPrinters = [];
+              _isLoading = false;
             });
           }
           return;
         }
-
         try {
           final printers = await _printingService.findBluetoothPrinters();
           if (mounted) {
@@ -160,9 +200,10 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
           }
         }
       } else if (_selectedConnectionType == PrinterConnectionType.wifi) {
-        // Start Wi-Fi (mDNS) discovery
+        // يمكن دعم الواي فاي على المنصات التي تدعمه فقط
+        // إذا كان هناك كود خاص بمنصة معينة، أضف شرط Platform هنا أيضًا
         try {
-          await _flutterNsd.discoverServices('_printer._tcp'.padRight(16, '.')); // Common service type for printers
+          await _flutterNsd.discoverServices('_printer._tcp'.padRight(16, '.'));
           // The listener will populate _discoveredPrinters
         } catch (e) {
           print('Error starting Wi-Fi discovery: $e');
@@ -173,10 +214,13 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
           }
         }
       }
-      // Wi-Fi discovery is typically manual input, no active discovery here.
     } catch (e) {
       print('Error discovering printers: $e');
-      // TODO: Show user feedback
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('حدث خطأ أثناء اكتشاف الطابعات: $e')),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -187,19 +231,38 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
   }
 
   Future<void> _selectDefaultPrinter(PrinterDevice printer) async {
-    await _settingsManager.saveDefaultPrinter(printer);
-    if (mounted) {
-      setState(() {
-        _defaultPrinter = printer;
-      });
+    try {
+      await _settingsManager.saveDefaultPrinter(printer);
+      if (mounted) {
+        setState(() {
+          _defaultPrinter = printer;
+        });
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('تم تعيين ${printer.name} كطابعة افتراضية.')),
+      );
+    } catch (e) {
+      print('Error setting default printer: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('حدث خطأ أثناء تعيين الطابعة الافتراضية: $e')),
+        );
+      }
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('تم تعيين ${printer.name} كطابعة افتراضية.')),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
+    // تحديد أنواع الاتصال المتاحة حسب النظام
+    List<PrinterConnectionType> availableTypes;
+    if (Platform.isWindows) {
+      availableTypes = [PrinterConnectionType.system, PrinterConnectionType.usb];
+    } else if (Platform.isAndroid) {
+      availableTypes = PrinterConnectionType.values;
+    } else {
+      // لأنظمة أخرى (مثلاً macOS أو Linux)، يمكنك تخصيص الخيارات لاحقاً
+      availableTypes = [PrinterConnectionType.system];
+    }
     return Scaffold(
       appBar: AppBar(
         title: const Text('إعدادات الطابعة'),
@@ -211,12 +274,12 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             DropdownButtonFormField<PrinterConnectionType>(
-              value: _selectedConnectionType,
+              value: availableTypes.contains(_selectedConnectionType) ? _selectedConnectionType : availableTypes.first,
               decoration: const InputDecoration(
                 labelText: 'نوع الاتصال',
                 border: OutlineInputBorder(),
               ),
-              items: PrinterConnectionType.values.map((type) {
+              items: availableTypes.map((type) {
                 String typeText = '';
                 switch (type) {
                   case PrinterConnectionType.system:
