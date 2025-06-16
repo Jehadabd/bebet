@@ -142,49 +142,40 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     if (_formKey.currentState!.validate() && _selectedProduct != null && _selectedPriceLevel != null) {
       final quantity = double.tryParse(_quantityController.text.trim()) ?? 0.0;
       if (quantity <= 0) return;
-
-      // Calculate itemCostPrice based on total quantity in small units
       double itemCostPriceForInvoiceItem;
-      // Calculate the applied price per unit sold (either small or large unit)
       double appliedPricePerUnitSold;
       double quantitySold;
-
       final unitsInLargeUnit = (_selectedProduct!.unit == 'piece' ? _selectedProduct!.piecesPerUnit : _selectedProduct!.lengthPerUnit) ?? 1.0;
-
+      String saleType = '';
+      if (_selectedProduct!.unit == 'piece') {
+        saleType = _useLargeUnit ? 'ك' : 'ق';
+      } else if (_selectedProduct!.unit == 'meter') {
+        saleType = _useLargeUnit ? 'ل' : 'م';
+      }
       if (_useLargeUnit) {
-         // Selling by large unit
-         quantitySold = quantity; // quantity is in large units
-         // Calculate the price per large unit based on the selected price per small unit
+         quantitySold = quantity;
          appliedPricePerUnitSold = (_selectedPriceLevel ?? _selectedProduct!.unitPrice ?? 0.0) * unitsInLargeUnit;
-
-         // Cost calculation based on total small units
          final totalSmallUnits = quantity * unitsInLargeUnit;
          itemCostPriceForInvoiceItem = (_selectedProduct!.costPrice ?? 0.0) * totalSmallUnits;
-
       } else {
-        // Selling by small unit
-        quantitySold = quantity; // quantity is in small units
-        appliedPricePerUnitSold = _selectedPriceLevel ?? _selectedProduct!.unitPrice ?? 0.0; // Price is already per small unit
-
-        // Cost calculation based on total small units (same as quantitySold in this case)
+        quantitySold = quantity;
+        appliedPricePerUnitSold = _selectedPriceLevel ?? _selectedProduct!.unitPrice ?? 0.0;
         itemCostPriceForInvoiceItem = (_selectedProduct!.costPrice ?? 0.0) * quantitySold;
       }
-
       final newItem = InvoiceItem(
-        invoiceId: 0, // Will be updated when saving the invoice
+        invoiceId: 0,
         productName: _selectedProduct!.name,
-        unit: _selectedProduct!.unit, // Store original unit
-        unitPrice: _selectedProduct!.unitPrice, // Store original small unit price
-        costPrice: itemCostPriceForInvoiceItem, // Store total cost for the quantity sold
-        quantityIndividual: _useLargeUnit ? null : quantitySold, // Store quantity in small units if applicable
-        quantityLargeUnit: _useLargeUnit ? quantitySold : null, // Store quantity in large units if applicable
-        appliedPrice: appliedPricePerUnitSold, // Store the applied price PER UNIT SOLD (large or small)
+        unit: _selectedProduct!.unit,
+        unitPrice: _selectedProduct!.unitPrice,
+        costPrice: itemCostPriceForInvoiceItem,
+        quantityIndividual: _useLargeUnit ? null : quantitySold,
+        quantityLargeUnit: _useLargeUnit ? quantitySold : null,
+        appliedPrice: appliedPricePerUnitSold,
         itemTotal: quantitySold * appliedPricePerUnitSold,
+        saleType: saleType,
       );
-
       setState(() {
         _invoiceItems.add(newItem);
-        // Clear fields for next item
         _productSearchController.clear();
         _quantityController.clear();
         _selectedProduct = null;
@@ -395,6 +386,28 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     final currentTotalAmount = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
     final discount = _discount;
     final afterDiscount = (currentTotalAmount - discount).clamp(0, double.infinity);
+    String formatNumber(num value) {
+      if (value % 1 == 0) {
+        return value.toInt().toString();
+      } else {
+        return value.toStringAsFixed(2);
+      }
+    }
+    String saleTypeText(String? unit) {
+      if (unit == null) return '';
+      switch (unit) {
+        case 'piece':
+          return 'ق';
+        case 'carton':
+          return 'ك';
+        case 'meter':
+          return 'م';
+        case 'roll':
+          return 'ل';
+        default:
+          return unit;
+      }
+    }
     pdf.addPage(
       pw.Page(
         pageFormat: PdfPageFormat.a4,
@@ -406,26 +419,25 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               children: [
                 // رأس الفاتورة الثابت
                 pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  mainAxisAlignment: pw.MainAxisAlignment.start,
                   children: [
                     pw.Column(
                       crossAxisAlignment: pw.CrossAxisAlignment.start,
                       children: [
                         pw.Text('النــاصر', style: pw.TextStyle(font: font, fontSize: 32, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)),
                         pw.Text('تجارة المواد الكهربائية والكابلات', style: pw.TextStyle(font: font, fontSize: 18)),
-                        pw.Text('الموصل - الجامعة، مقابل البرج', style: pw.TextStyle(font: font, fontSize: 14)),
+                        pw.Text('الموصل - الجدعة، مقابل البرج', style: pw.TextStyle(font: font, fontSize: 14)),
                         pw.Text('0773 284 5260  |  0770 304 0821', style: pw.TextStyle(font: font, fontSize: 14, color: PdfColors.orange)),
                       ],
                     ),
-                    // يمكنك إضافة صورة الشعار هنا إذا أردت
                   ],
                 ),
                 pw.SizedBox(height: 8),
                 pw.Row(
                   mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                   children: [
-                    pw.Text('التاريخ: ${_selectedDate.year}/${_selectedDate.month}/${_selectedDate.day}', style: pw.TextStyle(font: font)),
                     pw.Text('حضرة السيد: ${_customerNameController.text}', style: pw.TextStyle(font: font)),
+                    pw.Text('التاريخ: ${_selectedDate.year}/${_selectedDate.month}/${_selectedDate.day}', style: pw.TextStyle(font: font)),
                   ],
                 ),
                 if (_customerAddressController.text.isNotEmpty)
@@ -433,51 +445,100 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 if (_customerPhoneController.text.isNotEmpty)
                   pw.Text('الموبايل: ${_customerPhoneController.text}', style: pw.TextStyle(font: font)),
                 pw.SizedBox(height: 12),
-                // جدول الأصناف
-                pw.Table.fromTextArray(
-                  headers: ['م', 'التفاصيل', 'العدد', 'السعر', 'المبلغ'],
-                  data: [
-                    for (int i = 0; i < _invoiceItems.length; i++)
-                      [
-                        (i + 1).toString(),
-                        _invoiceItems[i].productName,
-                        (_invoiceItems[i].quantityIndividual ?? _invoiceItems[i].quantityLargeUnit ?? 0).toStringAsFixed(2),
-                        _invoiceItems[i].appliedPrice.toStringAsFixed(2),
-                        _invoiceItems[i].itemTotal.toStringAsFixed(2),
-                      ]
+                // جدول الأصناف بشكل يدوي مطابق للصورة
+                pw.Table(
+                  border: pw.TableBorder.all(width: 1),
+                  defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
+                  children: [
+                    pw.TableRow(
+                      decoration: pw.BoxDecoration(),
+                      children: [
+                        pw.Container(
+                          alignment: pw.Alignment.center,
+                          padding: const pw.EdgeInsets.all(4),
+                          child: pw.Text('ت', style: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold)),
+                        ),
+                        pw.Container(
+                          alignment: pw.Alignment.center,
+                          padding: const pw.EdgeInsets.all(4),
+                          child: pw.Text('التفاصيل', style: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold)),
+                        ),
+                        pw.Container(
+                          alignment: pw.Alignment.center,
+                          padding: const pw.EdgeInsets.all(4),
+                          child: pw.Text('نوع البيع', style: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold)),
+                        ),
+                        pw.Container(
+                          alignment: pw.Alignment.center,
+                          padding: const pw.EdgeInsets.all(4),
+                          child: pw.Text('العدد', style: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold)),
+                        ),
+                        pw.Container(
+                          alignment: pw.Alignment.center,
+                          padding: const pw.EdgeInsets.all(4),
+                          child: pw.Text('السعر', style: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold)),
+                        ),
+                        pw.Container(
+                          alignment: pw.Alignment.center,
+                          padding: const pw.EdgeInsets.all(4),
+                          child: pw.Text('المبلغ', style: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold)),
+                        ),
+                      ],
+                    ),
+                    ...[
+                      for (int i = 0; i < _invoiceItems.length; i++)
+                        pw.TableRow(
+                          children: [
+                            pw.Container(
+                              alignment: pw.Alignment.center,
+                              padding: const pw.EdgeInsets.all(4),
+                              child: pw.Text((i + 1).toString(), style: pw.TextStyle(font: font)),
+                            ),
+                            pw.Container(
+                              alignment: pw.Alignment.center,
+                              padding: const pw.EdgeInsets.all(4),
+                              child: pw.Text(_invoiceItems[i].productName, style: pw.TextStyle(font: font)),
+                            ),
+                            pw.Container(
+                              alignment: pw.Alignment.center,
+                              padding: const pw.EdgeInsets.all(4),
+                              child: pw.Text(_invoiceItems[i].saleType ?? '', style: pw.TextStyle(font: font)),
+                            ),
+                            pw.Container(
+                              alignment: pw.Alignment.center,
+                              padding: const pw.EdgeInsets.all(4),
+                              child: pw.Text(formatNumber(_invoiceItems[i].quantityIndividual ?? _invoiceItems[i].quantityLargeUnit ?? 0), style: pw.TextStyle(font: font)),
+                            ),
+                            pw.Container(
+                              alignment: pw.Alignment.center,
+                              padding: const pw.EdgeInsets.all(4),
+                              child: pw.Text(formatNumber(_invoiceItems[i].appliedPrice), style: pw.TextStyle(font: font)),
+                            ),
+                            pw.Container(
+                              alignment: pw.Alignment.center,
+                              padding: const pw.EdgeInsets.all(4),
+                              child: pw.Text(formatNumber(_invoiceItems[i].itemTotal), style: pw.TextStyle(font: font)),
+                            ),
+                          ],
+                        ),
+                    ]
                   ],
-                  headerStyle: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold),
-                  cellStyle: pw.TextStyle(font: font),
-                  cellAlignment: pw.Alignment.center,
-                  headerDecoration: const pw.BoxDecoration(color: PdfColors.grey300),
-                  border: pw.TableBorder.all(),
                 ),
                 pw.SizedBox(height: 12),
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.end,
-                  children: [
-                    pw.Text('الإجمالي قبل الخصم: ', style: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold, fontSize: 14)),
-                    pw.Text(currentTotalAmount.toStringAsFixed(2), style: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold, fontSize: 14)),
-                  ],
-                ),
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.end,
-                  children: [
-                    pw.Text('الخصم: ', style: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold, fontSize: 14)),
-                    pw.Text(discount.toStringAsFixed(2), style: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold, fontSize: 14)),
-                  ],
-                ),
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.end,
-                  children: [
-                    pw.Text('الإجمالي بعد الخصم: ', style: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold, fontSize: 18)),
-                    pw.Text(afterDiscount.toStringAsFixed(2), style: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold, fontSize: 18)),
-                  ],
+                // الإجماليات والخصم في الجهة اليمنى
+                pw.Container(
+                  alignment: pw.Alignment.centerRight,
+                  child: pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.end,
+                    children: [
+                      pw.Text('الإجمالي قبل الخصم: ${formatNumber(currentTotalAmount)}', style: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold, fontSize: 14)),
+                      pw.Text('الخصم: ${formatNumber(discount)}', style: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold, fontSize: 14)),
+                      pw.Text('الإجمالي بعد الخصم: ${formatNumber(afterDiscount)}', style: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold, fontSize: 18)),
+                    ],
+                  ),
                 ),
                 pw.SizedBox(height: 24),
                 pw.Text('التوقيع: _______________', style: pw.TextStyle(font: font)),
-                pw.SizedBox(height: 12),
-                pw.Text('ملاحظة: البضاعة لا ترد ولا تستبدل بعد اسبوعين من تاريخ البيع', style: pw.TextStyle(font: font, fontSize: 12)),
               ],
             ),
           );
@@ -956,7 +1017,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           Expanded(flex: 2, child: Text(itemTotalAmount.toStringAsFixed(2), textAlign: TextAlign.center)),
                           Expanded(flex: 4, child: Text(item.productName, textAlign: TextAlign.center)),
                           Expanded(flex: 1, child: Text(quantityText, textAlign: TextAlign.center)),
-                          Expanded(flex: 1, child: Text(displayUnit, textAlign: TextAlign.center)),
+                          Expanded(flex: 1, child: Text(item.saleType ?? '', textAlign: TextAlign.center)),
                           Expanded(flex: 2, child: Text(item.appliedPrice.toStringAsFixed(2), textAlign: TextAlign.center)),
                           if (!isViewOnly)
                             IconButton(

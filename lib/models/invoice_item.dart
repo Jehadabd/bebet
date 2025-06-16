@@ -11,6 +11,7 @@ class InvoiceItem {
   // الأسعار - السعر المطبق لهذا البند المحدد
   double appliedPrice; // The price used for calculation (price1, price2, etc.)
   double itemTotal;
+  String? saleType; // نوع البيع بالحرف العربي: ق/ك/م/ل
 
   InvoiceItem({
     this.id,
@@ -23,6 +24,7 @@ class InvoiceItem {
     required this.appliedPrice,
     required this.itemTotal,
     this.costPrice, // Made optional
+    this.saleType, // أضف هذا
   });
 
   // Convert an InvoiceItem object into a Map object
@@ -38,6 +40,7 @@ class InvoiceItem {
       'quantity_large_unit': quantityLargeUnit,
       'applied_price': appliedPrice,
       'item_total': itemTotal,
+      'sale_type': saleType, // أضف هذا
     };
   }
 
@@ -54,6 +57,7 @@ class InvoiceItem {
       quantityLargeUnit: map['quantity_large_unit'] as double?,
       appliedPrice: map['applied_price'] ?? 0.0,
       itemTotal: map['item_total'] ?? 0.0,
+      saleType: map['sale_type'] as String?, // أضف هذا
     );
   }
 
@@ -68,6 +72,7 @@ class InvoiceItem {
     double? quantityLargeUnit,
     double? appliedPrice,
     double? itemTotal,
+    String? saleType, // أضف هذا
   }) {
     return InvoiceItem(
       id: id ?? this.id,
@@ -80,6 +85,7 @@ class InvoiceItem {
       quantityLargeUnit: quantityLargeUnit ?? this.quantityLargeUnit,
       appliedPrice: appliedPrice ?? this.appliedPrice,
       itemTotal: itemTotal ?? this.itemTotal,
+      saleType: saleType ?? this.saleType, // أضف هذا
     );
   }
 } 
