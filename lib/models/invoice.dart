@@ -1,3 +1,4 @@
+// models/invoice.dart
 class Invoice {
   int? id;
   String customerName;
@@ -14,6 +15,7 @@ class Invoice {
   int? customerId;
   String status;
   double discount;
+  int? serialNumber;
 
   Invoice({
     this.id,
@@ -30,6 +32,7 @@ class Invoice {
     this.customerId,
     this.status = 'محفوظة',
     this.discount = 0.0,
+    this.serialNumber,
   });
 
   // Convert an Invoice object into a Map object
@@ -49,6 +52,7 @@ class Invoice {
       'customer_id': customerId,
       'status': status,
       'discount': discount,
+      'serial_number': serialNumber,
     };
   }
 
@@ -69,6 +73,7 @@ class Invoice {
       customerId: map['customer_id'] as int?,
       status: map['status'] ?? 'محفوظة',
       discount: map['discount'] ?? 0.0,
+      serialNumber: map['serial_number'],
     );
   }
 
@@ -88,6 +93,7 @@ class Invoice {
     int? customerId,
     String? status,
     double? discount,
+    int? serialNumber,
   }) {
     return Invoice(
       id: id ?? this.id,
@@ -104,6 +110,7 @@ class Invoice {
       customerId: customerId ?? this.customerId,
       status: status ?? this.status,
       discount: discount ?? this.discount,
+      serialNumber: serialNumber ?? this.serialNumber,
     );
   }
-} 
+}

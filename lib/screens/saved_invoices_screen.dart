@@ -72,6 +72,7 @@ class SavedInvoicesScreen extends StatelessWidget {
                           MaterialPageRoute(
                             builder: (context) => CreateInvoiceScreen(
                               existingInvoice: invoice,
+                              isViewOnly: invoice.status == 'محفوظة',
                             ),
                           ),
                         );

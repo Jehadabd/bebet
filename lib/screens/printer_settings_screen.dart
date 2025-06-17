@@ -1,3 +1,4 @@
+// screens/printer_settings_screen.dart
 import 'package:flutter/material.dart';
 import 'dart:async'; // Required for StreamSubscription
 import 'package:alnaser/models/printer_device.dart';
@@ -7,6 +8,7 @@ import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart';
 import 'package:flutter_nsd/flutter_nsd.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:io';
+import 'package:alnaser/services/printing_service_platform_io.dart'; // Import the platform-specific service getter
 
 class PrinterSettingsScreen extends StatefulWidget {
   const PrinterSettingsScreen({super.key});
@@ -16,7 +18,7 @@ class PrinterSettingsScreen extends StatefulWidget {
 }
 
 class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
-  final PrintingService _printingService = PrintingService();
+  late final PrintingService _printingService; // Changed to late final
   final SettingsManager _settingsManager = SettingsManager();
   final FlutterNsd _flutterNsd = FlutterNsd();
   StreamSubscription<NsdServiceInfo>? _nsdSubscription;
@@ -30,6 +32,7 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
   @override
   void initState() {
     super.initState();
+    _printingService = getPlatformPrintingService(); // Initialize using the getter
     _loadDefaultPrinter();
     _initNsdListener();
   }

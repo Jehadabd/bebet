@@ -1,3 +1,4 @@
+// screens/add_transaction_screen.dart
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter/services.dart';
@@ -41,6 +42,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
         amountChanged: amountChanged,
         newBalanceAfterTransaction: newBalance,
         transactionNote: _noteController.text.isEmpty ? null : _noteController.text,
+        transactionType: _isDebt ? 'Debt_Added' : 'Debt_Paid',
       );
 
       await context.read<AppProvider>().addTransaction(transaction);

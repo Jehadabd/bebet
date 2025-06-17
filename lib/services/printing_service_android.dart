@@ -1,3 +1,4 @@
+// services/printing_service_android.dart
 import 'dart:async';
 import 'dart:typed_data';
 import 'package:pdf/pdf.dart';
@@ -7,28 +8,17 @@ import 'package:alnaser/models/printer_device.dart';
 import 'package:alnaser/services/settings_manager.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_esc_pos_network/flutter_esc_pos_network.dart';
+import 'package:alnaser/services/printing_service.dart';
 
-class PrintingService {
+class PrintingServiceAndroid implements PrintingService {
   final SettingsManager _settingsManager = SettingsManager();
 
-  // Helper method to request Bluetooth permissions
-  Future<bool> _requestBluetoothPermissions() async {
-    // Request Bluetooth and Bluetooth connect permissions
-    var bluetoothPermission = await Permission.bluetooth.request();
-    var bluetoothConnectPermission = await Permission.bluetoothConnect.request();
-    var bluetoothScanPermission = await Permission.bluetoothScan.request();
-
-    return bluetoothPermission.isGranted &&
-        bluetoothConnectPermission.isGranted &&
-        bluetoothScanPermission.isGranted;
-  }
-
-  // Method to get the default printer from settings
+  @override
   Future<PrinterDevice?> getDefaultPrinter() async {
     return await _settingsManager.getDefaultPrinter();
   }
 
-  // --- Wi-Fi/LAN Printers ---
+  @override
   Future<void> printWithWifiPrinter(String ipAddress, List<int> commands, {int port = 9100}) async {
     final printer = PrinterNetworkManager(ipAddress, port: port);
     final PosPrintResult res = await printer.connect();
@@ -42,9 +32,14 @@ class PrintingService {
     }
   }
 
-  // --- Bluetooth Printers ---
+  @override
   Future<List<PrinterDevice>> findBluetoothPrinters() async {
-    if (!await _requestBluetoothPermissions()) {
+    // Request Bluetooth permissions directly in this method as it's specific to Bluetooth operations
+    var bluetoothPermission = await Permission.bluetooth.request();
+    var bluetoothConnectPermission = await Permission.bluetoothConnect.request();
+    var bluetoothScanPermission = await Permission.bluetoothScan.request();
+
+    if (!(bluetoothPermission.isGranted && bluetoothConnectPermission.isGranted && bluetoothScanPermission.isGranted)) {
       return [];
     }
 
@@ -67,8 +62,14 @@ class PrintingService {
     }
   }
 
+  @override
   Future<void> printWithBluetoothPrinter(String macAddress, List<int> commands) async {
-    if (!await _requestBluetoothPermissions()) {
+    // Request Bluetooth permissions directly in this method
+    var bluetoothPermission = await Permission.bluetooth.request();
+    var bluetoothConnectPermission = await Permission.bluetoothConnect.request();
+    var bluetoothScanPermission = await Permission.bluetoothScan.request();
+
+    if (!(bluetoothPermission.isGranted && bluetoothConnectPermission.isGranted && bluetoothScanPermission.isGranted)) {
       print('Cannot print: Bluetooth permissions not granted.');
       return;
     }
@@ -88,6 +89,7 @@ class PrintingService {
     }
   }
 
+  @override
   Future<void> printData(Uint8List dataToPrint, {List<int>? escPosCommands, PrinterDevice? printerDevice}) async {
     final defaultPrinter = printerDevice ?? await _settingsManager.getDefaultPrinter();
     if (defaultPrinter == null) {
@@ -114,5 +116,13 @@ class PrintingService {
         print('Unsupported printer type for Android.');
         break;
     }
+  }
+
+  @override
+  Future<List<PrinterDevice>> findSystemPrinters() {
+    // Android does not have system printers in the same way Windows does.
+    // Return an empty list or throw an UnsupportedError if this functionality is strictly not applicable.
+    // For now, returning empty list.
+    return Future.value([]);
   }
 } 

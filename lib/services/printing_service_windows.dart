@@ -1,3 +1,4 @@
+// services/printing_service_windows.dart
 import 'dart:async';
 import 'dart:typed_data';
 import 'dart:ffi';
@@ -5,15 +6,17 @@ import 'package:ffi/ffi.dart';
 import 'package:win32/win32.dart';
 import 'package:alnaser/models/printer_device.dart';
 import 'package:alnaser/services/settings_manager.dart';
+import 'package:alnaser/services/printing_service.dart'; // Import the abstract base class
 
-class PrintingService {
+class PrintingServiceWindows implements PrintingService {
   final SettingsManager _settingsManager = SettingsManager();
 
-  // Method to get the default printer from settings
+  @override
   Future<PrinterDevice?> getDefaultPrinter() async {
     return await _settingsManager.getDefaultPrinter();
   }
 
+  @override
   Future<void> printData(Uint8List dataToPrint, {List<int>? escPosCommands, PrinterDevice? printerDevice}) async {
     final defaultPrinter = printerDevice ?? await _settingsManager.getDefaultPrinter();
     if (defaultPrinter == null) {
@@ -72,7 +75,7 @@ class PrintingService {
     }
   }
 
-  // --- System Printers (Windows) ---
+  @override
   Future<List<PrinterDevice>> findSystemPrinters() async {
     final List<PrinterDevice> printers = [];
     Pointer<DWORD> pcbNeeded = calloc<DWORD>();
@@ -128,5 +131,25 @@ class PrintingService {
       }
     }
     return printers;
+  }
+
+  @override
+  Future<bool> _requestBluetoothPermissions() async {
+    return false; // Not applicable for Windows
+  }
+
+  @override
+  Future<List<PrinterDevice>> findBluetoothPrinters() async {
+    return []; // Not applicable for Windows
+  }
+
+  @override
+  Future<void> printWithBluetoothPrinter(String macAddress, List<int> commands) async {
+    print('Bluetooth printing not supported on Windows.');
+  }
+
+  @override
+  Future<void> printWithWifiPrinter(String ipAddress, List<int> commands, {int port = 9100}) async {
+    print('Wi-Fi printing not supported on Windows for this implementation.');
   }
 } 

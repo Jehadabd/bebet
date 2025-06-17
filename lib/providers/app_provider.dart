@@ -1,3 +1,4 @@
+// providers/app_provider.dart
 import 'package:flutter/foundation.dart';
 import '../models/customer.dart';
 import '../models/transaction.dart';
@@ -176,5 +177,14 @@ class AppProvider with ChangeNotifier {
 
   Future<List<Invoice>> getAllInvoices() async {
     return await _db.getAllInvoices();
+  }
+
+  // New method to update an invoice and notify listeners
+  Future<void> updateInvoice(Invoice invoice) async {
+    await _db.updateInvoice(invoice);
+    // Consider how you want to update local state if necessary,
+    // e.g., if invoices are cached in AppProvider.
+    // For now, simply notifying listeners will trigger a re-fetch in consuming widgets.
+    notifyListeners();
   }
 } 

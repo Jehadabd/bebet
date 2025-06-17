@@ -1,3 +1,4 @@
+// screens/customer_details_screen.dart
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/app_provider.dart';
@@ -94,7 +95,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                       const SizedBox(height: 8),
                       _buildInfoRow(
                         'إجمالي الدين',
-                        '${customer.currentTotalDebt.toStringAsFixed(2)} دينار',
+                        '${customer.currentTotalDebt?.toStringAsFixed(2) ?? '0.00'} دينار',
                         valueColor: customer.currentTotalDebt > 0
                             ? Colors.red
                             : Colors.green,
@@ -211,7 +212,7 @@ class TransactionListTile extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'الرصيد بعد المعاملة: ${transaction.newBalanceAfterTransaction.toStringAsFixed(2)} دينار',
+              'الرصيد بعد المعاملة: ${transaction.newBalanceAfterTransaction?.toStringAsFixed(2) ?? '0.00'} دينار',
             ),
             if (transaction.transactionNote != null)
               Text(transaction.transactionNote!),
@@ -255,7 +256,11 @@ class TransactionListTile extends StatelessWidget {
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (context) => CreateInvoiceScreen(existingInvoice: invoice, isViewOnly: true, relatedDebtTransaction: relatedDebtTransaction), // Pass the related transaction
+            builder: (context) => CreateInvoiceScreen(
+              existingInvoice: invoice,
+              isViewOnly: invoice.status == 'محفوظة',
+              relatedDebtTransaction: relatedDebtTransaction,
+            ),
           ),
         );
       } else if (context.mounted) {

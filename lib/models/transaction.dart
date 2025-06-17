@@ -1,10 +1,13 @@
+// models/transaction.dart
 class DebtTransaction {
   final int? id;
   final int customerId;
   final DateTime transactionDate;
   final double amountChanged;
-  final double newBalanceAfterTransaction;
+  final double? newBalanceAfterTransaction;
   final String? transactionNote;
+  final String transactionType;
+  final String? description;
   final int? invoiceId;
   final DateTime createdAt;
 
@@ -13,8 +16,10 @@ class DebtTransaction {
     required this.customerId,
     DateTime? transactionDate,
     required this.amountChanged,
-    required this.newBalanceAfterTransaction,
+    this.newBalanceAfterTransaction,
     this.transactionNote,
+    required this.transactionType,
+    this.description,
     this.invoiceId,
     DateTime? createdAt,
   })  : transactionDate = transactionDate ?? DateTime.now(),
@@ -28,6 +33,8 @@ class DebtTransaction {
       'amount_changed': amountChanged,
       'new_balance_after_transaction': newBalanceAfterTransaction,
       'transaction_note': transactionNote,
+      'transaction_type': transactionType,
+      'description': description,
       'invoice_id': invoiceId,
       'created_at': createdAt.toIso8601String(),
     };
@@ -39,8 +46,10 @@ class DebtTransaction {
       customerId: map['customer_id'] as int,
       transactionDate: DateTime.parse(map['transaction_date'] as String),
       amountChanged: map['amount_changed'] as double,
-      newBalanceAfterTransaction: map['new_balance_after_transaction'] as double,
+      newBalanceAfterTransaction: map['new_balance_after_transaction'] as double?,
       transactionNote: map['transaction_note'] as String?,
+      transactionType: map['transaction_type'] as String,
+      description: map['description'] as String?,
       invoiceId: map['invoice_id'] as int?,
       createdAt: DateTime.parse(map['created_at'] as String),
     );
@@ -53,6 +62,8 @@ class DebtTransaction {
     double? amountChanged,
     double? newBalanceAfterTransaction,
     String? transactionNote,
+    String? transactionType,
+    String? description,
     int? invoiceId,
     DateTime? createdAt,
   }) {
@@ -63,6 +74,8 @@ class DebtTransaction {
       amountChanged: amountChanged ?? this.amountChanged,
       newBalanceAfterTransaction: newBalanceAfterTransaction ?? this.newBalanceAfterTransaction,
       transactionNote: transactionNote ?? this.transactionNote,
+      transactionType: transactionType ?? this.transactionType,
+      description: description ?? this.description,
       invoiceId: invoiceId ?? this.invoiceId,
       createdAt: createdAt ?? this.createdAt,
     );

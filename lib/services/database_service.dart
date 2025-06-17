@@ -1,4 +1,4 @@
-// lib/services/database_service.dart
+// services/database_service.dart
 
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
@@ -50,7 +50,10 @@ class DatabaseService {
     final dir = await getApplicationSupportDirectory();
     final newPath = join(dir.path, 'debt_book.db');
     final oldPath = join(await getDatabasesPath(), 'debt_book.db');
-    // إذا كانت القاعدة في المسار القديم ولم توجد في الجديد، انقلها
+
+    print('DEBUG DB: New database path: $newPath');
+    print('DEBUG DB: Old database path: $oldPath');
+
     final oldFile = File(oldPath);
     final newFile = File(newPath);
     if (await oldFile.exists() && !(await newFile.exists())) {
@@ -59,7 +62,7 @@ class DatabaseService {
     }
     return await openDatabase(
       newPath,
-      version: 12, // تأكد من أن الإصدار هو الأحدث
+      version: 16, // Incrementing the database version for the new migration
       onCreate: _createDatabase,
       onUpgrade: _onUpgrade,
     );
@@ -87,6 +90,8 @@ class DatabaseService {
         amount_changed REAL NOT NULL,
         new_balance_after_transaction REAL NOT NULL,
         transaction_note TEXT,
+        transaction_type TEXT,
+        description TEXT,
         created_at TEXT NOT NULL,
         invoice_id INTEGER, --  يمكن أن يكون NULL إذا كانت معاملة يدوية
         FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE,
@@ -137,6 +142,7 @@ class DatabaseService {
         last_modified_at TEXT NOT NULL, --  يُخزن كـ ISO8601 String
         customer_id INTEGER, -- أضف حقل customer_id هنا
         status TEXT NOT NULL DEFAULT 'محفوظة',
+        serial_number INTEGER UNIQUE, -- الرقم التسلسلي الجديد
         FOREIGN KEY (installer_name) REFERENCES installers (name) ON UPDATE CASCADE ON DELETE SET NULL, --  تحسين سلوك المفتاح الأجنبي
         FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE SET NULL -- أضف المفتاح الأجنبي لـ customer_id
       )
@@ -154,62 +160,98 @@ class DatabaseService {
         applied_price REAL NOT NULL, -- السعر الذي تم تطبيقه فعليًا (price1, price2, etc.)
         item_total REAL NOT NULL, -- الإجمالي لهذا البند (applied_price * quantity)
         cost_price REAL, --  التكلفة الإجمالية لهذا البند (cost_per_unit_of_product * total_quantity_of_this_item)
+        sale_type TEXT,
         FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
       )
     ''');
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    print(
+        'DEBUG DB: Running onUpgrade from version $oldVersion to $newVersion');
     //  ترتيب الترقيات مهم
     if (oldVersion < 2) {
       //  ... (أكواد الترقية السابقة إذا كانت موجودة)
     }
     //  ...
     if (oldVersion < 8) {
-       await db.execute('ALTER TABLE transactions ADD COLUMN invoice_id INTEGER;');
-       //  قد تحتاج لإضافة FOREIGN KEY constraint هنا إذا لم يكن موجودًا من onCreate
+      await db
+          .execute('ALTER TABLE transactions ADD COLUMN invoice_id INTEGER;');
+      //  قد تحتاج لإضافة FOREIGN KEY constraint هنا إذا لم يكن موجودًا من onCreate
     }
     if (oldVersion < 9) {
-        try {
-            await db.execute('ALTER TABLE invoices ADD COLUMN amount_paid_on_invoice REAL DEFAULT 0.0;');
-        } catch (e) {
-            print("Failed to add column 'amount_paid_on_invoice' or it already exists: $e");
-        }
-        //  تحسين سلوك المفتاح الأجنبي لـ installer_name إذا كنت تقوم بالترقية من إصدار قديم جدًا
-        //  هذه الخطوة قد تكون معقدة إذا كان هناك بيانات موجودة
-        // await db.execute('DROP TABLE IF EXISTS temp_invoices;');
-        // await db.execute('CREATE TABLE temp_invoices AS SELECT * FROM invoices;');
-        // await db.execute('DROP TABLE invoices;');
-        //  أعد إنشاء جدول invoices بالـ FOREIGN KEY المحسن (كما في _createDatabase)
-        // await db.execute('''... CREATE TABLE invoices ... FOREIGN KEY (installer_name) REFERENCES installers (name) ON UPDATE CASCADE ON DELETE SET NULL ...''');
-        // await db.execute('INSERT INTO invoices SELECT * FROM temp_invoices;');
-        // await db.execute('DROP TABLE temp_invoices;');
-        //  التعامل مع تعديل المفاتيح الأجنبية في الترقية يتطلب حذرًا شديدًا.
+      try {
+        await db.execute(
+            'ALTER TABLE invoices ADD COLUMN amount_paid_on_invoice REAL DEFAULT 0.0;');
+      } catch (e) {
+        print(
+            "DEBUG DB Error: Failed to add column 'amount_paid_on_invoice' or it already exists: $e");
+      }
     }
-    if (oldVersion < 10) { // إضافة خطوة الترقية للإصدار 10
-        try {
-            // أضف حقل customer_id إذا لم يكن موجودًا بالفعل
-            await db.execute('ALTER TABLE invoices ADD COLUMN customer_id INTEGER;');
-            // أضف المفتاح الأجنبي إذا لم يكن موجودًا بالفعل (هذه الخطوة قد تكون معقدة وتتطلب إعادة إنشاء الجدول في بعض الحالات إذا كانت البيانات موجودة)
-            // For simplicity, we will assume adding the column is sufficient for the fix
-            // If there were existing invoices that should be linked to customers, a migration strategy would be needed here.
-        } catch (e) {
-            print("Failed to add column 'customer_id' to invoices table or it already exists: $e");
-        }
+    if (oldVersion < 10) {
+      try {
+        await db
+            .execute('ALTER TABLE invoices ADD COLUMN customer_id INTEGER;');
+      } catch (e) {
+        print(
+            "DEBUG DB Error: Failed to add column 'customer_id' to invoices table or it already exists: $e");
+      }
     }
     if (oldVersion < 11) {
-        try {
-            await db.execute("ALTER TABLE invoices ADD COLUMN status TEXT NOT NULL DEFAULT 'محفوظة';");
-        } catch (e) {
-            print("Failed to add column 'status' to invoices table or it already exists: $e");
-        }
+      try {
+        await db.execute(
+            "ALTER TABLE invoices ADD COLUMN status TEXT NOT NULL DEFAULT 'محفوظة';");
+      } catch (e) {
+        print(
+            "DEBUG DB Error: Failed to add column 'status' to invoices table or it already exists: $e");
+      }
     }
     if (oldVersion < 12) {
-        try {
-            await db.execute("ALTER TABLE invoices ADD COLUMN discount REAL NOT NULL DEFAULT 0.0;");
-        } catch (e) {
-            print("Failed to add column 'discount' to invoices table or it already exists: $e");
-        }
+      try {
+        await db.execute(
+            "ALTER TABLE invoices ADD COLUMN discount REAL NOT NULL DEFAULT 0.0;");
+      } catch (e) {
+        print(
+            "DEBUG DB Error: Failed to add column 'discount' to invoices table or it already exists: $e");
+      }
+    }
+    if (oldVersion < 13) {
+      try {
+        await db
+            .execute("ALTER TABLE invoice_items ADD COLUMN sale_type TEXT;");
+      } catch (e) {
+        print(
+            "DEBUG DB Error: Failed to add column 'sale_type' to invoice_items table or it already exists: $e");
+      }
+    }
+    if (oldVersion < 14) {
+      try {
+        await db.execute(
+            'ALTER TABLE transactions ADD COLUMN transaction_type TEXT;');
+      } catch (e) {
+        print(
+            "DEBUG DB Error: Failed to add column 'transaction_type' to transactions table or it already exists: $e");
+      }
+    }
+    if (oldVersion < 15) {
+      try {
+        await db
+            .execute('ALTER TABLE transactions ADD COLUMN description TEXT;');
+      } catch (e) {
+        print(
+            "DEBUG DB Error: Failed to add column 'description' to transactions table or it already exists: $e");
+      }
+    }
+    if (oldVersion < 16) {
+      print('DEBUG DB: Attempting to add serial_number column.');
+      try {
+        await db.execute(
+            'ALTER TABLE invoices ADD COLUMN serial_number INTEGER UNIQUE;');
+        print('DEBUG DB: serial_number column added successfully.');
+      } catch (e) {
+        print(
+            "DEBUG DB Error: Failed to add column 'serial_number' to invoices table or it already exists: $e");
+      }
     }
   }
 
@@ -222,7 +264,8 @@ class DatabaseService {
   Future<List<Customer>> getAllCustomers({String orderBy = 'name ASC'}) async {
     final db = await database;
     try {
-      final List<Map<String, dynamic>> maps = await db.query('customers', orderBy: orderBy);
+      final List<Map<String, dynamic>> maps =
+          await db.query('customers', orderBy: orderBy);
       return List.generate(maps.length, (i) => Customer.fromMap(maps[i]));
     } catch (e) {
       print('Error getting all customers: $e');
@@ -230,7 +273,7 @@ class DatabaseService {
     }
   }
 
-   Future<Customer?> getCustomerById(int id) async {
+  Future<Customer?> getCustomerById(int id) async {
     final db = await database;
     try {
       final List<Map<String, dynamic>> maps = await db.query(
@@ -270,10 +313,10 @@ class DatabaseService {
         whereArgs: [id],
       );
     } catch (e) {
-       throw Exception(_handleDatabaseError(e));
+      throw Exception(_handleDatabaseError(e));
     }
   }
-  
+
   Future<List<Customer>> searchCustomers(String query) async {
     final db = await database;
     try {
@@ -285,66 +328,70 @@ class DatabaseService {
       );
       return List.generate(maps.length, (i) => Customer.fromMap(maps[i]));
     } catch (e) {
-       throw Exception(_handleDatabaseError(e));
+      throw Exception(_handleDatabaseError(e));
     }
   }
-
 
   // --- دوال المنتجات ---
   Future<int> insertProduct(Product product) async {
     final db = await database;
     try {
-      return await db.insert('products', product.toMap()); // افترض أن toMap جاهزة
+      return await db.insert(
+          'products', product.toMap()); // افترض أن toMap جاهزة
     } catch (e) {
-       throw Exception(_handleDatabaseError(e));
+      throw Exception(_handleDatabaseError(e));
     }
   }
 
   Future<List<Product>> getAllProducts({String orderBy = 'name ASC'}) async {
     final db = await database;
     try {
-      final List<Map<String, dynamic>> maps = await db.query('products', orderBy: orderBy);
+      final List<Map<String, dynamic>> maps =
+          await db.query('products', orderBy: orderBy);
       return List.generate(maps.length, (i) => Product.fromMap(maps[i]));
     } catch (e) {
-       throw Exception(_handleDatabaseError(e));
+      throw Exception(_handleDatabaseError(e));
     }
   }
   // ... (بقية دوال المنتجات CRUD)
-
 
   // --- دوال الفنيين ---
   Future<int> insertInstaller(Installer installer) async {
     final db = await database;
     try {
-      return await db.insert('installers', installer.toMap()); // افترض أن toMap جاهزة
+      return await db.insert(
+          'installers', installer.toMap()); // افترض أن toMap جاهزة
     } catch (e) {
-       throw Exception(_handleDatabaseError(e));
+      throw Exception(_handleDatabaseError(e));
     }
   }
 
-  Future<List<Installer>> getAllInstallers({String orderBy = 'name ASC'}) async {
+  Future<List<Installer>> getAllInstallers(
+      {String orderBy = 'name ASC'}) async {
     final db = await database;
     try {
-      final List<Map<String, dynamic>> maps = await db.query('installers', orderBy: orderBy);
+      final List<Map<String, dynamic>> maps =
+          await db.query('installers', orderBy: orderBy);
       return List.generate(maps.length, (i) => Installer.fromMap(maps[i]));
     } catch (e) {
-       throw Exception(_handleDatabaseError(e));
+      throw Exception(_handleDatabaseError(e));
     }
   }
   // ... (بقية دوال الفنيين CRUD)
-
 
   // --- دوال المعاملات (Transactions) ---
   Future<int> insertTransaction(DebtTransaction transaction) async {
     final db = await database;
     try {
-      return await db.insert('transactions', transaction.toMap()); // افترض أن toMap جاهزة
+      return await db.insert(
+          'transactions', transaction.toMap()); // افترض أن toMap جاهزة
     } catch (e) {
-       throw Exception(_handleDatabaseError(e));
+      throw Exception(_handleDatabaseError(e));
     }
   }
 
-  Future<List<DebtTransaction>> getCustomerTransactions(int customerId, {String orderBy = 'transaction_date DESC, id DESC'}) async {
+  Future<List<DebtTransaction>> getCustomerTransactions(int customerId,
+      {String orderBy = 'transaction_date DESC, id DESC'}) async {
     final db = await database;
     try {
       final List<Map<String, dynamic>> maps = await db.query(
@@ -353,17 +400,18 @@ class DatabaseService {
         whereArgs: [customerId],
         orderBy: orderBy,
       );
-      return List.generate(maps.length, (i) => DebtTransaction.fromMap(maps[i]));
+      return List.generate(
+          maps.length, (i) => DebtTransaction.fromMap(maps[i]));
     } catch (e) {
-       throw Exception(_handleDatabaseError(e));
+      throw Exception(_handleDatabaseError(e));
     }
   }
   // ... (بقية دوال المعاملات)
 
-
   // --- دوال الفواتير والمنطق المحاسبي ---
 
-  Future<Customer?> _findCustomer(DatabaseExecutor txn, String customerName, String? customerPhone) async {
+  Future<Customer?> _findCustomer(
+      DatabaseExecutor txn, String customerName, String? customerPhone) async {
     //  محاولة البحث بالاسم والهاتف (إذا كان الهاتف موجودًا)
     String whereClause = 'name = ?';
     List<dynamic> whereArgs = [customerName.trim()];
@@ -393,8 +441,11 @@ class DatabaseService {
     return null;
   }
 
-  Future<void> _updateInstallerTotal(DatabaseExecutor txn, String? installerName, double amountChange) async {
-    if (installerName != null && installerName.trim().isNotEmpty && amountChange != 0) {
+  Future<void> _updateInstallerTotal(
+      DatabaseExecutor txn, String? installerName, double amountChange) async {
+    if (installerName != null &&
+        installerName.trim().isNotEmpty &&
+        amountChange != 0) {
       try {
         await txn.rawUpdate('''
           UPDATE installers
@@ -408,20 +459,26 @@ class DatabaseService {
     }
   }
 
-  String _generateInvoiceUpdateTransactionNote(Invoice oldInvoice, Invoice newInvoice, double netDebtChangeForCustomer) {
+  String _generateInvoiceUpdateTransactionNote(
+      Invoice oldInvoice, Invoice newInvoice, double netDebtChangeForCustomer) {
     List<String> changes = [];
-    if (oldInvoice.totalAmount.toStringAsFixed(2) != newInvoice.totalAmount.toStringAsFixed(2)) {
-      changes.add('إجمالي الفاتورة تغير من ${oldInvoice.totalAmount.toStringAsFixed(2)} إلى ${newInvoice.totalAmount.toStringAsFixed(2)}.');
+    if (oldInvoice.totalAmount.toStringAsFixed(2) !=
+        newInvoice.totalAmount.toStringAsFixed(2)) {
+      changes.add(
+          'إجمالي الفاتورة تغير من ${oldInvoice.totalAmount.toStringAsFixed(2)} إلى ${newInvoice.totalAmount.toStringAsFixed(2)}.');
     }
     if (oldInvoice.paymentType != newInvoice.paymentType) {
-      changes.add('نوع الدفع تغير من "${oldInvoice.paymentType}" إلى "${newInvoice.paymentType}".');
+      changes.add(
+          'نوع الدفع تغير من "${oldInvoice.paymentType}" إلى "${newInvoice.paymentType}".');
     }
 
     String mainMessage;
     if (netDebtChangeForCustomer > 0) {
-      mainMessage = 'نتج عن ذلك زيادة صافية في دين العميل بمقدار ${netDebtChangeForCustomer.toStringAsFixed(2)}.';
+      mainMessage =
+          'نتج عن ذلك زيادة صافية في دين العميل بمقدار ${netDebtChangeForCustomer.toStringAsFixed(2)}.';
     } else if (netDebtChangeForCustomer < 0) {
-      mainMessage = 'نتج عن ذلك نقصان صافي في دين العميل بمقدار ${(-netDebtChangeForCustomer).toStringAsFixed(2)}.';
+      mainMessage =
+          'نتج عن ذلك نقصان صافي في دين العميل بمقدار ${(-netDebtChangeForCustomer).toStringAsFixed(2)}.';
     } else {
       mainMessage = 'لم يتغير صافي الدين على العميل بسبب هذا التعديل.';
     }
@@ -429,24 +486,35 @@ class DatabaseService {
     if (changes.isEmpty && netDebtChangeForCustomer == 0) {
       return 'تحديث بيانات الفاتورة #${newInvoice.id} (بدون تغيير مالي مؤثر على رصيد دين العميل).';
     }
-    return 'تعديل فاتورة #${newInvoice.id}: ${changes.join(' ')} $mainMessage'.trim();
+    return 'تعديل فاتورة #${newInvoice.id}: ${changes.join(' ')} $mainMessage'
+        .trim();
   }
 
   Future<int> insertInvoice(Invoice invoice) async {
     final db = await database;
     try {
-       return await db.insert('invoices', invoice.toMap());
+      // إذا كانت الفاتورة جديدة وليس لديها رقم تسلسلي، قم بإنشاء واحد
+      if (invoice.serialNumber == null) {
+        final lastSerialNumber = await getLatestSerialNumber();
+        invoice = invoice.copyWith(serialNumber: lastSerialNumber + 1);
+      }
+      return await db.insert('invoices', invoice.toMap());
     } catch (e) {
-       throw Exception(_handleDatabaseError(e));
+      throw Exception(_handleDatabaseError(e));
     }
   }
 
   Future<int> updateInvoice(Invoice invoice) async {
     final db = await database;
-    
-    // Get the old invoice to calculate debt changes
+
+    // Get the old invoice to calculate debt changes and preserve serial number
     final oldInvoice = await getInvoiceById(invoice.id!);
     if (oldInvoice == null) return 0;
+
+    // إذا لم يكن الرقم التسلسلي موجودًا في الفاتورة الجديدة، احتفظ بالقديم
+    if (invoice.serialNumber == null && oldInvoice.serialNumber != null) {
+      invoice = invoice.copyWith(serialNumber: oldInvoice.serialNumber);
+    }
 
     // Calculate total paid amount for the invoice
     final List<Map<String, dynamic>> paymentMaps = await db.query(
@@ -466,11 +534,12 @@ class DatabaseService {
 
     double oldDebtContribution = 0.0;
     if (oldInvoice.paymentType == 'دين') {
-      oldDebtContribution = oldInvoice.totalAmount - oldInvoice.amountPaidOnInvoice;
+      oldDebtContribution =
+          oldInvoice.totalAmount - oldInvoice.amountPaidOnInvoice;
     }
 
     double newDebtContribution = 0.0;
-     if (invoice.paymentType == 'دين') {
+    if (invoice.paymentType == 'دين') {
       newDebtContribution = invoice.totalAmount - invoice.amountPaidOnInvoice;
     }
 
@@ -479,57 +548,66 @@ class DatabaseService {
 
     // Update customer's debt if a customer is linked and there's a debt change
     if (invoice.customerId != null && debtChange != 0) {
-       final customer = await getCustomerById(invoice.customerId!); // Use the customerId from the invoice
-       if (customer != null) {
-         final updatedCustomer = customer.copyWith(
-           currentTotalDebt: customer.currentTotalDebt + debtChange,
-           lastModifiedAt: DateTime.now(),
-         );
-         await updateCustomer(updatedCustomer);
+      final customer = await getCustomerById(
+          invoice.customerId!); // Use the customerId from the invoice
+      if (customer != null) {
+        final updatedCustomer = customer.copyWith(
+          currentTotalDebt: customer.currentTotalDebt + debtChange,
+          lastModifiedAt: DateTime.now(),
+        );
+        await updateCustomer(updatedCustomer);
 
-         // Record the debt change transaction
-         await insertTransaction(
-           DebtTransaction(
-             id: null,
-             customerId: customer.id!,
-             invoiceId: invoice.id!,
-             amountChanged: debtChange, // Positive for increase, negative for decrease
-             transactionDate: DateTime.now(),
-             newBalanceAfterTransaction: customer.currentTotalDebt + debtChange, // This will be the balance AFTER this transaction
-             transactionNote: _generateInvoiceUpdateTransactionNote(oldInvoice, invoice, debtChange), // Generate a descriptive note
-             createdAt: DateTime.now(),
-           ),
-         );
-       }
+        // Record the debt change transaction
+        await insertTransaction(
+          DebtTransaction(
+            id: null,
+            customerId: customer.id!,
+            invoiceId: invoice.id!,
+            amountChanged:
+                debtChange, // Positive for increase, negative for decrease
+            transactionDate: DateTime.now(),
+            newBalanceAfterTransaction: customer.currentTotalDebt +
+                debtChange, // This will be the balance AFTER this transaction
+            transactionNote: _generateInvoiceUpdateTransactionNote(
+                oldInvoice, invoice, debtChange), // Generate a descriptive note
+            transactionType: 'Invoice_Debt_Adjustment',
+            createdAt: DateTime.now(),
+          ),
+        );
+      }
     }
-    
+
     // Update installer's total billed amount if installer name changed or total amount changed
-    if (oldInvoice.installerName != invoice.installerName || oldInvoice.totalAmount != invoice.totalAmount) {
-       // Reverse the old installer's billed amount (if any)
-       if (oldInvoice.installerName != null && oldInvoice.installerName!.isNotEmpty) {
-         await _updateInstallerTotal(db, oldInvoice.installerName!, -oldInvoice.totalAmount);
-       }
-       // Add the new installer's billed amount (if any)
-       if (invoice.installerName != null && invoice.installerName!.isNotEmpty) {
-         await _updateInstallerTotal(db, invoice.installerName!, invoice.totalAmount);
-       }
+    if (oldInvoice.installerName != invoice.installerName ||
+        oldInvoice.totalAmount != invoice.totalAmount) {
+      // Reverse the old installer's billed amount (if any)
+      if (oldInvoice.installerName != null &&
+          oldInvoice.installerName!.isNotEmpty) {
+        await _updateInstallerTotal(
+            db, oldInvoice.installerName!, -oldInvoice.totalAmount);
+      }
+      // Add the new installer's billed amount (if any)
+      if (invoice.installerName != null && invoice.installerName!.isNotEmpty) {
+        await _updateInstallerTotal(
+            db, invoice.installerName!, invoice.totalAmount);
+      }
     }
 
     try {
-       return await db.update(
-         'invoices',
-         invoice.toMap(),
-         where: 'id = ?',
-         whereArgs: [invoice.id!],
-       );
+      return await db.update(
+        'invoices',
+        invoice.toMap(),
+        where: 'id = ?',
+        whereArgs: [invoice.id!],
+      );
     } catch (e) {
-       throw Exception(_handleDatabaseError(e));
+      throw Exception(_handleDatabaseError(e));
     }
   }
 
   Future<int> deleteInvoice(int id) async {
     final db = await database;
-    
+
     // Get the invoice to calculate debt reversal and update installer total
     final invoice = await getInvoiceById(id);
     if (invoice == null) return 0;
@@ -538,19 +616,21 @@ class DatabaseService {
     // This should be the debt amount associated with this specific invoice, not affected by other payments.
     double debtToReverse = 0.0;
     if (invoice.paymentType == 'دين') {
-        // Find the transaction linked to this invoice that represents the initial debt
-        final initialDebtTransaction = await getInvoiceDebtTransaction(id);
-        if (initialDebtTransaction != null) {
-            debtToReverse = initialDebtTransaction.amountChanged; // This is the positive debt amount recorded initially
-        }
-         // If there were partial payments recorded as separate transactions for this invoice,
-         // those should have already updated the customer's total debt.
-         // So, when deleting the invoice, we reverse the *initial* debt amount recorded.
+      // Find the transaction linked to this invoice that represents the initial debt
+      final initialDebtTransaction = await getInvoiceDebtTransaction(id);
+      if (initialDebtTransaction != null) {
+        debtToReverse = initialDebtTransaction
+            .amountChanged; // This is the positive debt amount recorded initially
+      }
+      // If there were partial payments recorded as separate transactions for this invoice,
+      // those should have already updated the customer's total debt.
+      // So, when deleting the invoice, we reverse the *initial* debt amount recorded.
     }
 
     // Update customer's debt if a customer is linked and there was initial debt from this invoice
     if (invoice.customerId != null && debtToReverse > 0) {
-      final customer = await getCustomerById(invoice.customerId!); // Use the customerId from the invoice
+      final customer = await getCustomerById(
+          invoice.customerId!); // Use the customerId from the invoice
       if (customer != null) {
         final updatedCustomer = customer.copyWith(
           currentTotalDebt: customer.currentTotalDebt - debtToReverse,
@@ -566,8 +646,10 @@ class DatabaseService {
             invoiceId: id,
             amountChanged: -debtToReverse, // Negative to reverse the debt
             transactionDate: DateTime.now(),
-            newBalanceAfterTransaction: customer.currentTotalDebt - debtToReverse, // Balance AFTER reversal
+            newBalanceAfterTransaction: customer.currentTotalDebt -
+                debtToReverse, // Balance AFTER reversal
             transactionNote: 'حذف الفاتورة رقم $id (عكس دين الفاتورة)',
+            transactionType: 'Invoice_Debt_Reversal',
             createdAt: DateTime.now(),
           ),
         );
@@ -575,33 +657,34 @@ class DatabaseService {
     }
 
     // Update installer's total billed amount (reverse the amount from this invoice)
-     if (invoice.installerName != null && invoice.installerName!.isNotEmpty) {
-        await _updateInstallerTotal(db, invoice.installerName!, -invoice.totalAmount);
-     }
+    if (invoice.installerName != null && invoice.installerName!.isNotEmpty) {
+      await _updateInstallerTotal(
+          db, invoice.installerName!, -invoice.totalAmount);
+    }
 
     try {
-       // Delete all transactions associated with this invoice
-       await db.delete(
-         'transactions',
-         where: 'invoice_id = ?',
-         whereArgs: [id],
-       );
+      // Delete all transactions associated with this invoice
+      await db.delete(
+        'transactions',
+        where: 'invoice_id = ?',
+        whereArgs: [id],
+      );
 
-       // Delete all invoice items associated with this invoice
-       await db.delete(
-         'invoice_items',
-         where: 'invoice_id = ?',
-         whereArgs: [id],
-       );
+      // Delete all invoice items associated with this invoice
+      await db.delete(
+        'invoice_items',
+        where: 'invoice_id = ?',
+        whereArgs: [id],
+      );
 
-       // Delete the invoice
-       return await db.delete(
-         'invoices',
-         where: 'id = ?',
-         whereArgs: [id],
-       );
+      // Delete the invoice
+      return await db.delete(
+        'invoices',
+        where: 'id = ?',
+        whereArgs: [id],
+      );
     } catch (e) {
-       throw Exception(_handleDatabaseError(e));
+      throw Exception(_handleDatabaseError(e));
     }
   }
 
@@ -611,7 +694,7 @@ class DatabaseService {
     try {
       return await db.insert('invoice_items', item.toMap());
     } catch (e) {
-       throw Exception(_handleDatabaseError(e));
+      throw Exception(_handleDatabaseError(e));
     }
   }
 
@@ -625,7 +708,7 @@ class DatabaseService {
         whereArgs: [item.id!],
       );
     } catch (e) {
-       throw Exception(_handleDatabaseError(e));
+      throw Exception(_handleDatabaseError(e));
     }
   }
 
@@ -638,33 +721,36 @@ class DatabaseService {
         whereArgs: [id],
       );
     } catch (e) {
-       throw Exception(_handleDatabaseError(e));
+      throw Exception(_handleDatabaseError(e));
     }
   }
 
   // Method to get the initial debt transaction for an invoice
   Future<DebtTransaction?> getInvoiceDebtTransaction(int invoiceId) async {
-      final db = await database;
-      try {
-           final List<Map<String, dynamic>> maps = await db.query(
-             'transactions',
-             where: 'invoice_id = ? AND amount_changed > 0',
-             whereArgs: [invoiceId],
-             orderBy: 'created_at ASC', // Get the earliest positive transaction linked to this invoice
-             limit: 1,
-           );
-           if (maps.isNotEmpty) {
-             return DebtTransaction.fromMap(maps.first);
-           }
-      } catch (e) {
-          print('Error getting invoice debt transaction for invoice $invoiceId: $e');
-           // Do not throw here, return null if not found or error occurs
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.query(
+        'transactions',
+        where: 'invoice_id = ? AND amount_changed > 0',
+        whereArgs: [invoiceId],
+        orderBy:
+            'created_at ASC', // Get the earliest positive transaction linked to this invoice
+        limit: 1,
+      );
+      if (maps.isNotEmpty) {
+        return DebtTransaction.fromMap(maps.first);
       }
-      return null;
+    } catch (e) {
+      print(
+          'Error getting invoice debt transaction for invoice $invoiceId: $e');
+      // Do not throw here, return null if not found or error occurs
+    }
+    return null;
   }
 
   // دوال مساعدة للقراءة داخل معاملة (إذا كنت تستدعيها من داخل دوال أخرى تستخدم معاملة)
-  Future<Invoice?> getInvoiceByIdUsingTransaction(DatabaseExecutor txn, int id) async {
+  Future<Invoice?> getInvoiceByIdUsingTransaction(
+      DatabaseExecutor txn, int id) async {
     final List<Map<String, dynamic>> maps = await txn.query(
       'invoices',
       where: 'id = ?',
@@ -677,20 +763,22 @@ class DatabaseService {
     return null;
   }
 
-  Future<Customer?> getCustomerByIdUsingTransaction(DatabaseExecutor txn, int id) async {
-     final List<Map<String, dynamic>> maps = await txn.query(
-        'customers',
-        where: 'id = ?',
-        whereArgs: [id],
-        limit: 1,
-      );
-      if (maps.isNotEmpty) {
-        return Customer.fromMap(maps.first);
-      }
-      return null;
+  Future<Customer?> getCustomerByIdUsingTransaction(
+      DatabaseExecutor txn, int id) async {
+    final List<Map<String, dynamic>> maps = await txn.query(
+      'customers',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (maps.isNotEmpty) {
+      return Customer.fromMap(maps.first);
+    }
+    return null;
   }
 
-  Future<List<InvoiceItem>> getInvoiceItemsUsingTransaction(DatabaseExecutor txn, int invoiceId) async {
+  Future<List<InvoiceItem>> getInvoiceItemsUsingTransaction(
+      DatabaseExecutor txn, int invoiceId) async {
     final List<Map<String, dynamic>> maps = await txn.query(
       'invoice_items',
       where: 'invoice_id = ?',
@@ -698,46 +786,53 @@ class DatabaseService {
     );
     return List.generate(maps.length, (i) => InvoiceItem.fromMap(maps[i]));
   }
-  
+
   // --- دوال جلب الفواتير وبنودها (خارج المعاملات) ---
-  Future<List<Invoice>> getAllInvoices({String orderBy = 'invoice_date DESC, id DESC'}) async {
+  Future<List<Invoice>> getAllInvoices(
+      {String orderBy = 'invoice_date DESC, id DESC'}) async {
     final db = await database;
     try {
-      final List<Map<String, dynamic>> maps = await db.query('invoices', orderBy: orderBy);
+      final List<Map<String, dynamic>> maps =
+          await db.query('invoices', orderBy: orderBy);
       return List.generate(maps.length, (i) => Invoice.fromMap(maps[i]));
     } catch (e) {
-       throw Exception(_handleDatabaseError(e));
+      throw Exception(_handleDatabaseError(e));
     }
   }
 
   Future<Invoice?> getInvoiceById(int id) async {
     final db = await database;
-    return await getInvoiceByIdUsingTransaction(db, id); //  يمكن إعادة استخدام دالة المعاملة
+    return await getInvoiceByIdUsingTransaction(
+        db, id); //  يمكن إعادة استخدام دالة المعاملة
   }
 
   Future<List<InvoiceItem>> getInvoiceItems(int invoiceId) async {
     final db = await database;
-    return await getInvoiceItemsUsingTransaction(db, invoiceId); //  يمكن إعادة استخدام دالة المعاملة
+    return await getInvoiceItemsUsingTransaction(
+        db, invoiceId); //  يمكن إعادة استخدام دالة المعاملة
   }
-
 
   // --- تقرير المبيعات الشهري ---
   Future<Map<String, MonthlySalesSummary>> getMonthlySalesSummary() async {
     final db = await database;
     try {
-      final List<Map<String, dynamic>> invoiceMaps = await db.query('invoices', orderBy: 'invoice_date DESC');
+      final List<Map<String, dynamic>> invoiceMaps =
+          await db.query('invoices', orderBy: 'invoice_date DESC');
       //  تحويل جميع الخرائط إلى كائنات Invoice أولاً للتعامل مع التواريخ بشكل صحيح
-      final List<Invoice> allInvoices = invoiceMaps.map((map) => Invoice.fromMap(map)).toList();
+      final List<Invoice> allInvoices =
+          invoiceMaps.map((map) => Invoice.fromMap(map)).toList();
 
       final Map<String, List<Invoice>> invoicesByMonth = {};
       for (var invoice in allInvoices) {
         if (invoice.invoiceDate == null) {
-            print("فاتورة (ID: ${invoice.id}) بتاريخ فارغ، سيتم تجاهلها في الملخص الشهري.");
-            continue;
+          print(
+              "فاتورة (ID: ${invoice.id}) بتاريخ فارغ، سيتم تجاهلها في الملخص الشهري.");
+          continue;
         }
         //  invoiceDate يجب أن يكون DateTime هنا
-        final monthYear = '${invoice.invoiceDate!.year}-${invoice.invoiceDate!.month.toString().padLeft(2, '0')}';
-        
+        final monthYear =
+            '${invoice.invoiceDate!.year}-${invoice.invoiceDate!.month.toString().padLeft(2, '0')}';
+
         invoicesByMonth.putIfAbsent(monthYear, () => []).add(invoice);
       }
 
@@ -750,7 +845,8 @@ class DatabaseService {
         double totalSales = 0.0;
         double netProfit = 0.0;
         double cashSales = 0.0;
-        double creditSalesValue = 0.0; //  يمثل قيمة الفواتير التي كانت "دين" عند إنشائها أو تعديلها
+        double creditSalesValue =
+            0.0; //  يمثل قيمة الفواتير التي كانت "دين" عند إنشائها أو تعديلها
 
         for (var invoice in invoicesInMonth) {
           totalSales += invoice.totalAmount;
@@ -759,15 +855,16 @@ class DatabaseService {
             cashSales += invoice.totalAmount;
           } else if (invoice.paymentType == 'دين') {
             // البيع بالدين هنا هو إجمالي قيمة الفاتورة التي صُنفت كدين
-            creditSalesValue += invoice.totalAmount; 
+            creditSalesValue += invoice.totalAmount;
           }
 
           //  لحساب الربح، نحتاج إلى بنود الفاتورة
-          final items = await getInvoiceItems(invoice.id!); //  نفترض أن هذه الدالة تعمل بشكل صحيح
+          final items = await getInvoiceItems(
+              invoice.id!); //  نفترض أن هذه الدالة تعمل بشكل صحيح
           for (var item in items) {
             //  نفترض أن item.costPrice هو التكلفة الإجمالية للبند (cost_per_unit_of_product * quantity)
             //  و item.itemTotal هو سعر البيع الإجمالي للبند
-            final itemCostPrice = item.costPrice ?? 0.0; 
+            final itemCostPrice = item.costPrice ?? 0.0;
             final itemProfit = item.itemTotal - itemCostPrice;
             netProfit += itemProfit;
           }
@@ -784,12 +881,11 @@ class DatabaseService {
       //  فرز الملخصات حسب الشهر تنازليًا
       var sortedEntries = monthlySummaries.entries.toList()
         ..sort((a, b) => b.key.compareTo(a.key));
-      
-      return Map.fromEntries(sortedEntries);
 
+      return Map.fromEntries(sortedEntries);
     } catch (e) {
-       print("Error in getMonthlySalesSummary: $e");
-       throw Exception(_handleDatabaseError(e));
+      print("Error in getMonthlySalesSummary: $e");
+      throw Exception(_handleDatabaseError(e));
     }
   }
 
@@ -798,13 +894,13 @@ class DatabaseService {
     final db = await database;
     final now = DateTime.now();
     final startOfDay = DateTime(now.year, now.month, now.day);
-    
+
     final List<Map<String, dynamic>> maps = await db.query(
       'customers',
       where: 'last_modified_at >= ?',
       whereArgs: [startOfDay.toIso8601String()],
     );
-    
+
     return List.generate(maps.length, (i) => Customer.fromMap(maps[i]));
   }
 
@@ -869,14 +965,19 @@ class DatabaseService {
         : '$year-${(month + 1).toString().padLeft(2, '0')}-01T00:00:00.000';
     final List<Map<String, dynamic>> maps = await db.query(
       'customers',
-      where: '(last_modified_at >= ? AND last_modified_at < ?) OR (created_at >= ? AND created_at < ?)',
+      where:
+          '(last_modified_at >= ? AND last_modified_at < ?) OR (created_at >= ? AND created_at < ?)',
       whereArgs: [start, end, start, end],
     );
     return List.generate(maps.length, (i) => Customer.fromMap(maps[i]));
   }
 
-  Future<File> generateMonthlyDebtsPdf(List<Customer> customers, int year, int month) async {
-    final font = pw.Font.ttf((await rootBundle.load('assets/fonts/Amiri-Regular.ttf')).buffer.asByteData());
+  Future<File> generateMonthlyDebtsPdf(
+      List<Customer> customers, int year, int month) async {
+    final font = pw.Font.ttf(
+        (await rootBundle.load('assets/fonts/Amiri-Regular.ttf'))
+            .buffer
+            .asByteData());
     final pdf = pw.Document();
     pdf.addPage(
       pw.Page(
@@ -884,18 +985,27 @@ class DatabaseService {
         build: (context) => pw.Column(
           crossAxisAlignment: pw.CrossAxisAlignment.stretch,
           children: [
-            pw.Text('سجل ديون شهر $year-$month', style: pw.TextStyle(font: font, fontSize: 24)),
+            pw.Text('سجل ديون شهر $year-$month',
+                style: pw.TextStyle(font: font, fontSize: 24)),
             pw.SizedBox(height: 16),
             pw.Table.fromTextArray(
               headers: ['المبلغ', 'العنوان', 'الاسم'],
-              data: customers.map((c) => [c.currentTotalDebt.toStringAsFixed(2), c.address ?? '', c.name]).toList(),
-              headerStyle: pw.TextStyle(font: font, fontWeight: pw.FontWeight.bold, fontSize: 14),
+              data: customers
+                  .map((c) => [
+                        c.currentTotalDebt.toStringAsFixed(2),
+                        c.address ?? '',
+                        c.name
+                      ])
+                  .toList(),
+              headerStyle: pw.TextStyle(
+                  font: font, fontWeight: pw.FontWeight.bold, fontSize: 14),
               cellStyle: pw.TextStyle(font: font, fontSize: 12),
               cellAlignment: pw.Alignment.centerRight,
               columnWidths: {
-                2: pw.FlexColumnWidth(2.5), // الاسم يأخذ المساحة الأكبر (آخر عمود)
+                2: pw.FlexColumnWidth(
+                    2.5), // الاسم يأخذ المساحة الأكبر (آخر عمود)
                 1: pw.FlexColumnWidth(1.5), // العنوان وسط
-                0: pw.FlexColumnWidth(1),   // المبلغ يسار (أول عمود)
+                0: pw.FlexColumnWidth(1), // المبلغ يسار (أول عمود)
               },
             ),
           ],
@@ -920,6 +1030,72 @@ class DatabaseService {
     return List.generate(maps.length, (i) => Customer.fromMap(maps[i]));
   }
 
+  // --- دوال معاملات الدين ---
+  Future<int> insertDebtTransaction(DebtTransaction transaction) async {
+    final db = await database;
+    return await db.insert('transactions', transaction.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<List<DebtTransaction>> getDebtTransactionsForCustomer(
+      int customerId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'transactions',
+      where: 'customer_id = ?',
+      whereArgs: [customerId],
+      orderBy: 'transaction_date DESC',
+    );
+    return List.generate(maps.length, (i) => DebtTransaction.fromMap(maps[i]));
+  }
+
+  Future<DebtTransaction?> getDebtTransactionById(int id) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'transactions',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (maps.isNotEmpty) {
+      return DebtTransaction.fromMap(maps.first);
+    }
+    return null;
+  }
+
+  Future<int> updateDebtTransaction(DebtTransaction transaction) async {
+    final db = await database;
+    return await db.update(
+      'transactions',
+      transaction.toMap(),
+      where: 'id = ?',
+      whereArgs: [transaction.id],
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<int> deleteDebtTransaction(int id) async {
+    final db = await database;
+    return await db.delete(
+      'transactions',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<int> getLatestSerialNumber() async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.query(
+        'invoices',
+        columns: ['MAX(serial_number) as max_serial'],
+      );
+      return (maps.first['max_serial'] as int?) ?? 0;
+    } catch (e) {
+      print('DEBUG DB Error: Error getting latest serial number: $e');
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
 } // نهاية كلاس DatabaseService
 
 //  MonthlySalesSummary class
