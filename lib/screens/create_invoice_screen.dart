@@ -71,31 +71,29 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   final DatabaseService _db = DatabaseService();
   PrinterDevice? _selectedPrinter;
   late final PrintingService _printingService;
+  Invoice? _invoiceToManage;
 
   @override
   void initState() {
     super.initState();
     _printingService = getPlatformPrintingService();
-    if (widget.existingInvoice != null) {
+    _invoiceToManage = widget.existingInvoice;
+    if (_invoiceToManage != null) {
       print(
-          'CreateInvoiceScreen: Init with existing invoice: ${widget.existingInvoice!.id}');
-      print('Invoice Status on Init: ${widget.existingInvoice!.status}');
+          'CreateInvoiceScreen: Init with existing invoice: ${_invoiceToManage!.id}');
+      print('Invoice Status on Init: ${_invoiceToManage!.status}');
       print('Is View Only on Init: ${widget.isViewOnly}');
       // Load existing invoice data
-      _customerNameController.text = widget.existingInvoice!.customerName;
-      _customerPhoneController.text =
-          widget.existingInvoice!.customerPhone ?? '';
-      _customerAddressController.text =
-          widget.existingInvoice!.customerAddress ?? '';
-      _installerNameController.text =
-          widget.existingInvoice!.installerName ?? '';
-      _selectedDate = widget.existingInvoice!.invoiceDate;
-      _paymentType = widget.existingInvoice!.paymentType; // Load payment type
-      _totalAmountController.text =
-          widget.existingInvoice!.totalAmount.toString();
-      _paidAmountController.text = widget.existingInvoice!.amountPaidOnInvoice
-          .toString(); // Load amount paid
-      _discount = widget.existingInvoice!.discount; // Load discount
+      _customerNameController.text = _invoiceToManage!.customerName;
+      _customerPhoneController.text = _invoiceToManage!.customerPhone ?? '';
+      _customerAddressController.text = _invoiceToManage!.customerAddress ?? '';
+      _installerNameController.text = _invoiceToManage!.installerName ?? '';
+      _selectedDate = _invoiceToManage!.invoiceDate;
+      _paymentType = _invoiceToManage!.paymentType; // Load payment type
+      _totalAmountController.text = _invoiceToManage!.totalAmount.toString();
+      _paidAmountController.text =
+          _invoiceToManage!.amountPaidOnInvoice.toString(); // Load amount paid
+      _discount = _invoiceToManage!.discount; // Load discount
       _discountController.text = _discount.toStringAsFixed(2);
 
       // Load invoice items
@@ -108,10 +106,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   }
 
   Future<void> _loadInvoiceItems() async {
-    if (widget.existingInvoice != null && widget.existingInvoice!.id != null) {
+    if (_invoiceToManage != null && _invoiceToManage!.id != null) {
       // Ensure invoice and its ID are not null
       try {
-        final items = await _db.getInvoiceItems(widget.existingInvoice!.id!);
+        final items = await _db.getInvoiceItems(_invoiceToManage!.id!);
         setState(() {
           _invoiceItems = items;
           // Update total amount based on loaded items (important for existing invoices)
@@ -231,8 +229,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     });
   }
 
-  Future<void> _saveInvoice() async {
-    if (!_formKey.currentState!.validate()) return;
+  Future<Invoice?> _saveInvoice({bool printAfterSave = false}) async {
+    if (!_formKey.currentState!.validate()) return null;
 
     try {
       // Find or create customer BEFORE creating the invoice object
@@ -286,7 +284,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       print('DEBUG: calculated debt: $debt');
 
       Invoice invoice = Invoice(
-        id: widget.existingInvoice?.id,
+        id: _invoiceToManage?.id,
         customerName: _customerNameController.text,
         customerPhone: _customerPhoneController.text,
         customerAddress: _customerAddressController.text,
@@ -298,10 +296,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         totalAmount: totalAmount,
         discount: _discount,
         amountPaidOnInvoice: paid,
-        createdAt: widget.existingInvoice?.createdAt ?? DateTime.now(),
+        createdAt: _invoiceToManage?.createdAt ?? DateTime.now(),
         lastModifiedAt: DateTime.now(),
         customerId: customer?.id,
         status: 'محفوظة',
+        serialNumber: _invoiceToManage
+            ?.serialNumber, // Keep existing serial number if updating
       );
 
       // Check if installer exists and add if not
@@ -319,22 +319,27 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       }
 
       int invoiceId;
-      if (widget.existingInvoice != null) {
-        invoiceId = widget.existingInvoice!.id!;
+      if (_invoiceToManage != null) {
+        invoiceId = _invoiceToManage!.id!;
         await context
             .read<AppProvider>()
             .updateInvoice(invoice); // Use AppProvider to update and notify
         print(
             'Updated existing invoice via AppProvider. Invoice ID: $invoiceId, New Status: ${invoice.status}');
       } else {
-        invoiceId = await _db
-            .insertInvoice(invoice); // For new invoices, still insert directly
-        // Update the invoice object with the new ID for potential use later if needed
-        if (invoice.id == null) {
-          invoice = invoice.copyWith(id: invoiceId);
+        // If it's a new invoice, let DatabaseService generate the serial number
+        invoiceId = await _db.insertInvoice(invoice);
+        // After insertion, fetch the complete invoice from DB to get the generated serial number
+        final savedInvoice = await _db.getInvoiceById(invoiceId);
+        if (savedInvoice != null) {
+          // Update _invoiceToManage to reflect the saved state for immediate use (e.g., printing)
+          setState(() {
+            _invoiceToManage = savedInvoice;
+          });
+          invoice = savedInvoice; // Use the fetched invoice with serial number
         }
         print(
-            'Inserted new invoice. Invoice ID: $invoiceId, Status: ${invoice.status}');
+            'Inserted new invoice. Invoice ID: $invoiceId, Status: ${invoice.status}, Serial Number: ${invoice.serialNumber}');
       }
 
       // إذا كانت الفاتورة بالدين، أضف المبلغ فورًا إلى حساب العميل (جديد أو موجود)
@@ -351,8 +356,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           customerId: customer.id!,
           amountChanged: debt, // Positive for new debt
           transactionType: 'invoice_debt',
-          description:
-              'دين فاتورة رقم ${invoiceId ?? widget.existingInvoice?.id}',
+          description: 'دين فاتورة رقم ${invoiceId ?? _invoiceToManage?.id}',
           newBalanceAfterTransaction: updatedCustomer.currentTotalDebt,
           invoiceId: invoiceId, // Link to the invoice
         );
@@ -383,8 +387,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             backgroundColor: Colors.green,
           ),
         );
-        Navigator.pop(context);
+        if (!printAfterSave) {
+          // Only pop if not printing immediately after save
+          Navigator.pop(context);
+        }
       }
+      return invoice; // Return the saved/updated invoice
     } catch (e) {
       // نستخدم رسالة الخطأ المفهومة التي جاءت مع الاستثناء من DatabaseService
       String errorMessage =
@@ -400,6 +408,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           ),
         );
       }
+      return null; // Return null on error
     }
   }
 
@@ -554,17 +563,20 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   ],
                 ),
                 pw.SizedBox(height: 8),
+                // عرض الرقم التسلسلي للفاتورة فوق التاريخ بحجم صغير
+                if (_invoiceToManage?.serialNumber != null)
+                  pw.Align(
+                    alignment: pw.Alignment.centerRight,
+                    child: pw.Text(
+                        'رقم الفاتورة: ${_invoiceToManage!.serialNumber}',
+                        style: pw.TextStyle(
+                            font: font, fontSize: 10)), // Smaller font size
+                  ),
+                pw.SizedBox(height: 4), // Small space after serial number
                 pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  mainAxisAlignment:
+                      pw.MainAxisAlignment.end, // Align date to the right
                   children: [
-                    // عرض الرقم التسلسلي للفاتورة
-                    if (widget.existingInvoice?.serialNumber != null)
-                      pw.Text(
-                          'رقم الفاتورة: ${widget.existingInvoice!.serialNumber}',
-                          style: pw.TextStyle(
-                              font: font,
-                              fontWeight: pw.FontWeight.bold,
-                              fontSize: 16)),
                     pw.Text(
                         'التاريخ: ${_selectedDate.year}/${_selectedDate.month}/${_selectedDate.day}',
                         style: pw.TextStyle(font: font)),
@@ -814,30 +826,32 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   }
 
   Future<void> _printInvoice() async {
+    Invoice? invoiceToPrint = _invoiceToManage;
+
     // إذا كانت الفاتورة جديدة ولم يتم حفظها بعد، قم بحفظها أولاً للحصول على رقم تسلسلي ومعرف
-    if (widget.existingInvoice == null) {
-      await _saveInvoice();
-      // بعد الحفظ، _saveInvoice سيقوم بتحديث widget.existingInvoice و Navigator.pop(context).
-      // يجب أن نتأكد أننا ما زلنا في نفس الشاشة لكي نتابع الطباعة.
-      // للتبسيط في هذا السياق، سنفترض أن المستخدم سيعيد الضغط على زر الطباعة بعد الحفظ التلقائي.
-      // أو يمكن إعادة بناء منطق _saveInvoice ليعيد المعرف ويتم استخدامه هنا مباشرة.
-      // لكن الأفضل هو فصل عملية الحفظ عن الطباعة بشكل أوضح في تدفق المستخدم.
-      // لذلك، سنتأكد أن الفاتورة الحالية موجودة ولها رقم تسلسلي قبل محاولة الطباعة
-      if (widget.existingInvoice?.id == null ||
-          widget.existingInvoice?.serialNumber == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text(
-                  'الرجاء حفظ الفاتورة أولاً للحصول على رقم تسلسلي قبل الطباعة.')),
-        );
+    if (invoiceToPrint == null ||
+        invoiceToPrint.id == null ||
+        invoiceToPrint.serialNumber == null) {
+      invoiceToPrint = await _saveInvoice(
+          printAfterSave: true); // Save and pass a flag to prevent popping
+      if (invoiceToPrint == null ||
+          invoiceToPrint.id == null ||
+          invoiceToPrint.serialNumber == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content:
+                    Text('فشل حفظ الفاتورة. لا يمكن الطباعة بدون رقم تسلسلي.')),
+          );
+        }
         return;
       }
     }
 
     final pdf = await _generateInvoicePdf();
     if (Platform.isWindows) {
-      final filePath = await _saveInvoicePdf(
-          pdf, _customerNameController.text, _selectedDate);
+      final filePath = await _saveInvoicePdf(pdf, invoiceToPrint.customerName,
+          invoiceToPrint.invoiceDate); // Use invoiceToPrint details
       await Process.start('cmd', ['/c', 'start', '/min', '', filePath, '/p']);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -929,7 +943,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.existingInvoice != null && !widget.isViewOnly
+        title: Text(_invoiceToManage != null && !widget.isViewOnly
             ? 'تعديل فاتورة'
             : (widget.isViewOnly ? 'عرض فاتورة' : 'إنشاء فاتورة')),
         centerTitle: true,
@@ -1486,11 +1500,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
                     Text(
-                      'نوع الدفع: ${widget.existingInvoice?.paymentType ?? 'غير محدد'}',
+                      'نوع الدفع: ${_invoiceToManage?.paymentType ?? 'غير محدد'}',
                       style: const TextStyle(
                           fontSize: 18, fontWeight: FontWeight.bold),
                     ),
-                    if (widget.existingInvoice?.paymentType == 'دين' &&
+                    if (_invoiceToManage?.paymentType == 'دين' &&
                         relatedDebtTransaction != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 8.0),
