@@ -83,43 +83,37 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           'CreateInvoiceScreen: Init with existing invoice: ${_invoiceToManage!.id}');
       print('Invoice Status on Init: ${_invoiceToManage!.status}');
       print('Is View Only on Init: ${widget.isViewOnly}');
-      // Load existing invoice data
       _customerNameController.text = _invoiceToManage!.customerName;
       _customerPhoneController.text = _invoiceToManage!.customerPhone ?? '';
       _customerAddressController.text = _invoiceToManage!.customerAddress ?? '';
       _installerNameController.text = _invoiceToManage!.installerName ?? '';
       _selectedDate = _invoiceToManage!.invoiceDate;
-      _paymentType = _invoiceToManage!.paymentType; // Load payment type
+      _paymentType = _invoiceToManage!.paymentType;
       _totalAmountController.text = _invoiceToManage!.totalAmount.toString();
       _paidAmountController.text =
-          _invoiceToManage!.amountPaidOnInvoice.toString(); // Load amount paid
-      _discount = _invoiceToManage!.discount; // Load discount
+          _invoiceToManage!.amountPaidOnInvoice.toString();
+      _discount = _invoiceToManage!.discount;
       _discountController.text = _discount.toStringAsFixed(2);
 
-      // Load invoice items
       _loadInvoiceItems();
     } else {
       print('CreateInvoiceScreen: Init with new invoice');
-      // For new invoices, initialize total amount controller
       _totalAmountController.text = '0.00';
     }
   }
 
   Future<void> _loadInvoiceItems() async {
     if (_invoiceToManage != null && _invoiceToManage!.id != null) {
-      // Ensure invoice and its ID are not null
       try {
         final items = await _db.getInvoiceItems(_invoiceToManage!.id!);
         setState(() {
           _invoiceItems = items;
-          // Update total amount based on loaded items (important for existing invoices)
           _totalAmountController.text = _invoiceItems
               .fold(0.0, (sum, item) => sum + item.itemTotal)
               .toStringAsFixed(2);
         });
       } catch (e) {
         print('Error loading invoice items: $e');
-        // Optionally show an error message to the user
       }
     }
   }
@@ -233,12 +227,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     if (!_formKey.currentState!.validate()) return null;
 
     try {
-      // Find or create customer BEFORE creating the invoice object
       Customer? customer;
       if (_customerNameController.text.trim().isNotEmpty) {
-        // Attempt to find customer by name and optionally phone
-        final customers =
-            await _db.getAllCustomers(); // Consider optimizing this search
+        final customers = await _db.getAllCustomers();
         try {
           customer = customers.firstWhere(
             (c) =>
@@ -246,16 +237,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 (c.phone == null ||
                     c.phone!.isEmpty ||
                     _customerPhoneController.text.trim().isEmpty ||
-                    c.phone ==
-                        _customerPhoneController.text
-                            .trim()), // Modified condition
+                    c.phone == _customerPhoneController.text.trim()),
           );
         } catch (e) {
-          customer = null; // Customer not found
+          customer = null;
         }
 
         if (customer == null) {
-          // Create a new customer if not found
           customer = Customer(
             id: null,
             name: _customerNameController.text.trim(),
@@ -300,11 +288,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         lastModifiedAt: DateTime.now(),
         customerId: customer?.id,
         status: 'محفوظة',
-        serialNumber: _invoiceToManage
-            ?.serialNumber, // Keep existing serial number if updating
       );
 
-      // Check if installer exists and add if not
       if (invoice.installerName != null && invoice.installerName!.isNotEmpty) {
         final existingInstaller =
             await _db.getInstallerByName(invoice.installerName!);
@@ -312,7 +297,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           final newInstaller = Installer(
             id: null,
             name: invoice.installerName!,
-            totalBilledAmount: 0.0, // Starting amount is zero
+            totalBilledAmount: 0.0,
           );
           await _db.insertInstaller(newInstaller);
         }
@@ -321,28 +306,22 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       int invoiceId;
       if (_invoiceToManage != null) {
         invoiceId = _invoiceToManage!.id!;
-        await context
-            .read<AppProvider>()
-            .updateInvoice(invoice); // Use AppProvider to update and notify
+        await context.read<AppProvider>().updateInvoice(invoice);
         print(
             'Updated existing invoice via AppProvider. Invoice ID: $invoiceId, New Status: ${invoice.status}');
       } else {
-        // If it's a new invoice, let DatabaseService generate the serial number
         invoiceId = await _db.insertInvoice(invoice);
-        // After insertion, fetch the complete invoice from DB to get the generated serial number
         final savedInvoice = await _db.getInvoiceById(invoiceId);
         if (savedInvoice != null) {
-          // Update _invoiceToManage to reflect the saved state for immediate use (e.g., printing)
           setState(() {
             _invoiceToManage = savedInvoice;
           });
-          invoice = savedInvoice; // Use the fetched invoice with serial number
+          invoice = savedInvoice;
         }
         print(
-            'Inserted new invoice. Invoice ID: $invoiceId, Status: ${invoice.status}, Serial Number: ${invoice.serialNumber}');
+            'Inserted new invoice. Invoice ID: $invoiceId, Status: ${invoice.status}');
       }
 
-      // إذا كانت الفاتورة بالدين، أضف المبلغ فورًا إلى حساب العميل (جديد أو موجود)
       if (_paymentType == 'دين' && customer != null && debt > 0) {
         final updatedCustomer = customer.copyWith(
           currentTotalDebt: (customer.currentTotalDebt) + debt,
@@ -350,31 +329,26 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         );
         await _db.updateCustomer(updatedCustomer);
 
-        // Record the debt transaction
         final debtTransaction = DebtTransaction(
           id: null,
           customerId: customer.id!,
-          amountChanged: debt, // Positive for new debt
+          amountChanged: debt,
           transactionType: 'invoice_debt',
           description: 'دين فاتورة رقم ${invoiceId ?? _invoiceToManage?.id}',
           newBalanceAfterTransaction: updatedCustomer.currentTotalDebt,
-          invoiceId: invoiceId, // Link to the invoice
+          invoiceId: invoiceId,
         );
         await _db.insertDebtTransaction(debtTransaction);
       }
 
-      // Save invoice items (ensure they are linked to the correct invoice ID)
       for (var item in _invoiceItems) {
-        item.invoiceId = invoiceId; // Assign the correct invoice ID
+        item.invoiceId = invoiceId;
         if (item.id == null) {
-          await _db.insertInvoiceItem(
-              item); // Assuming you have insertInvoiceItem method
+          await _db.insertInvoiceItem(item);
         } else {
-          await _db.updateInvoiceItem(
-              item); // Assuming you have updateInvoiceItem method
+          await _db.updateInvoiceItem(item);
         }
       }
-      // رسالة توضيحية للعميل عن الدين
       String extraMsg = '';
       if (_paymentType == 'دين') {
         extraMsg =
@@ -387,28 +361,21 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             backgroundColor: Colors.green,
           ),
         );
-        if (!printAfterSave) {
-          // Only pop if not printing immediately after save
-          Navigator.pop(context);
-        }
+        Navigator.pop(context);
       }
-      return invoice; // Return the saved/updated invoice
+      return invoice;
     } catch (e) {
-      // نستخدم رسالة الخطأ المفهومة التي جاءت مع الاستثناء من DatabaseService
-      String errorMessage =
-          'حدث خطأ عند حفظ الفاتورة: ${e.toString()}'; // رسالة افتراضية
-      // The _handleDatabaseError is in DatabaseService, not here.
-      // We can refine error handling later if needed.
+      String errorMessage = 'حدث خطأ عند حفظ الفاتورة: ${e.toString()}';
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(errorMessage), // عرض الرسالة المفهومة
+            content: Text(errorMessage),
             backgroundColor: Colors.red,
           ),
         );
       }
-      return null; // Return null on error
+      return null;
     }
   }
 
@@ -418,11 +385,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       Customer? customer;
       int? customerId;
       if (_customerNameController.text.trim().isNotEmpty) {
-        // Only search for an existing customer, do NOT create a new one.
         final customers =
             await _db.searchCustomers(_customerNameController.text.trim());
         customer = customers.isNotEmpty ? customers.first : null;
-        customerId = customer?.id; // Set customerId only if customer exists
+        customerId = customer?.id;
       }
       double currentTotalAmount =
           _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
@@ -457,14 +423,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       Navigator.of(context).pop();
     } catch (e) {
       String errorMessage = 'حدث خطأ عند تعليق الفاتورة: \${e.toString()}';
-      print('Error suspending invoice: $e'); // Log error
+      print('Error suspending invoice: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(errorMessage)),
       );
     }
   }
 
-  // دالة توليد ملف PDF للفاتورة
   Future<pw.Document> _generateInvoicePdf() async {
     final pdf = pw.Document();
     final font =
@@ -475,7 +440,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     final afterDiscount =
         (currentTotalAmount - discount).clamp(0, double.infinity);
 
-    // --- منطق الحساب السابق والحالي ---
     double previousDebt = 0.0;
     double currentDebt = 0.0;
     final customerName = _customerNameController.text.trim();
@@ -516,11 +480,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         previousDebt = matchedCustomer.currentTotalDebt;
       }
     }
-    // حساب المتبقي من الفاتورة
     final paid = double.tryParse(_paidAmountController.text) ?? 0.0;
     final isCash = _paymentType == 'نقد';
     final remaining = isCash ? 0.0 : (afterDiscount - paid);
-    // حساب الحساب الحالي
     if (isCash) {
       currentDebt = previousDebt;
     } else {
@@ -536,7 +498,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             child: pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
-                // رأس الفاتورة الثابت
                 pw.Row(
                   mainAxisAlignment: pw.MainAxisAlignment.start,
                   children: [
@@ -549,7 +510,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 fontSize: 32,
                                 fontWeight: pw.FontWeight.bold,
                                 color: PdfColors.green800)),
-                        pw.Text('تجارة المواد الكهربائية والكابلات',
+                        pw.Text('تجارة المواد الكهربائية والكيبلات',
                             style: pw.TextStyle(font: font, fontSize: 18)),
                         pw.Text('الموصل - الجدعة، مقابل البرج',
                             style: pw.TextStyle(font: font, fontSize: 14)),
@@ -563,79 +524,76 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   ],
                 ),
                 pw.SizedBox(height: 8),
-                // عرض الرقم التسلسلي للفاتورة فوق التاريخ بحجم صغير
-                if (_invoiceToManage?.serialNumber != null)
-                  pw.Align(
-                    alignment: pw.Alignment.centerRight,
-                    child: pw.Text(
-                        'رقم الفاتورة: ${_invoiceToManage!.serialNumber}',
-                        style: pw.TextStyle(
-                            font: font, fontSize: 10)), // Smaller font size
-                  ),
-                pw.SizedBox(height: 4), // Small space after serial number
-                pw.Row(
-                  mainAxisAlignment:
-                      pw.MainAxisAlignment.end, // Align date to the right
-                  children: [
-                    pw.Text(
-                        'التاريخ: ${_selectedDate.year}/${_selectedDate.month}/${_selectedDate.day}',
-                        style: pw.TextStyle(font: font)),
-                  ],
-                ),
-                pw.SizedBox(height: 8),
-                // تنسيق حضرة السيد والعنوان
                 pw.Row(
                   mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                   children: [
+                    // Left side: Customer Name and Address
                     pw.Expanded(
-                      child: pw.RichText(
-                        text: pw.TextSpan(
-                          children: [
-                            pw.TextSpan(
-                                text: 'حضرة السيد: ',
-                                style: pw.TextStyle(font: font)),
-                            pw.TextSpan(
-                              text: _customerNameController.text.length > 17
-                                  ? '${_customerNameController.text.substring(0, 17)}...'
-                                  : _customerNameController.text,
-                              style: pw.TextStyle(
-                                  font: font, fontWeight: pw.FontWeight.bold),
+                      child: pw.Column(
+                        crossAxisAlignment: pw.CrossAxisAlignment.start,
+                        children: [
+                          // Customer Name
+                          pw.RichText(
+                            text: pw.TextSpan(
+                              children: [
+                                pw.TextSpan(
+                                    text: 'حضرة السيد: ',
+                                    style: pw.TextStyle(font: font)),
+                                pw.TextSpan(
+                                  text: _customerNameController.text.length > 17
+                                      ? '${_customerNameController.text.substring(0, 17)}...'
+                                      : _customerNameController.text,
+                                  style: pw.TextStyle(
+                                      font: font,
+                                      fontWeight: pw.FontWeight.bold),
+                                ),
+                              ],
                             ),
-                            if (_customerAddressController.text.isNotEmpty)
-                              pw.TextSpan(
-                                  text: '  العنوان: ',
-                                  style: pw.TextStyle(font: font)),
-                            if (_customerAddressController.text.isNotEmpty)
-                              pw.TextSpan(
-                                text: _customerAddressController.text.length >
-                                        12
-                                    ? '${_customerAddressController.text.substring(0, 12)}...'
-                                    : _customerAddressController.text,
-                                style: pw.TextStyle(
-                                    font: font, fontWeight: pw.FontWeight.bold),
+                          ),
+                          // Customer Address (if exists)
+                          if (_customerAddressController.text.isNotEmpty)
+                            pw.RichText(
+                              text: pw.TextSpan(
+                                children: [
+                                  pw.TextSpan(
+                                      text: 'العنوان: ',
+                                      style: pw.TextStyle(font: font)),
+                                  pw.TextSpan(
+                                    text: _customerAddressController
+                                                .text.length >
+                                            12
+                                        ? '${_customerAddressController.text.substring(0, 12)}...'
+                                        : _customerAddressController.text,
+                                    style: pw.TextStyle(
+                                        font: font,
+                                        fontWeight: pw.FontWeight.bold),
+                                  ),
+                                ],
                               ),
-                          ],
-                        ),
+                            ),
+                        ],
                       ),
                     ),
-                    pw.SizedBox(width: 8),
-                    // Keep the date here or remove if already above.
-                    // Since it's already above, no need to duplicate.
+                    // Right side: Date
+                    pw.Text(
+                      'التاريخ: ${_selectedDate.year}/${_selectedDate.month}/${_selectedDate.day}',
+                      style: pw.TextStyle(font: font),
+                      textDirection: pw.TextDirection.rtl,
+                    ),
                   ],
                 ),
                 pw.SizedBox(height: 12),
-                // جدول الأصناف بشكل يدوي مطابق للصورة
                 pw.Table(
                   border: pw.TableBorder.all(width: 1),
                   defaultVerticalAlignment:
                       pw.TableCellVerticalAlignment.middle,
                   columnWidths: <int, pw.TableColumnWidth>{
-                    0: pw.FixedColumnWidth(20), // ت
-                    1: pw.FlexColumnWidth(4), // التفاصيل
-                    2: pw.FixedColumnWidth(40), // نوع البيع (تم تصغيره)
-                    3: pw.FlexColumnWidth(1.5), // العدد
-                    4: pw.FlexColumnWidth(2), // السعر
-                    5: pw.FlexColumnWidth(2.5), // المبلغ
+                    0: pw.FixedColumnWidth(20),
+                    1: pw.FlexColumnWidth(4),
+                    2: pw.FlexColumnWidth(2.5),
+                    3: pw.FlexColumnWidth(2),
+                    4: pw.FlexColumnWidth(1.5),
+                    5: pw.FixedColumnWidth(40),
                   },
                   children: [
                     pw.TableRow(
@@ -644,28 +602,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         pw.Container(
                           alignment: pw.Alignment.center,
                           padding: const pw.EdgeInsets.all(4),
-                          child: pw.Text('ت',
-                              style: pw.TextStyle(
-                                  font: font, fontWeight: pw.FontWeight.bold)),
-                        ),
-                        pw.Container(
-                          alignment: pw.Alignment.center,
-                          padding: const pw.EdgeInsets.all(4),
-                          child: pw.Text('التفاصيل',
-                              style: pw.TextStyle(
-                                  font: font, fontWeight: pw.FontWeight.bold)),
-                        ),
-                        pw.Container(
-                          alignment: pw.Alignment.center,
-                          padding: const pw.EdgeInsets.all(4),
-                          child: pw.Text('نوع البيع',
-                              style: pw.TextStyle(
-                                  font: font, fontWeight: pw.FontWeight.bold)),
-                        ),
-                        pw.Container(
-                          alignment: pw.Alignment.center,
-                          padding: const pw.EdgeInsets.all(4),
-                          child: pw.Text('العدد',
+                          child: pw.Text('المبلغ',
                               style: pw.TextStyle(
                                   font: font, fontWeight: pw.FontWeight.bold)),
                         ),
@@ -679,11 +616,32 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         pw.Container(
                           alignment: pw.Alignment.center,
                           padding: const pw.EdgeInsets.all(4),
-                          child: pw.Text('المبلغ',
+                          child: pw.Text('العدد ',
                               style: pw.TextStyle(
                                   font: font, fontWeight: pw.FontWeight.bold)),
                         ),
-                      ],
+                        pw.Container(
+                          alignment: pw.Alignment.center,
+                          padding: const pw.EdgeInsets.all(4),
+                          child: pw.Text('الفئة',
+                              style: pw.TextStyle(
+                                  font: font, fontWeight: pw.FontWeight.bold)),
+                        ),
+                        pw.Container(
+                          alignment: pw.Alignment.center,
+                          padding: const pw.EdgeInsets.all(4),
+                          child: pw.Text('التفاصيل',
+                              style: pw.TextStyle(
+                                  font: font, fontWeight: pw.FontWeight.bold)),
+                        ),
+                        pw.Container(
+                          alignment: pw.Alignment.center,
+                          padding: const pw.EdgeInsets.all(4),
+                          child: pw.Text('ت',
+                              style: pw.TextStyle(
+                                  font: font, fontWeight: pw.FontWeight.bold)),
+                        ),
+                      ].reversed.toList(),
                     ),
                     ...[
                       for (int i = 0; i < _invoiceItems.length; i++)
@@ -736,68 +694,173 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     ]
                   ],
                 ),
-                pw.SizedBox(height: 12),
-                // صف الإجماليات والحسابات
+                pw.SizedBox(height: 20),
                 pw.Row(
-                  crossAxisAlignment: pw.CrossAxisAlignment.start,
                   mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                   children: [
+                    // LEFT SIDE (Blue Box Area): Invoice Totals and Payment Type
                     pw.Expanded(
-                      flex: 3, // مساحة أكبر لقسم الإجماليات
-                      child: pw.Column(
-                        crossAxisAlignment: pw.CrossAxisAlignment.end,
-                        children: [
-                          pw.Text(
-                              'الإجمالي قبل الخصم: ${formatNumber(currentTotalAmount)} دينار',
-                              style: pw.TextStyle(
-                                  font: font,
-                                  fontWeight: pw.FontWeight.bold,
-                                  fontSize: 11)),
-                          pw.Text('الخصم: ${formatNumber(discount)} دينار',
-                              style: pw.TextStyle(
-                                  font: font,
-                                  fontWeight: pw.FontWeight.bold,
-                                  fontSize: 11)),
-                          pw.Text(
-                              'المبلغ المسدد: ${formatNumber(isCash ? afterDiscount : paid)} دينار',
-                              style: pw.TextStyle(
-                                  font: font,
-                                  fontWeight: pw.FontWeight.bold,
-                                  fontSize: 11)),
-                          pw.Text(
-                              'الإجمالي بعد الخصم: ${formatNumber(afterDiscount)} دينار',
-                              style: pw.TextStyle(
-                                  font: font,
-                                  fontWeight: pw.FontWeight.bold,
-                                  fontSize: 11)),
-                          pw.Text(
-                              'باقي الحساب: ${formatNumber(afterDiscount - (isCash ? afterDiscount : paid))} دينار',
-                              style: pw.TextStyle(
-                                  font: font,
-                                  fontWeight: pw.FontWeight.bold,
-                                  fontSize: 11)),
-                        ],
-                      ),
-                    ),
-                    pw.Expanded(
-                      flex: 2, // مساحة أقل لقسم الحسابات
+                      flex: 1,
                       child: pw.Column(
                         crossAxisAlignment: pw.CrossAxisAlignment.start,
                         children: [
+                          // Invoice Totals
+                          pw.Row(
+                            children: [
+                              pw.Text(
+                                'إجمالي القائمة قبل الخصم: ',
+                                style: pw.TextStyle(
+                                    font: font, fontWeight: pw.FontWeight.bold),
+                                textDirection: pw.TextDirection.rtl,
+                              ),
+                              pw.Expanded(
+                                child: pw.Text(
+                                  formatNumber(currentTotalAmount),
+                                  style: pw.TextStyle(
+                                      font: font,
+                                      fontWeight: pw.FontWeight.bold),
+                                  textDirection: pw.TextDirection.rtl,
+                                ),
+                              ),
+                            ],
+                          ),
+                          pw.Row(
+                            children: [
+                              pw.Text(
+                                'الخصم: ',
+                                style: pw.TextStyle(
+                                    font: font, fontWeight: pw.FontWeight.bold),
+                                textDirection: pw.TextDirection.rtl,
+                              ),
+                              pw.Expanded(
+                                child: pw.Text(
+                                  formatNumber(discount),
+                                  style: pw.TextStyle(
+                                      font: font,
+                                      fontWeight: pw.FontWeight.bold),
+                                  textDirection: pw.TextDirection.rtl,
+                                ),
+                              ),
+                            ],
+                          ),
+                          pw.Row(
+                            children: [
+                              pw.Text(
+                                'المبلغ المسدد: ',
+                                style: pw.TextStyle(
+                                    font: font, fontWeight: pw.FontWeight.bold),
+                                textDirection: pw.TextDirection.rtl,
+                              ),
+                              pw.Expanded(
+                                child: pw.Text(
+                                  formatNumber(paid),
+                                  style: pw.TextStyle(
+                                      font: font,
+                                      fontWeight: pw.FontWeight.bold),
+                                  textDirection: pw.TextDirection.rtl,
+                                ),
+                              ),
+                            ],
+                          ),
+                          pw.Row(
+                            children: [
+                              pw.Text(
+                                'إجمالي القائمة بعد الخصم: ',
+                                style: pw.TextStyle(
+                                    font: font, fontWeight: pw.FontWeight.bold),
+                                textDirection: pw.TextDirection.rtl,
+                              ),
+                              pw.Expanded(
+                                child: pw.Text(
+                                  formatNumber(afterDiscount),
+                                  style: pw.TextStyle(
+                                      font: font,
+                                      fontWeight: pw.FontWeight.bold),
+                                  textDirection: pw.TextDirection.rtl,
+                                ),
+                              ),
+                            ],
+                          ),
+                          pw.Row(
+                            children: [
+                              pw.Text(
+                                'المبلغ الباقي: ',
+                                style: pw.TextStyle(
+                                    font: font, fontWeight: pw.FontWeight.bold),
+                                textDirection: pw.TextDirection.rtl,
+                              ),
+                              pw.Expanded(
+                                child: pw.Text(
+                                  formatNumber(remaining),
+                                  style: pw.TextStyle(
+                                      font: font,
+                                      fontWeight: pw.FontWeight.bold),
+                                  textDirection: pw.TextDirection.rtl,
+                                ),
+                              ),
+                            ],
+                          ),
+                          pw.SizedBox(height: 20),
+                          // Payment Type
                           pw.Text(
-                              'الحساب السابق: ${formatNumber(previousDebt)} دينار',
-                              style: pw.TextStyle(font: font, fontSize: 14)),
-                          pw.SizedBox(height: 4),
-                          pw.Text(
-                              'الحساب الحالي: ${formatNumber(currentDebt)} دينار',
-                              style: pw.TextStyle(font: font, fontSize: 14)),
+                            'نوع الدفع: ${_paymentType}',
+                            style: pw.TextStyle(
+                                font: font, fontWeight: pw.FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                    ),
+                    pw.SizedBox(width: 40),
+
+                    // RIGHT SIDE (Red Box Area): Previous and Current Balance
+                    pw.Expanded(
+                      flex: 1,
+                      child: pw.Column(
+                        crossAxisAlignment: pw.CrossAxisAlignment.end,
+                        children: [
+                          pw.Row(
+                            children: [
+                              pw.Text(
+                                'الحساب السابق: ',
+                                style: pw.TextStyle(
+                                    font: font, fontWeight: pw.FontWeight.bold),
+                                textDirection: pw.TextDirection.rtl,
+                              ),
+                              pw.Expanded(
+                                child: pw.Text(
+                                  formatNumber(previousDebt),
+                                  style: pw.TextStyle(
+                                      font: font,
+                                      fontWeight: pw.FontWeight.bold),
+                                  textDirection: pw.TextDirection.rtl,
+                                ),
+                              ),
+                            ],
+                          ),
+                          pw.Row(
+                            children: [
+                              pw.Text(
+                                'الحساب الحالي: ',
+                                style: pw.TextStyle(
+                                    font: font, fontWeight: pw.FontWeight.bold),
+                                textDirection: pw.TextDirection.rtl,
+                              ),
+                              pw.Expanded(
+                                child: pw.Text(
+                                  formatNumber(currentDebt),
+                                  style: pw.TextStyle(
+                                      font: font,
+                                      fontWeight: pw.FontWeight.bold),
+                                  textDirection: pw.TextDirection.rtl,
+                                ),
+                              ),
+                            ],
+                          ),
                         ],
                       ),
                     ),
                   ],
                 ),
-                pw.Text('التوقيع: _______________',
-                    style: pw.TextStyle(font: font)),
               ],
             ),
           );
@@ -809,7 +872,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   Future<String> _saveInvoicePdf(
       pw.Document pdf, String customerName, DateTime invoiceDate) async {
-    // تنظيف اسم العميل ليكون صالحًا كاسم ملف
     final safeCustomerName =
         customerName.replaceAll(RegExp(r'[^\w\u0600-\u06FF]+'), '_');
     final formattedDate = DateFormat('yyyy-MM-dd').format(invoiceDate);
@@ -826,37 +888,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   }
 
   Future<void> _printInvoice() async {
-    Invoice? invoiceToPrint = _invoiceToManage;
-
-    // إذا كانت الفاتورة جديدة ولم يتم حفظها بعد، قم بحفظها أولاً للحصول على رقم تسلسلي ومعرف
-    if (invoiceToPrint == null ||
-        invoiceToPrint.id == null ||
-        invoiceToPrint.serialNumber == null) {
-      invoiceToPrint = await _saveInvoice(
-          printAfterSave: true); // Save and pass a flag to prevent popping
-      if (invoiceToPrint == null ||
-          invoiceToPrint.id == null ||
-          invoiceToPrint.serialNumber == null) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-                content:
-                    Text('فشل حفظ الفاتورة. لا يمكن الطباعة بدون رقم تسلسلي.')),
-          );
-        }
-        return;
-      }
-    }
-
     final pdf = await _generateInvoicePdf();
     if (Platform.isWindows) {
-      final filePath = await _saveInvoicePdf(pdf, invoiceToPrint.customerName,
-          invoiceToPrint.invoiceDate); // Use invoiceToPrint details
+      final filePath = await _saveInvoicePdf(
+          pdf, _customerNameController.text, _selectedDate);
       await Process.start('cmd', ['/c', 'start', '/min', '', filePath, '/p']);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('تم حفظ الفاتورة وإرسالها للطابعة مباشرة!')),
+          const SnackBar(content: Text('تم إرسال الفاتورة للطابعة مباشرة!')),
         );
       }
       return;
@@ -929,7 +968,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       }
       return;
     }
-    // ... منطق المنصات الأخرى (إن وجد) ...
   }
 
   @override
@@ -970,7 +1008,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 onTap: () => _selectDate(context),
               ),
               const SizedBox(height: 16.0),
-              // Grouping customer and installer info in one row
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -1028,7 +1065,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 ],
               ),
               const SizedBox(height: 24.0),
-
               if (!isViewOnly) ...[
                 const Text(
                   'إضافة أصناف للفاتورة',
@@ -1147,11 +1183,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                               const InputDecoration(labelText: 'مستوى السعر'),
                           value: _selectedPriceLevel,
                           items: () {
-                            // بناء قائمة أسعار فريدة
                             final Set<double> priceSet = {};
                             final List<double> uniquePrices = [];
 
-                            // Add all potential prices to the set
                             if (_selectedProduct!.price1 != null)
                               priceSet.add(_selectedProduct!.price1);
                             if (_selectedProduct!.price2 != null)
@@ -1165,16 +1199,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             if (_selectedProduct!.unitPrice != null)
                               priceSet.add(_selectedProduct!.unitPrice);
 
-                            // Add unique prices from the set to the list
                             uniquePrices.addAll(priceSet);
-                            uniquePrices.sort(); // Optional: sort prices
+                            uniquePrices.sort();
 
                             final List<DropdownMenuItem<double?>> priceItems =
                                 [];
 
-                            // Create DropdownMenuItems for unique prices
                             for (var price in uniquePrices) {
-                              // Determine the text for the price based on which field it matches
                               String priceText = 'سعر غير معروف';
                               if (price == _selectedProduct!.price1)
                                 priceText = 'سعر 1';
@@ -1193,8 +1224,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                   value: price, child: Text(priceText)));
                             }
 
-                            // إذا كان السعر المخصص غير null وغير موجود في القائمة، أضفه
-                            // This case might occur if an existing invoice item has a custom price
                             if (_selectedPriceLevel != null &&
                                 _selectedPriceLevel != -1 &&
                                 !uniquePrices.contains(_selectedPriceLevel!)) {
@@ -1203,7 +1232,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                   child: const Text('سعر مخصص حالي')));
                             }
 
-                            // أضف خيار سعر مخصص
                             priceItems.add(const DropdownMenuItem(
                                 value: -1, child: Text('سعر مخصص')));
                             return priceItems;
@@ -1212,7 +1240,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                               ? null
                               : (value) async {
                                   if (value == -1) {
-                                    // فتح Dialog لإدخال السعر المخصص مع فاليديشن قوي
                                     final customPrice =
                                         await showDialog<double>(
                                       context: context,
@@ -1307,9 +1334,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   ),
                 ],
               ],
-
               const SizedBox(height: 24.0),
-
               const Text(
                 'أصناف الفاتورة',
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -1318,7 +1343,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               if (_invoiceItems.isEmpty)
                 const Text('لا يوجد أصناف مضافة حتى الآن')
               else
-                // Table Headers
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 4.0),
                   child: Row(
@@ -1353,8 +1377,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           child: Text('السعر',
                               textAlign: TextAlign.center,
                               style: TextStyle(fontWeight: FontWeight.bold))),
-                      if (!isViewOnly)
-                        SizedBox(width: 40), // Space for delete icon
+                      if (!isViewOnly) SizedBox(width: 40),
                     ],
                   ),
                 ),
@@ -1364,27 +1387,22 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 itemCount: _invoiceItems.length,
                 itemBuilder: (context, index) {
                   final item = _invoiceItems[index];
-                  // Determine the quantity and unit to display
-                  // Display quantity is the actual quantity sold (either individual or large unit quantity)
                   final displayQuantity =
                       item.quantityIndividual ?? item.quantityLargeUnit ?? 0;
                   String displayUnit;
                   if (item.unit == 'piece') {
                     displayUnit = item.quantityIndividual != null ? 'ق' : 'ك';
                   } else if (item.unit == 'meter') {
-                    displayUnit =
-                        'م'; // Always 'م' when sold by meter, regardless of large or small unit representation
+                    displayUnit = 'م';
                   } else {
                     displayUnit = '';
                   }
 
-                  // Display quantity as integer if it's a whole number, otherwise keep decimals
                   final quantityText =
                       displayQuantity == displayQuantity.toInt()
                           ? displayQuantity.toInt().toString()
                           : displayQuantity.toStringAsFixed(2);
 
-                  // Item total is already calculated and stored correctly in item.itemTotal
                   final itemTotalAmount = item.itemTotal;
 
                   return Card(
@@ -1433,28 +1451,19 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 },
               ),
               const SizedBox(height: 24.0),
-              // ويدجت عرض القيم الثلاثة (أو الأربعة الآن)
-              // تم إزالة ValueListenableBuilder لضمان التفاعل مع تغيرات paymentType أيضاً
-              // حيث أن تغيير paymentType يقوم باستدعاء setState ويعيد بناء الشاشة.
               Builder(
                 builder: (context) {
-                  final totalBeforeDiscount =
-                      currentTotalAmount; // الإجمالي قبل الخصم
-                  final total =
-                      currentTotalAmount - _discount; // الإجمالي بعد الخصم
+                  final totalBeforeDiscount = currentTotalAmount;
+                  final total = currentTotalAmount - _discount;
                   double enteredPaidAmount =
                       double.tryParse(_paidAmountController.text) ?? 0.0;
                   double displayedPaidAmount = enteredPaidAmount;
                   double displayedRemainingAmount = total - enteredPaidAmount;
 
                   if (_paymentType == 'نقد') {
-                    displayedPaidAmount =
-                        total; // إذا كانت الفاتورة نقد، المبلغ المسدد هو الإجمالي
-                    displayedRemainingAmount = 0.0; // والمتبقي صفر
-                  } else {
-                    // إذا كانت دين
-                    // القيم كما هي من المدخلات
-                  }
+                    displayedPaidAmount = total;
+                    displayedRemainingAmount = 0.0;
+                  } else {}
 
                   return Card(
                     color: Colors.grey[100],
@@ -1494,7 +1503,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   );
                 },
               ),
-
               if (isViewOnly)
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.center,
@@ -1527,7 +1535,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           : (value) {
                               setState(() {
                                 _paymentType = value!;
-                                // إذا كان نقداً، اجعل المبلغ المسدد هو إجمالي الفاتورة بعد الخصم
                                 _paidAmountController.text = formatNumber(
                                     (currentTotalAmount - _discount)
                                         .clamp(0, double.infinity));
@@ -1544,8 +1551,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           : (value) {
                               setState(() {
                                 _paymentType = value!;
-                                // إذا كان ديناً، لا تعدل المبلغ المسدد تلقائياً، دعه فارغاً أو ما أدخله المستخدم
-                                // إذا لم يكن قد أدخل شيئاً، يمكن إعادته إلى '0' ليكون واضحاً
                                 if (_paidAmountController.text.isEmpty) {
                                   _paidAmountController.text = '0';
                                 }
@@ -1562,18 +1567,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     decoration: const InputDecoration(
                         labelText: 'المبلغ المسدد (اختياري)'),
                     keyboardType: TextInputType.number,
-                    enabled:
-                        !isViewOnly && _paymentType == 'دين', // فقط إذا كان دين
+                    enabled: !isViewOnly && _paymentType == 'دين',
                     onChanged: (value) {
-                      setState(() {
-                        // هذا الـ setState فارغ لكنه يجبر الواجهة على إعادة البناء وتحديث الحسابات
-                      });
+                      setState(() {});
                     },
                   ),
                 ],
               ],
               const SizedBox(height: 24.0),
-              // حقل الخصم
               TextFormField(
                 decoration:
                     const InputDecoration(labelText: 'الخصم (مبلغ وليس نسبة)'),
@@ -1590,7 +1591,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 enabled: !isViewOnly,
               ),
               const SizedBox(height: 24.0),
-              if (!isViewOnly) // Only show action buttons if not in view-only mode
+              if (!isViewOnly)
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [

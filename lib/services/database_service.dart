@@ -62,7 +62,7 @@ class DatabaseService {
     }
     return await openDatabase(
       newPath,
-      version: 16, // Incrementing the database version for the new migration
+      version: 17, // Incrementing the database version to remove serial_number
       onCreate: _createDatabase,
       onUpgrade: _onUpgrade,
     );
@@ -142,7 +142,6 @@ class DatabaseService {
         last_modified_at TEXT NOT NULL, --  يُخزن كـ ISO8601 String
         customer_id INTEGER, -- أضف حقل customer_id هنا
         status TEXT NOT NULL DEFAULT 'محفوظة',
-        serial_number INTEGER UNIQUE, -- الرقم التسلسلي الجديد
         FOREIGN KEY (installer_name) REFERENCES installers (name) ON UPDATE CASCADE ON DELETE SET NULL, --  تحسين سلوك المفتاح الأجنبي
         FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE SET NULL -- أضف المفتاح الأجنبي لـ customer_id
       )
@@ -251,6 +250,24 @@ class DatabaseService {
       } catch (e) {
         print(
             "DEBUG DB Error: Failed to add column 'serial_number' to invoices table or it already exists: $e");
+      }
+    }
+    if (oldVersion < 17) {
+      print('DEBUG DB: Attempting to drop serial_number column.');
+      try {
+        // Check if the column exists before attempting to drop it
+        final tableInfo = await db.rawQuery('PRAGMA table_info(invoices);');
+        final columnExists =
+            tableInfo.any((column) => column['name'] == 'serial_number');
+        if (columnExists) {
+          await db.execute('ALTER TABLE invoices DROP COLUMN serial_number;');
+          print('DEBUG DB: serial_number column dropped successfully.');
+        } else {
+          print(
+              'DEBUG DB: serial_number column does not exist, skipping drop.');
+        }
+      } catch (e) {
+        print('DEBUG DB Error: Failed to drop serial_number column: $e');
       }
     }
   }
@@ -493,11 +510,7 @@ class DatabaseService {
   Future<int> insertInvoice(Invoice invoice) async {
     final db = await database;
     try {
-      // إذا كانت الفاتورة جديدة وليس لديها رقم تسلسلي، قم بإنشاء واحد
-      if (invoice.serialNumber == null) {
-        final lastSerialNumber = await getLatestSerialNumber();
-        invoice = invoice.copyWith(serialNumber: lastSerialNumber + 1);
-      }
+      // No serial number generation needed
       return await db.insert('invoices', invoice.toMap());
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -507,14 +520,9 @@ class DatabaseService {
   Future<int> updateInvoice(Invoice invoice) async {
     final db = await database;
 
-    // Get the old invoice to calculate debt changes and preserve serial number
+    // Get the old invoice to calculate debt changes
     final oldInvoice = await getInvoiceById(invoice.id!);
     if (oldInvoice == null) return 0;
-
-    // إذا لم يكن الرقم التسلسلي موجودًا في الفاتورة الجديدة، احتفظ بالقديم
-    if (invoice.serialNumber == null && oldInvoice.serialNumber != null) {
-      invoice = invoice.copyWith(serialNumber: oldInvoice.serialNumber);
-    }
 
     // Calculate total paid amount for the invoice
     final List<Map<String, dynamic>> paymentMaps = await db.query(
@@ -1081,20 +1089,6 @@ class DatabaseService {
       where: 'id = ?',
       whereArgs: [id],
     );
-  }
-
-  Future<int> getLatestSerialNumber() async {
-    final db = await database;
-    try {
-      final List<Map<String, dynamic>> maps = await db.query(
-        'invoices',
-        columns: ['MAX(serial_number) as max_serial'],
-      );
-      return (maps.first['max_serial'] as int?) ?? 0;
-    } catch (e) {
-      print('DEBUG DB Error: Error getting latest serial number: $e');
-      throw Exception(_handleDatabaseError(e));
-    }
   }
 } // نهاية كلاس DatabaseService
 
