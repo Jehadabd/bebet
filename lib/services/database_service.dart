@@ -905,7 +905,7 @@ class DatabaseService {
 
     final List<Map<String, dynamic>> maps = await db.query(
       'customers',
-      where: 'last_modified_at >= ?',
+      where: 'last_modified_at >= ? AND current_total_debt > 0',
       whereArgs: [startOfDay.toIso8601String()],
     );
 
@@ -974,7 +974,7 @@ class DatabaseService {
     final List<Map<String, dynamic>> maps = await db.query(
       'customers',
       where:
-          '(last_modified_at >= ? AND last_modified_at < ?) OR (created_at >= ? AND created_at < ?)',
+          '((last_modified_at >= ? AND last_modified_at < ?) OR (created_at >= ? AND created_at < ?)) AND current_total_debt > 0',
       whereArgs: [start, end, start, end],
     );
     return List.generate(maps.length, (i) => Customer.fromMap(maps[i]));

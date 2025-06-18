@@ -1,3 +1,4 @@
+// screens/home_screen.dart
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -63,7 +64,8 @@ class _HomeScreenState extends State<HomeScreen> {
                             if (mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                  content: Text('سيتم فتح نافذة تسجيل الدخول إلى Google'),
+                                  content: Text(
+                                      'سيتم فتح نافذة تسجيل الدخول إلى Google'),
                                   duration: Duration(seconds: 2),
                                 ),
                               );
@@ -74,7 +76,8 @@ class _HomeScreenState extends State<HomeScreen> {
                             if (mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                  content: Text('تم تسجيل الدخول بنجاح! يمكنك الآن رفع التقارير إلى Google Drive'),
+                                  content: Text(
+                                      'تم تسجيل الدخول بنجاح! يمكنك الآن رفع التقارير إلى Google Drive'),
                                   backgroundColor: Colors.green,
                                   duration: Duration(seconds: 3),
                                 ),
@@ -102,7 +105,8 @@ class _HomeScreenState extends State<HomeScreen> {
                           context: context,
                           builder: (context) => AlertDialog(
                             title: const Text('تسجيل الخروج'),
-                            content: const Text('هل أنت متأكد من تسجيل الخروج من Google Drive؟'),
+                            content: const Text(
+                                'هل أنت متأكد من تسجيل الخروج من Google Drive؟'),
                             actions: [
                               TextButton(
                                 onPressed: () => Navigator.pop(context, false),
@@ -121,7 +125,8 @@ class _HomeScreenState extends State<HomeScreen> {
                           if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(
-                                content: Text('تم تسجيل الخروج من Google Drive'),
+                                content:
+                                    Text('تم تسجيل الخروج من Google Drive'),
                                 backgroundColor: Colors.orange,
                               ),
                             );
@@ -133,16 +138,17 @@ class _HomeScreenState extends State<HomeScreen> {
                   IconButton(
                     icon: const Icon(Icons.cloud_upload),
                     tooltip: provider.isDriveSignedInSync
-                        ? 'رفع التقرير اليومي إلى Google Drive'
+                        ? 'رفع سجل الديون إلى Google Drive'
                         : 'يجب تسجيل الدخول أولاً',
                     onPressed: provider.isDriveSignedInSync
                         ? () async {
                             try {
-                              await provider.generateAndUploadDailyReport();
+                              await provider.uploadDebtRecord();
                               if (mounted) {
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(
-                                    content: Text('تم رفع التقرير بنجاح إلى Google Drive'),
+                                    content: Text(
+                                        'تم رفع سجل الديون بنجاح إلى Google Drive'),
                                     backgroundColor: Colors.green,
                                   ),
                                 );
@@ -312,9 +318,7 @@ class CustomerListTile extends StatelessWidget {
         trailing: Text(
           '${customer.currentTotalDebt.toStringAsFixed(2)} دينار',
           style: TextStyle(
-            color: customer.currentTotalDebt > 0
-                ? Colors.red
-                : Colors.green,
+            color: customer.currentTotalDebt > 0 ? Colors.red : Colors.green,
             fontWeight: FontWeight.bold,
           ),
         ),
@@ -329,4 +333,4 @@ class CustomerListTile extends StatelessWidget {
       ),
     );
   }
-} 
+}

@@ -161,16 +161,23 @@ class AppProvider with ChangeNotifier {
     await loadCustomerTransactions(customer.id!);
   }
 
-  // Daily report generation and upload
-  Future<void> generateAndUploadDailyReport() async {
+  // رفع سجل الديون إلى Google Drive
+  Future<void> uploadDebtRecord() async {
     if (!_isDriveSupported) {
       throw Exception('ميزة التقارير غير مدعومة على هذا النظام');
     }
     _setLoading(true);
     try {
-      final modifiedCustomers = await _db.getCustomersModifiedToday();
-      if (modifiedCustomers.isNotEmpty) {
-        final reportFile = await _pdf.generateDailyReport(modifiedCustomers);
+      // رفع جميع العملاء الذين عليهم دين بدلاً من العملاء المعدلين اليوم فقط
+      final allCustomersWithDebt = _customers
+          .where((customer) => customer.currentTotalDebt > 0)
+          .toList();
+      if (allCustomersWithDebt.isNotEmpty) {
+        final reportFile = await _pdf.generateDailyReport(allCustomersWithDebt);
+        await _drive.uploadDailyReport(reportFile);
+      } else {
+        // إذا لم يكن هناك عملاء عليهم دين، ارفع ملف فارغ أو رسالة
+        final reportFile = await _pdf.generateDailyReport([]);
         await _drive.uploadDailyReport(reportFile);
       }
     } finally {

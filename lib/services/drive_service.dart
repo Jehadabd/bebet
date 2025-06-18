@@ -1,3 +1,4 @@
+// services/drive_service.dart
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
@@ -23,7 +24,8 @@ class DriveService {
   // OAuth 2.0 Desktop credentials from environment variables
   String get _clientIdString => dotenv.env['GOOGLE_CLIENT_ID'] ?? '';
   String get _clientSecretString => dotenv.env['GOOGLE_CLIENT_SECRET'] ?? '';
-  String get _redirectUrlString => dotenv.env['GOOGLE_REDIRECT_URL'] ?? 'http://localhost';
+  String get _redirectUrlString =>
+      dotenv.env['GOOGLE_REDIRECT_URL'] ?? 'http://localhost';
   final _scopes = [drive.DriveApi.driveFileScope, 'email', 'profile'];
 
   factory DriveService() => _instance;
@@ -63,8 +65,10 @@ class DriveService {
           if (account == null) {
             throw Exception('تم إلغاء تسجيل الدخول');
           }
-          final GoogleSignInAuthentication authData = await account.authentication;
-          await _storage.write(key: 'access_token', value: authData.accessToken);
+          final GoogleSignInAuthentication authData =
+              await account.authentication;
+          await _storage.write(
+              key: 'access_token', value: authData.accessToken);
           await _storage.write(key: 'refresh_token', value: authData.idToken);
           final client = await _getAuthenticatedClient();
           final driveApi = drive.DriveApi(client);
@@ -94,9 +98,12 @@ class DriveService {
               }
             },
           );
-          await _storage.write(key: 'access_token', value: credentials.accessToken.data);
-          await _storage.write(key: 'refresh_token', value: credentials.refreshToken ?? '');
-          final driveApi = drive.DriveApi(auth.authenticatedClient(client, credentials));
+          await _storage.write(
+              key: 'access_token', value: credentials.accessToken.data);
+          await _storage.write(
+              key: 'refresh_token', value: credentials.refreshToken ?? '');
+          final driveApi =
+              drive.DriveApi(auth.authenticatedClient(client, credentials));
           await driveApi.files.list(pageSize: 1);
           return true;
         } catch (e, stack) {
@@ -144,14 +151,16 @@ class DriveService {
     return createdFolder.id;
   }
 
-  Future<http.Client> _getAuthenticatedClient({bool forceRefresh = false}) async {
+  Future<http.Client> _getAuthenticatedClient(
+      {bool forceRefresh = false}) async {
     final accessToken = await _storage.read(key: 'access_token');
     final refreshToken = await _storage.read(key: 'refresh_token');
     if (accessToken == null) {
       throw Exception('لم يتم تسجيل الدخول');
     }
     final credentials = auth.AccessCredentials(
-      auth.AccessToken('Bearer', accessToken, DateTime.now().toUtc().add(const Duration(hours: 1))),
+      auth.AccessToken('Bearer', accessToken,
+          DateTime.now().toUtc().add(const Duration(hours: 1))),
       refreshToken,
       _scopes,
     );
@@ -159,9 +168,12 @@ class DriveService {
       final clientId = auth.ClientId(_clientIdString, _clientSecretString);
       final client = http.Client();
       try {
-        final refreshed = await auth.refreshCredentials(clientId, credentials, client);
-        await _storage.write(key: 'access_token', value: refreshed.accessToken.data);
-        await _storage.write(key: 'refresh_token', value: refreshed.refreshToken ?? '');
+        final refreshed =
+            await auth.refreshCredentials(clientId, credentials, client);
+        await _storage.write(
+            key: 'access_token', value: refreshed.accessToken.data);
+        await _storage.write(
+            key: 'refresh_token', value: refreshed.refreshToken ?? '');
         return auth.authenticatedClient(http.Client(), refreshed);
       } finally {
         client.close();
@@ -246,7 +258,8 @@ class DriveService {
       if (existingFiles.files?.isNotEmpty ?? false) {
         // تحديث الملف الموجود
         final fileId = existingFiles.files!.first.id;
-        final media = drive.Media(reportFile.openRead(), await reportFile.length());
+        final media =
+            drive.Media(reportFile.openRead(), await reportFile.length());
         await driveApi.files.update(
           drive.File()..name = _reportFileName,
           fileId!,
@@ -257,7 +270,8 @@ class DriveService {
         final driveFile = drive.File()
           ..name = _reportFileName
           ..parents = [folderId!];
-        final media = drive.Media(reportFile.openRead(), await reportFile.length());
+        final media =
+            drive.Media(reportFile.openRead(), await reportFile.length());
         await driveApi.files.create(
           driveFile,
           uploadMedia: media,
@@ -276,7 +290,8 @@ class DriveService {
 
         if (existingFiles.files?.isNotEmpty ?? false) {
           final fileId = existingFiles.files!.first.id;
-          final media = drive.Media(reportFile.openRead(), await reportFile.length());
+          final media =
+              drive.Media(reportFile.openRead(), await reportFile.length());
           await driveApi.files.update(
             drive.File()..name = _reportFileName,
             fileId!,
@@ -286,7 +301,8 @@ class DriveService {
           final driveFile = drive.File()
             ..name = _reportFileName
             ..parents = [folderId!];
-          final media = drive.Media(reportFile.openRead(), await reportFile.length());
+          final media =
+              drive.Media(reportFile.openRead(), await reportFile.length());
           await driveApi.files.create(
             driveFile,
             uploadMedia: media,
@@ -297,4 +313,4 @@ class DriveService {
       }
     }
   }
-} 
+}

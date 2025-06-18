@@ -1,3 +1,4 @@
+// services/pdf_service.dart
 import 'dart:io';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -30,14 +31,28 @@ class PdfService {
           textDirection: pw.TextDirection.rtl,
         ),
         build: (context) => [
+          // العنوان الرئيسي
           pw.Container(
             alignment: pw.Alignment.center,
             child: pw.Text(
-              'تقرير يومي - ${DateTime.now().toIso8601String().split('T')[0]}',
+              'سجل الديون',
               textAlign: pw.TextAlign.center,
               style: pw.TextStyle(
-                fontSize: 24,
+                fontSize: 28,
                 fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+          ),
+          pw.SizedBox(height: 8),
+          // التاريخ والوقت
+          pw.Container(
+            alignment: pw.Alignment.center,
+            child: pw.Text(
+              'تاريخ التحديث: ${DateTime.now().year}/${DateTime.now().month.toString().padLeft(2, '0')}/${DateTime.now().day.toString().padLeft(2, '0')} - ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}',
+              textAlign: pw.TextAlign.center,
+              style: pw.TextStyle(
+                fontSize: 14,
+                color: PdfColors.grey700,
               ),
             ),
           ),
@@ -45,26 +60,52 @@ class PdfService {
           if (customers.isEmpty)
             pw.Center(
               child: pw.Text(
-                'لا توجد تحديثات اليوم',
+                'لا يوجد عملاء عليهم دين حالياً',
                 style: const pw.TextStyle(fontSize: 16),
               ),
             )
-          else
+          else ...[
+            // إجمالي عدد العملاء
+            pw.Container(
+              alignment: pw.Alignment.center,
+              child: pw.Text(
+                'إجمالي عدد العملاء: ${customers.length}',
+                style: pw.TextStyle(
+                  fontSize: 16,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+              ),
+            ),
+            pw.SizedBox(height: 10),
+            // إجمالي الديون
+            pw.Container(
+              alignment: pw.Alignment.center,
+              child: pw.Text(
+                'إجمالي الديون: ${customers.fold(0.0, (sum, customer) => sum + customer.currentTotalDebt).toStringAsFixed(2)} دينار',
+                style: pw.TextStyle(
+                  fontSize: 16,
+                  fontWeight: pw.FontWeight.bold,
+                  color: PdfColors.red700,
+                ),
+              ),
+            ),
+            pw.SizedBox(height: 20),
+            // جدول العملاء
             pw.Table.fromTextArray(
               context: context,
               data: <List<String>>[
                 // Header
                 [
-                  'المبلغ المطلوب أو الدين',
+                  'المبلغ المطلوب',
                   'العنوان',
                   'اسم العميل',
                 ],
                 // Data
                 ...customers.map((customer) => [
-                  customer.currentTotalDebt.toStringAsFixed(2),
-                  customer.address ?? '-',
-                  customer.name,
-                ]),
+                      customer.currentTotalDebt.toStringAsFixed(2),
+                      customer.address ?? '-',
+                      customer.name,
+                    ]),
               ],
               headerStyle: pw.TextStyle(
                 fontWeight: pw.FontWeight.bold,
@@ -89,6 +130,7 @@ class PdfService {
                 0: const pw.FlexColumnWidth(1),
               },
             ),
+          ],
           pw.SizedBox(height: 20),
           pw.Container(
             margin: const pw.EdgeInsets.only(top: 20),
@@ -120,4 +162,4 @@ class PdfService {
     await file.writeAsBytes(await pdf.save());
     return file;
   }
-} 
+}
