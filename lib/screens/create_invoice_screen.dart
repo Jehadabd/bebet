@@ -571,271 +571,278 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     }
   }
 
- Future<pw.Document> _generateInvoicePdf() async {
-  final pdf = pw.Document();
-  final font =
-      pw.Font.ttf(await rootBundle.load('assets/fonts/Amiri-Regular.ttf'));
+  Future<pw.Document> _generateInvoicePdf() async {
+    final pdf = pw.Document();
+    final font =
+        pw.Font.ttf(await rootBundle.load('assets/fonts/Amiri-Regular.ttf'));
 
-  final currentTotalAmount =
-      _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-  final discount = _discount;
-  final afterDiscount =
-      (currentTotalAmount - discount).clamp(0, double.infinity);
+    final currentTotalAmount =
+        _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+    final discount = _discount;
+    final afterDiscount =
+        (currentTotalAmount - discount).clamp(0, double.infinity);
 
-  // حساب الديون
-  double previousDebt = 0.0;
-  double currentDebt = 0.0;
-  final customerName = _customerNameController.text.trim();
-  final customerPhone = _customerPhoneController.text.trim();
-  if (customerName.isNotEmpty) {
-    final customers = await _db.searchCustomers(customerName);
-    Customer? matchedCustomer;
-    if (customerPhone.isNotEmpty) {
-      matchedCustomer = customers
-              .where(
-                (c) =>
-                    c.name.trim() == customerName &&
-                    (c.phone ?? '').trim() == customerPhone,
-              )
-              .isNotEmpty
-          ? customers
-              .where(
-                (c) =>
-                    c.name.trim() == customerName &&
-                    (c.phone ?? '').trim() == customerPhone,
-              )
-              .first
-          : null;
+    // حساب الديون
+    double previousDebt = 0.0;
+    double currentDebt = 0.0;
+    final customerName = _customerNameController.text.trim();
+    final customerPhone = _customerPhoneController.text.trim();
+    if (customerName.isNotEmpty) {
+      final customers = await _db.searchCustomers(customerName);
+      Customer? matchedCustomer;
+      if (customerPhone.isNotEmpty) {
+        matchedCustomer = customers
+                .where(
+                  (c) =>
+                      c.name.trim() == customerName &&
+                      (c.phone ?? '').trim() == customerPhone,
+                )
+                .isNotEmpty
+            ? customers
+                .where(
+                  (c) =>
+                      c.name.trim() == customerName &&
+                      (c.phone ?? '').trim() == customerPhone,
+                )
+                .first
+            : null;
+      } else {
+        matchedCustomer = customers
+                .where(
+                  (c) => c.name.trim() == customerName,
+                )
+                .isNotEmpty
+            ? customers
+                .where(
+                  (c) => c.name.trim() == customerName,
+                )
+                .first
+            : null;
+      }
+      if (matchedCustomer != null) {
+        previousDebt = matchedCustomer.currentTotalDebt;
+      }
+    }
+    final paid = double.tryParse(_paidAmountController.text) ?? 0.0;
+    final isCash = _paymentType == 'نقد';
+    final remaining = isCash ? 0.0 : (afterDiscount - paid);
+    if (isCash) {
+      currentDebt = previousDebt;
     } else {
-      matchedCustomer = customers
-              .where(
-                (c) => c.name.trim() == customerName,
-              )
-              .isNotEmpty
-          ? customers
-              .where(
-                (c) => c.name.trim() == customerName,
-              )
-              .first
-          : null;
+      currentDebt = previousDebt + remaining;
     }
-    if (matchedCustomer != null) {
-      previousDebt = matchedCustomer.currentTotalDebt;
-    }
-  }
-  final paid = double.tryParse(_paidAmountController.text) ?? 0.0;
-  final isCash = _paymentType == 'نقد';
-  final remaining = isCash ? 0.0 : (afterDiscount - paid);
-  if (isCash) {
-    currentDebt = previousDebt;
-  } else {
-    currentDebt = previousDebt + remaining;
-  }
 
-  pdf.addPage(
-    pw.Page(
-      pageFormat: PdfPageFormat.a4,
-      margin: pw.EdgeInsets.only(top: 10, bottom: 10, left: 10, right: 10),
-      build: (pw.Context context) {
-        return pw.Directionality(
-          textDirection: pw.TextDirection.rtl,
-          child: pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: [
-              // --- الرأس الجديد مع معلومات المتجر ---
-              pw.Container(
-                padding: const pw.EdgeInsets.all(8),
-                decoration: pw.BoxDecoration(
-                  color: PdfColors.blue50,
-                  borderRadius: pw.BorderRadius.circular(4),
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.a4,
+        margin: pw.EdgeInsets.only(top: 10, bottom: 10, left: 10, right: 10),
+        build: (pw.Context context) {
+          return pw.Directionality(
+            textDirection: pw.TextDirection.rtl,
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                // --- الرأس الجديد مع معلومات المتجر ---
+                pw.Container(
+                  padding: const pw.EdgeInsets.all(8),
+                  decoration: pw.BoxDecoration(
+                    color: PdfColors.blue50,
+                    borderRadius: pw.BorderRadius.circular(4),
+                  ),
+                  child: pw.Column(
+                    children: [
+                      // اسم المتجر
+                      pw.Center(
+                        child: pw.Text('النــاصر',
+                            style: pw.TextStyle(
+                                font: font,
+                                fontSize: 24,
+                                fontWeight: pw.FontWeight.bold,
+                                color: PdfColors.blue800)),
+                      ),
+
+                      // نوع النشاط
+                      pw.Center(
+                        child: pw.Text('تجارة المواد الكهربائية والكيبلات',
+                            style: pw.TextStyle(font: font, fontSize: 16)),
+                      ),
+
+                      // العنوان
+                      pw.Center(
+                        child: pw.Text('الموصل - الجدعة، مقابل البرج',
+                            style: pw.TextStyle(font: font, fontSize: 12)),
+                      ),
+
+                      // أرقام الهواتف
+                      pw.Center(
+                        child: pw.Text('0773 284 5260  |  0770 304 0821',
+                            style: pw.TextStyle(
+                                font: font,
+                                fontSize: 12,
+                                color: PdfColors.orange)),
+                      ),
+                    ],
+                  ),
                 ),
-                child: pw.Column(
+                pw.SizedBox(height: 8),
+
+                // --- معلومات العميل والتاريخ ---
+                pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                   children: [
-                    // اسم المتجر
-                    pw.Center(
-                      child: pw.Text('النــاصر',
-                          style: pw.TextStyle(
-                              font: font,
-                              fontSize: 24,
-                              fontWeight: pw.FontWeight.bold,
-                              color: PdfColors.blue800)),
-                    ),
-                    
-                    // نوع النشاط
-                    pw.Center(
-                      child: pw.Text('تجارة المواد الكهربائية والكيبلات',
-                          style: pw.TextStyle(font: font, fontSize: 16)),
-                    ),
-                    
-                    // العنوان
-                    pw.Center(
-                      child: pw.Text('الموصل - الجدعة، مقابل البرج',
-                          style: pw.TextStyle(font: font, fontSize: 12)),
-                    ),
-                    
-                    // أرقام الهواتف
-                    pw.Center(
-                      child: pw.Text('0773 284 5260  |  0770 304 0821',
-                          style: pw.TextStyle(
-                              font: font,
-                              fontSize: 12,
-                              color: PdfColors.orange)),
+                    pw.Text('العميل: ${_customerNameController.text}',
+                        style: pw.TextStyle(font: font, fontSize: 9)),
+                    pw.Text('العنوان: ${_customerAddressController.text.isNotEmpty ? _customerAddressController.text : ' ______'}',
+                                style: pw.TextStyle(font: font, fontSize: 8)),
+                    pw.Text('الوقت: ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}',
+                                style: pw.TextStyle(font: font, fontSize: 8)),
+                         
+                    pw.Text(
+                      'التاريخ: ${_selectedDate.year}/${_selectedDate.month}/${_selectedDate.day}',
+                      style: pw.TextStyle(font: font, fontSize: 9),
                     ),
                   ],
                 ),
-              ),
-              pw.SizedBox(height: 8),
+                pw.Divider(height: 6, thickness: 0.5),
 
-              // --- معلومات العميل والتاريخ ---
-              pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                children: [
-                  pw.Text('العميل: ${_customerNameController.text}',
-                      style: pw.TextStyle(font: font, fontSize: 9)),
-                  pw.Text(
-                    'التاريخ: ${_selectedDate.year}/${_selectedDate.month}/${_selectedDate.day}',
-                    style: pw.TextStyle(font: font, fontSize: 9),
-                  ),
-                ],
-              ),
-              pw.Divider(height: 6, thickness: 0.5),
-
-              // --- جدول العناصر ---
-              pw.Table(
-                border: pw.TableBorder.all(width: 0.5),
-                columnWidths: {
-                  0: const pw.FixedColumnWidth(20), // ت (التسلسل)
-                  1: const pw.FlexColumnWidth(1.5), // الصنف
-                  2: const pw.FixedColumnWidth(40), // الكمية
-                  3: const pw.FixedColumnWidth(50), // السعر
-                  4: const pw.FixedColumnWidth(60), // المبلغ
-                },
-                defaultVerticalAlignment:
-                    pw.TableCellVerticalAlignment.middle,
-                children: [
-                  // رأس الجدول
-                  pw.TableRow(
-                    decoration: const pw.BoxDecoration(),
-                    children: [
-                      _headerCell('ت', font),
-                      _headerCell('اسم المنتج', font),
-                      _headerCell('العدد', font),
-                      _headerCell('السعر', font),
-                      _headerCell('المبلغ', font),
-                    ],
-                  ),
-
-                  // عناصر الجدول
-                  ..._invoiceItems.asMap().entries.map((entry) {
-                    final index = entry.key;
-                    final item = entry.value;
-                    final quantity = (item.quantityIndividual ??
-                        item.quantityLargeUnit ??
-                        0.0);
-
-                    return pw.TableRow(
+                // --- جدول العناصر ---
+                pw.Table(
+                  border: pw.TableBorder.all(width: 0.5),
+                  columnWidths: {
+                    0: const pw.FixedColumnWidth(60), // المبلغ
+                    1: const pw.FixedColumnWidth(40), // العدد
+                    2: const pw.FixedColumnWidth(50), // السعر
+                    3: const pw.FlexColumnWidth(1.5), // اسم المنتج
+                    4: const pw.FixedColumnWidth(20), // ت (التسلسل)
+                  },
+                  defaultVerticalAlignment:
+                      pw.TableCellVerticalAlignment.middle,
+                  children: [
+                    // رأس الجدول
+                    pw.TableRow(
+                      decoration: const pw.BoxDecoration(),
                       children: [
-                        _dataCell('${index + 1}', font),
-                        _dataCell(item.productName, font,
-                            align: pw.TextAlign.right),
-                        _dataCell(
-                            '${formatNumber(quantity)} ${item.saleType ?? ''}',
-                            font),
-                        _dataCell(formatNumber(item.appliedPrice), font),
-                        _dataCell(formatNumber(item.itemTotal), font),
+                        _headerCell('المبلغ', font),
+                        _headerCell('العدد', font),
+                        _headerCell('السعر', font),
+                        _headerCell('اسم المنتج', font),
+                        _headerCell('ت', font),
                       ],
-                    );
-                  }).toList(),
-                ],
-              ),
-              pw.Divider(height: 6, thickness: 0.5),
+                    ),
 
-              // --- المجاميع في صفين أفقيين متوازيين ---
-              pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.end,
-                children: [
-                  // الصف العلوي
-                  pw.Row(
-                    mainAxisAlignment: pw.MainAxisAlignment.end,
-                    children: [
-                      _summaryRow('الإجمالي:', currentTotalAmount, font),
-                      pw.SizedBox(width: 10),
-                      _summaryRow('الخصم:', discount, font),
-                      pw.SizedBox(width: 10),
-                      _summaryRow('الصافي:', afterDiscount, font),
-                      pw.SizedBox(width: 10),
-                      _summaryRow('المدفوع:', paid, font),
-                    ],
-                  ),
-                  pw.SizedBox(height: 6),
-                  
-                  // الصف السفلي
-                  pw.Row(
-                    mainAxisAlignment: pw.MainAxisAlignment.end,
-                    children: [
-                      _summaryRow('الباقي:', remaining, font),
-                      pw.SizedBox(width: 10),
-                      _summaryRow('الدين السابق:', previousDebt, font),
-                      pw.SizedBox(width: 10),
-                      _summaryRow('الدين الحالي:', currentDebt, font),
-                    ],
-                  ),
-                ],
-              ),
-              pw.SizedBox(height: 6),
+                    // عناصر الجدول
+                    ..._invoiceItems.asMap().entries.map((entry) {
+                      final index = entry.key;
+                      final item = entry.value;
+                      final quantity = (item.quantityIndividual ??
+                          item.quantityLargeUnit ??
+                          0.0);
 
-              // --- التذييل ---
-              pw.Center(
-                child: pw.Text('شكراً لتعاملكم معنا',
-                    style: pw.TextStyle(font: font, fontSize: 9))),
-            ],
-          ),
-        );
-      },
-    ),
-  );
-  return pdf;
-}
+                      return pw.TableRow(
+                        children: [
+                          _dataCell(formatNumber(item.itemTotal), font),
+                          _dataCell(
+                              '${formatNumber(quantity)} ${item.saleType ?? ''}',
+                              font),
+                          _dataCell(formatNumber(item.appliedPrice), font),
+                          _dataCell(item.productName, font,
+                              align: pw.TextAlign.right),
+                          _dataCell('${index + 1}', font),
+                        ],
+                      );
+                    }).toList(),
+                  ],
+                ),
+                pw.Divider(height: 6, thickness: 0.5),
+
+                // --- المجاميع في صفين أفقيين متوازيين ---
+                pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.end,
+                  children: [
+                    // الصف العلوي
+                    pw.Row(
+                      mainAxisAlignment: pw.MainAxisAlignment.end,
+                      children: [
+                        _summaryRow(
+                            'الاجمالي قبل الخصم:', currentTotalAmount, font),
+                        pw.SizedBox(width: 10),
+                        _summaryRow('الخصم:', discount, font),
+                        pw.SizedBox(width: 10),
+                        _summaryRow('الاجمالي بعد الخصم:', afterDiscount, font),
+                        pw.SizedBox(width: 10),
+                        _summaryRow('المبلغ المدفوع:', paid, font),
+                      ],
+                    ),
+                    pw.SizedBox(height: 6),
+
+                    // الصف السفلي
+                    pw.Row(
+                      mainAxisAlignment: pw.MainAxisAlignment.end,
+                      children: [
+                        _summaryRow('المبلغ الباقي:', remaining, font),
+                        pw.SizedBox(width: 10),
+                        _summaryRow('الدين السابق:', previousDebt, font),
+                        pw.SizedBox(width: 10),
+                        _summaryRow('الدين الحالي:', currentDebt, font),
+                      ],
+                    ),
+                  ],
+                ),
+                pw.SizedBox(height: 6),
+
+                // --- التذييل ---
+                pw.Center(
+                    child: pw.Text('شكراً لتعاملكم معنا',
+                        style: pw.TextStyle(font: font, fontSize: 9))),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+    return pdf;
+  }
 
 // ===== الدوال المساعدة =====
 
 // دالة لخلايا الرأس
-pw.Widget _headerCell(String text, pw.Font font) {
-  return pw.Padding(
-    padding: const pw.EdgeInsets.all(2),
-    child: pw.Text(text,
-        style: pw.TextStyle(
-            font: font, fontSize: 8, fontWeight: pw.FontWeight.bold),
-        textAlign: pw.TextAlign.center),
-  );
-}
+  pw.Widget _headerCell(String text, pw.Font font) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.all(2),
+      child: pw.Text(text,
+          style: pw.TextStyle(
+              font: font, fontSize: 8, fontWeight: pw.FontWeight.bold),
+          textAlign: pw.TextAlign.center),
+    );
+  }
 
 // دالة لخلايا البيانات
-pw.Widget _dataCell(String text, pw.Font font,
-    {pw.TextAlign align = pw.TextAlign.center}) {
-  return pw.Padding(
-    padding: const pw.EdgeInsets.all(2),
-    child: pw.Text(text,
-        style: pw.TextStyle(font: font, fontSize: 8), textAlign: align),
-  );
-}
+  pw.Widget _dataCell(String text, pw.Font font,
+      {pw.TextAlign align = pw.TextAlign.center}) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.all(2),
+      child: pw.Text(text,
+          style: pw.TextStyle(font: font, fontSize: 8), textAlign: align),
+    );
+  }
 
 // دالة لصفوف المجاميع
-pw.Widget _summaryRow(String label, num value, pw.Font font) {
-  return pw.Padding(
-    padding: const pw.EdgeInsets.symmetric(vertical: 1),
-    child: pw.Row(
-      mainAxisSize: pw.MainAxisSize.min,
-      children: [
-        pw.Text(label, style: pw.TextStyle(font: font, fontSize: 8)),
-        pw.SizedBox(width: 5),
-        pw.Text(formatNumber(value),
-            style: pw.TextStyle(
-                font: font, fontSize: 8, fontWeight: pw.FontWeight.bold)),
-      ],
-    ),
-  );
-}
+  pw.Widget _summaryRow(String label, num value, pw.Font font) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(vertical: 1),
+      child: pw.Row(
+        mainAxisSize: pw.MainAxisSize.min,
+        children: [
+          pw.Text(label, style: pw.TextStyle(font: font, fontSize: 8)),
+          pw.SizedBox(width: 5),
+          pw.Text(formatNumber(value),
+              style: pw.TextStyle(
+                  font: font, fontSize: 8, fontWeight: pw.FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+
   Future<String> _saveInvoicePdf(
       pw.Document pdf, String customerName, DateTime invoiceDate) async {
     final safeCustomerName =
