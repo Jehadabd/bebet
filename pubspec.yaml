@@ -41,6 +41,7 @@ dependencies:
   win32: ^5.14.0
   ffi: ^2.1.2
   flutter_nsd: ^1.6.0
+  get_storage: ^2.1.1
 
 dev_dependencies:
   flutter_test:

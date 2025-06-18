@@ -1,8 +1,10 @@
+// main.dart
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:get_storage/get_storage.dart';
 import 'providers/app_provider.dart';
 import 'screens/home_screen.dart';
 import 'screens/main_screen.dart';
@@ -18,22 +20,25 @@ import 'screens/printer_settings_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
+  // تهيئة GetStorage
+  await GetStorage.init();
+
   // تحميل ملف .env
   try {
     await dotenv.load();
   } catch (e) {
     print('خطأ في تحميل ملف .env: $e');
   }
-  
+
   // تهيئة sqflite_common_ffi على ويندوز فقط
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
-  
+
   // Check if passwords are set
   final passwordService = PasswordService();
   final bool passwordsSet = await passwordService.arePasswordsSet();
-  
+
   runApp(MyApp(initialRoute: passwordsSet ? '/' : '/password_setup'));
 }
 
