@@ -1,3 +1,4 @@
+// screens/edit_products_screen.dart
 import 'package:flutter/material.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
@@ -12,11 +13,14 @@ class EditProductsScreen extends StatefulWidget {
 
 class _EditProductsScreenState extends State<EditProductsScreen> {
   List<Product> _products = [];
+  List<Product> _filteredProducts = [];
   bool _loading = true;
+  final TextEditingController _searchController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
+    _searchController.addListener(_onSearchChanged);
     _loadProducts();
   }
 
@@ -26,8 +30,25 @@ class _EditProductsScreenState extends State<EditProductsScreen> {
     products.sort((a, b) => a.name.compareTo(b.name));
     setState(() {
       _products = products;
+      _applyFilter();
       _loading = false;
     });
+  }
+
+  void _onSearchChanged() {
+    setState(() {
+      _applyFilter();
+    });
+  }
+
+  void _applyFilter() {
+    final query = _searchController.text.trim();
+    if (query.isEmpty) {
+      _filteredProducts = _products;
+    } else {
+      _filteredProducts =
+          _products.where((p) => p.name.contains(query)).toList();
+    }
   }
 
   void _editProduct(Product product) async {
@@ -43,28 +64,54 @@ class _EditProductsScreenState extends State<EditProductsScreen> {
   }
 
   @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('تعديل البضاعة')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : _products.isEmpty
-              ? const Center(child: Text('لا توجد بضائع'))
-              : ListView.builder(
-                  itemCount: _products.length,
-                  itemBuilder: (context, index) {
-                    final product = _products[index];
-                    return Card(
-                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      child: ListTile(
-                        title: Text(product.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: Text('الوحدة: ${product.unit} | سعر 1: ${product.price1.toStringAsFixed(2)}'),
-                        trailing: const Icon(Icons.edit),
-                        onTap: () => _editProduct(product),
-                      ),
-                    );
-                  },
+          : Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: TextField(
+                    controller: _searchController,
+                    decoration: const InputDecoration(
+                      labelText: 'بحث باسم البضاعة',
+                      prefixIcon: Icon(Icons.search),
+                    ),
+                  ),
                 ),
+                Expanded(
+                  child: _filteredProducts.isEmpty
+                      ? const Center(child: Text('لا توجد بضائع مطابقة'))
+                      : ListView.builder(
+                          itemCount: _filteredProducts.length,
+                          itemBuilder: (context, index) {
+                            final product = _filteredProducts[index];
+                            return Card(
+                              margin: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 8),
+                              child: ListTile(
+                                title: Text(product.name,
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.bold)),
+                                subtitle: Text(
+                                    'الوحدة: ${product.unit} | سعر 1: ${product.price1.toStringAsFixed(2)}'),
+                                trailing: const Icon(Icons.edit),
+                                onTap: () => _editProduct(product),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
     );
   }
 }
@@ -94,13 +141,20 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
   void initState() {
     super.initState();
     _nameController = TextEditingController(text: widget.product.name);
-    _unitPriceController = TextEditingController(text: widget.product.unitPrice.toString());
-    _price1Controller = TextEditingController(text: widget.product.price1.toString());
-    _price2Controller = TextEditingController(text: widget.product.price2?.toString() ?? '');
-    _price3Controller = TextEditingController(text: widget.product.price3?.toString() ?? '');
-    _price4Controller = TextEditingController(text: widget.product.price4?.toString() ?? '');
-    _price5Controller = TextEditingController(text: widget.product.price5?.toString() ?? '');
-    _costPriceController = TextEditingController(text: widget.product.costPrice?.toString() ?? '');
+    _unitPriceController =
+        TextEditingController(text: widget.product.unitPrice.toString());
+    _price1Controller =
+        TextEditingController(text: widget.product.price1.toString());
+    _price2Controller =
+        TextEditingController(text: widget.product.price2?.toString() ?? '');
+    _price3Controller =
+        TextEditingController(text: widget.product.price3?.toString() ?? '');
+    _price4Controller =
+        TextEditingController(text: widget.product.price4?.toString() ?? '');
+    _price5Controller =
+        TextEditingController(text: widget.product.price5?.toString() ?? '');
+    _costPriceController =
+        TextEditingController(text: widget.product.costPrice?.toString() ?? '');
     _selectedUnit = widget.product.unit;
   }
 
@@ -138,7 +192,8 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
           ),
           ElevatedButton(
             onPressed: () async {
-              final bool isCorrect = await _passwordService.verifyPassword(passwordController.text);
+              final bool isCorrect = await _passwordService
+                  .verifyPassword(passwordController.text);
               Navigator.of(context).pop(isCorrect);
             },
             child: const Text('تأكيد'),
@@ -156,11 +211,21 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
       unit: _selectedUnit,
       unitPrice: double.tryParse(_unitPriceController.text.trim()) ?? 0.0,
       price1: double.tryParse(_price1Controller.text.trim()) ?? 0.0,
-      price2: _price2Controller.text.trim().isNotEmpty ? double.tryParse(_price2Controller.text.trim()) : null,
-      price3: _price3Controller.text.trim().isNotEmpty ? double.tryParse(_price3Controller.text.trim()) : null,
-      price4: _price4Controller.text.trim().isNotEmpty ? double.tryParse(_price4Controller.text.trim()) : null,
-      price5: _price5Controller.text.trim().isNotEmpty ? double.tryParse(_price5Controller.text.trim()) : null,
-      costPrice: _showCostPrice && _costPriceController.text.trim().isNotEmpty ? double.tryParse(_costPriceController.text.trim()) : widget.product.costPrice,
+      price2: _price2Controller.text.trim().isNotEmpty
+          ? double.tryParse(_price2Controller.text.trim())
+          : null,
+      price3: _price3Controller.text.trim().isNotEmpty
+          ? double.tryParse(_price3Controller.text.trim())
+          : null,
+      price4: _price4Controller.text.trim().isNotEmpty
+          ? double.tryParse(_price4Controller.text.trim())
+          : null,
+      price5: _price5Controller.text.trim().isNotEmpty
+          ? double.tryParse(_price5Controller.text.trim())
+          : null,
+      costPrice: _showCostPrice && _costPriceController.text.trim().isNotEmpty
+          ? double.tryParse(_costPriceController.text.trim())
+          : widget.product.costPrice,
       lastModifiedAt: DateTime.now(),
     );
     await db.updateProduct(updatedProduct);
@@ -195,7 +260,8 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
             TextField(
               controller: _unitPriceController,
               decoration: const InputDecoration(labelText: 'سعر الوحدة الأصلي'),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
             ),
             const SizedBox(height: 16),
             GestureDetector(
@@ -221,12 +287,15 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                   child: TextField(
                     controller: _costPriceController,
                     decoration: InputDecoration(
-                      labelText: _showCostPrice ? 'سعر التكلفة' : 'انقر للإدخال (محمي)',
+                      labelText: _showCostPrice
+                          ? 'سعر التكلفة'
+                          : 'انقر للإدخال (محمي)',
                       enabled: _showCostPrice,
                       fillColor: _showCostPrice ? null : Colors.grey[200],
                       filled: !_showCostPrice,
                     ),
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
                     readOnly: !_showCostPrice,
                   ),
                 ),
@@ -237,38 +306,44 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                 padding: EdgeInsets.only(top: 8.0),
                 child: Text(
                   'سعر التكلفة محمي بكلمة سر. انقر لإظهاره.',
-                  style: TextStyle(color: Colors.redAccent, fontStyle: FontStyle.italic),
+                  style: TextStyle(
+                      color: Colors.redAccent, fontStyle: FontStyle.italic),
                 ),
               ),
             const SizedBox(height: 16),
             TextField(
               controller: _price1Controller,
               decoration: const InputDecoration(labelText: 'سعر 1'),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
             ),
             const SizedBox(height: 16),
             TextField(
               controller: _price2Controller,
               decoration: const InputDecoration(labelText: 'سعر 2 (اختياري)'),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
             ),
             const SizedBox(height: 16),
             TextField(
               controller: _price3Controller,
               decoration: const InputDecoration(labelText: 'سعر 3 (اختياري)'),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
             ),
             const SizedBox(height: 16),
             TextField(
               controller: _price4Controller,
               decoration: const InputDecoration(labelText: 'سعر 4 (اختياري)'),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
             ),
             const SizedBox(height: 16),
             TextField(
               controller: _price5Controller,
               decoration: const InputDecoration(labelText: 'سعر 5 (اختياري)'),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
             ),
             const SizedBox(height: 24),
             ElevatedButton(
@@ -280,4 +355,4 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
       ),
     );
   }
-} 
+}

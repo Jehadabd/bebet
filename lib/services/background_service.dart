@@ -1,3 +1,4 @@
+// services/background_service.dart
 // تم تعطيل الكود الخاص ب Workmanager والرفع التلقائي
 
 import 'package:workmanager/workmanager.dart';
@@ -14,7 +15,7 @@ void callbackDispatcher() {
       final provider = AppProvider();
       try {
         await provider.initialize();
-        await provider.generateAndUploadDailyReport();
+        await provider.uploadDebtRecord();
         return Future.value(true);
       } catch (e) {
         return Future.value(false);
@@ -22,4 +23,4 @@ void callbackDispatcher() {
     }
     return Future.value(false);
   });
-} 
+}

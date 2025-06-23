@@ -1090,6 +1090,16 @@ class DatabaseService {
       whereArgs: [id],
     );
   }
+
+  // دالة لجلب آخر id للفواتير
+  Future<int> getLastInvoiceId() async {
+    final db = await database;
+    final result = await db.rawQuery('SELECT MAX(id) as maxId FROM invoices');
+    if (result.isNotEmpty && result.first['maxId'] != null) {
+      return result.first['maxId'] as int;
+    }
+    return 0;
+  }
 } // نهاية كلاس DatabaseService
 
 //  MonthlySalesSummary class

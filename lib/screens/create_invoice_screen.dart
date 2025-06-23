@@ -58,12 +58,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   double _discount = 0.0;
   final _discountController = TextEditingController();
 
-  String formatNumber(num value) {
-    if (value % 1 == 0) {
-      return value.toInt().toString();
-    } else {
-      return value.toStringAsFixed(2);
+  String formatNumber(num value, {bool forceDecimal = false}) {
+    if (forceDecimal) {
+      return value % 1 == 0 ? value.toInt().toString() : value.toString();
     }
+    return value.toInt().toString();
   }
 
   List<Product> _searchResults = [];
@@ -119,7 +118,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       _loadInvoiceItems();
     } else {
       print('CreateInvoiceScreen: Init with new invoice');
-      _totalAmountController.text = '0.00';
+      _totalAmountController.text = '0';
     }
   }
 
@@ -143,7 +142,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       }
 
       _paymentType = data['paymentType'] ?? 'نقد';
-      _discount = data['discount'] ?? 0.0;
+      _discount = data['discount'] ?? 0;
       _discountController.text = _discount.toStringAsFixed(2);
       _paidAmountController.text = data['paidAmount'] ?? '';
 
@@ -153,7 +152,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           productName: item['productName'],
           unit: item['unit'],
           unitPrice: item['unitPrice'],
-          costPrice: item['costPrice'] ?? 0.0,
+          costPrice: item['costPrice'] ?? 0,
           quantityIndividual: item['quantityIndividual'],
           quantityLargeUnit: item['quantityLargeUnit'],
           appliedPrice: item['appliedPrice'],
@@ -288,6 +287,28 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     });
   }
 
+  // دالة لتحديث المبلغ المسدد تلقائيًا إذا كان الدفع نقد
+  void _updatePaidAmountIfCash() {
+    if (_paymentType == 'نقد') {
+      _guardDiscount();
+      final currentTotalAmount =
+          _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+      final total = currentTotalAmount - _discount;
+      _paidAmountController.text =
+          total.clamp(0, double.infinity).toStringAsFixed(2);
+    }
+  }
+
+  // دالة مركزية لحماية الخصم
+  void _guardDiscount() {
+    final currentTotalAmount =
+        _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+    if (_discount >= currentTotalAmount) {
+      _discount = 0.0;
+      _discountController.text = '0';
+    }
+  }
+
   void _addInvoiceItem() {
     if (_formKey.currentState!.validate() &&
         _selectedProduct != null &&
@@ -310,17 +331,17 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       if (_useLargeUnit) {
         quantitySold = quantity;
         appliedPricePerUnitSold =
-            (_selectedPriceLevel ?? _selectedProduct!.unitPrice ?? 0.0) *
+            (_selectedPriceLevel ?? _selectedProduct!.unitPrice ?? 0) *
                 unitsInLargeUnit;
         final totalSmallUnits = quantity * unitsInLargeUnit;
         itemCostPriceForInvoiceItem =
-            (_selectedProduct!.costPrice ?? 0.0) * totalSmallUnits;
+            (_selectedProduct!.costPrice ?? 0) * totalSmallUnits;
       } else {
         quantitySold = quantity;
         appliedPricePerUnitSold =
-            _selectedPriceLevel ?? _selectedProduct!.unitPrice ?? 0.0;
+            _selectedPriceLevel ?? _selectedProduct!.unitPrice ?? 0;
         itemCostPriceForInvoiceItem =
-            (_selectedProduct!.costPrice ?? 0.0) * quantitySold;
+            (_selectedProduct!.costPrice ?? 0) * quantitySold;
       }
       final newItem = InvoiceItem(
         invoiceId: 0,
@@ -342,16 +363,20 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         _selectedPriceLevel = null;
         _useLargeUnit = false;
         _searchResults = [];
+        _guardDiscount();
+        _updatePaidAmountIfCash();
+        _autoSave();
       });
-      _autoSave(); // حفظ تلقائي عند إضافة صنف
     }
   }
 
   void _removeInvoiceItem(int index) {
     setState(() {
       _invoiceItems.removeAt(index);
+      _guardDiscount();
+      _updatePaidAmountIfCash();
+      _autoSave();
     });
-    _autoSave(); // حفظ تلقائي عند حذف صنف
   }
 
   Future<Invoice?> _saveInvoice({bool printAfterSave = false}) async {
@@ -396,6 +421,34 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       double paid = double.tryParse(_paidAmountController.text) ?? 0.0;
       double debt = (currentTotalAmount - _discount) - paid;
       double totalAmount = currentTotalAmount - _discount;
+
+      // تحقق من نسبة الخصم
+      if (_discount >= currentTotalAmount) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('نسبة الخصم خاطئة!')),
+          );
+        }
+        return null;
+      }
+
+      // تحقق من المبلغ المسدد في حالة الدين
+      if (_paymentType == 'دين' && paid >= totalAmount) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text(
+                    'لا يمكن أن يكون المبلغ المسدد مساوياً أو أكبر من إجمالي الفاتورة في حالة الدين!')),
+          );
+        }
+        return null;
+      }
+
+      // حماية: إذا كان نوع الدفع دين والمبلغ المسدد أكبر من الإجمالي، صفّره
+      if (_paymentType == 'دين' && paid > totalAmount) {
+        paid = 0.0;
+        _paidAmountController.text = '';
+      }
 
       print('DEBUG: currentTotalAmount: $currentTotalAmount');
       print('DEBUG: _discount: $_discount');
@@ -625,185 +678,225 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     }
     final paid = double.tryParse(_paidAmountController.text) ?? 0.0;
     final isCash = _paymentType == 'نقد';
-    final remaining = isCash ? 0.0 : (afterDiscount - paid);
+    final remaining = isCash ? 0 : (afterDiscount - paid);
     if (isCash) {
       currentDebt = previousDebt;
     } else {
       currentDebt = previousDebt + remaining;
     }
 
-    pdf.addPage(
-      pw.Page(
-        pageFormat: PdfPageFormat.a4,
-        margin: pw.EdgeInsets.only(top: 10, bottom: 10, left: 10, right: 10),
-        build: (pw.Context context) {
-          return pw.Directionality(
-            textDirection: pw.TextDirection.rtl,
-            child: pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                // --- الرأس الجديد مع معلومات المتجر ---
-                pw.Container(
-                  padding: const pw.EdgeInsets.all(8),
-                  decoration: pw.BoxDecoration(
-                    color: PdfColors.blue50,
-                    borderRadius: pw.BorderRadius.circular(4),
+    // --- منطق رقم الفاتورة ---
+    int invoiceId;
+    if (_invoiceToManage != null && _invoiceToManage!.id != null) {
+      invoiceId = _invoiceToManage!.id!;
+    } else {
+      invoiceId = (await _db.getLastInvoiceId()) + 1;
+    }
+
+    // تقسيم العناصر إلى صفحات (33 عنصر لكل صفحة)
+    const itemsPerPage = 33;
+    final totalPages = (_invoiceItems.length / itemsPerPage).ceil();
+
+    for (var pageIndex = 0; pageIndex < totalPages; pageIndex++) {
+      final start = pageIndex * itemsPerPage;
+      final end = (start + itemsPerPage) > _invoiceItems.length
+          ? _invoiceItems.length
+          : start + itemsPerPage;
+      final pageItems = _invoiceItems.sublist(start, end);
+
+      pdf.addPage(
+        pw.Page(
+          pageFormat: PdfPageFormat.a4,
+          margin: pw.EdgeInsets.only(top: 10, bottom: 10, left: 10, right: 10),
+          build: (pw.Context context) {
+            return pw.Directionality(
+              textDirection: pw.TextDirection.rtl,
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  // --- الرأس الجديد مع معلومات المتجر ---
+                  pw.Container(
+                    padding: const pw.EdgeInsets.all(8),
+                    decoration: pw.BoxDecoration(
+                      borderRadius: pw.BorderRadius.circular(4),
+                    ),
+                    child: pw.Column(
+                      children: [
+                        // اسم المتجر
+                        pw.Center(
+                          child: pw.Text('النــاصر',
+                              style: pw.TextStyle(
+                                  font: font,
+                                  fontSize: 24,
+                                  fontWeight: pw.FontWeight.bold,
+                                  color: PdfColors.black)),
+                        ),
+
+                        // نوع النشاط
+                        pw.Center(
+                          child: pw.Text(
+                              'لتجارة المواد الصحية والعدد اليدوية والانشائية',
+                              style: pw.TextStyle(font: font, fontSize: 16)),
+                        ),
+
+                        // العنوان مع رقم الفاتورة
+                        pw.Center(
+                          child: pw.Text(
+                            'الموصل - الجدعة - مقابل البرج',
+                            style: pw.TextStyle(font: font, fontSize: 12),
+                          ),
+                        ),
+
+                        // أرقام الهواتف
+                        pw.Center(
+                          child: pw.Text('0771 406 3064  |  0770 305 1353',
+                              style: pw.TextStyle(
+                                  font: font,
+                                  fontSize: 12,
+                                  color: PdfColors.black)),
+                        ),
+                      ],
+                    ),
                   ),
-                  child: pw.Column(
+                  pw.SizedBox(height: 8),
+
+                  // --- معلومات العميل والتاريخ ---
+                  pw.Row(
+                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                     children: [
-                      // اسم المتجر
-                      pw.Center(
-                        child: pw.Text('النــاصر',
-                            style: pw.TextStyle(
-                                font: font,
-                                fontSize: 24,
-                                fontWeight: pw.FontWeight.bold,
-                                color: PdfColors.blue800)),
-                      ),
-
-                      // نوع النشاط
-                      pw.Center(
-                        child: pw.Text('تجارة المواد الكهربائية والكيبلات',
-                            style: pw.TextStyle(font: font, fontSize: 16)),
-                      ),
-
-                      // العنوان
-                      pw.Center(
-                        child: pw.Text('الموصل - الجدعة، مقابل البرج',
-                            style: pw.TextStyle(font: font, fontSize: 12)),
-                      ),
-
-                      // أرقام الهواتف
-                      pw.Center(
-                        child: pw.Text('0773 284 5260  |  0770 304 0821',
-                            style: pw.TextStyle(
-                                font: font,
-                                fontSize: 12,
-                                color: PdfColors.orange)),
+                      pw.Text('العميل: ${_customerNameController.text}',
+                          style: pw.TextStyle(font: font, fontSize: 9)),
+                      pw.Text(
+                          'العنوان: ${_customerAddressController.text.isNotEmpty ? _customerAddressController.text : ' ______'}',
+                          style: pw.TextStyle(font: font, fontSize: 8)),
+                      pw.Text('رقم الفاتورة: ${invoiceId}',
+                          style: pw.TextStyle(font: font, fontSize: 9)),
+                      pw.Text(
+                          'الوقت: ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}',
+                          style: pw.TextStyle(font: font, fontSize: 8)),
+                      pw.Text(
+                        'التاريخ: ${_selectedDate.year}/${_selectedDate.month}/${_selectedDate.day}',
+                        style: pw.TextStyle(font: font, fontSize: 9),
                       ),
                     ],
                   ),
-                ),
-                pw.SizedBox(height: 8),
+                  pw.Divider(height: 6, thickness: 0.5),
 
-                // --- معلومات العميل والتاريخ ---
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Text('العميل: ${_customerNameController.text}',
-                        style: pw.TextStyle(font: font, fontSize: 9)),
-                    pw.Text('العنوان: ${_customerAddressController.text.isNotEmpty ? _customerAddressController.text : ' ______'}',
-                                style: pw.TextStyle(font: font, fontSize: 8)),
-                    pw.Text('الوقت: ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}',
-                                style: pw.TextStyle(font: font, fontSize: 8)),
-                         
-                    pw.Text(
-                      'التاريخ: ${_selectedDate.year}/${_selectedDate.month}/${_selectedDate.day}',
-                      style: pw.TextStyle(font: font, fontSize: 9),
-                    ),
-                  ],
-                ),
-                pw.Divider(height: 6, thickness: 0.5),
-
-                // --- جدول العناصر ---
-                pw.Table(
-                  border: pw.TableBorder.all(width: 0.5),
-                  columnWidths: {
-                    0: const pw.FixedColumnWidth(60), // المبلغ
-                    1: const pw.FixedColumnWidth(40), // العدد
-                    2: const pw.FixedColumnWidth(50), // السعر
-                    3: const pw.FlexColumnWidth(1.5), // اسم المنتج
-                    4: const pw.FixedColumnWidth(20), // ت (التسلسل)
-                  },
-                  defaultVerticalAlignment:
-                      pw.TableCellVerticalAlignment.middle,
-                  children: [
-                    // رأس الجدول
-                    pw.TableRow(
-                      decoration: const pw.BoxDecoration(),
-                      children: [
-                        _headerCell('المبلغ', font),
-                        _headerCell('العدد', font),
-                        _headerCell('السعر', font),
-                        _headerCell('اسم المنتج', font),
-                        _headerCell('ت', font),
-                      ],
-                    ),
-
-                    // عناصر الجدول
-                    ..._invoiceItems.asMap().entries.map((entry) {
-                      final index = entry.key;
-                      final item = entry.value;
-                      final quantity = (item.quantityIndividual ??
-                          item.quantityLargeUnit ??
-                          0.0);
-
-                      return pw.TableRow(
+                  // --- جدول العناصر ---
+                  pw.Table(
+                    border: pw.TableBorder.all(width: 0.5),
+                    columnWidths: {
+                      0: const pw.FixedColumnWidth(60), // المبلغ
+                      1: const pw.FixedColumnWidth(40), // العدد
+                      2: const pw.FixedColumnWidth(50), // السعر
+                      3: const pw.FlexColumnWidth(1.5), // اسم المنتج
+                      4: const pw.FixedColumnWidth(20), // ت (التسلسل)
+                    },
+                    defaultVerticalAlignment:
+                        pw.TableCellVerticalAlignment.middle,
+                    children: [
+                      // رأس الجدول
+                      pw.TableRow(
+                        decoration: const pw.BoxDecoration(),
                         children: [
-                          _dataCell(formatNumber(item.itemTotal), font),
-                          _dataCell(
-                              '${formatNumber(quantity)} ${item.saleType ?? ''}',
-                              font),
-                          _dataCell(formatNumber(item.appliedPrice), font),
-                          _dataCell(item.productName, font,
-                              align: pw.TextAlign.right),
-                          _dataCell('${index + 1}', font),
+                          _headerCell('المبلغ', font),
+                          _headerCell('العدد', font),
+                          _headerCell('السعر', font),
+                          _headerCell('اسم المنتج', font),
+                          _headerCell('ت', font),
                         ],
-                      );
-                    }).toList(),
-                  ],
-                ),
-                pw.Divider(height: 6, thickness: 0.5),
+                      ),
 
-                // --- المجاميع في صفين أفقيين متوازيين ---
-                pw.Column(
-                  crossAxisAlignment: pw.CrossAxisAlignment.end,
-                  children: [
-                    // الصف العلوي
-                    pw.Row(
-                      mainAxisAlignment: pw.MainAxisAlignment.end,
+                      // عناصر الجدول للصفحة الحالية
+                      ...pageItems.asMap().entries.map((entry) {
+                        final index = entry.key + (pageIndex * itemsPerPage);
+                        final item = entry.value;
+                        final quantity = (item.quantityIndividual ??
+                            item.quantityLargeUnit ??
+                            0.0);
+
+                        return pw.TableRow(
+                          children: [
+                            _dataCell(
+                                formatNumber(item.itemTotal,
+                                    forceDecimal: true),
+                                font),
+                            _dataCell(
+                                '${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}',
+                                font),
+                            _dataCell(
+                                formatNumber(item.appliedPrice,
+                                    forceDecimal: true),
+                                font),
+                            _dataCell(item.productName, font,
+                                align: pw.TextAlign.right),
+                            _dataCell('${index + 1}', font),
+                          ],
+                        );
+                      }).toList(),
+                    ],
+                  ),
+                  pw.Divider(height: 6, thickness: 0.5),
+
+                  // --- المجاميع في الصفحة الأخيرة فقط ---
+                  if (pageIndex == totalPages - 1) ...[
+                    pw.Column(
+                      crossAxisAlignment: pw.CrossAxisAlignment.end,
                       children: [
-                        _summaryRow(
-                            'الاجمالي قبل الخصم:', currentTotalAmount, font),
-                        pw.SizedBox(width: 10),
-                        _summaryRow('الخصم:', discount, font),
-                        pw.SizedBox(width: 10),
-                        _summaryRow('الاجمالي بعد الخصم:', afterDiscount, font),
-                        pw.SizedBox(width: 10),
-                        _summaryRow('المبلغ المدفوع:', paid, font),
+                        // الصف العلوي
+                        pw.Row(
+                          mainAxisAlignment: pw.MainAxisAlignment.end,
+                          children: [
+                            _summaryRow('الاجمالي قبل الخصم:',
+                                currentTotalAmount, font),
+                            pw.SizedBox(width: 10),
+                            _summaryRow('الخصم:', discount, font),
+                            pw.SizedBox(width: 10),
+                            _summaryRow(
+                                'الاجمالي بعد الخصم:', afterDiscount, font),
+                            pw.SizedBox(width: 10),
+                            _summaryRow('المبلغ المدفوع:', paid, font),
+                          ],
+                        ),
+                        pw.SizedBox(height: 6),
+
+                        // الصف السفلي
+                        pw.Row(
+                          mainAxisAlignment: pw.MainAxisAlignment.end,
+                          children: [
+                            _summaryRow('المبلغ المتبقي:', remaining, font),
+                            pw.SizedBox(width: 10),
+                            _summaryRow('الدين السابق:', previousDebt, font),
+                            pw.SizedBox(width: 10),
+                            _summaryRow('الدين الحالي:', currentDebt, font),
+                          ],
+                        ),
                       ],
                     ),
                     pw.SizedBox(height: 6),
 
-                    // الصف السفلي
-                    pw.Row(
-                      mainAxisAlignment: pw.MainAxisAlignment.end,
-                      children: [
-                        _summaryRow('المبلغ الباقي:', remaining, font),
-                        pw.SizedBox(width: 10),
-                        _summaryRow('الدين السابق:', previousDebt, font),
-                        pw.SizedBox(width: 10),
-                        _summaryRow('الدين الحالي:', currentDebt, font),
-                      ],
-                    ),
+                    // --- التذييل ---
+                    pw.Center(
+                        child: pw.Text('شكراً لتعاملكم معنا',
+                            style: pw.TextStyle(font: font, fontSize: 9))),
                   ],
-                ),
-                pw.SizedBox(height: 6),
 
-                // --- التذييل ---
-                pw.Center(
-                    child: pw.Text('شكراً لتعاملكم معنا',
-                        style: pw.TextStyle(font: font, fontSize: 9))),
-              ],
-            ),
-          );
-        },
-      ),
-    );
+                  // --- ترقيم الصفحات ---
+                  pw.Center(
+                    child: pw.Text(
+                      'صفحة ${pageIndex + 1} من $totalPages',
+                      style: pw.TextStyle(font: font, fontSize: 8),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      );
+    }
     return pdf;
   }
-
-// ===== الدوال المساعدة =====
 
 // دالة لخلايا الرأس
   pw.Widget _headerCell(String text, pw.Font font) {
@@ -835,7 +928,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         children: [
           pw.Text(label, style: pw.TextStyle(font: font, fontSize: 8)),
           pw.SizedBox(width: 5),
-          pw.Text(formatNumber(value),
+          pw.Text(formatNumber(value, forceDecimal: true),
               style: pw.TextStyle(
                   font: font, fontSize: 8, fontWeight: pw.FontWeight.bold)),
         ],
@@ -1202,15 +1295,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                     value: price, child: Text(priceText)));
                               }
 
-                              if (_selectedPriceLevel != null &&
-                                  _selectedPriceLevel != -1 &&
-                                  !uniquePrices
-                                      .contains(_selectedPriceLevel!)) {
-                                priceItems.add(DropdownMenuItem(
-                                    value: _selectedPriceLevel,
-                                    child: const Text('سعر مخصص حالي')));
-                              }
-
                               priceItems.add(const DropdownMenuItem(
                                   value: -1, child: Text('سعر مخصص')));
                               return priceItems;
@@ -1400,7 +1484,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                     textAlign: TextAlign.center)),
                             Expanded(
                                 flex: 2,
-                                child: Text(formatNumber(itemTotalAmount),
+                                child: Text(
+                                    formatNumber(itemTotalAmount,
+                                        forceDecimal: true),
                                     textAlign: TextAlign.center)),
                             Expanded(
                                 flex: 4,
@@ -1408,7 +1494,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                     textAlign: TextAlign.center)),
                             Expanded(
                                 flex: 1,
-                                child: Text(quantityText,
+                                child: Text(
+                                    formatNumber(displayQuantity,
+                                        forceDecimal: true),
                                     textAlign: TextAlign.center)),
                             Expanded(
                                 flex: 1,
@@ -1416,7 +1504,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                     textAlign: TextAlign.center)),
                             Expanded(
                                 flex: 2,
-                                child: Text(formatNumber(item.appliedPrice),
+                                child: Text(
+                                    formatNumber(item.appliedPrice,
+                                        forceDecimal: true),
                                     textAlign: TextAlign.center)),
                             if (!isViewOnly)
                               IconButton(
@@ -1437,13 +1527,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     final totalBeforeDiscount = currentTotalAmount;
                     final total = currentTotalAmount - _discount;
                     double enteredPaidAmount =
-                        double.tryParse(_paidAmountController.text) ?? 0.0;
+                        double.tryParse(_paidAmountController.text) ?? 0;
                     double displayedPaidAmount = enteredPaidAmount;
                     double displayedRemainingAmount = total - enteredPaidAmount;
 
                     if (_paymentType == 'نقد') {
                       displayedPaidAmount = total;
-                      displayedRemainingAmount = 0.0;
+                      displayedRemainingAmount = 0;
                     } else {}
 
                     return Card(
@@ -1455,27 +1545,27 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                                'المبلغ الإجمالي قبل الخصم:  ${formatNumber(totalBeforeDiscount)} دينار',
+                                'المبلغ الإجمالي قبل الخصم:  ${formatNumber(totalBeforeDiscount, forceDecimal: true)} دينار',
                                 style: const TextStyle(
                                     fontWeight: FontWeight.bold)),
                             const SizedBox(height: 4),
                             Text(
-                                'المبلغ الإجمالي:  ${formatNumber(total)} دينار',
+                                'المبلغ الإجمالي:  ${formatNumber(total, forceDecimal: true)} دينار',
                                 style: const TextStyle(
                                     fontWeight: FontWeight.bold)),
                             const SizedBox(height: 4),
                             Text(
-                                'المبلغ المسدد:    ${formatNumber(displayedPaidAmount)} دينار',
+                                'المبلغ المسدد:    ${formatNumber(displayedPaidAmount, forceDecimal: true)} دينار',
                                 style: const TextStyle(color: Colors.green)),
                             const SizedBox(height: 4),
                             Text(
-                                'المتبقي:         ${formatNumber(displayedRemainingAmount)} دينار',
+                                'المتبقي:         ${formatNumber(displayedRemainingAmount, forceDecimal: true)} دينار',
                                 style: const TextStyle(color: Colors.red)),
                             if (_paymentType == 'دين')
                               Padding(
                                 padding: const EdgeInsets.only(top: 8.0),
                                 child: Text(
-                                    'أصبح الدين: ${formatNumber(displayedRemainingAmount)} دينار',
+                                    'أصبح الدين: ${formatNumber(displayedRemainingAmount, forceDecimal: true)} دينار',
                                     style:
                                         const TextStyle(color: Colors.black87)),
                               ),
@@ -1517,10 +1607,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             : (value) {
                                 setState(() {
                                   _paymentType = value!;
-                                  _paidAmountController.text = formatNumber(
-                                      (currentTotalAmount - _discount)
-                                          .clamp(0, double.infinity));
-                                  _autoSave(); // حفظ تلقائي عند تغيير نوع الدفع
+                                  _guardDiscount();
+                                  _updatePaidAmountIfCash();
+                                  _autoSave();
                                 });
                               },
                       ),
@@ -1534,9 +1623,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             : (value) {
                                 setState(() {
                                   _paymentType = value!;
-                                  if (_paidAmountController.text.isEmpty) {
-                                    _paidAmountController.text = '0';
-                                  }
+                                  _paidAmountController.text = '0';
                                   _autoSave(); // حفظ تلقائي عند تغيير نوع الدفع
                                 });
                               },
@@ -1553,7 +1640,20 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       keyboardType: TextInputType.number,
                       enabled: !isViewOnly && _paymentType == 'دين',
                       onChanged: (value) {
-                        setState(() {});
+                        setState(() {
+                          double enteredPaid = double.tryParse(value) ?? 0.0;
+                          final total = _invoiceItems.fold(
+                                  0.0, (sum, item) => sum + item.itemTotal) -
+                              _discount;
+                          if (enteredPaid >= total) {
+                            _paidAmountController.text = '0';
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                  content: Text(
+                                      'المبلغ المسدد يجب أن يكون أقل من مبلغ الفاتورة في حالة الدين!')),
+                            );
+                          }
+                        });
                       },
                     ),
                   ],
@@ -1568,7 +1668,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       ? null
                       : (val) {
                           setState(() {
-                            _discount = double.tryParse(val) ?? 0.0;
+                            double enteredDiscount =
+                                double.tryParse(val) ?? 0.0;
+                            _discount = enteredDiscount;
+                            _guardDiscount();
+                            _updatePaidAmountIfCash();
                           });
                         },
                   initialValue: _discount > 0 ? _discount.toString() : '',
