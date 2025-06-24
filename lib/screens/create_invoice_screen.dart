@@ -316,7 +316,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       final quantity = double.tryParse(_quantityController.text.trim()) ?? 0.0;
       if (quantity <= 0) return;
       double itemCostPriceForInvoiceItem;
-      double appliedPricePerUnitSold;
       double quantitySold;
       final unitsInLargeUnit = (_selectedProduct!.unit == 'piece'
               ? _selectedProduct!.piecesPerUnit
@@ -328,6 +327,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       } else if (_selectedProduct!.unit == 'meter') {
         saleType = _useLargeUnit ? 'ل' : 'م';
       }
+      double appliedPricePerUnitSold;
       if (_useLargeUnit) {
         quantitySold = quantity;
         appliedPricePerUnitSold =
@@ -356,7 +356,24 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         saleType: saleType,
       );
       setState(() {
-        _invoiceItems.add(newItem);
+        // البحث عن صنف مطابق (نفس الاسم، نفس نوع البيع، نفس الوحدة)
+        final existingIndex = _invoiceItems.indexWhere((item) =>
+            item.productName == newItem.productName &&
+            item.saleType == newItem.saleType &&
+            item.unit == newItem.unit);
+        if (existingIndex != -1) {
+          final existingItem = _invoiceItems[existingIndex];
+          _invoiceItems[existingIndex] = existingItem.copyWith(
+            quantityIndividual: (existingItem.quantityIndividual ?? 0) +
+                (newItem.quantityIndividual ?? 0),
+            quantityLargeUnit: (existingItem.quantityLargeUnit ?? 0) +
+                (newItem.quantityLargeUnit ?? 0),
+            itemTotal: (existingItem.itemTotal) + (newItem.itemTotal),
+            costPrice: (existingItem.costPrice ?? 0) + (newItem.costPrice ?? 0),
+          );
+        } else {
+          _invoiceItems.add(newItem);
+        }
         _productSearchController.clear();
         _quantityController.clear();
         _selectedProduct = null;
