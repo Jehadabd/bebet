@@ -57,6 +57,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   final _paidAmountController = TextEditingController();
   double _discount = 0.0;
   final _discountController = TextEditingController();
+  int _unitSelection = 0; // 0 لـ "قطعة"، 1 لـ "كرتون/باكيت"
 
   String formatNumber(num value, {bool forceDecimal = false}) {
     if (forceDecimal) {
@@ -1053,6 +1054,58 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     }
   }
 
+  void _resetInvoice() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('فاتورة جديدة'),
+        content: const Text(
+            'هل تريد بدء فاتورة جديدة؟ سيتم مسح جميع البيانات الحالية.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _performReset();
+            },
+            child: const Text('نعم'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _performReset() {
+    setState(() {
+      _customerNameController.clear();
+      _customerPhoneController.clear();
+      _customerAddressController.clear();
+      _installerNameController.clear();
+      _productSearchController.clear();
+      _quantityController.clear();
+      _paidAmountController.clear();
+      _discountController.clear();
+      _discount = 0.0;
+      _selectedPriceLevel = null;
+      _selectedProduct = null;
+      _useLargeUnit = false;
+      _paymentType = 'نقد';
+      _selectedDate = DateTime.now();
+      _invoiceItems.clear();
+      _searchResults.clear();
+      _totalAmountController.text = '0';
+      _savedOrSuspended = false;
+      // حذف البيانات المؤقتة
+      _storage.remove('temp_invoice_data');
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('تم بدء فاتورة جديدة')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     print(
@@ -1074,6 +1127,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               : (widget.isViewOnly ? 'عرض فاتورة' : 'إنشاء فاتورة')),
           centerTitle: true,
           actions: [
+            // زر جديد لإعادة التعيين
+            IconButton(
+              icon: const Icon(Icons.receipt),
+              tooltip: 'فاتورة جديدة',
+              onPressed: _invoiceItems.isNotEmpty ||
+                      _customerNameController.text.isNotEmpty
+                  ? _resetInvoice
+                  : null,
+            ),
+            // زر الطباعة الموجود
             IconButton(
               icon: const Icon(Icons.print),
               tooltip: 'طباعة الفاتورة',
@@ -1218,21 +1281,86 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             _selectedProduct!.piecesPerUnit != null ||
                         _selectedProduct!.unit == 'meter' &&
                             _selectedProduct!.lengthPerUnit != null)
-                      SwitchListTile(
-                        title: Text(
-                          _selectedProduct!.unit == 'piece'
-                              ? 'استخدام الكرتون/الباكيت'
-                              : 'استخدام القطعة الكاملة',
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 16.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('نوع الوحدة:',
+                                style: TextStyle(fontWeight: FontWeight.bold)),
+                            SizedBox(height: 8),
+                            Container(
+                              decoration: BoxDecoration(
+                                color: Colors.grey[200],
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: ChoiceChip(
+                                      label: Text(
+                                        _selectedProduct!.unit == 'piece'
+                                            ? 'قطعة'
+                                            : 'متر',
+                                        style: TextStyle(
+                                          color: _unitSelection == 0
+                                              ? Colors.white
+                                              : Colors.black,
+                                        ),
+                                      ),
+                                      selected: _unitSelection == 0,
+                                      onSelected: (selected) {
+                                        setState(() {
+                                          _unitSelection = 0;
+                                          _useLargeUnit = false;
+                                          _quantityController.clear();
+                                        });
+                                      },
+                                      selectedColor:
+                                          Theme.of(context).primaryColor,
+                                      backgroundColor: Colors.transparent,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      padding:
+                                          EdgeInsets.symmetric(vertical: 12),
+                                    ),
+                                  ),
+                                  Expanded(
+                                    child: ChoiceChip(
+                                      label: Text(
+                                        _selectedProduct!.unit == 'piece'
+                                            ? 'كرتون/باكيت'
+                                            : 'لفة كاملة',
+                                        style: TextStyle(
+                                          color: _unitSelection == 1
+                                              ? Colors.white
+                                              : Colors.black,
+                                        ),
+                                      ),
+                                      selected: _unitSelection == 1,
+                                      onSelected: (selected) {
+                                        setState(() {
+                                          _unitSelection = 1;
+                                          _useLargeUnit = true;
+                                          _quantityController.clear();
+                                        });
+                                      },
+                                      selectedColor:
+                                          Theme.of(context).primaryColor,
+                                      backgroundColor: Colors.transparent,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      padding:
+                                          EdgeInsets.symmetric(vertical: 12),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ),
-                        value: _useLargeUnit,
-                        onChanged: isViewOnly
-                            ? null
-                            : (bool value) {
-                                setState(() {
-                                  _useLargeUnit = value;
-                                  _quantityController.clear();
-                                });
-                              },
                       ),
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1242,7 +1370,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           child: TextFormField(
                             controller: _quantityController,
                             decoration: InputDecoration(
-                              labelText: _useLargeUnit
+                              labelText: _unitSelection == 1
                                   ? (_selectedProduct!.unit == 'piece'
                                       ? 'عدد الكراتين/الباكيت'
                                       : 'عدد القطع الكاملة')
