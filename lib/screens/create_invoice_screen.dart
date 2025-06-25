@@ -257,6 +257,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     _installerNameController.dispose();
     _productSearchController.dispose();
     _quantityController.dispose();
+    _itemsController.dispose();
+    _totalAmountController.dispose();
     _paidAmountController.dispose();
     _discountController.dispose();
     _returnAmountController.dispose();
@@ -472,16 +474,18 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
       // تحديد الحالة الجديدة
       String newStatus = 'محفوظة';
-      bool newIsLocked = false;
+      bool newIsLocked =
+          _invoiceToManage?.isLocked ?? false; // الحفاظ على حالة القفل الحالية
+
       if (_invoiceToManage != null) {
         if (_invoiceToManage!.status == 'معلقة') {
-          // إذا كانت معلقة، عند الحفظ تتحول إلى محفوظة ومقفلة
           newStatus = 'محفوظة';
-          newIsLocked = true;
-        } else if (_invoiceToManage!.status == 'محفوظة') {
-          newStatus = 'محفوظة';
-          newIsLocked = _invoiceToManage!.isLocked;
+          newIsLocked =
+              false; // فواتير معلقة محولة تبقى قابلة للتعديل حتى إدخال الراجع
         }
+      } else {
+        // فواتير جديدة
+        newIsLocked = false;
       }
 
       Invoice invoice = Invoice(
@@ -504,7 +508,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         returnAmount: _returnAmountController.text.isNotEmpty
             ? double.parse(_returnAmountController.text)
             : 0.0,
-        isLocked: newIsLocked,
+        isLocked: false, // دائماً غير مقفلة بعد الحفظ العادي
       );
 
       if (invoice.installerName != null && invoice.installerName!.isNotEmpty) {
@@ -596,7 +600,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             backgroundColor: Colors.green,
           ),
         );
-        // لا نغلق الشاشة بل نبقى فيها
+        Navigator.of(context)
+            .popUntil((route) => route.isFirst); // العودة للصفحة الرئيسية
       }
       return updatedInvoice;
     } catch (e) {
@@ -1264,9 +1269,19 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     setState(() {
       _invoiceToManage = updatedInvoiceFromDb;
     });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('تم حفظ الراجع وقفل الفاتورة!')),
-    );
+    setState(() {
+      _isViewOnly = true; // تفعيل وضع العرض فقط
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('تم حفظ الراجع وقفل الفاتورة!'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      Navigator.of(context)
+          .popUntil((route) => route.isFirst); // العودة للصفحة الرئيسية
+    }
   }
 
   // دالة الحفظ التلقائي للفواتير المعلقة
@@ -1342,6 +1357,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
     final isViewOnly = _isViewOnly;
     final relatedDebtTransaction = widget.relatedDebtTransaction;
+    final isLocked = _invoiceToManage?.isLocked ?? false;
+    final isEnabled = !isViewOnly && !isLocked;
+    bool canEditReturn = _invoiceToManage != null &&
+        _invoiceToManage!.status == 'محفوظة' &&
+        !_invoiceToManage!.isLocked &&
+        (_invoiceToManage!.returnAmount == 0.0 ||
+            _invoiceToManage!.returnAmount == null);
 
     return WillPopScope(
       onWillPop: () async {
@@ -2136,36 +2158,39 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   ),
                 // إظهار قسم الراجع بعد الحفظ مباشرة
                 if (_invoiceToManage != null &&
-                    _invoiceToManage!.status == 'محفوظة') ...[
-                  if (!_invoiceToManage!.isLocked) ...[
-                    SizedBox(height: 24),
-                    TextFormField(
-                      controller: _returnAmountController,
-                      decoration:
-                          InputDecoration(labelText: 'الراجع (مبلغ الإرجاع)'),
-                      keyboardType: TextInputType.number,
-                      enabled: !_invoiceToManage!.isLocked,
-                    ),
-                    SizedBox(height: 12),
-                    ElevatedButton.icon(
-                      icon: Icon(Icons.assignment_turned_in),
-                      label: Text('حفظ الراجع'),
-                      onPressed: () async {
-                        final value =
-                            double.tryParse(_returnAmountController.text) ??
-                                0.0;
-                        await _saveReturnAmount(value);
-                      },
-                    ),
-                  ] else ...[
-                    SizedBox(height: 24),
-                    Text('الراجع: [${_invoiceToManage!.returnAmount}] دينار',
-                        style: TextStyle(
-                            fontWeight: FontWeight.bold, color: Colors.red)),
-                    SizedBox(height: 8),
-                    Text('الفاتورة مقفلة ولا يمكن تعديلها بعد حفظ الراجع.',
-                        style: TextStyle(color: Colors.grey)),
-                  ],
+                    _invoiceToManage!.status == 'محفوظة' &&
+                    !_invoiceToManage!.isLocked) ...[
+                  SizedBox(height: 24),
+                  TextFormField(
+                    controller: _returnAmountController,
+                    decoration:
+                        InputDecoration(labelText: 'الراجع (مبلغ الإرجاع)'),
+                    keyboardType: TextInputType.number,
+                    enabled: true, // نشط دائماً في هذه الحالة
+                  ),
+                  SizedBox(height: 12),
+                  ElevatedButton.icon(
+                    icon: Icon(Icons.assignment_turned_in),
+                    label: Text('حفظ الراجع'),
+                    onPressed: () async {
+                      final value =
+                          double.tryParse(_returnAmountController.text) ?? 0.0;
+                      await _saveReturnAmount(value);
+                    }, // نشط دائماً في هذه الحالة
+                  ),
+                ],
+                // عرض حالة الراجع للفواتير المقفلة أو إذا تم إدخال الراجع بالفعل
+                if (_invoiceToManage != null &&
+                    (_invoiceToManage!.isLocked ||
+                        (_invoiceToManage!.returnAmount != 0.0 &&
+                            _invoiceToManage!.returnAmount != null))) ...[
+                  SizedBox(height: 24),
+                  Text('الراجع: ${_invoiceToManage!.returnAmount} دينار',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold, color: Colors.red)),
+                  SizedBox(height: 8),
+                  Text('الفاتورة مقفلة ولا يمكن تعديلها',
+                      style: TextStyle(color: Colors.grey)),
                 ],
               ],
             ),
