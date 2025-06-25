@@ -83,11 +83,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   // أضف متغير تحكم لحقل الراجع
   final TextEditingController _returnAmountController = TextEditingController();
 
+  bool _isViewOnly = false;
+
   @override
   void initState() {
     super.initState();
     _printingService = getPlatformPrintingService();
     _invoiceToManage = widget.existingInvoice;
+    _isViewOnly = widget.isViewOnly;
 
     // تحميل البيانات المؤقتة
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -129,7 +132,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   // تحميل البيانات المحفوظة تلقائياً
   void _loadAutoSavedData() {
-    if (widget.isViewOnly || widget.existingInvoice != null) {
+    if (_isViewOnly || widget.existingInvoice != null) {
       return;
     }
 
@@ -174,9 +177,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   // حفظ البيانات تلقائياً
   void _autoSave() {
-    if (_savedOrSuspended ||
-        widget.isViewOnly ||
-        widget.existingInvoice != null) {
+    if (_savedOrSuspended || _isViewOnly || widget.existingInvoice != null) {
       return;
     }
 
@@ -246,9 +247,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     _debounceTimer?.cancel();
 
     // الحفظ النهائي عند إغلاق الشاشة
-    if (!_savedOrSuspended &&
-        widget.existingInvoice == null &&
-        !widget.isViewOnly) {
+    if (!_savedOrSuspended && widget.existingInvoice == null && !_isViewOnly) {
       _autoSave();
     }
 
@@ -309,7 +308,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   void _guardDiscount() {
     final currentTotalAmount =
         _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-    if (_discount >= currentTotalAmount) {
+    // الحد الأعلى للخصم هو أقل من نصف الإجمالي
+    final maxDiscount = (currentTotalAmount / 2) - 1;
+    if (_discount > maxDiscount) {
+      _discount = maxDiscount > 0 ? maxDiscount : 0.0;
+      _discountController.text = _discount.toStringAsFixed(2);
+    }
+    if (_discount < 0) {
       _discount = 0.0;
       _discountController.text = '0';
     }
@@ -389,6 +394,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         _guardDiscount();
         _updatePaidAmountIfCash();
         _autoSave();
+        if (_invoiceToManage != null &&
+            _invoiceToManage!.status == 'معلقة' &&
+            !_invoiceToManage!.isLocked) {
+          autoSaveSuspendedInvoice();
+        }
       });
     }
   }
@@ -399,6 +409,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       _guardDiscount();
       _updatePaidAmountIfCash();
       _autoSave();
+      if (_invoiceToManage != null &&
+          _invoiceToManage!.status == 'معلقة' &&
+          !_invoiceToManage!.isLocked) {
+        autoSaveSuspendedInvoice();
+      }
     });
   }
 
@@ -455,28 +470,19 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         return null;
       }
 
-      // تحقق من المبلغ المسدد في حالة الدين
-      if (_paymentType == 'دين' && paid >= totalAmount) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-                content: Text(
-                    'لا يمكن أن يكون المبلغ المسدد مساوياً أو أكبر من إجمالي الفاتورة في حالة الدين!')),
-          );
+      // تحديد الحالة الجديدة
+      String newStatus = 'محفوظة';
+      bool newIsLocked = false;
+      if (_invoiceToManage != null) {
+        if (_invoiceToManage!.status == 'معلقة') {
+          // إذا كانت معلقة، عند الحفظ تتحول إلى محفوظة ومقفلة
+          newStatus = 'محفوظة';
+          newIsLocked = true;
+        } else if (_invoiceToManage!.status == 'محفوظة') {
+          newStatus = 'محفوظة';
+          newIsLocked = _invoiceToManage!.isLocked;
         }
-        return null;
       }
-
-      // حماية: إذا كان نوع الدفع دين والمبلغ المسدد أكبر من الإجمالي، صفّره
-      if (_paymentType == 'دين' && paid > totalAmount) {
-        paid = 0.0;
-        _paidAmountController.text = '';
-      }
-
-      print('DEBUG: currentTotalAmount: $currentTotalAmount');
-      print('DEBUG: _discount: $_discount');
-      print('DEBUG: paid: $paid');
-      print('DEBUG: calculated debt: $debt');
 
       Invoice invoice = Invoice(
         id: _invoiceToManage?.id,
@@ -494,11 +500,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         createdAt: _invoiceToManage?.createdAt ?? DateTime.now(),
         lastModifiedAt: DateTime.now(),
         customerId: customer?.id,
-        status: 'محفوظة',
+        status: newStatus,
         returnAmount: _returnAmountController.text.isNotEmpty
             ? double.parse(_returnAmountController.text)
             : 0.0,
-        isLocked: false,
+        isLocked: newIsLocked,
       );
 
       if (invoice.installerName != null && invoice.installerName!.isNotEmpty) {
@@ -517,6 +523,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       int invoiceId;
       if (_invoiceToManage != null) {
         invoiceId = _invoiceToManage!.id!;
+        // حذف جميع أصناف الفاتورة القديمة وإضافة الجديدة
+        final oldItems = await _db.getInvoiceItems(invoiceId);
+        for (var oldItem in oldItems) {
+          await _db.deleteInvoiceItem(oldItem.id!);
+        }
+        for (var item in _invoiceItems) {
+          item.invoiceId = invoiceId;
+          await _db.insertInvoiceItem(item);
+        }
+        // تحديث الفاتورة بالحالة الجديدة
         await context.read<AppProvider>().updateInvoice(invoice);
         print(
             'Updated existing invoice via AppProvider. Invoice ID: $invoiceId, New Status: ${invoice.status}');
@@ -552,14 +568,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         await _db.insertDebtTransaction(debtTransaction);
       }
 
-      for (var item in _invoiceItems) {
-        item.invoiceId = invoiceId;
-        if (item.id == null) {
-          await _db.insertInvoiceItem(item);
-        } else {
-          await _db.updateInvoiceItem(item);
-        }
-      }
       String extraMsg = '';
       if (_paymentType == 'دين') {
         extraMsg =
@@ -570,6 +578,17 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       _storage.remove('temp_invoice_data');
       _savedOrSuspended = true;
 
+      // تحديث حالة الفاتورة في الذاكرة مباشرة بعد الحفظ
+      final updatedInvoice = await _db.getInvoiceById(invoiceId);
+      setState(() {
+        _invoiceToManage = updatedInvoice;
+        if (_invoiceToManage != null &&
+            _invoiceToManage!.status == 'محفوظة' &&
+            _invoiceToManage!.isLocked) {
+          _isViewOnly = true;
+        }
+      });
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -577,11 +596,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             backgroundColor: Colors.green,
           ),
         );
-        Navigator.pop(context);
+        // لا نغلق الشاشة بل نبقى فيها
       }
-      return invoice;
+      return updatedInvoice;
     } catch (e) {
-      String errorMessage = 'حدث خطأ عند حفظ الفاتورة: ${e.toString()}';
+      String errorMessage = 'حدث خطأ عند حفظ الفاتورة: [${e.toString()}';
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -611,6 +630,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       double totalAmount = currentTotalAmount - _discount;
       double paid = double.tryParse(_paidAmountController.text.trim()) ?? 0.0;
       final invoice = Invoice(
+        id: _invoiceToManage?.id,
         customerName: _customerNameController.text.trim(),
         customerPhone: _customerPhoneController.text.trim(),
         customerAddress: _customerAddressController.text.trim(),
@@ -620,16 +640,36 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         totalAmount: totalAmount,
         discount: _discount,
         amountPaidOnInvoice: paid,
-        createdAt: DateTime.now(),
+        createdAt: _invoiceToManage?.createdAt ?? DateTime.now(),
         lastModifiedAt: DateTime.now(),
         customerId: customerId,
         status: 'معلقة',
+        isLocked: false,
+        returnAmount: _returnAmountController.text.isNotEmpty
+            ? double.tryParse(_returnAmountController.text) ?? 0.0
+            : 0.0,
       );
-      final invoiceId = await _db.insertInvoice(invoice);
-      print(
-          'Suspended invoice. Invoice ID: $invoiceId, Status: ${invoice.status}');
-      for (final item in _invoiceItems) {
-        await _db.insertInvoiceItem(item.copyWith(invoiceId: invoiceId));
+      int invoiceId;
+      if (_invoiceToManage != null) {
+        invoiceId = _invoiceToManage!.id!;
+        // حذف جميع أصناف الفاتورة القديمة وإضافة الجديدة
+        final oldItems = await _db.getInvoiceItems(invoiceId);
+        for (var oldItem in oldItems) {
+          await _db.deleteInvoiceItem(oldItem.id!);
+        }
+        for (final item in _invoiceItems) {
+          await _db.insertInvoiceItem(item.copyWith(invoiceId: invoiceId));
+        }
+        await context.read<AppProvider>().updateInvoice(invoice);
+        print(
+            'Suspended invoice. Invoice ID: $invoiceId, Status: ${invoice.status}');
+      } else {
+        invoiceId = await _db.insertInvoice(invoice);
+        print(
+            'Suspended invoice. Invoice ID: $invoiceId, Status: ${invoice.status}');
+        for (final item in _invoiceItems) {
+          await _db.insertInvoiceItem(item.copyWith(invoiceId: invoiceId));
+        }
       }
 
       // حذف البيانات المؤقتة بعد التعليق الناجح
@@ -643,7 +683,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       );
       Navigator.of(context).pop();
     } catch (e) {
-      String errorMessage = 'حدث خطأ عند تعليق الفاتورة: \${e.toString()}';
+      String errorMessage = 'حدث خطأ عند تعليق الفاتورة: \\${e.toString()}';
       print('Error suspending invoice: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(errorMessage)),
@@ -1189,21 +1229,118 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         await _db.updateInstaller(updatedInstaller);
       }
     }
+    // تحديث دين العميل وتسجيل معاملة تسديد راجع
+    if (updatedInvoice.paymentType == 'دين' &&
+        updatedInvoice.customerId != null &&
+        value > 0) {
+      final customer = await _db.getCustomerById(updatedInvoice.customerId!);
+      if (customer != null) {
+        final newDebt =
+            (customer.currentTotalDebt - value).clamp(0.0, double.infinity);
+        final updatedCustomer = customer.copyWith(
+          currentTotalDebt: newDebt,
+          lastModifiedAt: DateTime.now(),
+        );
+        await _db.updateCustomer(updatedCustomer);
+        // سجل معاملة تسديد راجع
+        await _db.insertTransaction(
+          DebtTransaction(
+            id: null,
+            customerId: customer.id!,
+            invoiceId: updatedInvoice.id!,
+            amountChanged: -value, // سالبة لأنها تسديد
+            transactionDate: DateTime.now(),
+            newBalanceAfterTransaction: newDebt,
+            transactionNote: 'تسديد راجع على الفاتورة رقم ${updatedInvoice.id}',
+            transactionType: 'return_payment',
+            createdAt: DateTime.now(),
+          ),
+        );
+      }
+    }
+    // جلب أحدث نسخة من الفاتورة بعد الحفظ
+    final updatedInvoiceFromDb =
+        await _db.getInvoiceById(_invoiceToManage!.id!);
     setState(() {
-      _invoiceToManage = updatedInvoice;
+      _invoiceToManage = updatedInvoiceFromDb;
     });
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('تم حفظ الراجع وقفل الفاتورة!')),
     );
   }
 
+  // دالة الحفظ التلقائي للفواتير المعلقة
+  Future<void> autoSaveSuspendedInvoice() async {
+    if (_invoiceToManage == null ||
+        _invoiceToManage!.status != 'معلقة' ||
+        _invoiceToManage!.isLocked) return;
+    try {
+      Customer? customer;
+      if (_customerNameController.text.trim().isNotEmpty) {
+        final customers = await _db.getAllCustomers();
+        try {
+          customer = customers.firstWhere(
+            (c) =>
+                c.name.trim() == _customerNameController.text.trim() &&
+                (c.phone == null ||
+                    c.phone!.isEmpty ||
+                    _customerPhoneController.text.trim().isEmpty ||
+                    c.phone == _customerPhoneController.text.trim()),
+          );
+        } catch (e) {
+          customer = null;
+        }
+        // لا تنشئ عميل جديد هنا، فقط استخدم الموجود إن وجد
+      }
+      double currentTotalAmount =
+          _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+      double paid = double.tryParse(_paidAmountController.text) ?? 0.0;
+      double totalAmount = currentTotalAmount - _discount;
+      Invoice invoice = _invoiceToManage!.copyWith(
+        customerName: _customerNameController.text,
+        customerPhone: _customerPhoneController.text,
+        customerAddress: _customerAddressController.text,
+        installerName: _installerNameController.text.isEmpty
+            ? null
+            : _installerNameController.text,
+        invoiceDate: _selectedDate,
+        paymentType: _paymentType,
+        totalAmount: totalAmount,
+        discount: _discount,
+        amountPaidOnInvoice: paid,
+        lastModifiedAt: DateTime.now(),
+        customerId: customer?.id,
+        // status: 'معلقة',
+        returnAmount: _returnAmountController.text.isNotEmpty
+            ? double.parse(_returnAmountController.text)
+            : 0.0,
+        isLocked: false,
+      );
+      int invoiceId = _invoiceToManage!.id!;
+      // حذف جميع أصناف الفاتورة القديمة وإضافة الجديدة
+      final oldItems = await _db.getInvoiceItems(invoiceId);
+      for (var oldItem in oldItems) {
+        await _db.deleteInvoiceItem(oldItem.id!);
+      }
+      for (var item in _invoiceItems) {
+        item.invoiceId = invoiceId;
+        await _db.insertInvoiceItem(item);
+      }
+      await context.read<AppProvider>().updateInvoice(invoice);
+      setState(() {
+        _invoiceToManage = invoice;
+      });
+    } catch (e) {
+      print('Auto-save suspended invoice error: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    print(
-        'CreateInvoiceScreen: Building with isViewOnly: ${widget.isViewOnly}');
+    print('CreateInvoiceScreen: Building with isViewOnly: ${_isViewOnly}');
     final currentTotalAmount =
         _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-    final isViewOnly = widget.isViewOnly;
+    final isViewOnly = _isViewOnly;
     final relatedDebtTransaction = widget.relatedDebtTransaction;
 
     return WillPopScope(
@@ -1213,9 +1350,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(_invoiceToManage != null && !widget.isViewOnly
+          title: Text(_invoiceToManage != null && !_isViewOnly
               ? 'تعديل فاتورة'
-              : (widget.isViewOnly ? 'عرض فاتورة' : 'إنشاء فاتورة')),
+              : (_isViewOnly ? 'عرض فاتورة' : 'إنشاء فاتورة')),
           centerTitle: true,
           actions: [
             // زر جديد لإعادة التعيين
@@ -1255,7 +1392,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   children: [
                     Expanded(
                       flex: 3,
-                      child: widget.isViewOnly
+                      child: _isViewOnly
                           ? TextFormField(
                               controller: _customerNameController,
                               decoration: const InputDecoration(
@@ -1298,6 +1435,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                   onChanged: (val) {
                                     _customerNameController.text = val;
                                     _onFieldChanged();
+                                    if (_invoiceToManage != null &&
+                                        _invoiceToManage!.status == 'معلقة' &&
+                                        !_invoiceToManage!.isLocked) {
+                                      autoSaveSuspendedInvoice();
+                                    }
                                   },
                                 );
                               },
@@ -1886,6 +2028,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                   _updatePaidAmountIfCash();
                                   _autoSave();
                                 });
+                                if (_invoiceToManage != null &&
+                                    _invoiceToManage!.status == 'معلقة' &&
+                                    !_invoiceToManage!.isLocked) {
+                                  autoSaveSuspendedInvoice();
+                                }
                               },
                       ),
                       const Text('نقد'),
@@ -1899,8 +2046,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 setState(() {
                                   _paymentType = value!;
                                   _paidAmountController.text = '0';
-                                  _autoSave(); // حفظ تلقائي عند تغيير نوع الدفع
+                                  _autoSave();
                                 });
+                                if (_invoiceToManage != null &&
+                                    _invoiceToManage!.status == 'معلقة' &&
+                                    !_invoiceToManage!.isLocked) {
+                                  autoSaveSuspendedInvoice();
+                                }
                               },
                       ),
                       const Text('دين'),
@@ -1929,6 +2081,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             );
                           }
                         });
+                        if (_invoiceToManage != null &&
+                            _invoiceToManage!.status == 'معلقة' &&
+                            !_invoiceToManage!.isLocked) {
+                          autoSaveSuspendedInvoice();
+                        }
                       },
                     ),
                   ],
@@ -1949,6 +2106,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             _guardDiscount();
                             _updatePaidAmountIfCash();
                           });
+                          if (_invoiceToManage != null &&
+                              _invoiceToManage!.status == 'معلقة' &&
+                              !_invoiceToManage!.isLocked) {
+                            autoSaveSuspendedInvoice();
+                          }
                         },
                   initialValue: _discount > 0 ? _discount.toString() : '',
                   enabled: !isViewOnly,
@@ -1963,13 +2125,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         icon: const Icon(Icons.save),
                         label: const Text('حفظ الفاتورة'),
                       ),
-                      ElevatedButton.icon(
-                        onPressed: _suspendInvoice,
-                        icon: const Icon(Icons.pause),
-                        label: const Text('تعليق الفاتورة'),
-                      ),
+                      if (!(_invoiceToManage != null &&
+                          _invoiceToManage!.status == 'معلقة'))
+                        ElevatedButton.icon(
+                          onPressed: _suspendInvoice,
+                          icon: const Icon(Icons.pause),
+                          label: const Text('تعليق الفاتورة'),
+                        ),
                     ],
                   ),
+                // إظهار قسم الراجع بعد الحفظ مباشرة
                 if (_invoiceToManage != null &&
                     _invoiceToManage!.status == 'محفوظة') ...[
                   if (!_invoiceToManage!.isLocked) ...[
@@ -1994,7 +2159,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     ),
                   ] else ...[
                     SizedBox(height: 24),
-                    Text('الراجع: ${_invoiceToManage!.returnAmount} دينار',
+                    Text('الراجع: [${_invoiceToManage!.returnAmount}] دينار',
                         style: TextStyle(
                             fontWeight: FontWeight.bold, color: Colors.red)),
                     SizedBox(height: 8),
