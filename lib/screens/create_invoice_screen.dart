@@ -549,6 +549,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           });
           invoice = savedInvoice;
         }
+        // إضافة أصناف الفاتورة الجديدة
+        for (var item in _invoiceItems) {
+          item.invoiceId = invoiceId;
+          await _db.insertInvoiceItem(item);
+        }
         print(
             'Inserted new invoice. Invoice ID: $invoiceId, Status: ${invoice.status}');
       }
