@@ -62,7 +62,7 @@ class DatabaseService {
     }
     return await openDatabase(
       newPath,
-      version: 17, // Incrementing the database version to remove serial_number
+      version: 18, // رفع رقم النسخة لتفعيل الترقية
       onCreate: _createDatabase,
       onUpgrade: _onUpgrade,
     );
@@ -142,6 +142,8 @@ class DatabaseService {
         last_modified_at TEXT NOT NULL, --  يُخزن كـ ISO8601 String
         customer_id INTEGER, -- أضف حقل customer_id هنا
         status TEXT NOT NULL DEFAULT 'محفوظة',
+        return_amount REAL DEFAULT 0.0,
+        is_locked INTEGER DEFAULT 0,
         FOREIGN KEY (installer_name) REFERENCES installers (name) ON UPDATE CASCADE ON DELETE SET NULL, --  تحسين سلوك المفتاح الأجنبي
         FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE SET NULL -- أضف المفتاح الأجنبي لـ customer_id
       )
@@ -268,6 +270,22 @@ class DatabaseService {
         }
       } catch (e) {
         print('DEBUG DB Error: Failed to drop serial_number column: $e');
+      }
+    }
+    if (oldVersion < 18) {
+      try {
+        await db.execute(
+            'ALTER TABLE invoices ADD COLUMN return_amount REAL DEFAULT 0.0;');
+      } catch (e) {
+        print(
+            "DEBUG DB Error: Failed to add column 'return_amount' to invoices table or it already exists: $e");
+      }
+      try {
+        await db.execute(
+            'ALTER TABLE invoices ADD COLUMN is_locked INTEGER DEFAULT 0;');
+      } catch (e) {
+        print(
+            "DEBUG DB Error: Failed to add column 'is_locked' to invoices table or it already exists: $e");
       }
     }
   }
@@ -1099,6 +1117,44 @@ class DatabaseService {
       return result.first['maxId'] as int;
     }
     return 0;
+  }
+
+  Future<int> updateInstaller(Installer installer) async {
+    final db = await database;
+    return await db.update(
+      'installers',
+      installer.toMap(),
+      where: 'id = ?',
+      whereArgs: [installer.id],
+    );
+  }
+
+  /// دالة لإعادة حساب وتحديث إجمالي المبلغ المفوتر لكل المؤسسين من الفواتير
+  Future<void> recalculateAllInstallersBilledAmount() async {
+    final db = await database;
+    // جلب جميع المؤسسين
+    final installersMaps = await db.query('installers');
+    for (final installerMap in installersMaps) {
+      final installer = Installer.fromMap(installerMap);
+      // جلب جميع الفواتير المرتبطة بهذا المؤسس
+      final invoicesMaps = await db.query(
+        'invoices',
+        where: 'installer_name = ?',
+        whereArgs: [installer.name],
+      );
+      double total = 0.0;
+      for (final invoiceMap in invoicesMaps) {
+        final invoice = Invoice.fromMap(invoiceMap);
+        // إذا كانت الفاتورة مقفلة (راجع محفوظ)، اطرح قيمة الراجع
+        if (invoice.isLocked) {
+          total += (invoice.totalAmount - invoice.returnAmount);
+        } else {
+          total += invoice.totalAmount;
+        }
+      }
+      final updatedInstaller = installer.copyWith(totalBilledAmount: total);
+      await updateInstaller(updatedInstaller);
+    }
   }
 } // نهاية كلاس DatabaseService
 

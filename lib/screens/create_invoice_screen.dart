@@ -80,6 +80,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   bool _savedOrSuspended = false;
   Timer? _debounceTimer;
 
+  // أضف متغير تحكم لحقل الراجع
+  final TextEditingController _returnAmountController = TextEditingController();
+
   @override
   void initState() {
     super.initState();
@@ -115,6 +118,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           _invoiceToManage!.amountPaidOnInvoice.toString();
       _discount = _invoiceToManage!.discount;
       _discountController.text = _discount.toStringAsFixed(2);
+      _returnAmountController.text = _invoiceToManage!.returnAmount.toString();
 
       _loadInvoiceItems();
     } else {
@@ -256,6 +260,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     _quantityController.dispose();
     _paidAmountController.dispose();
     _discountController.dispose();
+    _returnAmountController.dispose();
     super.dispose();
   }
 
@@ -490,6 +495,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         lastModifiedAt: DateTime.now(),
         customerId: customer?.id,
         status: 'محفوظة',
+        returnAmount: _returnAmountController.text.isNotEmpty
+            ? double.parse(_returnAmountController.text)
+            : 0.0,
+        isLocked: false,
       );
 
       if (invoice.installerName != null && invoice.installerName!.isNotEmpty) {
@@ -711,8 +720,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       invoiceId = (await _db.getLastInvoiceId()) + 1;
     }
 
-    // تقسيم العناصر إلى صفحات (33 عنصر لكل صفحة)
-    const itemsPerPage = 33;
+    // تقسيم العناصر إلى صفحات
+    // const itemsPerPage = 33; // القيمة القديمة
+    const itemsPerPage =
+        22; //  <<<<----- تغيير هنا: القيمة الجديدة (جرب 25 أو 28)
     final totalPages = (_invoiceItems.length / itemsPerPage).ceil();
 
     for (var pageIndex = 0; pageIndex < totalPages; pageIndex++) {
@@ -742,10 +753,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       children: [
                         // اسم المتجر
                         pw.Center(
-                          child: pw.Text('النــاصر',
+                          child: pw.Text('الــــــنــــــاصــــــر',
                               style: pw.TextStyle(
                                   font: font,
-                                  fontSize: 24,
+                                  fontSize: 28, //  <<<<----- تغيير هنا
                                   fontWeight: pw.FontWeight.bold,
                                   color: PdfColors.black)),
                         ),
@@ -754,14 +765,20 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         pw.Center(
                           child: pw.Text(
                               'لتجارة المواد الصحية والعدد اليدوية والانشائية',
-                              style: pw.TextStyle(font: font, fontSize: 16)),
+                              // style: pw.TextStyle(font: font, fontSize: 16)), // قديم
+                              style: pw.TextStyle(
+                                  font: font,
+                                  fontSize: 17)), //  <<<<----- تغيير هنا
                         ),
 
                         // العنوان مع رقم الفاتورة
                         pw.Center(
                           child: pw.Text(
                             'الموصل - الجدعة - مقابل البرج',
-                            style: pw.TextStyle(font: font, fontSize: 12),
+                            // style: pw.TextStyle(font: font, fontSize: 12), // قديم
+                            style: pw.TextStyle(
+                                font: font,
+                                fontSize: 13), //  <<<<----- تغيير هنا
                           ),
                         ),
 
@@ -770,7 +787,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           child: pw.Text('0771 406 3064  |  0770 305 1353',
                               style: pw.TextStyle(
                                   font: font,
-                                  fontSize: 12,
+                                  // fontSize: 12, // قديم
+                                  fontSize: 13, //  <<<<----- تغيير هنا
                                   color: PdfColors.black)),
                         ),
                       ],
@@ -783,31 +801,49 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                     children: [
                       pw.Text('العميل: ${_customerNameController.text}',
-                          style: pw.TextStyle(font: font, fontSize: 9)),
+                          // style: pw.TextStyle(font: font, fontSize: 9)), // قديم
+                          style: pw.TextStyle(
+                              font: font,
+                              fontSize: 12)), //  <<<<----- تغيير هنا
                       pw.Text(
                           'العنوان: ${_customerAddressController.text.isNotEmpty ? _customerAddressController.text : ' ______'}',
-                          style: pw.TextStyle(font: font, fontSize: 8)),
+                          // style: pw.TextStyle(font: font, fontSize: 8)), // قديم
+                          style: pw.TextStyle(
+                              font: font,
+                              fontSize: 11)), //  <<<<----- تغيير هنا
                       pw.Text('رقم الفاتورة: ${invoiceId}',
-                          style: pw.TextStyle(font: font, fontSize: 9)),
+                          // style: pw.TextStyle(font: font, fontSize: 9)), // قديم
+                          style: pw.TextStyle(
+                              font: font,
+                              fontSize: 10)), //  <<<<----- تغيير هنا
                       pw.Text(
                           'الوقت: ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}',
-                          style: pw.TextStyle(font: font, fontSize: 8)),
+                          // style: pw.TextStyle(font: font, fontSize: 8)), // قديم
+                          style: pw.TextStyle(
+                              font: font,
+                              fontSize: 11)), //  <<<<----- تغيير هنا
                       pw.Text(
                         'التاريخ: ${_selectedDate.year}/${_selectedDate.month}/${_selectedDate.day}',
-                        style: pw.TextStyle(font: font, fontSize: 9),
+                        // style: pw.TextStyle(font: font, fontSize: 9), // قديم
+                        style: pw.TextStyle(
+                            font: font, fontSize: 11), //  <<<<----- تغيير هنا
                       ),
                     ],
                   ),
                   pw.Divider(height: 6, thickness: 0.5),
 
                   // --- جدول العناصر ---
+                  // ! ملاحظة هامة: يجب تعديل حجم الخط داخل دوال _headerCell و _dataCell أيضاً
+                  // بما أن تعريف هذه الدوال غير موجود هنا، افترض أنك ستعدل حجم الخط فيها
+                  // مثلاً، إذا كان _headerCell يستخدم fontSize: 8، غيره إلى fontSize: 9 أو 10
+                  // وكذلك بالنسبة لـ _dataCell
                   pw.Table(
                     border: pw.TableBorder.all(width: 0.5),
                     columnWidths: {
-                      0: const pw.FixedColumnWidth(60), // المبلغ
-                      1: const pw.FixedColumnWidth(40), // العدد
-                      2: const pw.FixedColumnWidth(50), // السعر
-                      3: const pw.FlexColumnWidth(1.5), // اسم المنتج
+                      0: const pw.FixedColumnWidth(90), // المبلغ
+                      1: const pw.FixedColumnWidth(50), // العدد
+                      2: const pw.FixedColumnWidth(65), // السعر
+                      3: const pw.FlexColumnWidth(1.4), // اسم المنتج
                       4: const pw.FixedColumnWidth(20), // ت (التسلسل)
                     },
                     defaultVerticalAlignment:
@@ -817,11 +853,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       pw.TableRow(
                         decoration: const pw.BoxDecoration(),
                         children: [
-                          _headerCell('المبلغ', font),
-                          _headerCell('العدد', font),
-                          _headerCell('السعر', font),
-                          _headerCell('اسم المنتج', font),
-                          _headerCell('ت', font),
+                          _headerCell(
+                              'المبلغ', font), // عدّل fontSize داخل هذه الدالة
+                          _headerCell(
+                              'العدد', font), // عدّل fontSize داخل هذه الدالة
+                          _headerCell(
+                              'السعر', font), // عدّل fontSize داخل هذه الدالة
+                          _headerCell('اسم المنتج',
+                              font), // عدّل fontSize داخل هذه الدالة
+                          _headerCell(
+                              'ت', font), // عدّل fontSize داخل هذه الدالة
                         ],
                       ),
 
@@ -836,19 +877,24 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         return pw.TableRow(
                           children: [
                             _dataCell(
+                                // عدّل fontSize داخل هذه الدالة
                                 formatNumber(item.itemTotal,
                                     forceDecimal: true),
                                 font),
                             _dataCell(
+                                // عدّل fontSize داخل هذه الدالة
                                 '${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}',
                                 font),
                             _dataCell(
+                                // عدّل fontSize داخل هذه الدالة
                                 formatNumber(item.appliedPrice,
                                     forceDecimal: true),
                                 font),
-                            _dataCell(item.productName, font,
+                            _dataCell(item.productName,
+                                font, // عدّل fontSize داخل هذه الدالة
                                 align: pw.TextAlign.right),
-                            _dataCell('${index + 1}', font),
+                            _dataCell('${index + 1}',
+                                font), // عدّل fontSize داخل هذه الدالة
                           ],
                         );
                       }).toList(),
@@ -865,15 +911,23 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         pw.Row(
                           mainAxisAlignment: pw.MainAxisAlignment.end,
                           children: [
-                            _summaryRow('الاجمالي قبل الخصم:',
-                                currentTotalAmount, font),
+                            // ! ملاحظة: يجب تعديل حجم الخط داخل دالة _summaryRow أيضاً
+                            _summaryRow(
+                                'الاجمالي قبل الخصم:', // عدّل fontSize داخل هذه الدالة
+                                currentTotalAmount,
+                                font),
                             pw.SizedBox(width: 10),
-                            _summaryRow('الخصم:', discount, font),
+                            _summaryRow('الخصم:', discount,
+                                font), // عدّل fontSize داخل هذه الدالة
                             pw.SizedBox(width: 10),
                             _summaryRow(
-                                'الاجمالي بعد الخصم:', afterDiscount, font),
+                                // عدّل fontSize داخل هذه الدالة
+                                'الاجمالي بعد الخصم:',
+                                afterDiscount,
+                                font),
                             pw.SizedBox(width: 10),
-                            _summaryRow('المبلغ المدفوع:', paid, font),
+                            _summaryRow('المبلغ المدفوع:', paid,
+                                font), // عدّل fontSize داخل هذه الدالة
                           ],
                         ),
                         pw.SizedBox(height: 6),
@@ -882,11 +936,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         pw.Row(
                           mainAxisAlignment: pw.MainAxisAlignment.end,
                           children: [
-                            _summaryRow('المبلغ المتبقي:', remaining, font),
+                            _summaryRow('المبلغ المتبقي:', remaining,
+                                font), // عدّل fontSize داخل هذه الدالة
                             pw.SizedBox(width: 10),
-                            _summaryRow('الدين السابق:', previousDebt, font),
+                            _summaryRow('الدين السابق:', previousDebt,
+                                font), // عدّل fontSize داخل هذه الدالة
                             pw.SizedBox(width: 10),
-                            _summaryRow('الدين الحالي:', currentDebt, font),
+                            _summaryRow('الدين الحالي:', currentDebt,
+                                font), // عدّل fontSize داخل هذه الدالة
                           ],
                         ),
                       ],
@@ -896,14 +953,21 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     // --- التذييل ---
                     pw.Center(
                         child: pw.Text('شكراً لتعاملكم معنا',
-                            style: pw.TextStyle(font: font, fontSize: 9))),
+                            // style: pw.TextStyle(font: font, fontSize: 9))), // قديم
+                            style: pw.TextStyle(
+                                font: font,
+                                fontSize: 11))), //  <<<<----- تغيير هنا
                   ],
 
                   // --- ترقيم الصفحات ---
-                  pw.Center(
+                  pw.Align(
+                    // استخدم Align لتوسيط أفضل إذا كان هناك عناصر أخرى في نفس المستوى
+                    alignment: pw.Alignment.center,
                     child: pw.Text(
                       'صفحة ${pageIndex + 1} من $totalPages',
-                      style: pw.TextStyle(font: font, fontSize: 8),
+                      // style: pw.TextStyle(font: font, fontSize: 8), // قديم
+                      style: pw.TextStyle(
+                          font: font, fontSize: 11), //  <<<<----- تغيير هنا
                     ),
                   ),
                 ],
@@ -922,7 +986,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       padding: const pw.EdgeInsets.all(2),
       child: pw.Text(text,
           style: pw.TextStyle(
-              font: font, fontSize: 8, fontWeight: pw.FontWeight.bold),
+              font: font, fontSize: 13, fontWeight: pw.FontWeight.bold),
           textAlign: pw.TextAlign.center),
     );
   }
@@ -933,7 +997,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     return pw.Padding(
       padding: const pw.EdgeInsets.all(2),
       child: pw.Text(text,
-          style: pw.TextStyle(font: font, fontSize: 8), textAlign: align),
+          style: pw.TextStyle(font: font, fontSize: 13), textAlign: align),
     );
   }
 
@@ -944,11 +1008,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       child: pw.Row(
         mainAxisSize: pw.MainAxisSize.min,
         children: [
-          pw.Text(label, style: pw.TextStyle(font: font, fontSize: 8)),
+          pw.Text(label, style: pw.TextStyle(font: font, fontSize: 11)),
           pw.SizedBox(width: 5),
           pw.Text(formatNumber(value, forceDecimal: true),
               style: pw.TextStyle(
-                  font: font, fontSize: 8, fontWeight: pw.FontWeight.bold)),
+                  font: font, fontSize: 13, fontWeight: pw.FontWeight.bold)),
         ],
       ),
     );
@@ -1106,6 +1170,33 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     );
   }
 
+  Future<void> _saveReturnAmount(double value) async {
+    if (_invoiceToManage == null || _invoiceToManage!.isLocked) return;
+    // تحديث الفاتورة في قاعدة البيانات
+    final updatedInvoice =
+        _invoiceToManage!.copyWith(returnAmount: value, isLocked: true);
+    await _db.updateInvoice(updatedInvoice);
+    // إذا كان هناك مؤسس، اطرح الراجع من رصيده
+    if (updatedInvoice.installerName != null &&
+        updatedInvoice.installerName!.isNotEmpty) {
+      final installer =
+          await _db.getInstallerByName(updatedInvoice.installerName!);
+      if (installer != null) {
+        final newTotal = (installer.totalBilledAmount - value.toDouble())
+            .clamp(0.0, double.infinity);
+        final updatedInstaller =
+            installer.copyWith(totalBilledAmount: newTotal as double?);
+        await _db.updateInstaller(updatedInstaller);
+      }
+    }
+    setState(() {
+      _invoiceToManage = updatedInvoice;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('تم حفظ الراجع وقفل الفاتورة!')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     print(
@@ -1164,18 +1255,57 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   children: [
                     Expanded(
                       flex: 3,
-                      child: TextFormField(
-                        controller: _customerNameController,
-                        decoration:
-                            const InputDecoration(labelText: 'اسم العميل'),
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'الرجاء إدخال اسم العميل';
-                          }
-                          return null;
-                        },
-                        enabled: !isViewOnly,
-                      ),
+                      child: widget.isViewOnly
+                          ? TextFormField(
+                              controller: _customerNameController,
+                              decoration: const InputDecoration(
+                                  labelText: 'اسم العميل'),
+                              validator: (value) {
+                                if (value == null || value.isEmpty) {
+                                  return 'الرجاء إدخال اسم العميل';
+                                }
+                                return null;
+                              },
+                              enabled: false,
+                            )
+                          : Autocomplete<String>(
+                              optionsBuilder:
+                                  (TextEditingValue textEditingValue) async {
+                                if (textEditingValue.text == '') {
+                                  return const Iterable<String>.empty();
+                                }
+                                final customers = await _db
+                                    .searchCustomers(textEditingValue.text);
+                                return customers.map((c) => c.name).toSet();
+                              },
+                              fieldViewBuilder: (context, controller, focusNode,
+                                  onFieldSubmitted) {
+                                controller.text = _customerNameController.text;
+                                controller.selection =
+                                    TextSelection.fromPosition(TextPosition(
+                                        offset: controller.text.length));
+                                return TextFormField(
+                                  controller: controller,
+                                  focusNode: focusNode,
+                                  decoration: const InputDecoration(
+                                      labelText: 'اسم العميل'),
+                                  validator: (value) {
+                                    if (value == null || value.isEmpty) {
+                                      return 'الرجاء إدخال اسم العميل';
+                                    }
+                                    return null;
+                                  },
+                                  onChanged: (val) {
+                                    _customerNameController.text = val;
+                                    _onFieldChanged();
+                                  },
+                                );
+                              },
+                              onSelected: (String selection) {
+                                _customerNameController.text = selection;
+                                _onFieldChanged();
+                              },
+                            ),
                     ),
                     const SizedBox(width: 8.0),
                     Expanded(
@@ -1840,6 +1970,38 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       ),
                     ],
                   ),
+                if (_invoiceToManage != null &&
+                    _invoiceToManage!.status == 'محفوظة') ...[
+                  if (!_invoiceToManage!.isLocked) ...[
+                    SizedBox(height: 24),
+                    TextFormField(
+                      controller: _returnAmountController,
+                      decoration:
+                          InputDecoration(labelText: 'الراجع (مبلغ الإرجاع)'),
+                      keyboardType: TextInputType.number,
+                      enabled: !_invoiceToManage!.isLocked,
+                    ),
+                    SizedBox(height: 12),
+                    ElevatedButton.icon(
+                      icon: Icon(Icons.assignment_turned_in),
+                      label: Text('حفظ الراجع'),
+                      onPressed: () async {
+                        final value =
+                            double.tryParse(_returnAmountController.text) ??
+                                0.0;
+                        await _saveReturnAmount(value);
+                      },
+                    ),
+                  ] else ...[
+                    SizedBox(height: 24),
+                    Text('الراجع: ${_invoiceToManage!.returnAmount} دينار',
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold, color: Colors.red)),
+                    SizedBox(height: 8),
+                    Text('الفاتورة مقفلة ولا يمكن تعديلها بعد حفظ الراجع.',
+                        style: TextStyle(color: Colors.grey)),
+                  ],
+                ],
               ],
             ),
           ),

@@ -15,6 +15,8 @@ class Invoice {
   DateTime lastModifiedAt;
   int? customerId;
   String status;
+  double returnAmount;
+  bool isLocked;
 
   Invoice({
     this.id,
@@ -31,6 +33,8 @@ class Invoice {
     required this.lastModifiedAt,
     this.customerId,
     this.status = 'محفوظة',
+    this.returnAmount = 0.0,
+    this.isLocked = false,
   });
 
   // Convert an Invoice object into a Map object
@@ -50,6 +54,8 @@ class Invoice {
       'last_modified_at': lastModifiedAt.toIso8601String(),
       'customer_id': customerId,
       'status': status,
+      'return_amount': returnAmount,
+      'is_locked': isLocked ? 1 : 0,
     };
   }
 
@@ -70,6 +76,8 @@ class Invoice {
       lastModifiedAt: DateTime.parse(map['last_modified_at']),
       customerId: map['customer_id'] as int?,
       status: map['status'] as String? ?? 'محفوظة',
+      returnAmount: map['return_amount'] as double? ?? 0.0,
+      isLocked: (map['is_locked'] ?? 0) == 1,
     );
   }
 
@@ -89,6 +97,8 @@ class Invoice {
     DateTime? lastModifiedAt,
     int? customerId,
     String? status,
+    double? returnAmount,
+    bool? isLocked,
   }) {
     return Invoice(
       id: id ?? this.id,
@@ -105,6 +115,8 @@ class Invoice {
       lastModifiedAt: lastModifiedAt ?? this.lastModifiedAt,
       customerId: customerId ?? this.customerId,
       status: status ?? this.status,
+      returnAmount: returnAmount ?? this.returnAmount,
+      isLocked: isLocked ?? this.isLocked,
     );
   }
 }
