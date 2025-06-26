@@ -703,8 +703,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   Future<pw.Document> _generateInvoicePdf() async {
     final pdf = pw.Document();
+    // تحميل الخط الافتراضي للنصوص الأخرى
     final font =
         pw.Font.ttf(await rootBundle.load('assets/fonts/Amiri-Regular.ttf'));
+    // تحميل خط Old Antic Outline Shaded لكلمة الناصر فقط
+    final alnaserFont = pw.Font.ttf(
+        await rootBundle.load('assets/fonts/Old Antic Outline Shaded.ttf'));
 
     final currentTotalAmount =
         _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
@@ -773,7 +777,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     // تقسيم العناصر إلى صفحات
     // const itemsPerPage = 33; // القيمة القديمة
     const itemsPerPage =
-        22; //  <<<<----- تغيير هنا: القيمة الجديدة (جرب 25 أو 28)
+        20; //  <<<<----- تغيير هنا: القيمة الجديدة (جرب 25 أو 28)
     final totalPages = (_invoiceItems.length / itemsPerPage).ceil();
 
     for (var pageIndex = 0; pageIndex < totalPages; pageIndex++) {
@@ -786,7 +790,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       pdf.addPage(
         pw.Page(
           pageFormat: PdfPageFormat.a4,
-          margin: pw.EdgeInsets.only(top: 10, bottom: 10, left: 10, right: 10),
+          margin: pw.EdgeInsets.only(top: 0, bottom: 2, left: 10, right: 10),
           build: (pw.Context context) {
             return pw.Directionality(
               textDirection: pw.TextDirection.rtl,
@@ -795,20 +799,24 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 children: [
                   // --- الرأس الجديد مع معلومات المتجر ---
                   pw.Container(
-                    padding: const pw.EdgeInsets.all(8),
+                    padding: const pw.EdgeInsets.all(2),
                     decoration: pw.BoxDecoration(
-                      borderRadius: pw.BorderRadius.circular(4),
+                      borderRadius: pw.BorderRadius.circular(1),
                     ),
                     child: pw.Column(
                       children: [
-                        // اسم المتجر
+                        pw.SizedBox(height: 0), // رفع كلمة الناصر للأعلى قليلاً
                         pw.Center(
-                          child: pw.Text('الــــــنــــــاصــــــر',
-                              style: pw.TextStyle(
-                                  font: font,
-                                  fontSize: 28, //  <<<<----- تغيير هنا
-                                  fontWeight: pw.FontWeight.bold,
-                                  color: PdfColors.black)),
+                          child: pw.Text(
+                            'الــــــنــــــاصــــــر',
+                            style: pw.TextStyle(
+                              font: alnaserFont,
+                              fontSize: 45, // زيادة كبيرة في الحجم
+                              height: 0, // تقليل الارتفاع الرأسي
+                              fontWeight: pw.FontWeight.bold,
+                              color: PdfColors.black,
+                            ),
+                          ),
                         ),
 
                         // نوع النشاط
@@ -844,7 +852,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       ],
                     ),
                   ),
-                  pw.SizedBox(height: 8),
+                  pw.SizedBox(height: 4),
 
                   // --- معلومات العميل والتاريخ ---
                   pw.Row(
@@ -880,7 +888,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       ),
                     ],
                   ),
-                  pw.Divider(height: 6, thickness: 0.5),
+                  pw.Divider(height: 5, thickness: 0.5),
 
                   // --- جدول العناصر ---
                   // ! ملاحظة هامة: يجب تعديل حجم الخط داخل دوال _headerCell و _dataCell أيضاً
@@ -888,13 +896,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   // مثلاً، إذا كان _headerCell يستخدم fontSize: 8، غيره إلى fontSize: 9 أو 10
                   // وكذلك بالنسبة لـ _dataCell
                   pw.Table(
-                    border: pw.TableBorder.all(width: 0.5),
+                    border: pw.TableBorder.all(width: 0.4),
                     columnWidths: {
                       0: const pw.FixedColumnWidth(90), // المبلغ
-                      1: const pw.FixedColumnWidth(50), // العدد
-                      2: const pw.FixedColumnWidth(65), // السعر
-                      3: const pw.FlexColumnWidth(1.4), // اسم المنتج
-                      4: const pw.FixedColumnWidth(20), // ت (التسلسل)
+                      1: const pw.FixedColumnWidth(65), // السعر
+                      2: const pw.FixedColumnWidth(50), // العدد
+                      3: const pw.FlexColumnWidth(1.4), // التفاصيل
+                      4: const pw.FixedColumnWidth(
+                          20), // ت (التسلسل) - أقصى اليسار
                     },
                     defaultVerticalAlignment:
                         pw.TableCellVerticalAlignment.middle,
@@ -903,16 +912,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       pw.TableRow(
                         decoration: const pw.BoxDecoration(),
                         children: [
-                          _headerCell(
-                              'المبلغ', font), // عدّل fontSize داخل هذه الدالة
-                          _headerCell(
-                              'العدد', font), // عدّل fontSize داخل هذه الدالة
-                          _headerCell(
-                              'السعر', font), // عدّل fontSize داخل هذه الدالة
-                          _headerCell('اسم المنتج',
-                              font), // عدّل fontSize داخل هذه الدالة
-                          _headerCell(
-                              'ت', font), // عدّل fontSize داخل هذه الدالة
+                          _headerCell('المبلغ', font),
+                          _headerCell('السعر', font),
+                          _headerCell('العدد', font),
+                          _headerCell('التفاصيل ', font),
+                          _headerCell('ت', font), // التسلسل أقصى اليسار
                         ],
                       ),
 
@@ -927,30 +931,26 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         return pw.TableRow(
                           children: [
                             _dataCell(
-                                // عدّل fontSize داخل هذه الدالة
                                 formatNumber(item.itemTotal,
                                     forceDecimal: true),
-                                font),
+                                font), // المبلغ
                             _dataCell(
-                                // عدّل fontSize داخل هذه الدالة
-                                '${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}',
-                                font),
-                            _dataCell(
-                                // عدّل fontSize داخل هذه الدالة
                                 formatNumber(item.appliedPrice,
                                     forceDecimal: true),
-                                font),
-                            _dataCell(item.productName,
-                                font, // عدّل fontSize داخل هذه الدالة
-                                align: pw.TextAlign.right),
-                            _dataCell('${index + 1}',
-                                font), // عدّل fontSize داخل هذه الدالة
+                                font), // السعر
+                            _dataCell(
+                                '${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}',
+                                font), // العدد
+                            _dataCell(item.productName, font,
+                                align: pw.TextAlign.right), // التفاصيل
+                            _dataCell(
+                                '${index + 1}', font), // التسلسل أقصى اليسار
                           ],
                         );
                       }).toList(),
                     ],
                   ),
-                  pw.Divider(height: 6, thickness: 0.5),
+                  pw.Divider(height: 4, thickness: 0.4),
 
                   // --- المجاميع في الصفحة الأخيرة فقط ---
                   if (pageIndex == totalPages - 1) ...[
@@ -1047,7 +1047,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     return pw.Padding(
       padding: const pw.EdgeInsets.all(2),
       child: pw.Text(text,
-          style: pw.TextStyle(font: font, fontSize: 13), textAlign: align),
+          style: pw.TextStyle(
+              font: font, fontSize: 13, fontWeight: pw.FontWeight.bold),
+          textAlign: align),
     );
   }
 

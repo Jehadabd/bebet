@@ -54,6 +54,9 @@ flutter:
   assets:
     - assets/fonts/Amiri-Regular.ttf
     - .env
+    - assets/fonts/andlso.ttf
+    - assets/fonts/Old Antic Outline Shaded.ttf
+
 
 flutter_dotenv:
   file: .env
