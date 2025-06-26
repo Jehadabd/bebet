@@ -48,6 +48,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   final _installerNameController = TextEditingController();
   final _productSearchController = TextEditingController();
   final _quantityController = TextEditingController();
+  final FocusNode _quantityFocusNode = FocusNode(); // FocusNode لحقل الكمية
   final _itemsController = TextEditingController();
   final _totalAmountController = TextEditingController();
   double? _selectedPriceLevel;
@@ -84,6 +85,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   final TextEditingController _returnAmountController = TextEditingController();
 
   bool _isViewOnly = false;
+
+  final FocusNode _searchFocusNode = FocusNode(); // FocusNode جديد لحقل البحث
+  bool _suppressSearch = false; // لمنع البحث التلقائي عند اختيار منتج
+  bool _quantityAutofocus = false; // للتحكم في autofocus لحقل الكمية
 
   @override
   void initState() {
@@ -128,6 +133,24 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       print('CreateInvoiceScreen: Init with new invoice');
       _totalAmountController.text = '0';
     }
+    // تهيئة FocusNode
+    _quantityFocusNode.addListener(_onFieldChanged);
+    // إضافة مستمع لحقل البحث
+    _productSearchController.addListener(() {
+      if (_suppressSearch) {
+        _suppressSearch = false;
+        return;
+      }
+      if (_productSearchController.text.isNotEmpty) {
+        _searchProducts(_productSearchController.text);
+      }
+      if (_productSearchController.text.isEmpty) {
+        setState(() {
+          _searchResults = [];
+          _selectedProduct = null;
+        });
+      }
+    });
   }
 
   // تحميل البيانات المحفوظة تلقائياً
@@ -262,6 +285,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     _paidAmountController.dispose();
     _discountController.dispose();
     _returnAmountController.dispose();
+    _quantityFocusNode.dispose(); // تنظيف FocusNode
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
@@ -1525,6 +1550,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   const SizedBox(height: 8.0),
                   TextFormField(
                     controller: _productSearchController,
+                    focusNode: _searchFocusNode, // ربط FocusNode
                     decoration: InputDecoration(
                       labelText: 'البحث عن صنف',
                       suffixIcon: IconButton(
@@ -1561,13 +1587,40 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             onTap: isViewOnly
                                 ? null
                                 : () {
+                                    // الخطوة 1: إخفاء لوحة المفاتيح وإلغاء التركيز من حقل البحث
+                                    FocusScope.of(context).unfocus();
+
+                                    // الخطوة 2: تحديث حالة الواجهة بالمنتج المختار
                                     setState(() {
                                       _selectedProduct = product;
+                                      _suppressSearch =
+                                          true; // منع البحث مرة أخرى
                                       _productSearchController.text =
                                           product.name;
-                                      _searchResults = [];
+                                      _searchResults = []; // إخفاء قائمة البحث
                                       _selectedPriceLevel =
                                           product.price1 ?? product.unitPrice;
+                                      _quantityAutofocus =
+                                          true; // تفعيل autofocus
+                                    });
+
+                                    // الخطوة 3: بعد إعادة بناء الواجهة، قم بنقل التركيز وتحديد النص
+                                    WidgetsBinding.instance
+                                        .addPostFrameCallback((_) {
+                                      // نقل التركيز إلى حقل الكمية
+                                      FocusScope.of(context)
+                                          .requestFocus(_quantityFocusNode);
+                                      // تحديد النص الموجود في حقل الكمية (إن وجد)
+                                      _quantityController.selection =
+                                          TextSelection(
+                                        baseOffset: 0,
+                                        extentOffset:
+                                            _quantityController.text.length,
+                                      );
+                                      // إلغاء autofocus بعد أول بناء
+                                      setState(() {
+                                        _quantityAutofocus = false;
+                                      });
                                     });
                                   },
                           );
@@ -1670,6 +1723,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           flex: 2,
                           child: TextFormField(
                             controller: _quantityController,
+                            focusNode: _quantityFocusNode, // ربط FocusNode
+                            autofocus: _quantityAutofocus, // ربط autofocus
                             decoration: InputDecoration(
                               labelText: _unitSelection == 1
                                   ? (_selectedProduct!.unit == 'piece'
