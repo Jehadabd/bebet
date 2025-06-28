@@ -1,4 +1,6 @@
 // screens/edit_products_screen.dart
+
+// screens/edit_products_screen.dart
 import 'package:flutter/material.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
@@ -133,6 +135,8 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
   late TextEditingController _price4Controller;
   late TextEditingController _price5Controller;
   late TextEditingController _costPriceController;
+  late TextEditingController _piecesPerUnitController;
+  late TextEditingController _lengthPerUnitController;
   String _selectedUnit = 'piece';
   bool _showCostPrice = false;
   final PasswordService _passwordService = PasswordService();
@@ -155,6 +159,10 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
         TextEditingController(text: widget.product.price5?.toString() ?? '');
     _costPriceController =
         TextEditingController(text: widget.product.costPrice?.toString() ?? '');
+    _piecesPerUnitController = TextEditingController(
+        text: widget.product.piecesPerUnit?.toString() ?? '');
+    _lengthPerUnitController = TextEditingController(
+        text: widget.product.lengthPerUnit?.toString() ?? '');
     _selectedUnit = widget.product.unit;
   }
 
@@ -168,6 +176,8 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     _price4Controller.dispose();
     _price5Controller.dispose();
     _costPriceController.dispose();
+    _piecesPerUnitController.dispose();
+    _lengthPerUnitController.dispose();
     super.dispose();
   }
 
@@ -204,10 +214,19 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     return result ?? false;
   }
 
+  String normalizeProductName(String name) {
+    return name.trim().replaceAll(RegExp(r'\s+'), ' ');
+  }
+
+  String normalizeProductNameForCompare(String name) {
+    return name.replaceAll(RegExp(r'\s+'), '');
+  }
+
   Future<void> _save() async {
     final db = DatabaseService();
+    final inputName = _nameController.text.trim();
     final updatedProduct = widget.product.copyWith(
-      name: _nameController.text.trim(),
+      name: inputName,
       unit: _selectedUnit,
       unitPrice: double.tryParse(_unitPriceController.text.trim()) ?? 0.0,
       price1: double.tryParse(_price1Controller.text.trim()) ?? 0.0,
@@ -226,8 +245,28 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
       costPrice: _showCostPrice && _costPriceController.text.trim().isNotEmpty
           ? double.tryParse(_costPriceController.text.trim())
           : widget.product.costPrice,
+      piecesPerUnit: _selectedUnit == 'piece' &&
+              _piecesPerUnitController.text.trim().isNotEmpty
+          ? int.tryParse(_piecesPerUnitController.text.trim())
+          : null,
+      lengthPerUnit: _selectedUnit == 'meter' &&
+              _lengthPerUnitController.text.trim().isNotEmpty
+          ? double.tryParse(_lengthPerUnitController.text.trim())
+          : null,
       lastModifiedAt: DateTime.now(),
     );
+    final allProducts = await db.getAllProducts();
+    final inputNameForCompare = normalizeProductNameForCompare(inputName);
+    final exists = allProducts.any((p) =>
+        normalizeProductNameForCompare(p.name) == inputNameForCompare &&
+        p.id != widget.product.id);
+    if (exists) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('يوجد منتج آخر بنفس الاسم (بغض النظر عن الفراغات)!')),
+      );
+      return;
+    }
     await db.updateProduct(updatedProduct);
     if (mounted) Navigator.pop(context, true);
   }
@@ -256,6 +295,23 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                 if (value != null) setState(() => _selectedUnit = value);
               },
             ),
+            const SizedBox(height: 16),
+            if (_selectedUnit == 'piece')
+              TextField(
+                controller: _piecesPerUnitController,
+                decoration: const InputDecoration(
+                    labelText: 'عدد القطع في الكرتون/الباكيت'),
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+              ),
+            if (_selectedUnit == 'meter')
+              TextField(
+                controller: _lengthPerUnitController,
+                decoration:
+                    const InputDecoration(labelText: 'عدد الأمتار في اللفة'),
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+              ),
             const SizedBox(height: 16),
             TextField(
               controller: _unitPriceController,

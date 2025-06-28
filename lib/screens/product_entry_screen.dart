@@ -1,3 +1,4 @@
+// screens/product_entry_screen.dart
 import 'package:flutter/material.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
@@ -40,23 +41,55 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
     super.dispose();
   }
 
+  String normalizeProductNameForCompare(String name) {
+    return name.replaceAll(RegExp(r'\s+'), '');
+  }
+
   Future<void> _saveProduct() async {
     if (_formKey.currentState!.validate()) {
+      final inputName = _nameController.text.trim();
       final newProduct = Product(
-        name: _nameController.text.trim(),
+        name: inputName,
         unit: _selectedUnit,
         unitPrice: double.tryParse(_unitPriceController.text.trim()) ?? 0.0,
         costPrice: double.tryParse(_costPriceController.text.trim()),
-        piecesPerUnit: _selectedUnit == 'piece' && _piecesPerUnitController.text.trim().isNotEmpty ? int.tryParse(_piecesPerUnitController.text.trim()) : null,
-        lengthPerUnit: _selectedUnit == 'meter' && _lengthPerUnitController.text.trim().isNotEmpty ? double.tryParse(_lengthPerUnitController.text.trim()) : null,
+        piecesPerUnit: _selectedUnit == 'piece' &&
+                _piecesPerUnitController.text.trim().isNotEmpty
+            ? int.tryParse(_piecesPerUnitController.text.trim())
+            : null,
+        lengthPerUnit: _selectedUnit == 'meter' &&
+                _lengthPerUnitController.text.trim().isNotEmpty
+            ? double.tryParse(_lengthPerUnitController.text.trim())
+            : null,
         price1: double.tryParse(_price1Controller.text.trim()) ?? 0.0,
-        price2: _price2Controller.text.trim().isNotEmpty ? double.tryParse(_price2Controller.text.trim()) : null,
-        price3: _price3Controller.text.trim().isNotEmpty ? double.tryParse(_price3Controller.text.trim()) : null,
-        price4: _price4Controller.text.trim().isNotEmpty ? double.tryParse(_price4Controller.text.trim()) : null,
-        price5: _price5Controller.text.trim().isNotEmpty ? double.tryParse(_price5Controller.text.trim()) : null,
+        price2: _price2Controller.text.trim().isNotEmpty
+            ? double.tryParse(_price2Controller.text.trim())
+            : null,
+        price3: _price3Controller.text.trim().isNotEmpty
+            ? double.tryParse(_price3Controller.text.trim())
+            : null,
+        price4: _price4Controller.text.trim().isNotEmpty
+            ? double.tryParse(_price4Controller.text.trim())
+            : null,
+        price5: _price5Controller.text.trim().isNotEmpty
+            ? double.tryParse(_price5Controller.text.trim())
+            : null,
         createdAt: DateTime.now(),
         lastModifiedAt: DateTime.now(),
       );
+      final allProducts = await _db.getAllProducts();
+      final inputNameForCompare = normalizeProductNameForCompare(inputName);
+      final exists = allProducts.any(
+          (p) => normalizeProductNameForCompare(p.name) == inputNameForCompare);
+      if (exists) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content:
+                  Text('يوجد منتج آخر بنفس الاسم (بغض النظر عن الفراغات)!'),
+              backgroundColor: Colors.red),
+        );
+        return;
+      }
       try {
         await _db.insertProduct(newProduct);
         ScaffoldMessenger.of(context).showSnackBar(
@@ -79,15 +112,13 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
           _selectedUnit = 'piece';
         });
       } catch (e) {
-        // نستخدم رسالة الخطأ المفهومة التي جاءت مع الاستثناء من DatabaseService
-        String errorMessage = 'فشل حفظ المنتج: ${e.toString()}'; // رسالة افتراضية
-         if (e is Exception) {
-           errorMessage = e.toString(); // نستخدم الرسالة التي قدمتها دالة _handleDatabaseError
-         }
-
+        String errorMessage = 'فشل حفظ المنتج: ${e.toString()}';
+        if (e is Exception) {
+          errorMessage = e.toString();
+        }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(errorMessage), // عرض الرسالة المفهومة
+            content: Text(errorMessage),
             backgroundColor: Colors.red,
           ),
         );
@@ -139,8 +170,10 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
               const SizedBox(height: 16.0),
               TextFormField(
                 controller: _costPriceController,
-                decoration: const InputDecoration(labelText: 'سعر التكلفة للوحدة'),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration:
+                    const InputDecoration(labelText: 'سعر التكلفة للوحدة'),
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
                     return null;
@@ -156,10 +189,14 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                 visible: _selectedUnit == 'piece',
                 child: TextFormField(
                   controller: _piecesPerUnitController,
-                  decoration: const InputDecoration(labelText: 'عدد القطع في الوحدة الأكبر (كرتون/باكيت)'),
+                  decoration: const InputDecoration(
+                      labelText: 'عدد القطع في الوحدة الأكبر (كرتون/باكيت)'),
                   keyboardType: TextInputType.number,
                   validator: (value) {
-                    if (_selectedUnit == 'piece' && value != null && value.isNotEmpty && int.tryParse(value) == null) {
+                    if (_selectedUnit == 'piece' &&
+                        value != null &&
+                        value.isNotEmpty &&
+                        int.tryParse(value) == null) {
                       return 'الرجاء إدخال عدد صحيح';
                     }
                     return null;
@@ -171,10 +208,15 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                 visible: _selectedUnit == 'meter',
                 child: TextFormField(
                   controller: _lengthPerUnitController,
-                  decoration: const InputDecoration(labelText: 'طول القطعة الكاملة (بالمتر)'),
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                      labelText: 'طول القطعة الكاملة (بالمتر)'),
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
                   validator: (value) {
-                    if (_selectedUnit == 'meter' && value != null && value.isNotEmpty && double.tryParse(value) == null) {
+                    if (_selectedUnit == 'meter' &&
+                        value != null &&
+                        value.isNotEmpty &&
+                        double.tryParse(value) == null) {
                       return 'الرجاء إدخال رقم صحيح';
                     }
                     return null;
@@ -185,7 +227,8 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
               TextFormField(
                 controller: _price1Controller,
                 decoration: const InputDecoration(labelText: 'سعر 1 (المفرد)'),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
                     return 'الرجاء إدخال السعر الأول';
@@ -200,9 +243,12 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
               TextFormField(
                 controller: _price2Controller,
                 decoration: const InputDecoration(labelText: 'سعر 2 (اختياري)'),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
                 validator: (value) {
-                  if (value != null && value.isNotEmpty && double.tryParse(value) == null) {
+                  if (value != null &&
+                      value.isNotEmpty &&
+                      double.tryParse(value) == null) {
                     return 'الرجاء إدخال رقم صحيح';
                   }
                   return null;
@@ -212,9 +258,12 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
               TextFormField(
                 controller: _price3Controller,
                 decoration: const InputDecoration(labelText: 'سعر 3 (اختياري)'),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
                 validator: (value) {
-                  if (value != null && value.isNotEmpty && double.tryParse(value) == null) {
+                  if (value != null &&
+                      value.isNotEmpty &&
+                      double.tryParse(value) == null) {
                     return 'الرجاء إدخال رقم صحيح';
                   }
                   return null;
@@ -224,9 +273,12 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
               TextFormField(
                 controller: _price4Controller,
                 decoration: const InputDecoration(labelText: 'سعر 4 (اختياري)'),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
                 validator: (value) {
-                  if (value != null && value.isNotEmpty && double.tryParse(value) == null) {
+                  if (value != null &&
+                      value.isNotEmpty &&
+                      double.tryParse(value) == null) {
                     return 'الرجاء إدخال رقم صحيح';
                   }
                   return null;
@@ -236,9 +288,12 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
               TextFormField(
                 controller: _price5Controller,
                 decoration: const InputDecoration(labelText: 'سعر 5 (اختياري)'),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
                 validator: (value) {
-                  if (value != null && value.isNotEmpty && double.tryParse(value) == null) {
+                  if (value != null &&
+                      value.isNotEmpty &&
+                      double.tryParse(value) == null) {
                     return 'الرجاء إدخال رقم صحيح';
                   }
                   return null;
@@ -255,4 +310,4 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
       ),
     );
   }
-} 
+}

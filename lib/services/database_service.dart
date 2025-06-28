@@ -62,7 +62,7 @@ class DatabaseService {
     }
     return await openDatabase(
       newPath,
-      version: 18, // رفع رقم النسخة لتفعيل الترقية
+      version: 19, // رفع رقم النسخة لتفعيل الترقية الجديدة
       onCreate: _createDatabase,
       onUpgrade: _onUpgrade,
     );
@@ -162,6 +162,7 @@ class DatabaseService {
         item_total REAL NOT NULL, -- الإجمالي لهذا البند (applied_price * quantity)
         cost_price REAL, --  التكلفة الإجمالية لهذا البند (cost_per_unit_of_product * total_quantity_of_this_item)
         sale_type TEXT,
+        units_in_large_unit REAL,
         FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
       )
     ''');
@@ -286,6 +287,17 @@ class DatabaseService {
       } catch (e) {
         print(
             "DEBUG DB Error: Failed to add column 'is_locked' to invoices table or it already exists: $e");
+      }
+    }
+    if (oldVersion < 19) {
+      try {
+        await db.execute(
+            'ALTER TABLE invoice_items ADD COLUMN units_in_large_unit REAL;');
+        print(
+            'DEBUG DB: units_in_large_unit column added successfully to invoice_items table.');
+      } catch (e) {
+        print(
+            "DEBUG DB Error: Failed to add column 'units_in_large_unit' to invoice_items table or it already exists: $e");
       }
     }
   }

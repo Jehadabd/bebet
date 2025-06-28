@@ -1,10 +1,12 @@
+// models/invoice_item.dart
 class InvoiceItem {
   int? id;
   int invoiceId; // Foreign key to Invoice
   String productName;
   String unit;
   double unitPrice; // This is the *selling* unit price from the product
-  double? costPrice; // Added: The cost price of the item at the time of sale (made nullable)
+  double?
+      costPrice; // Added: The cost price of the item at the time of sale (made nullable)
   // الكميات - حقل واحد فقط يُستخدم في كل مرة
   double? quantityIndividual; // Quantity in pieces or meters
   double? quantityLargeUnit; // Quantity in cartons/packets or full meters
@@ -12,6 +14,8 @@ class InvoiceItem {
   double appliedPrice; // The price used for calculation (price1, price2, etc.)
   double itemTotal;
   String? saleType; // نوع البيع بالحرف العربي: ق/ك/م/ل
+  double?
+      unitsInLargeUnit; // عدد القطع في الكرتون أو الأمتار في اللفة (للوحدة الكبيرة)
 
   InvoiceItem({
     this.id,
@@ -25,6 +29,7 @@ class InvoiceItem {
     required this.itemTotal,
     this.costPrice, // Made optional
     this.saleType, // أضف هذا
+    this.unitsInLargeUnit,
   });
 
   // Convert an InvoiceItem object into a Map object
@@ -41,6 +46,7 @@ class InvoiceItem {
       'applied_price': appliedPrice,
       'item_total': itemTotal,
       'sale_type': saleType, // أضف هذا
+      'units_in_large_unit': unitsInLargeUnit,
     };
   }
 
@@ -52,12 +58,14 @@ class InvoiceItem {
       productName: map['product_name'] ?? '',
       unit: map['unit'] ?? '',
       unitPrice: map['unit_price'] as double,
-      costPrice: map['cost_price'] as double?, // Retrieve as double?, defaults to null if not present
+      costPrice: map['cost_price']
+          as double?, // Retrieve as double?, defaults to null if not present
       quantityIndividual: map['quantity_individual'] as double?,
       quantityLargeUnit: map['quantity_large_unit'] as double?,
       appliedPrice: map['applied_price'] ?? 0.0,
       itemTotal: map['item_total'] ?? 0.0,
       saleType: map['sale_type'] as String?, // أضف هذا
+      unitsInLargeUnit: map['units_in_large_unit'] as double?,
     );
   }
 
@@ -73,6 +81,7 @@ class InvoiceItem {
     double? appliedPrice,
     double? itemTotal,
     String? saleType, // أضف هذا
+    double? unitsInLargeUnit,
   }) {
     return InvoiceItem(
       id: id ?? this.id,
@@ -86,6 +95,7 @@ class InvoiceItem {
       appliedPrice: appliedPrice ?? this.appliedPrice,
       itemTotal: itemTotal ?? this.itemTotal,
       saleType: saleType ?? this.saleType, // أضف هذا
+      unitsInLargeUnit: unitsInLargeUnit ?? this.unitsInLargeUnit,
     );
   }
-} 
+}

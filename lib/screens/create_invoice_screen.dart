@@ -189,6 +189,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           appliedPrice: item['appliedPrice'],
           itemTotal: item['itemTotal'],
           saleType: item['saleType'],
+          unitsInLargeUnit: item['unitsInLargeUnit'],
         );
       }).toList();
 
@@ -224,6 +225,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 'appliedPrice': item.appliedPrice,
                 'itemTotal': item.itemTotal,
                 'saleType': item.saleType,
+                'unitsInLargeUnit': item.unitsInLargeUnit,
               })
           .toList(),
     };
@@ -392,6 +394,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         appliedPrice: appliedPricePerUnitSold,
         itemTotal: quantitySold * appliedPricePerUnitSold,
         saleType: saleType,
+        unitsInLargeUnit: _useLargeUnit
+            ? (unitsInLargeUnit != null ? unitsInLargeUnit.toDouble() : null)
+            : null,
       );
       setState(() {
         // البحث عن صنف مطابق (نفس الاسم، نفس نوع البيع، نفس الوحدة)
@@ -408,6 +413,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 (newItem.quantityLargeUnit ?? 0),
             itemTotal: (existingItem.itemTotal) + (newItem.itemTotal),
             costPrice: (existingItem.costPrice ?? 0) + (newItem.costPrice ?? 0),
+            unitsInLargeUnit: newItem.unitsInLargeUnit,
           );
         } else {
           _invoiceItems.add(newItem);
@@ -417,6 +423,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         _selectedProduct = null;
         _selectedPriceLevel = null;
         _useLargeUnit = false;
+        _unitSelection = 0;
         _searchResults = [];
         _guardDiscount();
         _updatePaidAmountIfCash();
@@ -883,7 +890,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   pw.Row(
                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                     children: [
-                      pw.Text('العميل: ${_customerNameController.text}',
+                      pw.Text('السد: ${_customerNameController.text}',
                           // style: pw.TextStyle(font: font, fontSize: 9)), // قديم
                           style: pw.TextStyle(
                               font: font,
@@ -900,7 +907,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                               font: font,
                               fontSize: 10)), //  <<<<----- تغيير هنا
                       pw.Text(
-                          'الوقت: ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}',
+                          'الوقت: ${_invoiceToManage?.createdAt?.hour.toString().padLeft(2, '0') ?? DateTime.now().hour.toString().padLeft(2, '0')}:${_invoiceToManage?.createdAt?.minute.toString().padLeft(2, '0') ?? DateTime.now().minute.toString().padLeft(2, '0')}',
                           // style: pw.TextStyle(font: font, fontSize: 8)), // قديم
                           style: pw.TextStyle(
                               font: font,
@@ -921,55 +928,57 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   // مثلاً، إذا كان _headerCell يستخدم fontSize: 8، غيره إلى fontSize: 9 أو 10
                   // وكذلك بالنسبة لـ _dataCell
                   pw.Table(
-                    border: pw.TableBorder.all(width: 0.4),
+                    border: pw.TableBorder.all(width: 0.2),
                     columnWidths: {
                       0: const pw.FixedColumnWidth(90), // المبلغ
                       1: const pw.FixedColumnWidth(65), // السعر
-                      2: const pw.FixedColumnWidth(50), // العدد
-                      3: const pw.FlexColumnWidth(1.4), // التفاصيل
-                      4: const pw.FixedColumnWidth(
-                          20), // ت (التسلسل) - أقصى اليسار
+                      2: const pw.FixedColumnWidth(70), // عدد الوحدات (جديد)
+                      3: const pw.FixedColumnWidth(50), // العدد
+                      4: const pw.FlexColumnWidth(1), // التفاصيل (قلل المساحة)
+                      5: const pw.FixedColumnWidth(20), // ت
                     },
                     defaultVerticalAlignment:
                         pw.TableCellVerticalAlignment.middle,
                     children: [
-                      // رأس الجدول
                       pw.TableRow(
                         decoration: const pw.BoxDecoration(),
                         children: [
                           _headerCell('المبلغ', font),
                           _headerCell('السعر', font),
+                          _headerCell('عدد الوحدات', font), // جديد
                           _headerCell('العدد', font),
                           _headerCell('التفاصيل ', font),
-                          _headerCell('ت', font), // التسلسل أقصى اليسار
+                          _headerCell('ت', font),
                         ],
                       ),
-
-                      // عناصر الجدول للصفحة الحالية
                       ...pageItems.asMap().entries.map((entry) {
                         final index = entry.key + (pageIndex * itemsPerPage);
                         final item = entry.value;
                         final quantity = (item.quantityIndividual ??
                             item.quantityLargeUnit ??
                             0.0);
-
                         return pw.TableRow(
                           children: [
                             _dataCell(
                                 formatNumber(item.itemTotal,
                                     forceDecimal: true),
-                                font), // المبلغ
+                                font),
                             _dataCell(
                                 formatNumber(item.appliedPrice,
                                     forceDecimal: true),
-                                font), // السعر
+                                font),
+                            // عدد الوحدات (جديد)
+                            ((item.saleType == 'ك' || item.saleType == 'ل') &&
+                                    item.unitsInLargeUnit != null)
+                                ? _dataCell(
+                                    item.unitsInLargeUnit!.toString(), font)
+                                : _dataCell('', font),
                             _dataCell(
                                 '${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}',
-                                font), // العدد
+                                font),
                             _dataCell(item.productName, font,
-                                align: pw.TextAlign.right), // التفاصيل
-                            _dataCell(
-                                '${index + 1}', font), // التسلسل أقصى اليسار
+                                align: pw.TextAlign.right),
+                            _dataCell('${index + 1}', font),
                           ],
                         );
                       }).toList(),
@@ -986,52 +995,38 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         pw.Row(
                           mainAxisAlignment: pw.MainAxisAlignment.end,
                           children: [
-                            // ! ملاحظة: يجب تعديل حجم الخط داخل دالة _summaryRow أيضاً
-                            _summaryRow(
-                                'الاجمالي قبل الخصم:', // عدّل fontSize داخل هذه الدالة
-                                currentTotalAmount,
-                                font),
+                            _summaryRow('الاجمالي قبل الخصم:',
+                                currentTotalAmount, font),
                             pw.SizedBox(width: 10),
-                            _summaryRow('الخصم:', discount,
-                                font), // عدّل fontSize داخل هذه الدالة
+                            _summaryRow('الخصم:', discount, font),
                             pw.SizedBox(width: 10),
                             _summaryRow(
-                                // عدّل fontSize داخل هذه الدالة
-                                'الاجمالي بعد الخصم:',
-                                afterDiscount,
-                                font),
+                                'الاجمالي بعد الخصم:', afterDiscount, font),
                             pw.SizedBox(width: 10),
-                            _summaryRow('المبلغ المدفوع:', paid,
-                                font), // عدّل fontSize داخل هذه الدالة
+                            _summaryRow('المبلغ المدفوع:', paid, font),
                           ],
                         ),
                         pw.SizedBox(height: 6),
-
-                        // الصف السفلي
-                        pw.Row(
-                          mainAxisAlignment: pw.MainAxisAlignment.end,
-                          children: [
-                            _summaryRow('المبلغ المتبقي:', remaining,
-                                font), // عدّل fontSize داخل هذه الدالة
-                            pw.SizedBox(width: 10),
-                            _summaryRow('الدين السابق:', previousDebt,
-                                font), // عدّل fontSize داخل هذه الدالة
-                            pw.SizedBox(width: 10),
-                            _summaryRow('الدين الحالي:', currentDebt,
-                                font), // عدّل fontSize داخل هذه الدالة
-                          ],
-                        ),
+                        // الصف السفلي (الدين السابق/الحالي) فقط إذا لم تكن الفاتورة محفوظة
+                        if (!(_invoiceToManage != null &&
+                            _invoiceToManage!.status == 'محفوظة'))
+                          pw.Row(
+                            mainAxisAlignment: pw.MainAxisAlignment.end,
+                            children: [
+                              _summaryRow('المبلغ المتبقي:', remaining, font),
+                              pw.SizedBox(width: 10),
+                              _summaryRow('الدين السابق:', previousDebt, font),
+                              pw.SizedBox(width: 10),
+                              _summaryRow('الدين الحالي:', currentDebt, font),
+                            ],
+                          ),
                       ],
                     ),
                     pw.SizedBox(height: 6),
-
                     // --- التذييل ---
                     pw.Center(
                         child: pw.Text('شكراً لتعاملكم معنا',
-                            // style: pw.TextStyle(font: font, fontSize: 9))), // قديم
-                            style: pw.TextStyle(
-                                font: font,
-                                fontSize: 11))), //  <<<<----- تغيير هنا
+                            style: pw.TextStyle(font: font, fontSize: 11))),
                   ],
 
                   // --- ترقيم الصفحات ---
@@ -1565,6 +1560,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                   _quantityController.clear();
                                   _selectedPriceLevel = null;
                                   _useLargeUnit = false;
+                                  _unitSelection = 0;
                                 });
                               },
                       ),
@@ -1924,7 +1920,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 textAlign: TextAlign.center,
                                 style: TextStyle(fontWeight: FontWeight.bold))),
                         Expanded(
-                            flex: 4,
+                            flex: 3,
                             child: Text('التفاصيل',
                                 textAlign: TextAlign.center,
                                 style: TextStyle(fontWeight: FontWeight.bold))),
@@ -1943,6 +1939,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             child: Text('السعر',
                                 textAlign: TextAlign.center,
                                 style: TextStyle(fontWeight: FontWeight.bold))),
+                        Expanded(
+                            flex: 1,
+                            child: Text('عدد الوحدات',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(fontWeight: FontWeight.bold))),
                         if (!isViewOnly) SizedBox(width: 40),
                       ],
                     ),
@@ -1959,7 +1960,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     if (item.unit == 'piece') {
                       displayUnit = item.quantityIndividual != null ? 'ق' : 'ك';
                     } else if (item.unit == 'meter') {
-                      displayUnit = 'م';
+                      displayUnit = item.quantityIndividual != null ? 'م' : 'ل';
                     } else {
                       displayUnit = '';
                     }
@@ -1990,7 +1991,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                         forceDecimal: true),
                                     textAlign: TextAlign.center)),
                             Expanded(
-                                flex: 4,
+                                flex: 3,
                                 child: Text(item.productName,
                                     textAlign: TextAlign.center)),
                             Expanded(
@@ -2009,6 +2010,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                     formatNumber(item.appliedPrice,
                                         forceDecimal: true),
                                     textAlign: TextAlign.center)),
+                            Expanded(
+                                flex: 1,
+                                child: (item.saleType == 'ك' ||
+                                            item.saleType == 'ل') &&
+                                        item.unitsInLargeUnit != null
+                                    ? Text(item.unitsInLargeUnit!.toString(),
+                                        textAlign: TextAlign.center)
+                                    : const SizedBox()),
                             if (!isViewOnly)
                               IconButton(
                                 icon: const Icon(Icons.delete,
