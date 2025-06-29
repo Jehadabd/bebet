@@ -457,20 +457,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     try {
       Customer? customer;
       if (_customerNameController.text.trim().isNotEmpty) {
-        final customers = await _db.getAllCustomers();
-        try {
-          customer = customers.firstWhere(
-            (c) =>
-                c.name.trim() == _customerNameController.text.trim() &&
-                (c.phone == null ||
-                    c.phone!.isEmpty ||
-                    _customerPhoneController.text.trim().isEmpty ||
-                    c.phone == _customerPhoneController.text.trim()),
-          );
-        } catch (e) {
-          customer = null;
-        }
-
+        // التطبيع: إزالة المسافات من الاسم والبحث عبر الدالة الجديدة
+        customer = await _db.findCustomerByNormalizedName(
+          _customerNameController.text.trim(),
+          phone: _customerPhoneController.text.trim().isEmpty
+              ? null
+              : _customerPhoneController.text.trim(),
+        );
         if (customer == null) {
           customer = Customer(
             id: null,
@@ -642,7 +635,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       }
       return updatedInvoice;
     } catch (e) {
-      String errorMessage = 'حدث خطأ عند حفظ الفاتورة: [${e.toString()}';
+      String errorMessage = 'حدث خطأ عند حفظ الفاتورة: ￼[${e.toString()}';
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

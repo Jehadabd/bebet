@@ -208,16 +208,10 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
       final transactions =
           await db.getCustomerTransactions(widget.customer.id!);
 
-      // جلب جميع الفواتير للعميل
-      final invoices = await db.getAllInvoices();
-      final customerInvoices = invoices
-          .where((invoice) => invoice.customerId == widget.customer.id)
-          .toList();
-
-      // دمج المعاملات والفواتير وترتيبها حسب التاريخ
+      // دمج المعاملات وترتيبها حسب التاريخ
       final allTransactions = <AccountStatementItem>[];
 
-      // إضافة المعاملات اليدوية
+      // إضافة المعاملات من قاعدة البيانات فقط
       for (var transaction in transactions) {
         if (transaction.transactionDate != null) {
           allTransactions.add(AccountStatementItem(
@@ -230,52 +224,51 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         }
       }
 
-      // إضافة الفواتير
-      for (var invoice in customerInvoices) {
-        if (invoice.invoiceDate != null) {
-          // البحث عن المعاملة المرتبطة بالفاتورة
-          final relatedTransaction = transactions.firstWhere(
-            (t) => t.invoiceId == invoice.id && t.amountChanged > 0,
-            orElse: () => DebtTransaction(
-              id: null,
-              customerId: widget.customer.id!,
-              amountChanged:
-                  invoice.paymentType == 'دين' ? invoice.totalAmount : 0,
-              transactionDate: invoice.invoiceDate!,
-              newBalanceAfterTransaction: 0,
-              transactionNote: 'فاتورة رقم ${invoice.id}',
-              transactionType: 'invoice_debt',
-              createdAt: invoice.createdAt,
-            ),
-          );
-
-          allTransactions.add(AccountStatementItem(
-            date: invoice.invoiceDate!,
-            description: 'فاتورة رقم: ${invoice.id}',
-            amount: invoice.paymentType == 'دين' ? invoice.totalAmount : 0,
-            type: 'invoice',
-            invoice: invoice,
-            transaction: relatedTransaction,
-          ));
-        }
-      }
-
       // ترتيب المعاملات حسب التاريخ
       allTransactions.sort((a, b) => a.date.compareTo(b.date));
 
-      // حساب الأرصدة
+      // إبقاء فقط آخر 15 معاملة مالية
+      final last15Transactions = allTransactions.length > 15
+          ? allTransactions.sublist(allTransactions.length - 15)
+          : allTransactions;
+
+      // حساب الأرصدة بشكل صحيح
       double currentBalance = 0.0;
-      for (var item in allTransactions) {
+
+      // إذا كان لدينا معاملات، نحسب الرصيد قبل أول معاملة في القائمة المعروضة
+      if (last15Transactions.isNotEmpty) {
+        // حساب الرصيد قبل أول معاملة في القائمة المعروضة
+        final firstTransactionDate = last15Transactions.first.date;
+
+        for (var transaction in transactions) {
+          if (transaction.transactionDate!.isBefore(firstTransactionDate)) {
+            currentBalance += transaction.amountChanged;
+          }
+        }
+      }
+
+      // حساب الأرصدة للقائمة المعروضة
+      for (var item in last15Transactions) {
         item.balanceBefore = currentBalance;
         currentBalance += item.amount;
         item.balanceAfter = currentBalance;
       }
 
-      // إنشاء PDF
+      // التأكد من أن الرصيد النهائي يتطابق مع الرصيد الفعلي للعميل
+      final actualCustomerBalance = widget.customer.currentTotalDebt;
+      if ((currentBalance - actualCustomerBalance).abs() > 0.01) {
+        // إذا كان هناك اختلاف كبير، نستخدم الرصيد الفعلي للعميل
+        print(
+            'Warning: Calculated balance ($currentBalance) differs from actual customer balance ($actualCustomerBalance)');
+        currentBalance = actualCustomerBalance;
+      }
+
+      // إنشاء PDF مع الرصيد النهائي المحسوب
       final pdfService = PdfService();
       final pdf = await pdfService.generateAccountStatement(
         customer: widget.customer,
-        transactions: allTransactions,
+        transactions: last15Transactions,
+        finalBalance: currentBalance, // تمرير الرصيد النهائي المحسوب
       );
 
       // إغلاق مؤشر التحميل
@@ -336,8 +329,10 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
   }
 
   String _getTransactionDescription(DebtTransaction transaction) {
+    final hasInvoice = transaction.invoiceId != null;
+    final invoicePart = hasInvoice ? ' (فاتورة #${transaction.invoiceId})' : '';
     if (transaction.transactionType == 'invoice_debt') {
-      return 'فاتورة رقم: ${transaction.invoiceId}';
+      return 'معاملة مالية - إضافة دين$invoicePart';
     } else if (transaction.transactionType == 'manual_payment') {
       return 'دفعة نقدية (تسديد)';
     } else if (transaction.transactionType == 'manual_debt') {
@@ -346,6 +341,9 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
       return 'تعديل فاتورة رقم: ${transaction.invoiceId}';
     } else if (transaction.transactionType == 'Invoice_Debt_Reversal') {
       return 'حذف فاتورة رقم: ${transaction.invoiceId}';
+    } else if (hasInvoice) {
+      // أي معاملة أخرى مرتبطة بفاتورة
+      return 'معاملة مالية$invoicePart';
     } else {
       return transaction.transactionNote ?? 'معاملة مالية';
     }

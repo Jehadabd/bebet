@@ -242,7 +242,7 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
               const SizedBox(height: 16.0),
               TextFormField(
                 controller: _price2Controller,
-                decoration: const InputDecoration(labelText: 'سعر 2 (اختياري)'),
+                decoration: const InputDecoration(labelText: 'سعر 2 (الجملة)'),
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
                 validator: (value) {
@@ -257,7 +257,8 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
               const SizedBox(height: 16.0),
               TextFormField(
                 controller: _price3Controller,
-                decoration: const InputDecoration(labelText: 'سعر 3 (اختياري)'),
+                decoration:
+                    const InputDecoration(labelText: 'سعر 3 (الجملة بيوت)'),
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
                 validator: (value) {
@@ -272,7 +273,7 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
               const SizedBox(height: 16.0),
               TextFormField(
                 controller: _price4Controller,
-                decoration: const InputDecoration(labelText: 'سعر 4 (اختياري)'),
+                decoration: const InputDecoration(labelText: 'سعر 4 (بيوت)'),
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
                 validator: (value) {
@@ -287,7 +288,7 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
               const SizedBox(height: 16.0),
               TextFormField(
                 controller: _price5Controller,
-                decoration: const InputDecoration(labelText: 'سعر 5 (اختياري)'),
+                decoration: const InputDecoration(labelText: 'سعر 5 (أخرى)'),
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
                 validator: (value) {

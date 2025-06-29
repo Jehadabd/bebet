@@ -1168,6 +1168,29 @@ class DatabaseService {
       await updateInstaller(updatedInstaller);
     }
   }
+
+  // البحث عن عميل بالاسم بعد التطبيع (إزالة المسافات)
+  Future<Customer?> findCustomerByNormalizedName(String name,
+      {String? phone}) async {
+    final db = await database;
+    final normalizedName = name.replaceAll(' ', '');
+    List<Map<String, dynamic>> maps;
+    if (phone != null && phone.trim().isNotEmpty) {
+      maps = await db.rawQuery(
+        "SELECT * FROM customers WHERE REPLACE(name, ' ', '') = ? AND phone = ? LIMIT 1",
+        [normalizedName, phone.trim()],
+      );
+    } else {
+      maps = await db.rawQuery(
+        "SELECT * FROM customers WHERE REPLACE(name, ' ', '') = ? LIMIT 1",
+        [normalizedName],
+      );
+    }
+    if (maps.isNotEmpty) {
+      return Customer.fromMap(maps.first);
+    }
+    return null;
+  }
 } // نهاية كلاس DatabaseService
 
 //  MonthlySalesSummary class

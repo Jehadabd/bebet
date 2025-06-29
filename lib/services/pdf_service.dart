@@ -168,6 +168,7 @@ class PdfService {
   Future<Uint8List> generateAccountStatement({
     required Customer customer,
     required List<AccountStatementItem> transactions,
+    double? finalBalance,
   }) async {
     // تحميل الخط العربي Amiri
     final fontData = await rootBundle.load('assets/fonts/Amiri-Regular.ttf');
@@ -185,12 +186,18 @@ class PdfService {
     }
 
     String formatDescription(AccountStatementItem item) {
+      final hasInvoice = item.transaction?.invoiceId != null;
+      final invoicePart =
+          hasInvoice ? ' (فاتورة #${item.transaction?.invoiceId})' : '';
       if (item.type == 'transaction' && item.transaction != null) {
         if (item.transaction!.amountChanged > 0) {
-          return 'معاملة مالية - إضافة دين';
+          return 'معاملة مالية - إضافة دين$invoicePart';
         } else if (item.transaction!.amountChanged < 0) {
-          return 'معاملة مالية - تسديد دين';
+          return 'معاملة مالية - تسديد دين$invoicePart';
         }
+      }
+      if (hasInvoice) {
+        return 'معاملة مالية$invoicePart';
       }
       return item.description.replaceAll('(', '').replaceAll(')', '');
     }
@@ -350,12 +357,12 @@ class PdfService {
                           ),
                         ),
                         pw.Text(
-                          '${formatNumber(customer.currentTotalDebt)} دينار',
+                          '${formatNumber(finalBalance ?? 0)} دينار',
                           style: pw.TextStyle(
                             font: ttf,
                             fontSize: 18,
                             fontWeight: pw.FontWeight.bold,
-                            color: customer.currentTotalDebt > 0
+                            color: finalBalance != null && finalBalance > 0
                                 ? PdfColors.red
                                 : PdfColors.green,
                           ),
