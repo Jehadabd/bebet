@@ -1,5 +1,5 @@
 // screens/main_screen.dart
-                    import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:intl/intl.dart'; // Import for date formatting
 import 'package:share_plus/share_plus.dart';
 import '../services/database_service.dart';
@@ -19,7 +19,8 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> {
   String _currentMonthYear = '';
-  final PasswordService _passwordService = PasswordService(); // Initialize PasswordService
+  final PasswordService _passwordService =
+      PasswordService(); // Initialize PasswordService
 
   @override
   void initState() {
@@ -29,7 +30,8 @@ class _MainScreenState extends State<MainScreen> {
 
   void _updateCurrentMonthYear() {
     final now = DateTime.now();
-    _currentMonthYear = DateFormat.yMMMM('ar').format(now); // Format current month and year in Arabic
+    _currentMonthYear = DateFormat.yMMMM('ar')
+        .format(now); // Format current month and year in Arabic
   }
 
   Future<bool> _showPasswordDialog() async {
@@ -53,7 +55,8 @@ class _MainScreenState extends State<MainScreen> {
           ),
           ElevatedButton(
             onPressed: () async {
-              final bool isCorrect = await _passwordService.verifyPassword(passwordController.text);
+              final bool isCorrect = await _passwordService
+                  .verifyPassword(passwordController.text);
               Navigator.of(context).pop(isCorrect);
             },
             child: const Text('تأكيد'),
@@ -77,7 +80,8 @@ class _MainScreenState extends State<MainScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
               child: ElevatedButton(
                 onPressed: () {
                   // Navigate to Debt Register Screen
@@ -85,36 +89,43 @@ class _MainScreenState extends State<MainScreen> {
                   //   context,
                   //   MaterialPageRoute(builder: (context) => const HomeScreen()),
                   // );
-                  Navigator.pushNamed(context, '/debt_register'); // Use named route
+                  Navigator.pushNamed(
+                      context, '/debt_register'); // Use named route
                 },
                 child: const Text('سجل الديون'),
               ),
             ),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
               child: ElevatedButton(
                 onPressed: () {
                   // Navigate to Product Entry Screen
-                  Navigator.pushNamed(context, '/product_entry'); // Use named route
+                  Navigator.pushNamed(
+                      context, '/product_entry'); // Use named route
                 },
                 child: const Text('إدخال البضاعة'),
               ),
             ),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
               child: ElevatedButton(
                 onPressed: () {
                   // Navigate to Create Invoice Screen
-                  Navigator.pushNamed(context, '/create_invoice'); // Use named route
+                  Navigator.pushNamed(
+                      context, '/create_invoice'); // Use named route
                 },
                 child: const Text('إنشاء قائمة'),
               ),
             ),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
               child: ElevatedButton(
                 onPressed: () async {
-                  final TextEditingController _monthsController = TextEditingController();
+                  final TextEditingController _monthsController =
+                      TextEditingController();
                   int? selectedMonths;
                   await showDialog<int>(
                     context: context,
@@ -136,12 +147,15 @@ class _MainScreenState extends State<MainScreen> {
                           ),
                           ElevatedButton(
                             onPressed: () {
-                              final input = int.tryParse(_monthsController.text);
+                              final input =
+                                  int.tryParse(_monthsController.text);
                               if (input != null && input > 0) {
                                 Navigator.of(context).pop(input);
                               } else {
                                 ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('الرجاء إدخال عدد صحيح موجب للأشهر.')),
+                                  const SnackBar(
+                                      content: Text(
+                                          'الرجاء إدخال عدد صحيح موجب للأشهر.')),
                                 );
                               }
                             },
@@ -156,13 +170,16 @@ class _MainScreenState extends State<MainScreen> {
 
                   if (selectedMonths != null) {
                     final db = DatabaseService();
-                    final lateCustomers = await db.getLateCustomers(selectedMonths!);
+                    final lateCustomers =
+                        await db.getLateCustomers(selectedMonths!);
                     showDialog(
                       context: context,
                       builder: (context) => AlertDialog(
-                        title: Text('المتأخرون عن السداد ($selectedMonths شهر)'),
+                        title:
+                            Text('المتأخرون عن السداد ($selectedMonths شهر)'),
                         content: lateCustomers.isEmpty
-                            ? const Text('لا يوجد عملاء متأخرون عن السداد لهذا المدى.')
+                            ? const Text(
+                                'لا يوجد عملاء متأخرون عن السداد لهذا المدى.')
                             : SizedBox(
                                 width: double.maxFinite,
                                 child: ListView.builder(
@@ -172,8 +189,10 @@ class _MainScreenState extends State<MainScreen> {
                                     final c = lateCustomers[i];
                                     return ListTile(
                                       title: Text(c.name),
-                                      subtitle: Text('العنوان: ${c.address ?? "-"}'),
-                                      trailing: Text('الدين: ${c.currentTotalDebt.toStringAsFixed(2)}'),
+                                      subtitle:
+                                          Text('العنوان: ${c.address ?? "-"}'),
+                                      trailing: Text(
+                                          'الدين: ${c.currentTotalDebt.toStringAsFixed(2)}'),
                                     );
                                   },
                                 ),
@@ -192,7 +211,8 @@ class _MainScreenState extends State<MainScreen> {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
               child: ElevatedButton(
                 onPressed: () async {
                   final db = DatabaseService();
@@ -201,10 +221,12 @@ class _MainScreenState extends State<MainScreen> {
                   final months = <String>{};
                   for (final c in allCustomers) {
                     final dt = c.lastModifiedAt;
-                    final key = '${dt.year}-${dt.month.toString().padLeft(2, '0')}';
+                    final key =
+                        '${dt.year}-${dt.month.toString().padLeft(2, '0')}';
                     months.add(key);
                   }
-                  final sortedMonths = months.toList()..sort((a, b) => b.compareTo(a));
+                  final sortedMonths = months.toList()
+                    ..sort((a, b) => b.compareTo(a));
                   String? selectedMonth;
                   await showDialog(
                     context: context,
@@ -235,16 +257,20 @@ class _MainScreenState extends State<MainScreen> {
                     final parts = selectedMonth!.split('-');
                     final year = int.parse(parts[0]);
                     final month = int.parse(parts[1]);
-                    final customers = await db.getCustomersForMonth(year, month);
-                    final file = await db.generateMonthlyDebtsPdf(customers, year, month);
-                    await Share.shareFiles([file.path], text: 'سجل ديون شهر $selectedMonth');
+                    final customers =
+                        await db.getCustomersForMonth(year, month);
+                    final file = await db.generateMonthlyDebtsPdf(
+                        customers, year, month);
+                    await Share.shareFiles([file.path],
+                        text: 'سجل ديون شهر $selectedMonth');
                     // بعد المشاركة، اعرض Dialog فيه زر لفتح المجلد
                     final dirPath = file.parent.path;
                     showDialog(
                       context: context,
                       builder: (context) => AlertDialog(
                         title: const Text('مشاركة الملف'),
-                        content: const Text('إذا لم يظهر التطبيق المطلوب، يمكنك فتح المجلد وإرسال الملف يدويًا عبر أي تطبيق (بلوتوث، تيليجرام، واتساب...)'),
+                        content: const Text(
+                            'إذا لم يظهر التطبيق المطلوب، يمكنك فتح المجلد وإرسال الملف يدويًا عبر أي تطبيق (بلوتوث، تيليجرام، واتساب...)'),
                         actions: [
                           TextButton(
                             onPressed: () async {
@@ -266,7 +292,8 @@ class _MainScreenState extends State<MainScreen> {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
               child: ElevatedButton(
                 onPressed: () {
                   Navigator.pushNamed(context, '/printer_settings');
@@ -362,4 +389,4 @@ class _MainScreenState extends State<MainScreen> {
       ),
     );
   }
-} 
+}

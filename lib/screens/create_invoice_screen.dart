@@ -90,6 +90,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   bool _suppressSearch = false; // لمنع البحث التلقائي عند اختيار منتج
   bool _quantityAutofocus = false; // للتحكم في autofocus لحقل الكمية
 
+  // أضف متغير نوع القائمة (يظل موجوداً ولكن بدون واجهة مستخدم لتغييره)
+  String _selectedListType = 'مفرد';
+  final List<String> _listTypes = ['مفرد', 'جملة', 'جملة بيوت', 'بيوت', 'أخرى'];
+
   @override
   void initState() {
     super.initState();
@@ -353,6 +357,35 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     if (_formKey.currentState!.validate() &&
         _selectedProduct != null &&
         _selectedPriceLevel != null) {
+      // تحقق من توفر السعر المناسب
+      if (_selectedPriceLevel == null || _selectedPriceLevel == 0) {
+        String priceName = '';
+        switch (_selectedListType) {
+          case 'مفرد':
+            priceName = 'سعر المفرد';
+            break;
+          case 'جملة':
+            priceName = 'سعر الجملة';
+            break;
+          case 'جملة بيوت':
+            priceName = 'سعر الجملة بيوت';
+            break;
+          case 'بيوت':
+            priceName = 'سعر البيوت';
+            break;
+          case 'أخرى':
+            priceName = 'سعر أخرى';
+            break;
+          default:
+            priceName = 'السعر';
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text(
+                  'المنتج لا يحتوي على $priceName لهذا النوع من القائمة!')),
+        );
+        return;
+      }
       final quantity = double.tryParse(_quantityController.text.trim()) ?? 0.0;
       if (quantity <= 0) return;
       double itemCostPriceForInvoiceItem;
@@ -883,7 +916,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   pw.Row(
                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                     children: [
-                      pw.Text('السد: ${_customerNameController.text}',
+                      pw.Text('السيد: ${_customerNameController.text}',
                           // style: pw.TextStyle(font: font, fontSize: 9)), // قديم
                           style: pw.TextStyle(
                               font: font,
@@ -1536,6 +1569,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 8.0),
+                  // --- START: THE SECTION YOU WANTED TO REMOVE ---
+                  // The Dropdown and SizedBox have been removed from here.
+                  // --- END: THE SECTION YOU WANTED TO REMOVE ---
                   TextFormField(
                     controller: _productSearchController,
                     focusNode: _searchFocusNode, // ربط FocusNode
@@ -1576,37 +1612,67 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             onTap: isViewOnly
                                 ? null
                                 : () {
-                                    // الخطوة 1: إخفاء لوحة المفاتيح وإلغاء التركيز من حقل البحث
                                     FocusScope.of(context).unfocus();
-
-                                    // الخطوة 2: تحديث حالة الواجهة بالمنتج المختار
-                                    setState(() {
-                                      _selectedProduct = product;
-                                      _suppressSearch =
-                                          true; // منع البحث مرة أخرى
-                                      _productSearchController.text =
-                                          product.name;
-                                      _searchResults = []; // إخفاء قائمة البحث
-                                      _selectedPriceLevel =
-                                          product.price1 ?? product.unitPrice;
-                                      _quantityAutofocus =
-                                          true; // تفعيل autofocus
-                                    });
-
-                                    // الخطوة 3: بعد إعادة بناء الواجهة، قم بنقل التركيز وتحديد النص
+                                    double? newPriceLevel;
+                                    switch (_selectedListType) {
+                                      case 'مفرد':
+                                        newPriceLevel = product.price1;
+                                        break;
+                                      case 'جملة':
+                                        newPriceLevel = product.price2;
+                                        break;
+                                      case 'جملة بيوت':
+                                        newPriceLevel = product.price3;
+                                        break;
+                                      case 'بيوت':
+                                        newPriceLevel = product.price4;
+                                        break;
+                                      case 'أخرى':
+                                        newPriceLevel = product.price5;
+                                        break;
+                                      default:
+                                        newPriceLevel = product.price1;
+                                    }
+                                    if (newPriceLevel == null ||
+                                        newPriceLevel == 0) {
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                              'المنتج "${product.name}" لا يملك سعر "$_selectedListType". الرجاء اختيار سعر آخر يدوياً.'),
+                                          backgroundColor: Colors.orange,
+                                        ),
+                                      );
+                                      setState(() {
+                                        _selectedProduct = product;
+                                        _suppressSearch = true;
+                                        _productSearchController.text =
+                                            product.name;
+                                        _searchResults = [];
+                                        _selectedPriceLevel = null;
+                                        _quantityAutofocus = true;
+                                      });
+                                    } else {
+                                      setState(() {
+                                        _selectedProduct = product;
+                                        _suppressSearch = true;
+                                        _productSearchController.text =
+                                            product.name;
+                                        _searchResults = [];
+                                        _selectedPriceLevel = newPriceLevel;
+                                        _quantityAutofocus = true;
+                                      });
+                                    }
                                     WidgetsBinding.instance
                                         .addPostFrameCallback((_) {
-                                      // نقل التركيز إلى حقل الكمية
                                       FocusScope.of(context)
                                           .requestFocus(_quantityFocusNode);
-                                      // تحديد النص الموجود في حقل الكمية (إن وجد)
                                       _quantityController.selection =
                                           TextSelection(
                                         baseOffset: 0,
                                         extentOffset:
                                             _quantityController.text.length,
                                       );
-                                      // إلغاء autofocus بعد أول بناء
                                       setState(() {
                                         _quantityAutofocus = false;
                                       });
@@ -1686,7 +1752,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                         setState(() {
                                           _unitSelection = 1;
                                           _useLargeUnit = true;
-                                          _quantityController.clear();
                                         });
                                       },
                                       selectedColor:
@@ -1738,53 +1803,71 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         ),
                         const SizedBox(width: 8.0),
                         Expanded(
-                          flex: 3,
+                          flex: 1,
                           child: DropdownButtonFormField<double?>(
                             decoration:
                                 const InputDecoration(labelText: 'مستوى السعر'),
                             value: _selectedPriceLevel,
                             items: () {
-                              final Set<double> priceSet = {};
-                              final List<double> uniquePrices = [];
-
-                              if (_selectedProduct!.price1 != null)
-                                priceSet.add(_selectedProduct!.price1);
-                              if (_selectedProduct!.price2 != null)
-                                priceSet.add(_selectedProduct!.price2!);
-                              if (_selectedProduct!.price3 != null)
-                                priceSet.add(_selectedProduct!.price3!);
-                              if (_selectedProduct!.price4 != null)
-                                priceSet.add(_selectedProduct!.price4!);
-                              if (_selectedProduct!.price5 != null)
-                                priceSet.add(_selectedProduct!.price5!);
-                              if (_selectedProduct!.unitPrice != null)
-                                priceSet.add(_selectedProduct!.unitPrice);
-
-                              uniquePrices.addAll(priceSet);
-                              uniquePrices.sort();
-
                               final List<DropdownMenuItem<double?>> priceItems =
                                   [];
-
-                              for (var price in uniquePrices) {
-                                String priceText = 'سعر غير معروف';
-                                if (price == _selectedProduct!.price1)
-                                  priceText = 'سعر 1';
-                                else if (price == _selectedProduct!.price2)
-                                  priceText = 'سعر 2';
-                                else if (price == _selectedProduct!.price3)
-                                  priceText = 'سعر 3';
-                                else if (price == _selectedProduct!.price4)
-                                  priceText = 'سعر 4';
-                                else if (price == _selectedProduct!.price5)
-                                  priceText = 'سعر 5';
-                                else if (price == _selectedProduct!.unitPrice)
-                                  priceText = 'سعر الوحدة الأصلي';
-
-                                priceItems.add(DropdownMenuItem(
-                                    value: price, child: Text(priceText)));
+                              final product = _selectedProduct!;
+                              final List<Map<String, dynamic>> priceOptions = [
+                                {
+                                  'value': product.price1,
+                                  'label': 'سعر المفرد (سعر 1)',
+                                  'number': 1,
+                                },
+                                {
+                                  'value': product.price2,
+                                  'label': 'سعر الجملة (سعر 2)',
+                                  'number': 2,
+                                },
+                                {
+                                  'value': product.price3,
+                                  'label': 'سعر الجملة بيوت (سعر 3)',
+                                  'number': 3,
+                                },
+                                {
+                                  'value': product.price4,
+                                  'label': 'سعر البيوت (سعر 4)',
+                                  'number': 4,
+                                },
+                                {
+                                  'value': product.price5,
+                                  'label': 'سعر أخرى (سعر 5)',
+                                  'number': 5,
+                                },
+                                {
+                                  'value': product.unitPrice ?? 0.0,
+                                  'label': 'سعر الوحدة الأصلي',
+                                  'number': null,
+                                  'alwaysShow': true,
+                                },
+                              ];
+                              for (var option in priceOptions) {
+                                if ((option['value'] != null &&
+                                        option['value'] > 0) ||
+                                    option['alwaysShow'] == true) {
+                                  String text =
+                                      option['label'] + ': ${option['value']}';
+                                  priceItems.add(DropdownMenuItem(
+                                    value: option['value'],
+                                    child: Text(text),
+                                  ));
+                                }
                               }
-
+                              // إضافة خيار سعر التكلفة (غير قابل للاختيار)
+                              if (product.costPrice != null &&
+                                  product.costPrice! > 0) {
+                                priceItems.add(DropdownMenuItem(
+                                  value: null,
+                                  enabled: false,
+                                  child: Text(
+                                      'سعر التكلفة: ${product.costPrice}',
+                                      style: TextStyle(color: Colors.grey)),
+                                ));
+                              }
                               priceItems.add(const DropdownMenuItem(
                                   value: -1, child: Text('سعر مخصص')));
                               return priceItems;
@@ -1835,19 +1918,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                                   ),
                                                   TextButton(
                                                     onPressed: () {
-                                                      final val =
-                                                          double.tryParse(
-                                                              controller.text
-                                                                  .trim());
-                                                      if (val != null &&
-                                                          val > 0) {
+                                                      final v = double.tryParse(
+                                                          controller.text
+                                                              .trim());
+                                                      if (v != null && v > 0) {
                                                         Navigator.pop(
-                                                            context, val);
-                                                      } else {
-                                                        setState(() {
-                                                          errorText =
-                                                              'أدخل رقمًا موجبًا';
-                                                        });
+                                                            context, v);
                                                       }
                                                     },
                                                     child: const Text('موافق'),
@@ -1878,6 +1954,67 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             },
                             isDense: isViewOnly,
                             menuMaxHeight: isViewOnly ? 0 : 200,
+                          ),
+                        ),
+                        const SizedBox(width: 8.0),
+                        Expanded(
+                          flex: 1,
+                          child: DropdownButtonFormField<String>(
+                            value: _selectedListType,
+                            decoration:
+                                const InputDecoration(labelText: 'نوع القائمة'),
+                            items: _listTypes
+                                .map((type) => DropdownMenuItem(
+                                    value: type, child: Text(type)))
+                                .toList(),
+                            onChanged: isViewOnly
+                                ? null
+                                : (value) {
+                                    if (value != null) {
+                                      setState(() {
+                                        _selectedListType = value;
+                                        if (_selectedProduct != null) {
+                                          double? newPriceLevel;
+                                          switch (value) {
+                                            case 'مفرد':
+                                              newPriceLevel =
+                                                  _selectedProduct!.price1;
+                                              break;
+                                            case 'جملة':
+                                              newPriceLevel =
+                                                  _selectedProduct!.price2;
+                                              break;
+                                            case 'جملة بيوت':
+                                              newPriceLevel =
+                                                  _selectedProduct!.price3;
+                                              break;
+                                            case 'بيوت':
+                                              newPriceLevel =
+                                                  _selectedProduct!.price4;
+                                              break;
+                                            case 'أخرى':
+                                              newPriceLevel =
+                                                  _selectedProduct!.price5;
+                                              break;
+                                          }
+                                          if (newPriceLevel != null &&
+                                              newPriceLevel > 0) {
+                                            _selectedPriceLevel = newPriceLevel;
+                                          } else {
+                                            _selectedPriceLevel = null;
+                                            ScaffoldMessenger.of(context)
+                                                .showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                    'المنتج المحدد لا يملك سعر "$value".'),
+                                                backgroundColor: Colors.orange,
+                                              ),
+                                            );
+                                          }
+                                        }
+                                      });
+                                    }
+                                  },
                           ),
                         ),
                       ],

@@ -400,7 +400,19 @@ class DatabaseService {
       throw Exception(_handleDatabaseError(e));
     }
   }
-  // ... (بقية دوال المنتجات CRUD)
+
+  Future<int> deleteProduct(int id) async {
+    final db = await database;
+    try {
+      return await db.delete(
+        'products',
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
 
   // --- دوال الفنيين ---
   Future<int> insertInstaller(Installer installer) async {
@@ -883,28 +895,30 @@ class DatabaseService {
         double totalSales = 0.0;
         double netProfit = 0.0;
         double cashSales = 0.0;
-        double creditSalesValue =
-            0.0; //  يمثل قيمة الفواتير التي كانت "دين" عند إنشائها أو تعديلها
+        double creditSalesValue = 0.0;
+        double totalReturns = 0.0; // إجمالي الراجع
 
         for (var invoice in invoicesInMonth) {
-          totalSales += invoice.totalAmount;
+          if (invoice.status == 'محفوظة') {
+            totalSales += invoice.totalAmount;
+            totalReturns += invoice.returnAmount ?? 0; // حساب إجمالي الراجع
 
-          if (invoice.paymentType == 'نقد') {
-            cashSales += invoice.totalAmount;
-          } else if (invoice.paymentType == 'دين') {
-            // البيع بالدين هنا هو إجمالي قيمة الفاتورة التي صُنفت كدين
-            creditSalesValue += invoice.totalAmount;
-          }
+            if (invoice.paymentType == 'نقد') {
+              cashSales += invoice.totalAmount;
+            } else if (invoice.paymentType == 'دين') {
+              creditSalesValue += invoice.totalAmount;
+            }
 
-          //  لحساب الربح، نحتاج إلى بنود الفاتورة
-          final items = await getInvoiceItems(
-              invoice.id!); //  نفترض أن هذه الدالة تعمل بشكل صحيح
-          for (var item in items) {
-            //  نفترض أن item.costPrice هو التكلفة الإجمالية للبند (cost_per_unit_of_product * quantity)
-            //  و item.itemTotal هو سعر البيع الإجمالي للبند
-            final itemCostPrice = item.costPrice ?? 0.0;
-            final itemProfit = item.itemTotal - itemCostPrice;
-            netProfit += itemProfit;
+            //  لحساب الربح، نحتاج إلى بنود الفاتورة مع مراعاة الراجع
+            final items = await getInvoiceItems(invoice.id!);
+            final totalCost = items.fold<double>(
+                0, (sum, item) => sum + (item.costPrice ?? 0));
+
+            // معادلة الربح الصحيحة والدقيقة (بعد طرح الراجع)
+            final netSaleAmount =
+                invoice.totalAmount - (invoice.returnAmount ?? 0);
+            final profit = netSaleAmount - totalCost;
+            netProfit += profit;
           }
         }
 
@@ -914,6 +928,7 @@ class DatabaseService {
           netProfit: netProfit,
           cashSales: cashSales,
           creditSales: creditSalesValue,
+          totalReturns: totalReturns, // إضافة إجمالي الراجع
         );
       }
       //  فرز الملخصات حسب الشهر تنازليًا
@@ -1199,7 +1214,8 @@ class MonthlySalesSummary {
   final double totalSales;
   final double netProfit;
   final double cashSales;
-  final double creditSales; //  قيمة المبيعات التي تمت بالدين
+  final double creditSales;
+  final double totalReturns; // إجمالي الراجع
 
   MonthlySalesSummary({
     required this.monthYear,
@@ -1207,10 +1223,11 @@ class MonthlySalesSummary {
     required this.netProfit,
     required this.cashSales,
     required this.creditSales,
+    required this.totalReturns, // إضافة إجمالي الراجع
   });
 
   @override
   String toString() {
-    return 'MonthlySummary($monthYear: Sales=$totalSales, Profit=$netProfit, Cash=$cashSales, Credit=$creditSales)';
+    return 'MonthlySummary($monthYear: Sales=$totalSales, Profit=$netProfit, Cash=$cashSales, Credit=$creditSales, Returns=$totalReturns)';
   }
 }

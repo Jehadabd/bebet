@@ -1,3 +1,4 @@
+// screens/inventory_screen.dart
 import 'package:flutter/material.dart';
 import '../services/database_service.dart';
 import 'package:intl/intl.dart';
@@ -44,8 +45,10 @@ class _InventoryScreenState extends State<InventoryScreen> {
     final sortedMonthYears = _monthlySummaries.keys.toList();
     sortedMonthYears.sort((a, b) {
       // Ensure month is zero-padded for parsing
-      final aDate = DateTime.parse('${a.split('-')[0]}-${a.split('-')[1].padLeft(2, '0')}-01');
-      final bDate = DateTime.parse('${b.split('-')[0]}-${b.split('-')[1].padLeft(2, '0')}-01');
+      final aDate = DateTime.parse(
+          '${a.split('-')[0]}-${a.split('-')[1].padLeft(2, '0')}-01');
+      final bDate = DateTime.parse(
+          '${b.split('-')[0]}-${b.split('-')[1].padLeft(2, '0')}-01');
       return bDate.compareTo(aDate);
     });
 
@@ -67,12 +70,16 @@ class _InventoryScreenState extends State<InventoryScreen> {
                     final summary = _monthlySummaries[monthYear]!;
 
                     // Format month and year for display
-                    final date = DateTime.parse('${monthYear.split('-')[0]}-${monthYear.split('-')[1].padLeft(2, '0')}-01'); // Ensure month is zero-padded
-                    final monthName = DateFormat.yMMMM('ar').format(date); // Format in Arabic
-                    final isCurrentMonth = date.year == now.year && date.month == now.month;
+                    final date = DateTime.parse(
+                        '${monthYear.split('-')[0]}-${monthYear.split('-')[1].padLeft(2, '0')}-01'); // Ensure month is zero-padded
+                    final monthName =
+                        DateFormat.yMMMM('ar').format(date); // Format in Arabic
+                    final isCurrentMonth =
+                        date.year == now.year && date.month == now.month;
 
                     return Card(
-                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      margin: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 8),
                       child: Padding(
                         padding: const EdgeInsets.all(16),
                         child: Column(
@@ -83,10 +90,19 @@ class _InventoryScreenState extends State<InventoryScreen> {
                               style: Theme.of(context).textTheme.titleLarge,
                             ),
                             const SizedBox(height: 8),
-                            Text('إجمالي المبيعات: ${summary.totalSales.toStringAsFixed(2)} دينار عراقي'),
-                            Text('صافي الأرباح: ${summary.netProfit.toStringAsFixed(2)} دينار عراقي'),
-                            Text('البيع بالنقد: ${summary.cashSales.toStringAsFixed(2)} دينار عراقي'),
-                            Text('البيع بالدين: ${summary.creditSales.toStringAsFixed(2)} دينار عراقي'),
+                            Text(
+                                'إجمالي المبيعات: ${summary.totalSales.toStringAsFixed(2)} دينار عراقي'),
+                            Text(
+                                'إجمالي الراجع: ${summary.totalReturns.toStringAsFixed(2)} دينار عراقي',
+                                style: TextStyle(
+                                    color: Colors.orange,
+                                    fontWeight: FontWeight.bold)),
+                            Text(
+                                'صافي الأرباح: ${summary.netProfit.toStringAsFixed(2)} دينار عراقي'),
+                            Text(
+                                'البيع بالنقد: ${summary.cashSales.toStringAsFixed(2)} دينار عراقي'),
+                            Text(
+                                'البيع بالدين: ${summary.creditSales.toStringAsFixed(2)} دينار عراقي'),
                           ],
                         ),
                       ),
@@ -95,4 +111,4 @@ class _InventoryScreenState extends State<InventoryScreen> {
                 ),
     );
   }
-} 
+}

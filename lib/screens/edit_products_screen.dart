@@ -369,35 +369,36 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
             const SizedBox(height: 16),
             TextField(
               controller: _price1Controller,
-              decoration: const InputDecoration(labelText: 'سعر 1'),
+              decoration: const InputDecoration(labelText: 'سعر 1 (المفرد)'),
               keyboardType:
                   const TextInputType.numberWithOptions(decimal: true),
             ),
             const SizedBox(height: 16),
             TextField(
               controller: _price2Controller,
-              decoration: const InputDecoration(labelText: 'سعر 2 (اختياري)'),
+              decoration: const InputDecoration(labelText: 'سعر 2 (الجملة)'),
               keyboardType:
                   const TextInputType.numberWithOptions(decimal: true),
             ),
             const SizedBox(height: 16),
             TextField(
               controller: _price3Controller,
-              decoration: const InputDecoration(labelText: 'سعر 3 (اختياري)'),
+              decoration:
+                  const InputDecoration(labelText: 'سعر 3 (الجملة بيوت)'),
               keyboardType:
                   const TextInputType.numberWithOptions(decimal: true),
             ),
             const SizedBox(height: 16),
             TextField(
               controller: _price4Controller,
-              decoration: const InputDecoration(labelText: 'سعر 4 (اختياري)'),
+              decoration: const InputDecoration(labelText: 'سعر 4 (بيوت)'),
               keyboardType:
                   const TextInputType.numberWithOptions(decimal: true),
             ),
             const SizedBox(height: 16),
             TextField(
               controller: _price5Controller,
-              decoration: const InputDecoration(labelText: 'سعر 5 (اختياري)'),
+              decoration: const InputDecoration(labelText: 'سعر 5 (أخرى)'),
               keyboardType:
                   const TextInputType.numberWithOptions(decimal: true),
             ),
@@ -405,6 +406,45 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
             ElevatedButton(
               onPressed: _save,
               child: const Text('حفظ التعديلات'),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () async {
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: const Text('تأكيد الحذف'),
+                    content: const Text(
+                        'هل أنت متأكد أنك تريد حذف هذا المنتج؟ لا يمكن التراجع عن هذه العملية.'),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(false),
+                        child: const Text('إلغاء'),
+                      ),
+                      ElevatedButton(
+                        onPressed: () => Navigator.of(context).pop(true),
+                        child: const Text('حذف'),
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.red),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirm == true) {
+                  final db = DatabaseService();
+                  await db.deleteProduct(widget.product.id!);
+                  if (mounted) {
+                    Navigator.of(context).pop(true);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                          content: Text('تم حذف المنتج بنجاح'),
+                          backgroundColor: Colors.red),
+                    );
+                  }
+                }
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              child: const Text('حذف المنتج'),
             ),
           ],
         ),
