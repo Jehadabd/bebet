@@ -23,6 +23,7 @@ import 'package:alnaser/providers/app_provider.dart';
 import 'package:alnaser/services/pdf_service.dart';
 import 'package:alnaser/services/printing_service_platform_io.dart';
 import 'package:get_storage/get_storage.dart';
+import 'dart:convert';
 
 class CreateInvoiceScreen extends StatefulWidget {
   final Invoice? existingInvoice;
@@ -94,15 +95,22 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   String _selectedListType = 'مفرد';
   final List<String> _listTypes = ['مفرد', 'جملة', 'جملة بيوت', 'بيوت', 'أخرى'];
 
+  // 1. أضف المتغيرات أعلى الكلاس:
+  List<Map<String, dynamic>> _currentUnitHierarchy = [];
+  List<String> _currentUnitOptions = ['قطعة'];
+  String _selectedUnitForItem = 'قطعة';
+
+  List<Product>? _allProductsForUnits;
+
   @override
   void initState() {
     super.initState();
     _printingService = getPlatformPrintingService();
     _invoiceToManage = widget.existingInvoice;
     _isViewOnly = widget.isViewOnly;
-
-    // تحميل البيانات المؤقتة
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      _allProductsForUnits = await _db.getAllProducts();
+      setState(() {});
       _loadAutoSavedData();
     });
 
@@ -357,82 +365,84 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     if (_formKey.currentState!.validate() &&
         _selectedProduct != null &&
         _selectedPriceLevel != null) {
-      // تحقق من توفر السعر المناسب
-      if (_selectedPriceLevel == null || _selectedPriceLevel == 0) {
-        String priceName = '';
-        switch (_selectedListType) {
-          case 'مفرد':
-            priceName = 'سعر المفرد';
-            break;
-          case 'جملة':
-            priceName = 'سعر الجملة';
-            break;
-          case 'جملة بيوت':
-            priceName = 'سعر الجملة بيوت';
-            break;
-          case 'بيوت':
-            priceName = 'سعر البيوت';
-            break;
-          case 'أخرى':
-            priceName = 'سعر أخرى';
-            break;
-          default:
-            priceName = 'السعر';
+      final double inputQuantity =
+          double.tryParse(_quantityController.text.trim()) ?? 0.0;
+      if (inputQuantity <= 0) return;
+      double finalAppliedPrice = _selectedPriceLevel!;
+      double baseUnitsPerSelectedUnit = 1.0;
+      // --- تعديل منطق التسعير التراكمي ---
+      if (_selectedProduct!.unit == 'piece' && _selectedUnitForItem != 'قطعة') {
+        // إذا كان هناك تسلسل هرمي للوحدات
+        if (_selectedProduct!.unitHierarchy != null &&
+            _selectedProduct!.unitHierarchy!.isNotEmpty) {
+          try {
+            final List<dynamic> hierarchy = json
+                .decode(_selectedProduct!.unitHierarchy!.replaceAll("'", '"'));
+            List<num> factors = [];
+            for (int i = 0; i < hierarchy.length; i++) {
+              final unitName =
+                  hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
+              final quantity =
+                  num.tryParse(hierarchy[i]['quantity'].toString()) ?? 1;
+              factors.add(quantity);
+              if (unitName == _selectedUnitForItem) {
+                break;
+              }
+            }
+            baseUnitsPerSelectedUnit = factors.fold(1, (a, b) => a * b);
+            finalAppliedPrice = _selectedPriceLevel! * baseUnitsPerSelectedUnit;
+          } catch (e) {
+            // fallback: منطق قديم
+            final selectedHierarchyUnit = _currentUnitHierarchy.firstWhere(
+              (element) =>
+                  (element['unit_name'] ?? element['name']) ==
+                  _selectedUnitForItem,
+              orElse: () => {},
+            );
+            if (selectedHierarchyUnit.isNotEmpty) {
+              baseUnitsPerSelectedUnit = double.tryParse(
+                      selectedHierarchyUnit['quantity'].toString()) ??
+                  1.0;
+              finalAppliedPrice =
+                  _selectedPriceLevel! * baseUnitsPerSelectedUnit;
+            }
+          }
         }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text(
-                  'المنتج لا يحتوي على $priceName لهذا النوع من القائمة!')),
-        );
-        return;
+      } else if (_selectedProduct!.unit == 'meter' &&
+          _selectedUnitForItem == 'لفة') {
+        baseUnitsPerSelectedUnit = _selectedProduct!.lengthPerUnit ?? 1.0;
+        finalAppliedPrice = _selectedPriceLevel! * baseUnitsPerSelectedUnit;
       }
-      final quantity = double.tryParse(_quantityController.text.trim()) ?? 0.0;
-      if (quantity <= 0) return;
-      double itemCostPriceForInvoiceItem;
-      double quantitySold;
-      final unitsInLargeUnit = (_selectedProduct!.unit == 'piece'
-              ? _selectedProduct!.piecesPerUnit
-              : _selectedProduct!.lengthPerUnit) ??
-          1.0;
-      String saleType = '';
-      if (_selectedProduct!.unit == 'piece') {
-        saleType = _useLargeUnit ? 'ك' : 'ق';
-      } else if (_selectedProduct!.unit == 'meter') {
-        saleType = _useLargeUnit ? 'ل' : 'م';
-      }
-      double appliedPricePerUnitSold;
-      if (_useLargeUnit) {
-        quantitySold = quantity;
-        appliedPricePerUnitSold =
-            (_selectedPriceLevel ?? _selectedProduct!.unitPrice ?? 0) *
-                unitsInLargeUnit;
-        final totalSmallUnits = quantity * unitsInLargeUnit;
-        itemCostPriceForInvoiceItem =
-            (_selectedProduct!.costPrice ?? 0) * totalSmallUnits;
+      final double totalBaseUnitsSold =
+          inputQuantity * baseUnitsPerSelectedUnit;
+      final double finalItemCostPrice =
+          (_selectedProduct!.costPrice ?? 0) * totalBaseUnitsSold;
+      final double finalItemTotal = inputQuantity * finalAppliedPrice;
+      double? quantityIndividual;
+      double? quantityLargeUnit;
+      if ((_selectedProduct!.unit == 'piece' &&
+              _selectedUnitForItem == 'قطعة') ||
+          (_selectedProduct!.unit == 'meter' &&
+              _selectedUnitForItem == 'متر')) {
+        quantityIndividual = inputQuantity;
       } else {
-        quantitySold = quantity;
-        appliedPricePerUnitSold =
-            _selectedPriceLevel ?? _selectedProduct!.unitPrice ?? 0;
-        itemCostPriceForInvoiceItem =
-            (_selectedProduct!.costPrice ?? 0) * quantitySold;
+        quantityLargeUnit = inputQuantity;
       }
       final newItem = InvoiceItem(
         invoiceId: 0,
         productName: _selectedProduct!.name,
         unit: _selectedProduct!.unit,
         unitPrice: _selectedProduct!.unitPrice,
-        costPrice: itemCostPriceForInvoiceItem,
-        quantityIndividual: _useLargeUnit ? null : quantitySold,
-        quantityLargeUnit: _useLargeUnit ? quantitySold : null,
-        appliedPrice: appliedPricePerUnitSold,
-        itemTotal: quantitySold * appliedPricePerUnitSold,
-        saleType: saleType,
-        unitsInLargeUnit: _useLargeUnit
-            ? (unitsInLargeUnit != null ? unitsInLargeUnit.toDouble() : null)
-            : null,
+        costPrice: finalItemCostPrice,
+        quantityIndividual: quantityIndividual,
+        quantityLargeUnit: quantityLargeUnit,
+        appliedPrice: finalAppliedPrice,
+        itemTotal: finalItemTotal,
+        saleType: _selectedUnitForItem,
+        unitsInLargeUnit:
+            baseUnitsPerSelectedUnit != 1.0 ? baseUnitsPerSelectedUnit : null,
       );
       setState(() {
-        // البحث عن صنف مطابق (نفس الاسم، نفس نوع البيع، نفس الوحدة)
         final existingIndex = _invoiceItems.indexWhere((item) =>
             item.productName == newItem.productName &&
             item.saleType == newItem.saleType &&
@@ -455,9 +465,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         _quantityController.clear();
         _selectedProduct = null;
         _selectedPriceLevel = null;
-        _useLargeUnit = false;
-        _unitSelection = 0;
         _searchResults = [];
+        _selectedUnitForItem = 'قطعة';
+        _currentUnitOptions = ['قطعة'];
+        _currentUnitHierarchy = [];
         _guardDiscount();
         _updatePaidAmountIfCash();
         _autoSave();
@@ -761,12 +772,51 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   Future<pw.Document> _generateInvoicePdf() async {
     final pdf = pw.Document();
-    // تحميل الخط الافتراضي للنصوص الأخرى
     final font =
         pw.Font.ttf(await rootBundle.load('assets/fonts/Amiri-Regular.ttf'));
-    // تحميل خط Old Antic Outline Shaded لكلمة الناصر فقط
     final alnaserFont = pw.Font.ttf(
         await rootBundle.load('assets/fonts/Old Antic Outline Shaded.ttf'));
+
+    // دالة مساعدة لبناء سلسلة التحويل من InvoiceItem
+    String buildUnitConversionStringForPdf(InvoiceItem item, Product? product) {
+      if (item.unit == 'meter') {
+        if (item.saleType == 'لفة' && item.unitsInLargeUnit != null) {
+          return item.unitsInLargeUnit!.toString();
+        } else {
+          return '';
+        }
+      }
+      if (item.saleType == 'قطعة' || item.saleType == 'متر') {
+        return '';
+      }
+      if (product == null ||
+          product.unitHierarchy == null ||
+          product.unitHierarchy!.isEmpty) {
+        return item.unitsInLargeUnit?.toString() ?? '';
+      }
+      try {
+        final List<dynamic> hierarchy =
+            json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+        List<String> factors = [];
+        for (int i = 0; i < hierarchy.length; i++) {
+          final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
+          final quantity = hierarchy[i]['quantity'];
+          factors.add(quantity.toString());
+          if (unitName == item.saleType) {
+            break;
+          }
+        }
+        if (factors.isEmpty) {
+          return item.unitsInLargeUnit?.toString() ?? '';
+        }
+        return factors.join(' × ');
+      } catch (e) {
+        return item.unitsInLargeUnit?.toString() ?? '';
+      }
+    }
+
+    // جلب جميع المنتجات لمطابقة الهيكل الهرمي
+    final allProducts = await _db.getAllProducts();
 
     final currentTotalAmount =
         _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
@@ -824,7 +874,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       currentDebt = previousDebt + remaining;
     }
 
-    // --- منطق رقم الفاتورة ---
     int invoiceId;
     if (_invoiceToManage != null && _invoiceToManage!.id != null) {
       invoiceId = _invoiceToManage!.id!;
@@ -832,10 +881,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       invoiceId = (await _db.getLastInvoiceId()) + 1;
     }
 
-    // تقسيم العناصر إلى صفحات
-    // const itemsPerPage = 33; // القيمة القديمة
-    const itemsPerPage =
-        20; //  <<<<----- تغيير هنا: القيمة الجديدة (جرب 25 أو 28)
+    const itemsPerPage = 20;
     final totalPages = (_invoiceItems.length / itemsPerPage).ceil();
 
     for (var pageIndex = 0; pageIndex < totalPages; pageIndex++) {
@@ -863,104 +909,72 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     ),
                     child: pw.Column(
                       children: [
-                        pw.SizedBox(height: 0), // رفع كلمة الناصر للأعلى قليلاً
+                        pw.SizedBox(height: 0),
                         pw.Center(
                           child: pw.Text(
                             'الــــــنــــــاصــــــر',
                             style: pw.TextStyle(
                               font: alnaserFont,
-                              fontSize: 45, // زيادة كبيرة في الحجم
-                              height: 0, // تقليل الارتفاع الرأسي
+                              fontSize: 45,
+                              height: 0,
                               fontWeight: pw.FontWeight.bold,
                               color: PdfColors.black,
                             ),
                           ),
                         ),
-
-                        // نوع النشاط
                         pw.Center(
                           child: pw.Text(
                               'لتجارة المواد الصحية والعدد اليدوية والانشائية',
-                              // style: pw.TextStyle(font: font, fontSize: 16)), // قديم
-                              style: pw.TextStyle(
-                                  font: font,
-                                  fontSize: 17)), //  <<<<----- تغيير هنا
+                              style: pw.TextStyle(font: font, fontSize: 17)),
                         ),
-
-                        // العنوان مع رقم الفاتورة
                         pw.Center(
                           child: pw.Text(
                             'الموصل - الجدعة - مقابل البرج',
-                            // style: pw.TextStyle(font: font, fontSize: 12), // قديم
-                            style: pw.TextStyle(
-                                font: font,
-                                fontSize: 13), //  <<<<----- تغيير هنا
+                            style: pw.TextStyle(font: font, fontSize: 13),
                           ),
                         ),
-
-                        // أرقام الهواتف
                         pw.Center(
                           child: pw.Text('0771 406 3064  |  0770 305 1353',
                               style: pw.TextStyle(
                                   font: font,
-                                  // fontSize: 12, // قديم
-                                  fontSize: 13, //  <<<<----- تغيير هنا
+                                  fontSize: 13,
                                   color: PdfColors.black)),
                         ),
                       ],
                     ),
                   ),
                   pw.SizedBox(height: 4),
-
                   // --- معلومات العميل والتاريخ ---
                   pw.Row(
                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                     children: [
                       pw.Text('السيد: ${_customerNameController.text}',
-                          // style: pw.TextStyle(font: font, fontSize: 9)), // قديم
-                          style: pw.TextStyle(
-                              font: font,
-                              fontSize: 12)), //  <<<<----- تغيير هنا
+                          style: pw.TextStyle(font: font, fontSize: 12)),
                       pw.Text(
                           'العنوان: ${_customerAddressController.text.isNotEmpty ? _customerAddressController.text : ' ______'}',
-                          // style: pw.TextStyle(font: font, fontSize: 8)), // قديم
-                          style: pw.TextStyle(
-                              font: font,
-                              fontSize: 11)), //  <<<<----- تغيير هنا
+                          style: pw.TextStyle(font: font, fontSize: 11)),
                       pw.Text('رقم الفاتورة: ${invoiceId}',
-                          // style: pw.TextStyle(font: font, fontSize: 9)), // قديم
-                          style: pw.TextStyle(
-                              font: font,
-                              fontSize: 10)), //  <<<<----- تغيير هنا
+                          style: pw.TextStyle(font: font, fontSize: 10)),
                       pw.Text(
                           'الوقت: ${_invoiceToManage?.createdAt?.hour.toString().padLeft(2, '0') ?? DateTime.now().hour.toString().padLeft(2, '0')}:${_invoiceToManage?.createdAt?.minute.toString().padLeft(2, '0') ?? DateTime.now().minute.toString().padLeft(2, '0')}',
-                          // style: pw.TextStyle(font: font, fontSize: 8)), // قديم
-                          style: pw.TextStyle(
-                              font: font,
-                              fontSize: 11)), //  <<<<----- تغيير هنا
+                          style: pw.TextStyle(font: font, fontSize: 11)),
                       pw.Text(
                         'التاريخ: ${_selectedDate.year}/${_selectedDate.month}/${_selectedDate.day}',
-                        // style: pw.TextStyle(font: font, fontSize: 9), // قديم
-                        style: pw.TextStyle(
-                            font: font, fontSize: 11), //  <<<<----- تغيير هنا
+                        style: pw.TextStyle(font: font, fontSize: 11),
                       ),
                     ],
                   ),
                   pw.Divider(height: 5, thickness: 0.5),
 
                   // --- جدول العناصر ---
-                  // ! ملاحظة هامة: يجب تعديل حجم الخط داخل دوال _headerCell و _dataCell أيضاً
-                  // بما أن تعريف هذه الدوال غير موجود هنا، افترض أنك ستعدل حجم الخط فيها
-                  // مثلاً، إذا كان _headerCell يستخدم fontSize: 8، غيره إلى fontSize: 9 أو 10
-                  // وكذلك بالنسبة لـ _dataCell
                   pw.Table(
                     border: pw.TableBorder.all(width: 0.2),
                     columnWidths: {
                       0: const pw.FixedColumnWidth(90), // المبلغ
-                      1: const pw.FixedColumnWidth(65), // السعر
-                      2: const pw.FixedColumnWidth(70), // عدد الوحدات (جديد)
-                      3: const pw.FixedColumnWidth(50), // العدد
-                      4: const pw.FlexColumnWidth(1), // التفاصيل (قلل المساحة)
+                      1: const pw.FixedColumnWidth(70), // السعر
+                      2: const pw.FixedColumnWidth(65), // عدد الوحدات (جديد)
+                      3: const pw.FixedColumnWidth(90), // العدد
+                      4: const pw.FlexColumnWidth(0.8), // التفاصيل
                       5: const pw.FixedColumnWidth(20), // ت
                     },
                     defaultVerticalAlignment:
@@ -971,7 +985,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         children: [
                           _headerCell('المبلغ', font),
                           _headerCell('السعر', font),
-                          _headerCell('عدد الوحدات', font), // جديد
+                          _headerCell('عدد الوحدات', font),
                           _headerCell('العدد', font),
                           _headerCell('التفاصيل ', font),
                           _headerCell('ت', font),
@@ -983,6 +997,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         final quantity = (item.quantityIndividual ??
                             item.quantityLargeUnit ??
                             0.0);
+                        Product? product;
+                        try {
+                          product = allProducts
+                              .firstWhere((p) => p.name == item.productName);
+                        } catch (e) {
+                          product = null;
+                        }
                         return pw.TableRow(
                           children: [
                             _dataCell(
@@ -993,15 +1014,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 formatNumber(item.appliedPrice,
                                     forceDecimal: true),
                                 font),
-                            // عدد الوحدات (جديد)
-                            ((item.saleType == 'ك' || item.saleType == 'ل') &&
-                                    item.unitsInLargeUnit != null)
-                                ? _dataCell(
-                                    item.unitsInLargeUnit!.toString(), font)
-                                : _dataCell('', font),
+                            // عدد الوحدات (منطق جديد)
                             _dataCell(
-                                '${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}',
-                                font),
+                              buildUnitConversionStringForPdf(item, product),
+                              font,
+                            ),
+                            _dataCell(
+                              '${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}',
+                              font,
+                            ),
                             _dataCell(item.productName, font,
                                 align: pw.TextAlign.right),
                             _dataCell('${index + 1}', font),
@@ -1017,7 +1038,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     pw.Column(
                       crossAxisAlignment: pw.CrossAxisAlignment.end,
                       children: [
-                        // الصف العلوي
                         pw.Row(
                           mainAxisAlignment: pw.MainAxisAlignment.end,
                           children: [
@@ -1033,7 +1053,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           ],
                         ),
                         pw.SizedBox(height: 6),
-                        // الصف السفلي (الدين السابق/الحالي) فقط إذا لم تكن الفاتورة محفوظة
                         if (!(_invoiceToManage != null &&
                             _invoiceToManage!.status == 'محفوظة'))
                           pw.Row(
@@ -1049,21 +1068,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       ],
                     ),
                     pw.SizedBox(height: 6),
-                    // --- التذييل ---
                     pw.Center(
                         child: pw.Text('شكراً لتعاملكم معنا',
                             style: pw.TextStyle(font: font, fontSize: 11))),
                   ],
 
-                  // --- ترقيم الصفحات ---
                   pw.Align(
-                    // استخدم Align لتوسيط أفضل إذا كان هناك عناصر أخرى في نفس المستوى
                     alignment: pw.Alignment.center,
                     child: pw.Text(
                       'صفحة ${pageIndex + 1} من $totalPages',
-                      // style: pw.TextStyle(font: font, fontSize: 8), // قديم
-                      style: pw.TextStyle(
-                          font: font, fontSize: 11), //  <<<<----- تغيير هنا
+                      style: pw.TextStyle(font: font, fontSize: 11),
                     ),
                   ),
                 ],
@@ -1076,7 +1090,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     return pdf;
   }
 
-// دالة لخلايا الرأس
+  // دالة لخلايا الرأس
   pw.Widget _headerCell(String text, pw.Font font) {
     return pw.Padding(
       padding: const pw.EdgeInsets.all(2),
@@ -1087,7 +1101,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     );
   }
 
-// دالة لخلايا البيانات
+  // دالة لخلايا البيانات
   pw.Widget _dataCell(String text, pw.Font font,
       {pw.TextAlign align = pw.TextAlign.center}) {
     return pw.Padding(
@@ -1099,7 +1113,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     );
   }
 
-// دالة لصفوف المجاميع
+  // دالة لصفوف المجاميع
   pw.Widget _summaryRow(String label, num value, pw.Font font) {
     return pw.Padding(
       padding: const pw.EdgeInsets.symmetric(vertical: 1),
@@ -1403,6 +1417,135 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     }
   }
 
+  // 2. أضف دالة توليد الوحدات:
+  void _onProductSelected(Product product) {
+    setState(() {
+      _selectedProduct = product;
+      _quantityController.clear();
+      _currentUnitHierarchy = [];
+      _currentUnitOptions = [];
+      if (product.unit == 'piece') {
+        _currentUnitOptions.add('قطعة');
+        _selectedUnitForItem = 'قطعة';
+        if (product.unitHierarchy != null &&
+            product.unitHierarchy!.isNotEmpty) {
+          try {
+            final List<dynamic> parsed =
+                json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+            _currentUnitHierarchy =
+                parsed.map((e) => Map<String, dynamic>.from(e)).toList();
+            _currentUnitOptions.addAll(_currentUnitHierarchy
+                .map((e) => (e['unit_name'] ?? e['name'] ?? '').toString()));
+            print(
+                'DEBUG: product.unitHierarchy = \u001b[32m${product.unitHierarchy}\u001b[0m');
+            print(
+                'DEBUG: _currentUnitOptions = \u001b[36m$_currentUnitOptions\u001b[0m');
+            print(
+                'DEBUG: _currentUnitHierarchy = \u001b[35m$_currentUnitHierarchy\u001b[0m');
+          } catch (e) {
+            print('Error parsing unit hierarchy for ${product.name}: $e');
+          }
+        }
+      } else if (product.unit == 'meter') {
+        _currentUnitOptions = ['متر'];
+        _selectedUnitForItem = 'متر';
+        if (product.lengthPerUnit != null && product.lengthPerUnit! > 0) {
+          _currentUnitOptions.add('لفة');
+        }
+      } else {
+        _currentUnitOptions.add(product.unit);
+        _selectedUnitForItem = product.unit;
+      }
+      double? newPriceLevel;
+      switch (_selectedListType) {
+        case 'مفرد':
+          newPriceLevel = product.price1;
+          break;
+        case 'جملة':
+          newPriceLevel = product.price2;
+          break;
+        case 'جملة بيوت':
+          newPriceLevel = product.price3;
+          break;
+        case 'بيوت':
+          newPriceLevel = product.price4;
+          break;
+        case 'أخرى':
+          newPriceLevel = product.price5;
+          break;
+        default:
+          newPriceLevel = product.price1;
+      }
+      if (newPriceLevel == null || newPriceLevel == 0) {
+        newPriceLevel = product.unitPrice;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                'المنتج "${product.name}" لا يملك سعر "$_selectedListType". تم اختيار سعر الوحدة الأصلي.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      _selectedPriceLevel = newPriceLevel;
+      _suppressSearch = true;
+      _productSearchController.text = product.name;
+      _searchResults = [];
+      _quantityAutofocus = true;
+    });
+  }
+
+  // دالة مساعدة لبناء سلسلة التحويل للوحدة المختارة
+  String buildUnitConversionString(
+      InvoiceItem item, List<Product> allProducts) {
+    // المنتجات التي تباع بالامتار
+    if (item.unit == 'meter') {
+      if (item.saleType == 'لفة' && item.unitsInLargeUnit != null) {
+        return item.unitsInLargeUnit!.toString();
+      } else {
+        return '';
+      }
+    }
+    // المنتجات التي تباع بالقطعة ولها تسلسل هرمي
+    final product = allProducts.firstWhere(
+      (p) => p.name == item.productName,
+      orElse: () => Product(
+        id: null,
+        name: item.productName,
+        unit: item.unit,
+        unitPrice: item.unitPrice,
+        costPrice: null,
+        piecesPerUnit: null,
+        lengthPerUnit: null,
+        price1: item.unitPrice,
+        createdAt: DateTime.now(),
+        lastModifiedAt: DateTime.now(),
+      ),
+    );
+    if (product.unitHierarchy == null || product.unitHierarchy!.isEmpty) {
+      return item.unitsInLargeUnit?.toString() ?? '';
+    }
+    try {
+      final List<dynamic> hierarchy =
+          json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+      // ابحث عن تسلسل التحويل للوحدة المختارة
+      List<String> factors = [];
+      for (int i = 0; i < hierarchy.length; i++) {
+        final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
+        final quantity = hierarchy[i]['quantity'];
+        factors.add(quantity.toString());
+        if (unitName == item.saleType) {
+          break;
+        }
+      }
+      if (factors.isEmpty) {
+        return item.unitsInLargeUnit?.toString() ?? '';
+      }
+      return factors.join(' × ');
+    } catch (e) {
+      return item.unitsInLargeUnit?.toString() ?? '';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     print('CreateInvoiceScreen: Building with isViewOnly: ${_isViewOnly}');
@@ -1492,10 +1635,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                               },
                               fieldViewBuilder: (context, controller, focusNode,
                                   onFieldSubmitted) {
-                                controller.text = _customerNameController.text;
-                                controller.selection =
-                                    TextSelection.fromPosition(TextPosition(
-                                        offset: controller.text.length));
+                                // لا تضع controller.text = ... هنا
                                 return TextFormField(
                                   controller: controller,
                                   focusNode: focusNode,
@@ -1635,48 +1775,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                     }
                                     if (newPriceLevel == null ||
                                         newPriceLevel == 0) {
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(
-                                        SnackBar(
-                                          content: Text(
-                                              'المنتج "${product.name}" لا يملك سعر "$_selectedListType". الرجاء اختيار سعر آخر يدوياً.'),
-                                          backgroundColor: Colors.orange,
-                                        ),
-                                      );
-                                      setState(() {
-                                        _selectedProduct = product;
-                                        _suppressSearch = true;
-                                        _productSearchController.text =
-                                            product.name;
-                                        _searchResults = [];
-                                        _selectedPriceLevel = null;
-                                        _quantityAutofocus = true;
-                                      });
-                                    } else {
-                                      setState(() {
-                                        _selectedProduct = product;
-                                        _suppressSearch = true;
-                                        _productSearchController.text =
-                                            product.name;
-                                        _searchResults = [];
-                                        _selectedPriceLevel = newPriceLevel;
-                                        _quantityAutofocus = true;
-                                      });
+                                      newPriceLevel = product.unitPrice;
                                     }
-                                    WidgetsBinding.instance
-                                        .addPostFrameCallback((_) {
-                                      FocusScope.of(context)
-                                          .requestFocus(_quantityFocusNode);
-                                      _quantityController.selection =
-                                          TextSelection(
-                                        baseOffset: 0,
-                                        extentOffset:
-                                            _quantityController.text.length,
-                                      );
-                                      setState(() {
-                                        _quantityAutofocus = false;
-                                      });
+                                    setState(() {
+                                      _selectedProduct = product;
+                                      _selectedPriceLevel = newPriceLevel;
+                                      _quantityController.clear();
                                     });
+                                    _onProductSelected(
+                                        product); // استدعاء الدالة بعد setState
                                   },
                           );
                         },
@@ -1686,10 +1793,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   if (_selectedProduct != null) ...[
                     Text('الصنف المحدد: ${_selectedProduct!.name}'),
                     const SizedBox(height: 8.0),
-                    if (_selectedProduct!.unit == 'piece' &&
-                            _selectedProduct!.piecesPerUnit != null ||
-                        _selectedProduct!.unit == 'meter' &&
-                            _selectedProduct!.lengthPerUnit != null)
+                    if ((_selectedProduct != null &&
+                            _currentUnitOptions.length > 1) ||
+                        (_selectedProduct!.unit == 'meter' &&
+                            _selectedProduct!.lengthPerUnit != null))
                       Padding(
                         padding: const EdgeInsets.only(bottom: 16.0),
                         child: Column(
@@ -1704,67 +1811,39 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: Row(
-                                children: [
-                                  Expanded(
-                                    child: ChoiceChip(
-                                      label: Text(
-                                        _selectedProduct!.unit == 'piece'
-                                            ? 'قطعة'
-                                            : 'متر',
-                                        style: TextStyle(
-                                          color: _unitSelection == 0
-                                              ? Colors.white
-                                              : Colors.black,
-                                        ),
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceEvenly,
+                                children: _currentUnitOptions.map((unitName) {
+                                  return ChoiceChip(
+                                    label: Text(
+                                      unitName,
+                                      style: TextStyle(
+                                        color: _selectedUnitForItem == unitName
+                                            ? Colors.white
+                                            : Colors.black,
                                       ),
-                                      selected: _unitSelection == 0,
-                                      onSelected: (selected) {
-                                        setState(() {
-                                          _unitSelection = 0;
-                                          _useLargeUnit = false;
-                                          _quantityController.clear();
-                                        });
-                                      },
-                                      selectedColor:
-                                          Theme.of(context).primaryColor,
-                                      backgroundColor: Colors.transparent,
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(10),
-                                      ),
-                                      padding:
-                                          EdgeInsets.symmetric(vertical: 12),
                                     ),
-                                  ),
-                                  Expanded(
-                                    child: ChoiceChip(
-                                      label: Text(
-                                        _selectedProduct!.unit == 'piece'
-                                            ? 'كرتون/باكيت'
-                                            : 'لفة كاملة',
-                                        style: TextStyle(
-                                          color: _unitSelection == 1
-                                              ? Colors.white
-                                              : Colors.black,
-                                        ),
-                                      ),
-                                      selected: _unitSelection == 1,
-                                      onSelected: (selected) {
-                                        setState(() {
-                                          _unitSelection = 1;
-                                          _useLargeUnit = true;
-                                        });
-                                      },
-                                      selectedColor:
-                                          Theme.of(context).primaryColor,
-                                      backgroundColor: Colors.transparent,
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(10),
-                                      ),
-                                      padding:
-                                          EdgeInsets.symmetric(vertical: 12),
+                                    selected: _selectedUnitForItem == unitName,
+                                    onSelected: isViewOnly
+                                        ? null
+                                        : (selected) {
+                                            if (selected) {
+                                              setState(() {
+                                                _selectedUnitForItem = unitName;
+                                                _quantityController.clear();
+                                              });
+                                            }
+                                          },
+                                    selectedColor:
+                                        Theme.of(context).primaryColor,
+                                    backgroundColor: Colors.transparent,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(10),
                                     ),
-                                  ),
-                                ],
+                                    padding: EdgeInsets.symmetric(
+                                        horizontal: 16, vertical: 12),
+                                  );
+                                }).toList(),
                               ),
                             ),
                           ],
@@ -1780,11 +1859,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             focusNode: _quantityFocusNode, // ربط FocusNode
                             autofocus: _quantityAutofocus, // ربط autofocus
                             decoration: InputDecoration(
-                              labelText: _unitSelection == 1
-                                  ? (_selectedProduct!.unit == 'piece'
-                                      ? 'عدد الكراتين/الباكيت'
-                                      : 'عدد القطع الكاملة')
-                                  : 'الكمية (${_selectedProduct!.unit == 'piece' ? 'قطعة' : 'متر'})',
+                              labelText: 'الكمية (${_selectedUnitForItem})',
                             ),
                             keyboardType: const TextInputType.numberWithOptions(
                                 decimal: true),
@@ -2141,13 +2216,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                         forceDecimal: true),
                                     textAlign: TextAlign.center)),
                             Expanded(
-                                flex: 1,
-                                child: (item.saleType == 'ك' ||
-                                            item.saleType == 'ل') &&
-                                        item.unitsInLargeUnit != null
-                                    ? Text(item.unitsInLargeUnit!.toString(),
-                                        textAlign: TextAlign.center)
-                                    : const SizedBox()),
+                              flex: 1,
+                              child: (item.saleType == 'قطعة' ||
+                                      item.saleType == 'متر')
+                                  ? const SizedBox()
+                                  : Text(
+                                      buildUnitConversionString(
+                                          item, _allProductsForUnits ?? []),
+                                      textAlign: TextAlign.center),
+                            ),
                             if (!isViewOnly)
                               IconButton(
                                 icon: const Icon(Icons.delete,

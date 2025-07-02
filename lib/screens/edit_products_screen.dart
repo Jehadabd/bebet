@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
 import '../services/password_service.dart';
+import 'dart:convert';
 
 class EditProductsScreen extends StatefulWidget {
   const EditProductsScreen({super.key});
@@ -140,6 +141,15 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
   String _selectedUnit = 'piece';
   bool _showCostPrice = false;
   final PasswordService _passwordService = PasswordService();
+  List<Map<String, dynamic>> _unitHierarchyList = [];
+  final List<String> _unitOptions = [
+    'باكيت',
+    'ربطة',
+    'سيت',
+    'كيس',
+    'صندوق',
+    'كرتون',
+  ];
 
   @override
   void initState() {
@@ -164,6 +174,18 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     _lengthPerUnitController = TextEditingController(
         text: widget.product.lengthPerUnit?.toString() ?? '');
     _selectedUnit = widget.product.unit;
+    if (_selectedUnit == 'piece' &&
+        widget.product.unitHierarchy != null &&
+        widget.product.unitHierarchy!.isNotEmpty) {
+      try {
+        final List<dynamic> parsed =
+            json.decode(widget.product.unitHierarchy!.replaceAll("'", '"'));
+        _unitHierarchyList =
+            parsed.map((e) => Map<String, dynamic>.from(e)).toList();
+      } catch (e) {
+        _unitHierarchyList = [];
+      }
+    }
   }
 
   @override
@@ -222,9 +244,74 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     return name.replaceAll(RegExp(r'\s+'), '');
   }
 
+  void _checkDuplicatePrices(String changedField) {
+    final prices = {
+      'price1': _price1Controller.text.trim(),
+      'price2': _price2Controller.text.trim(),
+      'price3': _price3Controller.text.trim(),
+      'price4': _price4Controller.text.trim(),
+      'price5': _price5Controller.text.trim(),
+    };
+    final entered = prices.entries.where((e) => e.value.isNotEmpty).toList();
+    for (int i = 0; i < entered.length; i++) {
+      for (int j = i + 1; j < entered.length; j++) {
+        if (entered[i].value == entered[j].value) {
+          if (changedField == entered[j].key) {
+            setState(() {
+              switch (entered[j].key) {
+                case 'price1':
+                  _price1Controller.clear();
+                  break;
+                case 'price2':
+                  _price2Controller.clear();
+                  break;
+                case 'price3':
+                  _price3Controller.clear();
+                  break;
+                case 'price4':
+                  _price4Controller.clear();
+                  break;
+                case 'price5':
+                  _price5Controller.clear();
+                  break;
+              }
+            });
+          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('لا يمكن تكرار نفس السعر في أكثر من مستوى!'),
+              backgroundColor: Colors.red,
+            ),
+          );
+          return;
+        }
+      }
+    }
+  }
+
   Future<void> _save() async {
     final db = DatabaseService();
     final inputName = _nameController.text.trim();
+    String? unitHierarchyJson;
+    if (_selectedUnit == 'piece' && _unitHierarchyList.isNotEmpty) {
+      final filtered = _unitHierarchyList
+          .where((row) =>
+              row['unit_name'] != null &&
+              row['quantity'] != null &&
+              row['quantity'].toString().isNotEmpty)
+          .toList();
+      if (filtered.isNotEmpty) {
+        unitHierarchyJson = json.encode(filtered
+            .map((row) => {
+                  'unit_name': row['unit_name'],
+                  'quantity': int.tryParse(row['quantity'].toString()) ?? 0,
+                })
+            .toList());
+      }
+    }
+    if (_selectedUnit == 'meter') {
+      unitHierarchyJson = null;
+    }
     final updatedProduct = widget.product.copyWith(
       name: inputName,
       unit: _selectedUnit,
@@ -254,6 +341,7 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
           ? double.tryParse(_lengthPerUnitController.text.trim())
           : null,
       lastModifiedAt: DateTime.now(),
+      unitHierarchy: unitHierarchyJson,
     );
     final allProducts = await db.getAllProducts();
     final inputNameForCompare = normalizeProductNameForCompare(inputName);
@@ -269,6 +357,18 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     }
     await db.updateProduct(updatedProduct);
     if (mounted) Navigator.pop(context, true);
+  }
+
+  void _addUnitHierarchyRow() {
+    setState(() {
+      _unitHierarchyList.add({'unit_name': null, 'quantity': null});
+    });
+  }
+
+  void _removeUnitHierarchyRow(int index) {
+    setState(() {
+      _unitHierarchyList.removeAt(index);
+    });
   }
 
   @override
@@ -290,19 +390,96 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
               items: const [
                 DropdownMenuItem(value: 'piece', child: Text('قطعة')),
                 DropdownMenuItem(value: 'meter', child: Text('متر')),
+                DropdownMenuItem(value: 'roll', child: Text('لفة')),
               ],
               onChanged: (value) {
-                if (value != null) setState(() => _selectedUnit = value);
+                if (value != null) {
+                  setState(() {
+                    _selectedUnit = value;
+                    if (_selectedUnit != 'piece') {
+                      _unitHierarchyList.clear();
+                    }
+                  });
+                }
               },
             ),
-            const SizedBox(height: 16),
             if (_selectedUnit == 'piece')
-              TextField(
-                controller: _piecesPerUnitController,
-                decoration: const InputDecoration(
-                    labelText: 'عدد القطع في الكرتون/الباكيت'),
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 16.0),
+                  const Text(
+                    'إضافة وحدات أكبر (اختياري):',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  ..._unitHierarchyList.asMap().entries.map((entry) {
+                    int idx = entry.key;
+                    var row = entry.value;
+                    return Row(
+                      children: [
+                        Expanded(
+                          flex: 2,
+                          child: DropdownButtonFormField<String>(
+                            value: row['unit_name'],
+                            decoration:
+                                const InputDecoration(labelText: 'اسم الوحدة'),
+                            items: _unitOptions
+                                .map((unit) => DropdownMenuItem(
+                                      value: unit,
+                                      child: Text(unit),
+                                    ))
+                                .toList(),
+                            onChanged: (val) {
+                              setState(() {
+                                _unitHierarchyList[idx]['unit_name'] = val;
+                              });
+                            },
+                            validator: (val) {
+                              if (val == null || val.isEmpty) {
+                                return 'اختر اسم الوحدة';
+                              }
+                              return null;
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: 2,
+                          child: TextFormField(
+                            initialValue: row['quantity']?.toString(),
+                            decoration:
+                                const InputDecoration(labelText: 'العدد'),
+                            keyboardType: TextInputType.number,
+                            onChanged: (val) {
+                              _unitHierarchyList[idx]['quantity'] = val;
+                            },
+                            validator: (val) {
+                              if (val == null || val.isEmpty) {
+                                return 'أدخل العدد';
+                              }
+                              if (int.tryParse(val) == null) {
+                                return 'أدخل رقم صحيح';
+                              }
+                              return null;
+                            },
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete, color: Colors.red),
+                          onPressed: () => _removeUnitHierarchyRow(idx),
+                        ),
+                      ],
+                    );
+                  }).toList(),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      icon: const Icon(Icons.add),
+                      label: const Text('إضافة وحدة أكبر'),
+                      onPressed: _addUnitHierarchyRow,
+                    ),
+                  ),
+                ],
               ),
             if (_selectedUnit == 'meter')
               TextField(
@@ -372,6 +549,7 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
               decoration: const InputDecoration(labelText: 'سعر 1 (المفرد)'),
               keyboardType:
                   const TextInputType.numberWithOptions(decimal: true),
+              onChanged: (_) => _checkDuplicatePrices('price1'),
             ),
             const SizedBox(height: 16),
             TextField(
@@ -379,14 +557,15 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
               decoration: const InputDecoration(labelText: 'سعر 2 (الجملة)'),
               keyboardType:
                   const TextInputType.numberWithOptions(decimal: true),
+              onChanged: (_) => _checkDuplicatePrices('price2'),
             ),
             const SizedBox(height: 16),
             TextField(
               controller: _price3Controller,
-              decoration:
-                  const InputDecoration(labelText: 'سعر 3 (الجملة بيوت)'),
+              decoration: const InputDecoration(labelText: 'سعر 3 (جملة بيوت)'),
               keyboardType:
                   const TextInputType.numberWithOptions(decimal: true),
+              onChanged: (_) => _checkDuplicatePrices('price3'),
             ),
             const SizedBox(height: 16),
             TextField(
@@ -394,6 +573,7 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
               decoration: const InputDecoration(labelText: 'سعر 4 (بيوت)'),
               keyboardType:
                   const TextInputType.numberWithOptions(decimal: true),
+              onChanged: (_) => _checkDuplicatePrices('price4'),
             ),
             const SizedBox(height: 16),
             TextField(
@@ -401,6 +581,7 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
               decoration: const InputDecoration(labelText: 'سعر 5 (أخرى)'),
               keyboardType:
                   const TextInputType.numberWithOptions(decimal: true),
+              onChanged: (_) => _checkDuplicatePrices('price5'),
             ),
             const SizedBox(height: 24),
             ElevatedButton(

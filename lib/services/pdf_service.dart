@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import '../models/customer.dart';
 import '../models/account_statement_item.dart';
+import 'dart:convert';
 
 class PdfService {
   static final PdfService _instance = PdfService._internal();
@@ -431,5 +432,46 @@ class PdfService {
         textAlign: align,
       ),
     );
+  }
+
+  // دالة مساعدة لبناء سلسلة التحويل للوحدة المختارة
+  String buildUnitConversionStringPdf(dynamic item, List products) {
+    // المنتجات التي تباع بالامتار
+    if (item['unit'] == 'meter') {
+      if (item['saleType'] == 'لفة' && item['unitsInLargeUnit'] != null) {
+        return item['unitsInLargeUnit'].toString();
+      } else {
+        return '';
+      }
+    }
+    // المنتجات التي تباع بالقطعة ولها تسلسل هرمي
+    final product = products.firstWhere(
+      (p) => p.name == item['productName'],
+      orElse: () => null,
+    );
+    if (product == null ||
+        product.unitHierarchy == null ||
+        product.unitHierarchy.isEmpty) {
+      return item['unitsInLargeUnit']?.toString() ?? '';
+    }
+    try {
+      final List<dynamic> hierarchy =
+          json.decode(product.unitHierarchy.replaceAll("'", '"'));
+      List<String> factors = [];
+      for (int i = 0; i < hierarchy.length; i++) {
+        final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
+        final quantity = hierarchy[i]['quantity'];
+        factors.add(quantity.toString());
+        if (unitName == item['saleType']) {
+          break;
+        }
+      }
+      if (factors.isEmpty) {
+        return item['unitsInLargeUnit']?.toString() ?? '';
+      }
+      return factors.join(' × ');
+    } catch (e) {
+      return item['unitsInLargeUnit']?.toString() ?? '';
+    }
   }
 }

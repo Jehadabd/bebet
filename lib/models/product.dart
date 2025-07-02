@@ -1,3 +1,4 @@
+// models/product.dart
 class Product {
   final int? id;
   final String name;
@@ -11,6 +12,7 @@ class Product {
   final double? price3;
   final double? price4;
   final double? price5;
+  final String? unitHierarchy; // JSON string representing the unit hierarchy
   final DateTime createdAt;
   final DateTime lastModifiedAt;
 
@@ -27,6 +29,7 @@ class Product {
     this.price3,
     this.price4,
     this.price5,
+    this.unitHierarchy,
     required this.createdAt,
     required this.lastModifiedAt,
   });
@@ -45,6 +48,7 @@ class Product {
       'price3': price3,
       'price4': price4,
       'price5': price5,
+      'unit_hierarchy': unitHierarchy,
       'created_at': createdAt.toIso8601String(),
       'last_modified_at': lastModifiedAt.toIso8601String(),
     };
@@ -64,6 +68,7 @@ class Product {
       price3: map['price3'] as double?,
       price4: map['price4'] as double?,
       price5: map['price5'] as double?,
+      unitHierarchy: map['unit_hierarchy'] as String?,
       createdAt: DateTime.parse(map['created_at'] as String),
       lastModifiedAt: DateTime.parse(map['last_modified_at'] as String),
     );
@@ -83,6 +88,7 @@ class Product {
     double? price3,
     double? price4,
     double? price5,
+    String? unitHierarchy,
     DateTime? createdAt,
     DateTime? lastModifiedAt,
   }) {
@@ -99,8 +105,9 @@ class Product {
       price3: price3 ?? this.price3,
       price4: price4 ?? this.price4,
       price5: price5 ?? this.price5,
+      unitHierarchy: unitHierarchy ?? this.unitHierarchy,
       createdAt: createdAt ?? this.createdAt,
       lastModifiedAt: lastModifiedAt ?? this.lastModifiedAt,
     );
   }
-} 
+}

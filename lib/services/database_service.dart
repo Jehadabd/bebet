@@ -43,6 +43,15 @@ class DatabaseService {
   Future<Database> get database async {
     if (_database != null) return _database!;
     _database = await _initDatabase();
+    // --- كود مؤقت لإضافة العمود يدويًا إذا لم يكن موجودًا ---
+    try {
+      await _database!
+          .execute('ALTER TABLE products ADD COLUMN unit_hierarchy TEXT;');
+      print('DEBUG: تم إضافة عمود unit_hierarchy بنجاح!');
+    } catch (e) {
+      print('DEBUG: قد يكون العمود موجودًا بالفعل أو هناك خطأ: $e');
+    }
+    // --- نهاية الكود المؤقت ---
     return _database!;
   }
 
@@ -62,7 +71,7 @@ class DatabaseService {
     }
     return await openDatabase(
       newPath,
-      version: 19, // رفع رقم النسخة لتفعيل الترقية الجديدة
+      version: 22, // رفع رقم النسخة لتفعيل الترقية وإضافة عمود unit_hierarchy
       onCreate: _createDatabase,
       onUpgrade: _onUpgrade,
     );
