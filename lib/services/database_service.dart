@@ -906,6 +906,7 @@ class DatabaseService {
         double cashSales = 0.0;
         double creditSalesValue = 0.0;
         double totalReturns = 0.0; // إجمالي الراجع
+        double totalDebtPayments = 0.0; // إجمالي تسديد الديون
 
         for (var invoice in invoicesInMonth) {
           if (invoice.status == 'محفوظة') {
@@ -931,6 +932,24 @@ class DatabaseService {
           }
         }
 
+        // جمع معاملات تسديد الديون لهذا الشهر
+        final year = int.parse(monthYear.split('-')[0]);
+        final month = int.parse(monthYear.split('-')[1]);
+        final String start =
+            '$year-${month.toString().padLeft(2, '0')}-01T00:00:00.000';
+        final String end = month == 12
+            ? '${year + 1}-01-01T00:00:00.000'
+            : '$year-${(month + 1).toString().padLeft(2, '0')}-01T00:00:00.000';
+        final List<Map<String, dynamic>> debtTxMaps = await db.query(
+          'transactions',
+          where:
+              "transaction_type = 'Debt_Paid' AND (invoice_id IS NULL OR invoice_id = 0) AND transaction_date >= ? AND transaction_date < ?",
+          whereArgs: [start, end],
+        );
+        for (final tx in debtTxMaps) {
+          totalDebtPayments += (tx['amount_changed'] as double).abs();
+        }
+
         monthlySummaries[monthYear] = MonthlySalesSummary(
           monthYear: monthYear,
           totalSales: totalSales,
@@ -938,6 +957,7 @@ class DatabaseService {
           cashSales: cashSales,
           creditSales: creditSalesValue,
           totalReturns: totalReturns, // إضافة إجمالي الراجع
+          totalDebtPayments: totalDebtPayments, // إضافة إجمالي تسديد الديون
         );
       }
       //  فرز الملخصات حسب الشهر تنازليًا
@@ -1225,6 +1245,7 @@ class MonthlySalesSummary {
   final double cashSales;
   final double creditSales;
   final double totalReturns; // إجمالي الراجع
+  final double totalDebtPayments; // إجمالي تسديد الديون
 
   MonthlySalesSummary({
     required this.monthYear,
@@ -1233,10 +1254,11 @@ class MonthlySalesSummary {
     required this.cashSales,
     required this.creditSales,
     required this.totalReturns, // إضافة إجمالي الراجع
+    required this.totalDebtPayments, // إضافة إجمالي تسديد الديون
   });
 
   @override
   String toString() {
-    return 'MonthlySummary($monthYear: Sales=$totalSales, Profit=$netProfit, Cash=$cashSales, Credit=$creditSales, Returns=$totalReturns)';
+    return 'MonthlySummary($monthYear: Sales=$totalSales, Profit=$netProfit, Cash=$cashSales, Credit=$creditSales, Returns=$totalReturns, DebtPayments=$totalDebtPayments)';
   }
 }

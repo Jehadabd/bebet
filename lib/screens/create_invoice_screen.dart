@@ -102,16 +102,20 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   List<Product>? _allProductsForUnits;
 
+  late TextEditingController _loadingFeeController;
+
   @override
   void initState() {
     super.initState();
     _printingService = getPlatformPrintingService();
     _invoiceToManage = widget.existingInvoice;
     _isViewOnly = widget.isViewOnly;
+    _loadingFeeController = TextEditingController();
+    _loadAutoSavedData();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       _allProductsForUnits = await _db.getAllProducts();
       setState(() {});
-      _loadAutoSavedData();
+      // تمت إزالة استدعاء _loadAutoSavedData من هنا
     });
 
     // إضافة استماع للتغيرات في الحقول
@@ -301,6 +305,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     _returnAmountController.dispose();
     _quantityFocusNode.dispose(); // تنظيف FocusNode
     _searchFocusNode.dispose();
+    _loadingFeeController.dispose();
     super.dispose();
   }
 
@@ -772,6 +777,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   Future<pw.Document> _generateInvoicePdf() async {
     final pdf = pw.Document();
+    // تحميل صورة اللوجو الجديدة من الأصول
+    final logoBytes = await rootBundle
+        .load('assets/icon/AL_NASSER_logo_transparent_medium.png');
+    final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
     final font =
         pw.Font.ttf(await rootBundle.load('assets/fonts/Amiri-Regular.ttf'));
     final alnaserFont = pw.Font.ttf(
@@ -901,47 +910,57 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               child: pw.Column(
                 crossAxisAlignment: pw.CrossAxisAlignment.start,
                 children: [
-                  // --- الرأس الجديد مع معلومات المتجر ---
-                  pw.Container(
-                    padding: const pw.EdgeInsets.all(2),
-                    decoration: pw.BoxDecoration(
-                      borderRadius: pw.BorderRadius.circular(1),
-                    ),
-                    child: pw.Column(
-                      children: [
-                        pw.SizedBox(height: 0),
-                        pw.Center(
-                          child: pw.Text(
-                            'الــــــنــــــاصــــــر',
-                            style: pw.TextStyle(
-                              font: alnaserFont,
-                              fontSize: 45,
-                              height: 0,
-                              fontWeight: pw.FontWeight.bold,
-                              color: PdfColors.black,
+                  // --- رأس الفاتورة مع اللوجو الجديد في الجهة اليمنى ---
+                  pw.Row(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      // بقية رأس الفاتورة (العنوان والمعلومات)
+                      pw.Expanded(
+                        child: pw.Column(
+                          children: [
+                            pw.SizedBox(height: 0),
+                            pw.Center(
+                              child: pw.Text(
+                                'الــــــنــــــاصــــــر',
+                                style: pw.TextStyle(
+                                  font: alnaserFont,
+                                  fontSize: 45,
+                                  height: 0,
+                                  fontWeight: pw.FontWeight.bold,
+                                  color: PdfColors.black,
+                                ),
+                              ),
                             ),
-                          ),
+                            pw.Center(
+                              child: pw.Text(
+                                  'لتجارة المواد الصحية والعدد اليدوية والانشائية',
+                                  style:
+                                      pw.TextStyle(font: font, fontSize: 17)),
+                            ),
+                            pw.Center(
+                              child: pw.Text(
+                                'الموصل - الجدعة - مقابل البرج',
+                                style: pw.TextStyle(font: font, fontSize: 13),
+                              ),
+                            ),
+                            pw.Center(
+                              child: pw.Text('0771 406 3064  |  0770 305 1353',
+                                  style: pw.TextStyle(
+                                      font: font,
+                                      fontSize: 13,
+                                      color: PdfColors.black)),
+                            ),
+                          ],
                         ),
-                        pw.Center(
-                          child: pw.Text(
-                              'لتجارة المواد الصحية والعدد اليدوية والانشائية',
-                              style: pw.TextStyle(font: font, fontSize: 17)),
-                        ),
-                        pw.Center(
-                          child: pw.Text(
-                            'الموصل - الجدعة - مقابل البرج',
-                            style: pw.TextStyle(font: font, fontSize: 13),
-                          ),
-                        ),
-                        pw.Center(
-                          child: pw.Text('0771 406 3064  |  0770 305 1353',
-                              style: pw.TextStyle(
-                                  font: font,
-                                  fontSize: 13,
-                                  color: PdfColors.black)),
-                        ),
-                      ],
-                    ),
+                      ),
+                      pw.SizedBox(width: 12),
+                      pw.Container(
+                        width: 150,
+                        height: 150,
+                        // تم حذف border
+                        child: pw.Image(logoImage, fit: pw.BoxFit.contain),
+                      ),
+                    ],
                   ),
                   pw.SizedBox(height: 4),
                   // --- معلومات العميل والتاريخ ---
@@ -1635,7 +1654,17 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                               },
                               fieldViewBuilder: (context, controller, focusNode,
                                   onFieldSubmitted) {
-                                // لا تضع controller.text = ... هنا
+                                // مزامنة النص بين المتحكمين
+                                if (controller.text !=
+                                    _customerNameController.text) {
+                                  controller.text =
+                                      _customerNameController.text;
+                                  controller.selection =
+                                      TextSelection.fromPosition(
+                                    TextPosition(
+                                        offset: controller.text.length),
+                                  );
+                                }
                                 return TextFormField(
                                   controller: controller,
                                   focusNode: focusNode,
@@ -2469,6 +2498,19 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   SizedBox(height: 8),
                   Text('الفاتورة مقفلة ولا يمكن تعديلها',
                       style: TextStyle(color: Colors.grey)),
+                ],
+                // إضافة حقل أجور التحميل فقط إذا لم يكن العرض فقط أو الفاتورة مقفلة
+                if (!isViewOnly && !isLocked) ...[
+                  const SizedBox(height: 16.0),
+                  TextFormField(
+                    controller: _loadingFeeController,
+                    decoration: const InputDecoration(
+                      labelText: 'أجور التحميل (اختياري)',
+                      hintText: 'أدخل مبلغ أجور التحميل إذا وجد',
+                    ),
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                  ),
                 ],
               ],
             ),

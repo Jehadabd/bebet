@@ -103,6 +103,11 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                 'البيع بالنقد: ${summary.cashSales.toStringAsFixed(2)} دينار عراقي'),
                             Text(
                                 'البيع بالدين: ${summary.creditSales.toStringAsFixed(2)} دينار عراقي'),
+                            Text(
+                                'تسديد الديون: ${summary.totalDebtPayments.toStringAsFixed(2)} دينار عراقي',
+                                style: TextStyle(
+                                    color: Colors.green,
+                                    fontWeight: FontWeight.bold)),
                           ],
                         ),
                       ),
