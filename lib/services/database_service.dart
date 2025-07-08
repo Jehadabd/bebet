@@ -43,15 +43,22 @@ class DatabaseService {
   Future<Database> get database async {
     if (_database != null) return _database!;
     _database = await _initDatabase();
-    // --- كود مؤقت لإضافة العمود يدويًا إذا لم يكن موجودًا ---
-    try {
-      await _database!
-          .execute('ALTER TABLE products ADD COLUMN unit_hierarchy TEXT;');
-      print('DEBUG: تم إضافة عمود unit_hierarchy بنجاح!');
-    } catch (e) {
-      print('DEBUG: قد يكون العمود موجودًا بالفعل أو هناك خطأ: $e');
+    // --- تحقق من وجود العمود قبل محاولة إضافته ---
+    final columns = await _database!.rawQuery("PRAGMA table_info(products);");
+    final hasUnitHierarchy =
+        columns.any((col) => col['name'] == 'unit_hierarchy');
+    if (!hasUnitHierarchy) {
+      try {
+        await _database!
+            .execute('ALTER TABLE products ADD COLUMN unit_hierarchy TEXT;');
+        print('DEBUG: تم إضافة عمود unit_hierarchy بنجاح!');
+      } catch (e) {
+        print('DEBUG: خطأ أثناء إضافة العمود unit_hierarchy: $e');
+      }
+    } else {
+      print('DEBUG: عمود unit_hierarchy موجود بالفعل، لا حاجة للإضافة.');
     }
-    // --- نهاية الكود المؤقت ---
+    // --- نهاية التحقق ---
     return _database!;
   }
 

@@ -1,5 +1,4 @@
 // screens/create_invoice_screen.dart
-// screens/create_invoice_screen.dart
 import 'package:flutter/material.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
@@ -24,6 +23,10 @@ import 'package:alnaser/services/pdf_service.dart';
 import 'package:alnaser/services/printing_service_platform_io.dart';
 import 'package:get_storage/get_storage.dart';
 import 'dart:convert';
+
+// تعريف EditableInvoiceItemRow موجود هنا (أو تأكد من وجوده قبل استخدامه في ListView)
+// إذا كان التعريف موجود بالفعل، لا داعي لأي تعديل إضافي هنا.
+// إذا لم يكن موجودًا، أضف الكود الذي تم إنشاؤه في الخطوة السابقة هنا.
 
 class CreateInvoiceScreen extends StatefulWidget {
   final Invoice? existingInvoice;
@@ -107,160 +110,186 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   @override
   void initState() {
     super.initState();
-    _printingService = getPlatformPrintingService();
-    _invoiceToManage = widget.existingInvoice;
-    _isViewOnly = widget.isViewOnly;
-    _loadingFeeController = TextEditingController();
-    _loadAutoSavedData();
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      _allProductsForUnits = await _db.getAllProducts();
-      setState(() {});
-      // تمت إزالة استدعاء _loadAutoSavedData من هنا
-    });
+    try {
+      _printingService = getPlatformPrintingService();
+      _invoiceToManage = widget.existingInvoice;
+      _isViewOnly = widget.isViewOnly;
+      _loadingFeeController = TextEditingController();
+      _loadAutoSavedData();
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        try {
+          _allProductsForUnits = await _db.getAllProducts();
+          setState(() {});
+        } catch (e) {
+          print('Error loading products: $e');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('حدث خطأ أثناء تحميل المنتجات: $e')),
+            );
+          }
+        }
+      });
 
-    // إضافة استماع للتغيرات في الحقول
-    _customerNameController.addListener(_onFieldChanged);
-    _customerPhoneController.addListener(_onFieldChanged);
-    _customerAddressController.addListener(_onFieldChanged);
-    _installerNameController.addListener(_onFieldChanged);
-    _paidAmountController.addListener(_onFieldChanged);
-    _discountController.addListener(_onFieldChanged);
+      // إضافة استماع للتغيرات في الحقول
+      _customerNameController.addListener(_onFieldChanged);
+      _customerPhoneController.addListener(_onFieldChanged);
+      _customerAddressController.addListener(_onFieldChanged);
+      _installerNameController.addListener(_onFieldChanged);
+      _paidAmountController.addListener(_onFieldChanged);
+      _discountController.addListener(_onFieldChanged);
 
-    if (_invoiceToManage != null) {
-      print(
-          'CreateInvoiceScreen: Init with existing invoice: ${_invoiceToManage!.id}');
-      print('Invoice Status on Init: ${_invoiceToManage!.status}');
-      print('Is View Only on Init: ${widget.isViewOnly}');
-      _customerNameController.text = _invoiceToManage!.customerName;
-      _customerPhoneController.text = _invoiceToManage!.customerPhone ?? '';
-      _customerAddressController.text = _invoiceToManage!.customerAddress ?? '';
-      _installerNameController.text = _invoiceToManage!.installerName ?? '';
-      _selectedDate = _invoiceToManage!.invoiceDate;
-      _paymentType = _invoiceToManage!.paymentType;
-      _totalAmountController.text = _invoiceToManage!.totalAmount.toString();
-      _paidAmountController.text =
-          _invoiceToManage!.amountPaidOnInvoice.toString();
-      _discount = _invoiceToManage!.discount;
-      _discountController.text = _discount.toStringAsFixed(2);
-      _returnAmountController.text = _invoiceToManage!.returnAmount.toString();
+      if (_invoiceToManage != null) {
+        print(
+            'CreateInvoiceScreen: Init with existing invoice: ${_invoiceToManage!.id}');
+        print('Invoice Status on Init: ${_invoiceToManage!.status}');
+        print('Is View Only on Init: ${widget.isViewOnly}');
+        _customerNameController.text = _invoiceToManage!.customerName;
+        _customerPhoneController.text = _invoiceToManage!.customerPhone ?? '';
+        _customerAddressController.text =
+            _invoiceToManage!.customerAddress ?? '';
+        _installerNameController.text = _invoiceToManage!.installerName ?? '';
+        _selectedDate = _invoiceToManage!.invoiceDate;
+        _paymentType = _invoiceToManage!.paymentType;
+        _totalAmountController.text = _invoiceToManage!.totalAmount.toString();
+        _paidAmountController.text =
+            _invoiceToManage!.amountPaidOnInvoice.toString();
+        _discount = _invoiceToManage!.discount;
+        _discountController.text = _discount.toStringAsFixed(2);
+        _returnAmountController.text =
+            _invoiceToManage!.returnAmount.toString();
 
-      _loadInvoiceItems();
-    } else {
-      print('CreateInvoiceScreen: Init with new invoice');
-      _totalAmountController.text = '0';
+        _loadInvoiceItems();
+      } else {
+        print('CreateInvoiceScreen: Init with new invoice');
+        _totalAmountController.text = '0';
+      }
+      // تهيئة FocusNode
+      _quantityFocusNode.addListener(_onFieldChanged);
+      // إضافة مستمع لحقل البحث
+      _productSearchController.addListener(() {
+        if (_suppressSearch) {
+          _suppressSearch = false;
+          return;
+        }
+        if (_productSearchController.text.isNotEmpty) {
+          _searchProducts(_productSearchController.text);
+        }
+        if (_productSearchController.text.isEmpty) {
+          setState(() {
+            _searchResults = [];
+            _selectedProduct = null;
+          });
+        }
+      });
+    } catch (e) {
+      print('Error in initState: $e');
     }
-    // تهيئة FocusNode
-    _quantityFocusNode.addListener(_onFieldChanged);
-    // إضافة مستمع لحقل البحث
-    _productSearchController.addListener(() {
-      if (_suppressSearch) {
-        _suppressSearch = false;
-        return;
-      }
-      if (_productSearchController.text.isNotEmpty) {
-        _searchProducts(_productSearchController.text);
-      }
-      if (_productSearchController.text.isEmpty) {
-        setState(() {
-          _searchResults = [];
-          _selectedProduct = null;
-        });
-      }
-    });
   }
 
   // تحميل البيانات المحفوظة تلقائياً
   void _loadAutoSavedData() {
-    if (_isViewOnly || widget.existingInvoice != null) {
-      return;
-    }
-
-    final data = _storage.read('temp_invoice_data');
-    if (data == null) return;
-
-    setState(() {
-      _customerNameController.text = data['customerName'] ?? '';
-      _customerPhoneController.text = data['customerPhone'] ?? '';
-      _customerAddressController.text = data['customerAddress'] ?? '';
-      _installerNameController.text = data['installerName'] ?? '';
-
-      if (data['selectedDate'] != null) {
-        _selectedDate = DateTime.parse(data['selectedDate']);
+    try {
+      if (_isViewOnly || widget.existingInvoice != null) {
+        return;
       }
 
-      _paymentType = data['paymentType'] ?? 'نقد';
-      _discount = data['discount'] ?? 0;
-      _discountController.text = _discount.toStringAsFixed(2);
-      _paidAmountController.text = data['paidAmount'] ?? '';
+      final data = _storage.read('temp_invoice_data');
+      if (data == null) return;
 
-      _invoiceItems = (data['invoiceItems'] as List<dynamic>).map((item) {
-        return InvoiceItem(
-          invoiceId: 0,
-          productName: item['productName'],
-          unit: item['unit'],
-          unitPrice: item['unitPrice'],
-          costPrice: item['costPrice'] ?? 0,
-          quantityIndividual: item['quantityIndividual'],
-          quantityLargeUnit: item['quantityLargeUnit'],
-          appliedPrice: item['appliedPrice'],
-          itemTotal: item['itemTotal'],
-          saleType: item['saleType'],
-          unitsInLargeUnit: item['unitsInLargeUnit'],
-        );
-      }).toList();
+      setState(() {
+        _customerNameController.text = data['customerName'] ?? '';
+        _customerPhoneController.text = data['customerPhone'] ?? '';
+        _customerAddressController.text = data['customerAddress'] ?? '';
+        _installerNameController.text = data['installerName'] ?? '';
 
-      _totalAmountController.text = _invoiceItems
-          .fold(0.0, (sum, item) => sum + item.itemTotal)
-          .toStringAsFixed(2);
-    });
+        if (data['selectedDate'] != null) {
+          _selectedDate = DateTime.parse(data['selectedDate']);
+        }
+
+        _paymentType = data['paymentType'] ?? 'نقد';
+        _discount = data['discount'] ?? 0;
+        _discountController.text = _discount.toStringAsFixed(2);
+        _paidAmountController.text = data['paidAmount'] ?? '';
+
+        _invoiceItems = (data['invoiceItems'] as List<dynamic>).map((item) {
+          return InvoiceItem(
+            invoiceId: 0,
+            productName: item['productName'],
+            unit: item['unit'],
+            unitPrice: item['unitPrice'],
+            costPrice: item['costPrice'] ?? 0,
+            quantityIndividual: item['quantityIndividual'],
+            quantityLargeUnit: item['quantityLargeUnit'],
+            appliedPrice: item['appliedPrice'],
+            itemTotal: item['itemTotal'],
+            saleType: item['saleType'],
+            unitsInLargeUnit: item['unitsInLargeUnit'],
+          );
+        }).toList();
+
+        _totalAmountController.text = _invoiceItems
+            .fold(0.0, (sum, item) => sum + item.itemTotal)
+            .toStringAsFixed(2);
+      });
+    } catch (e) {
+      print('Error loading auto-saved data: $e');
+    }
   }
 
   // حفظ البيانات تلقائياً
   void _autoSave() {
-    if (_savedOrSuspended || _isViewOnly || widget.existingInvoice != null) {
-      return;
+    try {
+      if (_savedOrSuspended || _isViewOnly || widget.existingInvoice != null) {
+        return;
+      }
+
+      final data = {
+        'customerName': _customerNameController.text,
+        'customerPhone': _customerPhoneController.text,
+        'customerAddress': _customerAddressController.text,
+        'installerName': _installerNameController.text,
+        'selectedDate': _selectedDate.toIso8601String(),
+        'paymentType': _paymentType,
+        'discount': _discount,
+        'paidAmount': _paidAmountController.text,
+        'invoiceItems': _invoiceItems
+            .map((item) => {
+                  'productName': item.productName,
+                  'unit': item.unit,
+                  'unitPrice': item.unitPrice,
+                  'costPrice': item.costPrice,
+                  'quantityIndividual': item.quantityIndividual,
+                  'quantityLargeUnit': item.quantityLargeUnit,
+                  'appliedPrice': item.appliedPrice,
+                  'itemTotal': item.itemTotal,
+                  'saleType': item.saleType,
+                  'unitsInLargeUnit': item.unitsInLargeUnit,
+                })
+            .toList(),
+      };
+
+      _storage.write('temp_invoice_data', data);
+    } catch (e) {
+      print('Error in autoSave: $e');
     }
-
-    final data = {
-      'customerName': _customerNameController.text,
-      'customerPhone': _customerPhoneController.text,
-      'customerAddress': _customerAddressController.text,
-      'installerName': _installerNameController.text,
-      'selectedDate': _selectedDate.toIso8601String(),
-      'paymentType': _paymentType,
-      'discount': _discount,
-      'paidAmount': _paidAmountController.text,
-      'invoiceItems': _invoiceItems
-          .map((item) => {
-                'productName': item.productName,
-                'unit': item.unit,
-                'unitPrice': item.unitPrice,
-                'costPrice': item.costPrice,
-                'quantityIndividual': item.quantityIndividual,
-                'quantityLargeUnit': item.quantityLargeUnit,
-                'appliedPrice': item.appliedPrice,
-                'itemTotal': item.itemTotal,
-                'saleType': item.saleType,
-                'unitsInLargeUnit': item.unitsInLargeUnit,
-              })
-          .toList(),
-    };
-
-    _storage.write('temp_invoice_data', data);
   }
 
   // معالج تغيير الحقول مع تأخير
   void _onFieldChanged() {
-    if (_debounceTimer?.isActive ?? false) {
-      _debounceTimer!.cancel();
-    }
+    try {
+      if (_debounceTimer?.isActive ?? false) {
+        _debounceTimer!.cancel();
+      }
 
-    _debounceTimer = Timer(const Duration(seconds: 1), _autoSave);
+      _debounceTimer = Timer(const Duration(seconds: 1), _autoSave);
+    } catch (e) {
+      print('Error in onFieldChanged: $e');
+    }
   }
 
   Future<void> _loadInvoiceItems() async {
-    if (_invoiceToManage != null && _invoiceToManage!.id != null) {
-      try {
+    try {
+      if (_invoiceToManage != null && _invoiceToManage!.id != null) {
         final items = await _db.getInvoiceItems(_invoiceToManage!.id!);
         setState(() {
           _invoiceItems = items;
@@ -268,212 +297,275 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               .fold(0.0, (sum, item) => sum + item.itemTotal)
               .toStringAsFixed(2);
         });
-      } catch (e) {
-        print('Error loading invoice items: $e');
+      }
+    } catch (e) {
+      print('Error loading invoice items: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('حدث خطأ أثناء تحميل أصناف الفاتورة: $e')),
+        );
       }
     }
   }
 
   @override
   void dispose() {
-    // إزالة المستمعين
-    _customerNameController.removeListener(_onFieldChanged);
-    _customerPhoneController.removeListener(_onFieldChanged);
-    _customerAddressController.removeListener(_onFieldChanged);
-    _installerNameController.removeListener(_onFieldChanged);
-    _paidAmountController.removeListener(_onFieldChanged);
-    _discountController.removeListener(_onFieldChanged);
+    try {
+      // إزالة المستمعين
+      _customerNameController.removeListener(_onFieldChanged);
+      _customerPhoneController.removeListener(_onFieldChanged);
+      _customerAddressController.removeListener(_onFieldChanged);
+      _installerNameController.removeListener(_onFieldChanged);
+      _paidAmountController.removeListener(_onFieldChanged);
+      _discountController.removeListener(_onFieldChanged);
 
-    // إلغاء المؤقت
-    _debounceTimer?.cancel();
+      // إلغاء المؤقت
+      _debounceTimer?.cancel();
 
-    // الحفظ النهائي عند إغلاق الشاشة
-    if (!_savedOrSuspended && widget.existingInvoice == null && !_isViewOnly) {
-      _autoSave();
+      // الحفظ النهائي عند إغلاق الشاشة
+      if (!_savedOrSuspended &&
+          widget.existingInvoice == null &&
+          !_isViewOnly) {
+        _autoSave();
+      }
+
+      _customerNameController.dispose();
+      _customerPhoneController.dispose();
+      _customerAddressController.dispose();
+      _installerNameController.dispose();
+      _productSearchController.dispose();
+      _quantityController.dispose();
+      _itemsController.dispose();
+      _totalAmountController.dispose();
+      _paidAmountController.dispose();
+      _discountController.dispose();
+      _returnAmountController.dispose();
+      _quantityFocusNode.dispose(); // تنظيف FocusNode
+      _searchFocusNode.dispose();
+      _loadingFeeController.dispose();
+      super.dispose();
+    } catch (e) {
+      print('Error in dispose: $e');
     }
-
-    _customerNameController.dispose();
-    _customerPhoneController.dispose();
-    _customerAddressController.dispose();
-    _installerNameController.dispose();
-    _productSearchController.dispose();
-    _quantityController.dispose();
-    _itemsController.dispose();
-    _totalAmountController.dispose();
-    _paidAmountController.dispose();
-    _discountController.dispose();
-    _returnAmountController.dispose();
-    _quantityFocusNode.dispose(); // تنظيف FocusNode
-    _searchFocusNode.dispose();
-    _loadingFeeController.dispose();
-    super.dispose();
   }
 
   Future<void> _selectDate(BuildContext context) async {
-    final DateTime? picked = await showDatePicker(
-      context: context,
-      initialDate: _selectedDate,
-      firstDate: DateTime(2000),
-      lastDate: DateTime(2100),
-      locale: const Locale('ar', 'SA'),
-    );
-    if (picked != null && picked != _selectedDate) {
-      setState(() {
-        _selectedDate = picked;
-        _autoSave(); // حفظ تلقائي عند تغيير التاريخ
-      });
+    try {
+      final DateTime? picked = await showDatePicker(
+        context: context,
+        initialDate: _selectedDate,
+        firstDate: DateTime(2000),
+        lastDate: DateTime(2100),
+        locale: const Locale('ar', 'SA'),
+      );
+      if (picked != null && picked != _selectedDate) {
+        setState(() {
+          _selectedDate = picked;
+          _autoSave(); // حفظ تلقائي عند تغيير التاريخ
+        });
+      }
+    } catch (e) {
+      print('Error selecting date: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('حدث خطأ أثناء اختيار التاريخ: $e')),
+        );
+      }
     }
   }
 
   Future<void> _searchProducts(String query) async {
-    if (query.isEmpty) {
+    try {
+      if (query.isEmpty) {
+        setState(() {
+          _searchResults = [];
+        });
+        return;
+      }
+      final results = await _db.searchProducts(query);
+      setState(() {
+        _searchResults = results;
+      });
+    } catch (e) {
+      print('Error searching products: $e');
       setState(() {
         _searchResults = [];
       });
-      return;
     }
-    final results = await _db.searchProducts(query);
-    setState(() {
-      _searchResults = results;
-    });
   }
 
   // دالة لتحديث المبلغ المسدد تلقائيًا إذا كان الدفع نقد
   void _updatePaidAmountIfCash() {
-    if (_paymentType == 'نقد') {
-      _guardDiscount();
-      final currentTotalAmount =
-          _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-      final total = currentTotalAmount - _discount;
-      _paidAmountController.text =
-          total.clamp(0, double.infinity).toStringAsFixed(2);
+    try {
+      if (_paymentType == 'نقد') {
+        _guardDiscount();
+        final currentTotalAmount =
+            _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+        final total = currentTotalAmount - _discount;
+        _paidAmountController.text =
+            total.clamp(0, double.infinity).toStringAsFixed(2);
+      }
+    } catch (e) {
+      print('Error in updatePaidAmountIfCash: $e');
     }
   }
 
   // دالة مركزية لحماية الخصم
   void _guardDiscount() {
-    final currentTotalAmount =
-        _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-    // الحد الأعلى للخصم هو أقل من نصف الإجمالي
-    final maxDiscount = (currentTotalAmount / 2) - 1;
-    if (_discount > maxDiscount) {
-      _discount = maxDiscount > 0 ? maxDiscount : 0.0;
-      _discountController.text = _discount.toStringAsFixed(2);
-    }
-    if (_discount < 0) {
-      _discount = 0.0;
-      _discountController.text = '0';
+    try {
+      final currentTotalAmount =
+          _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+      // الحد الأعلى للخصم هو أقل من نصف الإجمالي
+      final maxDiscount = (currentTotalAmount / 2) - 1;
+      if (_discount > maxDiscount) {
+        _discount = maxDiscount > 0 ? maxDiscount : 0.0;
+        _discountController.text = _discount.toStringAsFixed(2);
+      }
+      if (_discount < 0) {
+        _discount = 0.0;
+        _discountController.text = '0';
+      }
+    } catch (e) {
+      print('Error in guardDiscount: $e');
     }
   }
 
   void _addInvoiceItem() {
-    if (_formKey.currentState!.validate() &&
-        _selectedProduct != null &&
-        _selectedPriceLevel != null) {
-      final double inputQuantity =
-          double.tryParse(_quantityController.text.trim()) ?? 0.0;
-      if (inputQuantity <= 0) return;
-      double finalAppliedPrice = _selectedPriceLevel!;
-      double baseUnitsPerSelectedUnit = 1.0;
-      // --- تعديل منطق التسعير التراكمي ---
-      if (_selectedProduct!.unit == 'piece' && _selectedUnitForItem != 'قطعة') {
-        // إذا كان هناك تسلسل هرمي للوحدات
-        if (_selectedProduct!.unitHierarchy != null &&
-            _selectedProduct!.unitHierarchy!.isNotEmpty) {
-          try {
-            final List<dynamic> hierarchy = json
-                .decode(_selectedProduct!.unitHierarchy!.replaceAll("'", '"'));
-            List<num> factors = [];
-            for (int i = 0; i < hierarchy.length; i++) {
-              final unitName =
-                  hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
-              final quantity =
-                  num.tryParse(hierarchy[i]['quantity'].toString()) ?? 1;
-              factors.add(quantity);
-              if (unitName == _selectedUnitForItem) {
-                break;
+    try {
+      if (_formKey.currentState!.validate() &&
+          _selectedProduct != null &&
+          _selectedPriceLevel != null) {
+        final double inputQuantity =
+            double.tryParse(_quantityController.text.trim()) ?? 0.0;
+        if (inputQuantity <= 0) return;
+        double finalAppliedPrice = _selectedPriceLevel!;
+        double baseUnitsPerSelectedUnit = 1.0;
+        // --- تعديل منطق التسعير التراكمي ---
+        if (_selectedProduct!.unit == 'piece' &&
+            _selectedUnitForItem != 'قطعة') {
+          // إذا كان هناك تسلسل هرمي للوحدات
+          if (_selectedProduct!.unitHierarchy != null &&
+              _selectedProduct!.unitHierarchy!.isNotEmpty) {
+            try {
+              final List<dynamic> hierarchy = json.decode(
+                  _selectedProduct!.unitHierarchy!.replaceAll("'", '"'));
+              List<num> factors = [];
+              for (int i = 0; i < hierarchy.length; i++) {
+                final unitName =
+                    hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
+                final quantity =
+                    num.tryParse(hierarchy[i]['quantity'].toString()) ?? 1;
+                factors.add(quantity);
+                if (unitName == _selectedUnitForItem) {
+                  break;
+                }
               }
-            }
-            baseUnitsPerSelectedUnit = factors.fold(1, (a, b) => a * b);
-            finalAppliedPrice = _selectedPriceLevel! * baseUnitsPerSelectedUnit;
-          } catch (e) {
-            // fallback: منطق قديم
-            final selectedHierarchyUnit = _currentUnitHierarchy.firstWhere(
-              (element) =>
-                  (element['unit_name'] ?? element['name']) ==
-                  _selectedUnitForItem,
-              orElse: () => {},
-            );
-            if (selectedHierarchyUnit.isNotEmpty) {
-              baseUnitsPerSelectedUnit = double.tryParse(
-                      selectedHierarchyUnit['quantity'].toString()) ??
-                  1.0;
+              baseUnitsPerSelectedUnit = factors.fold(1, (a, b) => a * b);
               finalAppliedPrice =
                   _selectedPriceLevel! * baseUnitsPerSelectedUnit;
+            } catch (e) {
+              // fallback: منطق قديم
+              final selectedHierarchyUnit = _currentUnitHierarchy.firstWhere(
+                (element) =>
+                    (element['unit_name'] ?? element['name']) ==
+                    _selectedUnitForItem,
+                orElse: () => {},
+              );
+              if (selectedHierarchyUnit.isNotEmpty) {
+                baseUnitsPerSelectedUnit = double.tryParse(
+                        selectedHierarchyUnit['quantity'].toString()) ??
+                    1.0;
+                finalAppliedPrice =
+                    _selectedPriceLevel! * baseUnitsPerSelectedUnit;
+              }
             }
           }
+        } else if (_selectedProduct!.unit == 'meter' &&
+            _selectedUnitForItem == 'لفة') {
+          baseUnitsPerSelectedUnit = _selectedProduct!.lengthPerUnit ?? 1.0;
+          finalAppliedPrice = _selectedPriceLevel! * baseUnitsPerSelectedUnit;
         }
-      } else if (_selectedProduct!.unit == 'meter' &&
-          _selectedUnitForItem == 'لفة') {
-        baseUnitsPerSelectedUnit = _selectedProduct!.lengthPerUnit ?? 1.0;
-        finalAppliedPrice = _selectedPriceLevel! * baseUnitsPerSelectedUnit;
-      }
-      final double totalBaseUnitsSold =
-          inputQuantity * baseUnitsPerSelectedUnit;
-      final double finalItemCostPrice =
-          (_selectedProduct!.costPrice ?? 0) * totalBaseUnitsSold;
-      final double finalItemTotal = inputQuantity * finalAppliedPrice;
-      double? quantityIndividual;
-      double? quantityLargeUnit;
-      if ((_selectedProduct!.unit == 'piece' &&
-              _selectedUnitForItem == 'قطعة') ||
-          (_selectedProduct!.unit == 'meter' &&
-              _selectedUnitForItem == 'متر')) {
-        quantityIndividual = inputQuantity;
-      } else {
-        quantityLargeUnit = inputQuantity;
-      }
-      final newItem = InvoiceItem(
-        invoiceId: 0,
-        productName: _selectedProduct!.name,
-        unit: _selectedProduct!.unit,
-        unitPrice: _selectedProduct!.unitPrice,
-        costPrice: finalItemCostPrice,
-        quantityIndividual: quantityIndividual,
-        quantityLargeUnit: quantityLargeUnit,
-        appliedPrice: finalAppliedPrice,
-        itemTotal: finalItemTotal,
-        saleType: _selectedUnitForItem,
-        unitsInLargeUnit:
-            baseUnitsPerSelectedUnit != 1.0 ? baseUnitsPerSelectedUnit : null,
-      );
-      setState(() {
-        final existingIndex = _invoiceItems.indexWhere((item) =>
-            item.productName == newItem.productName &&
-            item.saleType == newItem.saleType &&
-            item.unit == newItem.unit);
-        if (existingIndex != -1) {
-          final existingItem = _invoiceItems[existingIndex];
-          _invoiceItems[existingIndex] = existingItem.copyWith(
-            quantityIndividual: (existingItem.quantityIndividual ?? 0) +
-                (newItem.quantityIndividual ?? 0),
-            quantityLargeUnit: (existingItem.quantityLargeUnit ?? 0) +
-                (newItem.quantityLargeUnit ?? 0),
-            itemTotal: (existingItem.itemTotal) + (newItem.itemTotal),
-            costPrice: (existingItem.costPrice ?? 0) + (newItem.costPrice ?? 0),
-            unitsInLargeUnit: newItem.unitsInLargeUnit,
-          );
+        final double totalBaseUnitsSold =
+            inputQuantity * baseUnitsPerSelectedUnit;
+        final double finalItemCostPrice =
+            (_selectedProduct!.costPrice ?? 0) * totalBaseUnitsSold;
+        final double finalItemTotal = inputQuantity * finalAppliedPrice;
+        double? quantityIndividual;
+        double? quantityLargeUnit;
+        if ((_selectedProduct!.unit == 'piece' &&
+                _selectedUnitForItem == 'قطعة') ||
+            (_selectedProduct!.unit == 'meter' &&
+                _selectedUnitForItem == 'متر')) {
+          quantityIndividual = inputQuantity;
         } else {
-          _invoiceItems.add(newItem);
+          quantityLargeUnit = inputQuantity;
         }
-        _productSearchController.clear();
-        _quantityController.clear();
-        _selectedProduct = null;
-        _selectedPriceLevel = null;
-        _searchResults = [];
-        _selectedUnitForItem = 'قطعة';
-        _currentUnitOptions = ['قطعة'];
-        _currentUnitHierarchy = [];
+        final newItem = InvoiceItem(
+          invoiceId: 0,
+          productName: _selectedProduct!.name,
+          unit: _selectedProduct!.unit,
+          unitPrice: _selectedProduct!.unitPrice,
+          costPrice: finalItemCostPrice,
+          quantityIndividual: quantityIndividual,
+          quantityLargeUnit: quantityLargeUnit,
+          appliedPrice: finalAppliedPrice,
+          itemTotal: finalItemTotal,
+          saleType: _selectedUnitForItem,
+          unitsInLargeUnit:
+              baseUnitsPerSelectedUnit != 1.0 ? baseUnitsPerSelectedUnit : null,
+        );
+        setState(() {
+          final existingIndex = _invoiceItems.indexWhere((item) =>
+              item.productName == newItem.productName &&
+              item.saleType == newItem.saleType &&
+              item.unit == newItem.unit);
+          if (existingIndex != -1) {
+            final existingItem = _invoiceItems[existingIndex];
+            _invoiceItems[existingIndex] = existingItem.copyWith(
+              quantityIndividual: (existingItem.quantityIndividual ?? 0) +
+                  (newItem.quantityIndividual ?? 0),
+              quantityLargeUnit: (existingItem.quantityLargeUnit ?? 0) +
+                  (newItem.quantityLargeUnit ?? 0),
+              itemTotal: (existingItem.itemTotal) + (newItem.itemTotal),
+              costPrice:
+                  (existingItem.costPrice ?? 0) + (newItem.costPrice ?? 0),
+              unitsInLargeUnit: newItem.unitsInLargeUnit,
+            );
+          } else {
+            _invoiceItems.add(newItem);
+          }
+          _productSearchController.clear();
+          _quantityController.clear();
+          _selectedProduct = null;
+          _selectedPriceLevel = null;
+          _searchResults = [];
+          _selectedUnitForItem = 'قطعة';
+          _currentUnitOptions = ['قطعة'];
+          _currentUnitHierarchy = [];
+          _guardDiscount();
+          _updatePaidAmountIfCash();
+          _autoSave();
+          if (_invoiceToManage != null &&
+              _invoiceToManage!.status == 'معلقة' &&
+              !_invoiceToManage!.isLocked) {
+            autoSaveSuspendedInvoice();
+          }
+        });
+      }
+    } catch (e) {
+      print('Error adding invoice item: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('حدث خطأ أثناء إضافة الصنف: $e')),
+        );
+      }
+    }
+  }
+
+  void _removeInvoiceItem(int index) {
+    try {
+      setState(() {
+        _invoiceItems.removeAt(index);
         _guardDiscount();
         _updatePaidAmountIfCash();
         _autoSave();
@@ -483,21 +575,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           autoSaveSuspendedInvoice();
         }
       });
-    }
-  }
-
-  void _removeInvoiceItem(int index) {
-    setState(() {
-      _invoiceItems.removeAt(index);
-      _guardDiscount();
-      _updatePaidAmountIfCash();
-      _autoSave();
-      if (_invoiceToManage != null &&
-          _invoiceToManage!.status == 'معلقة' &&
-          !_invoiceToManage!.isLocked) {
-        autoSaveSuspendedInvoice();
+    } catch (e) {
+      print('Error removing invoice item: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('حدث خطأ أثناء حذف الصنف: $e')),
+        );
       }
-    });
+    }
   }
 
   Future<Invoice?> _saveInvoice({bool printAfterSave = false}) async {
@@ -776,337 +861,350 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   }
 
   Future<pw.Document> _generateInvoicePdf() async {
-    final pdf = pw.Document();
-    // تحميل صورة اللوجو الجديدة من الأصول
-    final logoBytes = await rootBundle
-        .load('assets/icon/AL_NASSER_logo_transparent_medium.png');
-    final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
-    final font =
-        pw.Font.ttf(await rootBundle.load('assets/fonts/Amiri-Regular.ttf'));
-    final alnaserFont = pw.Font.ttf(
-        await rootBundle.load('assets/fonts/Old Antic Outline Shaded.ttf'));
+    try {
+      final pdf = pw.Document();
+      // تحميل صورة اللوجو الجديدة من الأصول
+      final logoBytes = await rootBundle
+          .load('assets/icon/AL_NASSER_logo_transparent_medium.png');
+      final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
+      final font =
+          pw.Font.ttf(await rootBundle.load('assets/fonts/Amiri-Regular.ttf'));
+      final alnaserFont = pw.Font.ttf(
+          await rootBundle.load('assets/fonts/Old Antic Outline Shaded.ttf'));
 
-    // دالة مساعدة لبناء سلسلة التحويل من InvoiceItem
-    String buildUnitConversionStringForPdf(InvoiceItem item, Product? product) {
-      if (item.unit == 'meter') {
-        if (item.saleType == 'لفة' && item.unitsInLargeUnit != null) {
-          return item.unitsInLargeUnit!.toString();
-        } else {
-          return '';
-        }
-      }
-      if (item.saleType == 'قطعة' || item.saleType == 'متر') {
-        return '';
-      }
-      if (product == null ||
-          product.unitHierarchy == null ||
-          product.unitHierarchy!.isEmpty) {
-        return item.unitsInLargeUnit?.toString() ?? '';
-      }
-      try {
-        final List<dynamic> hierarchy =
-            json.decode(product.unitHierarchy!.replaceAll("'", '"'));
-        List<String> factors = [];
-        for (int i = 0; i < hierarchy.length; i++) {
-          final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
-          final quantity = hierarchy[i]['quantity'];
-          factors.add(quantity.toString());
-          if (unitName == item.saleType) {
-            break;
+      // دالة مساعدة لبناء سلسلة التحويل من InvoiceItem
+      String buildUnitConversionStringForPdf(
+          InvoiceItem item, Product? product) {
+        if (item.unit == 'meter') {
+          if (item.saleType == 'لفة' && item.unitsInLargeUnit != null) {
+            return item.unitsInLargeUnit!.toString();
+          } else {
+            return '';
           }
         }
-        if (factors.isEmpty) {
+        if (item.saleType == 'قطعة' || item.saleType == 'متر') {
+          return '';
+        }
+        if (product == null ||
+            product.unitHierarchy == null ||
+            product.unitHierarchy!.isEmpty) {
           return item.unitsInLargeUnit?.toString() ?? '';
         }
-        return factors.join(' × ');
-      } catch (e) {
-        return item.unitsInLargeUnit?.toString() ?? '';
+        try {
+          final List<dynamic> hierarchy =
+              json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+          List<String> factors = [];
+          for (int i = 0; i < hierarchy.length; i++) {
+            final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
+            final quantity = hierarchy[i]['quantity'];
+            factors.add(quantity.toString());
+            if (unitName == item.saleType) {
+              break;
+            }
+          }
+          if (factors.isEmpty) {
+            return item.unitsInLargeUnit?.toString() ?? '';
+          }
+          return factors.join(' × ');
+        } catch (e) {
+          return item.unitsInLargeUnit?.toString() ?? '';
+        }
       }
-    }
 
-    // جلب جميع المنتجات لمطابقة الهيكل الهرمي
-    final allProducts = await _db.getAllProducts();
+      // جلب جميع المنتجات لمطابقة الهيكل الهرمي
+      final allProducts = await _db.getAllProducts();
 
-    final currentTotalAmount =
-        _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-    final discount = _discount;
-    final afterDiscount =
-        (currentTotalAmount - discount).clamp(0, double.infinity);
+      final currentTotalAmount =
+          _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+      final discount = _discount;
+      final afterDiscount =
+          (currentTotalAmount - discount).clamp(0, double.infinity);
 
-    // حساب الديون
-    double previousDebt = 0.0;
-    double currentDebt = 0.0;
-    final customerName = _customerNameController.text.trim();
-    final customerPhone = _customerPhoneController.text.trim();
-    if (customerName.isNotEmpty) {
-      final customers = await _db.searchCustomers(customerName);
-      Customer? matchedCustomer;
-      if (customerPhone.isNotEmpty) {
-        matchedCustomer = customers
-                .where(
-                  (c) =>
-                      c.name.trim() == customerName &&
-                      (c.phone ?? '').trim() == customerPhone,
-                )
-                .isNotEmpty
-            ? customers
-                .where(
-                  (c) =>
-                      c.name.trim() == customerName &&
-                      (c.phone ?? '').trim() == customerPhone,
-                )
-                .first
-            : null;
+      // حساب الديون
+      double previousDebt = 0.0;
+      double currentDebt = 0.0;
+      final customerName = _customerNameController.text.trim();
+      final customerPhone = _customerPhoneController.text.trim();
+      if (customerName.isNotEmpty) {
+        final customers = await _db.searchCustomers(customerName);
+        Customer? matchedCustomer;
+        if (customerPhone.isNotEmpty) {
+          matchedCustomer = customers
+                  .where(
+                    (c) =>
+                        c.name.trim() == customerName &&
+                        (c.phone ?? '').trim() == customerPhone,
+                  )
+                  .isNotEmpty
+              ? customers
+                  .where(
+                    (c) =>
+                        c.name.trim() == customerName &&
+                        (c.phone ?? '').trim() == customerPhone,
+                  )
+                  .first
+              : null;
+        } else {
+          matchedCustomer = customers
+                  .where(
+                    (c) => c.name.trim() == customerName,
+                  )
+                  .isNotEmpty
+              ? customers
+                  .where(
+                    (c) => c.name.trim() == customerName,
+                  )
+                  .first
+              : null;
+        }
+        if (matchedCustomer != null) {
+          previousDebt = matchedCustomer.currentTotalDebt;
+        }
+      }
+      final paid = double.tryParse(_paidAmountController.text) ?? 0.0;
+      final isCash = _paymentType == 'نقد';
+      final remaining = isCash ? 0 : (afterDiscount - paid);
+      if (isCash) {
+        currentDebt = previousDebt;
       } else {
-        matchedCustomer = customers
-                .where(
-                  (c) => c.name.trim() == customerName,
-                )
-                .isNotEmpty
-            ? customers
-                .where(
-                  (c) => c.name.trim() == customerName,
-                )
-                .first
-            : null;
+        currentDebt = previousDebt + remaining;
       }
-      if (matchedCustomer != null) {
-        previousDebt = matchedCustomer.currentTotalDebt;
+
+      int invoiceId;
+      if (_invoiceToManage != null && _invoiceToManage!.id != null) {
+        invoiceId = _invoiceToManage!.id!;
+      } else {
+        invoiceId = (await _db.getLastInvoiceId()) + 1;
       }
-    }
-    final paid = double.tryParse(_paidAmountController.text) ?? 0.0;
-    final isCash = _paymentType == 'نقد';
-    final remaining = isCash ? 0 : (afterDiscount - paid);
-    if (isCash) {
-      currentDebt = previousDebt;
-    } else {
-      currentDebt = previousDebt + remaining;
-    }
 
-    int invoiceId;
-    if (_invoiceToManage != null && _invoiceToManage!.id != null) {
-      invoiceId = _invoiceToManage!.id!;
-    } else {
-      invoiceId = (await _db.getLastInvoiceId()) + 1;
-    }
+      const itemsPerPage = 20;
+      final totalPages = (_invoiceItems.length / itemsPerPage).ceil();
 
-    const itemsPerPage = 20;
-    final totalPages = (_invoiceItems.length / itemsPerPage).ceil();
+      for (var pageIndex = 0; pageIndex < totalPages; pageIndex++) {
+        final start = pageIndex * itemsPerPage;
+        final end = (start + itemsPerPage) > _invoiceItems.length
+            ? _invoiceItems.length
+            : start + itemsPerPage;
+        final pageItems = _invoiceItems.sublist(start, end);
 
-    for (var pageIndex = 0; pageIndex < totalPages; pageIndex++) {
-      final start = pageIndex * itemsPerPage;
-      final end = (start + itemsPerPage) > _invoiceItems.length
-          ? _invoiceItems.length
-          : start + itemsPerPage;
-      final pageItems = _invoiceItems.sublist(start, end);
-
-      pdf.addPage(
-        pw.Page(
-          pageFormat: PdfPageFormat.a4,
-          margin: pw.EdgeInsets.only(top: 0, bottom: 2, left: 10, right: 10),
-          build: (pw.Context context) {
-            return pw.Directionality(
-              textDirection: pw.TextDirection.rtl,
-              child: pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
-                children: [
-                  // --- رأس الفاتورة مع اللوجو الجديد في الجهة اليمنى ---
-                  pw.Row(
-                    crossAxisAlignment: pw.CrossAxisAlignment.start,
-                    children: [
-                      // بقية رأس الفاتورة (العنوان والمعلومات)
-                      pw.Expanded(
-                        child: pw.Column(
-                          children: [
-                            pw.SizedBox(height: 0),
-                            pw.Center(
-                              child: pw.Text(
-                                'الــــــنــــــاصــــــر',
-                                style: pw.TextStyle(
-                                  font: alnaserFont,
-                                  fontSize: 45,
-                                  height: 0,
-                                  fontWeight: pw.FontWeight.bold,
-                                  color: PdfColors.black,
+        pdf.addPage(
+          pw.Page(
+            pageFormat: PdfPageFormat.a4,
+            margin: pw.EdgeInsets.only(top: 0, bottom: 2, left: 10, right: 10),
+            build: (pw.Context context) {
+              return pw.Directionality(
+                textDirection: pw.TextDirection.rtl,
+                child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    // --- رأس الفاتورة مع اللوجو الجديد في الجهة اليمنى ---
+                    pw.Row(
+                      crossAxisAlignment: pw.CrossAxisAlignment.start,
+                      children: [
+                        // بقية رأس الفاتورة (العنوان والمعلومات)
+                        pw.Expanded(
+                          child: pw.Column(
+                            children: [
+                              pw.SizedBox(height: 0),
+                              pw.Center(
+                                child: pw.Text(
+                                  'الــــــنــــــاصــــــر',
+                                  style: pw.TextStyle(
+                                    font: alnaserFont,
+                                    fontSize: 45,
+                                    height: 0,
+                                    fontWeight: pw.FontWeight.bold,
+                                    color: PdfColors.black,
+                                  ),
                                 ),
                               ),
-                            ),
-                            pw.Center(
-                              child: pw.Text(
-                                  'لتجارة المواد الصحية والعدد اليدوية والانشائية',
-                                  style:
-                                      pw.TextStyle(font: font, fontSize: 17)),
-                            ),
-                            pw.Center(
-                              child: pw.Text(
-                                'الموصل - الجدعة - مقابل البرج',
-                                style: pw.TextStyle(font: font, fontSize: 13),
+                              pw.Center(
+                                child: pw.Text(
+                                    'لتجارة المواد الكهربائية والكيبلات',
+                                    style:
+                                        pw.TextStyle(font: font, fontSize: 17)),
                               ),
-                            ),
-                            pw.Center(
-                              child: pw.Text('0771 406 3064  |  0770 305 1353',
-                                  style: pw.TextStyle(
-                                      font: font,
-                                      fontSize: 13,
-                                      color: PdfColors.black)),
-                            ),
-                          ],
+                              pw.Center(
+                                child: pw.Text(
+                                  'الموصل - الجدعة - مقابل البرج',
+                                  style: pw.TextStyle(font: font, fontSize: 13),
+                                ),
+                              ),
+                              pw.Center(
+                                child: pw.Text(
+                                    '0773 284 5260  |  0770 304 0821',
+                                    style: pw.TextStyle(
+                                        font: font,
+                                        fontSize: 13,
+                                        color: PdfColors.black)),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                      pw.SizedBox(width: 12),
-                      pw.Container(
-                        width: 150,
-                        height: 150,
-                        // تم حذف border
-                        child: pw.Image(logoImage, fit: pw.BoxFit.contain),
-                      ),
-                    ],
-                  ),
-                  pw.SizedBox(height: 4),
-                  // --- معلومات العميل والتاريخ ---
-                  pw.Row(
-                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                    children: [
-                      pw.Text('السيد: ${_customerNameController.text}',
-                          style: pw.TextStyle(font: font, fontSize: 12)),
-                      pw.Text(
-                          'العنوان: ${_customerAddressController.text.isNotEmpty ? _customerAddressController.text : ' ______'}',
-                          style: pw.TextStyle(font: font, fontSize: 11)),
-                      pw.Text('رقم الفاتورة: ${invoiceId}',
-                          style: pw.TextStyle(font: font, fontSize: 10)),
-                      pw.Text(
-                          'الوقت: ${_invoiceToManage?.createdAt?.hour.toString().padLeft(2, '0') ?? DateTime.now().hour.toString().padLeft(2, '0')}:${_invoiceToManage?.createdAt?.minute.toString().padLeft(2, '0') ?? DateTime.now().minute.toString().padLeft(2, '0')}',
-                          style: pw.TextStyle(font: font, fontSize: 11)),
-                      pw.Text(
-                        'التاريخ: ${_selectedDate.year}/${_selectedDate.month}/${_selectedDate.day}',
-                        style: pw.TextStyle(font: font, fontSize: 11),
-                      ),
-                    ],
-                  ),
-                  pw.Divider(height: 5, thickness: 0.5),
-
-                  // --- جدول العناصر ---
-                  pw.Table(
-                    border: pw.TableBorder.all(width: 0.2),
-                    columnWidths: {
-                      0: const pw.FixedColumnWidth(90), // المبلغ
-                      1: const pw.FixedColumnWidth(70), // السعر
-                      2: const pw.FixedColumnWidth(65), // عدد الوحدات (جديد)
-                      3: const pw.FixedColumnWidth(90), // العدد
-                      4: const pw.FlexColumnWidth(0.8), // التفاصيل
-                      5: const pw.FixedColumnWidth(20), // ت
-                    },
-                    defaultVerticalAlignment:
-                        pw.TableCellVerticalAlignment.middle,
-                    children: [
-                      pw.TableRow(
-                        decoration: const pw.BoxDecoration(),
-                        children: [
-                          _headerCell('المبلغ', font),
-                          _headerCell('السعر', font),
-                          _headerCell('عدد الوحدات', font),
-                          _headerCell('العدد', font),
-                          _headerCell('التفاصيل ', font),
-                          _headerCell('ت', font),
-                        ],
-                      ),
-                      ...pageItems.asMap().entries.map((entry) {
-                        final index = entry.key + (pageIndex * itemsPerPage);
-                        final item = entry.value;
-                        final quantity = (item.quantityIndividual ??
-                            item.quantityLargeUnit ??
-                            0.0);
-                        Product? product;
-                        try {
-                          product = allProducts
-                              .firstWhere((p) => p.name == item.productName);
-                        } catch (e) {
-                          product = null;
-                        }
-                        return pw.TableRow(
-                          children: [
-                            _dataCell(
-                                formatNumber(item.itemTotal,
-                                    forceDecimal: true),
-                                font),
-                            _dataCell(
-                                formatNumber(item.appliedPrice,
-                                    forceDecimal: true),
-                                font),
-                            // عدد الوحدات (منطق جديد)
-                            _dataCell(
-                              buildUnitConversionStringForPdf(item, product),
-                              font,
-                            ),
-                            _dataCell(
-                              '${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}',
-                              font,
-                            ),
-                            _dataCell(item.productName, font,
-                                align: pw.TextAlign.right),
-                            _dataCell('${index + 1}', font),
-                          ],
-                        );
-                      }).toList(),
-                    ],
-                  ),
-                  pw.Divider(height: 4, thickness: 0.4),
-
-                  // --- المجاميع في الصفحة الأخيرة فقط ---
-                  if (pageIndex == totalPages - 1) ...[
-                    pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.end,
+                        pw.SizedBox(width: 12),
+                        pw.Container(
+                          width: 150,
+                          height: 150,
+                          // تم حذف border
+                          child: pw.Image(logoImage, fit: pw.BoxFit.contain),
+                        ),
+                      ],
+                    ),
+                    pw.SizedBox(height: 4),
+                    // --- معلومات العميل والتاريخ ---
+                    pw.Row(
+                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                       children: [
-                        pw.Row(
-                          mainAxisAlignment: pw.MainAxisAlignment.end,
+                        pw.Text('السيد: ${_customerNameController.text}',
+                            style: pw.TextStyle(font: font, fontSize: 12)),
+                        pw.Text(
+                            'العنوان: ${_customerAddressController.text.isNotEmpty ? _customerAddressController.text : ' ______'}',
+                            style: pw.TextStyle(font: font, fontSize: 11)),
+                        pw.Text('رقم الفاتورة: ${invoiceId}',
+                            style: pw.TextStyle(font: font, fontSize: 10)),
+                        pw.Text(
+                            'الوقت: ${_invoiceToManage?.createdAt?.hour.toString().padLeft(2, '0') ?? DateTime.now().hour.toString().padLeft(2, '0')}:${_invoiceToManage?.createdAt?.minute.toString().padLeft(2, '0') ?? DateTime.now().minute.toString().padLeft(2, '0')}',
+                            style: pw.TextStyle(font: font, fontSize: 11)),
+                        pw.Text(
+                          'التاريخ: ${_selectedDate.year}/${_selectedDate.month}/${_selectedDate.day}',
+                          style: pw.TextStyle(font: font, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                    pw.Divider(height: 5, thickness: 0.5),
+
+                    // --- جدول العناصر ---
+                    pw.Table(
+                      border: pw.TableBorder.all(width: 0.2),
+                      columnWidths: {
+                        0: const pw.FixedColumnWidth(90), // المبلغ
+                        1: const pw.FixedColumnWidth(70), // السعر
+                        2: const pw.FixedColumnWidth(65), // عدد الوحدات (جديد)
+                        3: const pw.FixedColumnWidth(90), // العدد
+                        4: const pw.FlexColumnWidth(0.8), // التفاصيل
+                        5: const pw.FixedColumnWidth(20), // ت
+                      },
+                      defaultVerticalAlignment:
+                          pw.TableCellVerticalAlignment.middle,
+                      children: [
+                        pw.TableRow(
+                          decoration: const pw.BoxDecoration(),
                           children: [
-                            _summaryRow('الاجمالي قبل الخصم:',
-                                currentTotalAmount, font),
-                            pw.SizedBox(width: 10),
-                            _summaryRow('الخصم:', discount, font),
-                            pw.SizedBox(width: 10),
-                            _summaryRow(
-                                'الاجمالي بعد الخصم:', afterDiscount, font),
-                            pw.SizedBox(width: 10),
-                            _summaryRow('المبلغ المدفوع:', paid, font),
+                            _headerCell('المبلغ', font),
+                            _headerCell('السعر', font),
+                            _headerCell('عدد الوحدات', font),
+                            _headerCell('العدد', font),
+                            _headerCell('التفاصيل ', font),
+                            _headerCell('ت', font),
                           ],
                         ),
-                        pw.SizedBox(height: 6),
-                        if (!(_invoiceToManage != null &&
-                            _invoiceToManage!.status == 'محفوظة'))
+                        ...pageItems.asMap().entries.map((entry) {
+                          final index = entry.key + (pageIndex * itemsPerPage);
+                          final item = entry.value;
+                          final quantity = (item.quantityIndividual ??
+                              item.quantityLargeUnit ??
+                              0.0);
+                          Product? product;
+                          try {
+                            product = allProducts
+                                .firstWhere((p) => p.name == item.productName);
+                          } catch (e) {
+                            product = null;
+                          }
+                          return pw.TableRow(
+                            children: [
+                              _dataCell(
+                                  formatNumber(item.itemTotal,
+                                      forceDecimal: true),
+                                  font),
+                              _dataCell(
+                                  formatNumber(item.appliedPrice,
+                                      forceDecimal: true),
+                                  font),
+                              // عدد الوحدات (منطق جديد)
+                              _dataCell(
+                                buildUnitConversionStringForPdf(item, product),
+                                font,
+                              ),
+                              _dataCell(
+                                '${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}',
+                                font,
+                              ),
+                              _dataCell(item.productName, font,
+                                  align: pw.TextAlign.right),
+                              _dataCell('${index + 1}', font),
+                            ],
+                          );
+                        }).toList(),
+                      ],
+                    ),
+                    pw.Divider(height: 4, thickness: 0.4),
+
+                    // --- المجاميع في الصفحة الأخيرة فقط ---
+                    if (pageIndex == totalPages - 1) ...[
+                      pw.Column(
+                        crossAxisAlignment: pw.CrossAxisAlignment.end,
+                        children: [
                           pw.Row(
                             mainAxisAlignment: pw.MainAxisAlignment.end,
                             children: [
-                              _summaryRow('المبلغ المتبقي:', remaining, font),
+                              _summaryRow('الاجمالي قبل الخصم:',
+                                  currentTotalAmount, font),
                               pw.SizedBox(width: 10),
-                              _summaryRow('الدين السابق:', previousDebt, font),
+                              _summaryRow('الخصم:', discount, font),
                               pw.SizedBox(width: 10),
-                              _summaryRow('الدين الحالي:', currentDebt, font),
+                              _summaryRow(
+                                  'الاجمالي بعد الخصم:', afterDiscount, font),
+                              pw.SizedBox(width: 10),
+                              _summaryRow('المبلغ المدفوع:', paid, font),
                             ],
                           ),
-                      ],
-                    ),
-                    pw.SizedBox(height: 6),
-                    pw.Center(
-                        child: pw.Text('شكراً لتعاملكم معنا',
-                            style: pw.TextStyle(font: font, fontSize: 11))),
-                  ],
+                          pw.SizedBox(height: 6),
+                          if (!(_invoiceToManage != null &&
+                              _invoiceToManage!.status == 'محفوظة'))
+                            pw.Row(
+                              mainAxisAlignment: pw.MainAxisAlignment.end,
+                              children: [
+                                _summaryRow('المبلغ المتبقي:', remaining, font),
+                                pw.SizedBox(width: 10),
+                                _summaryRow(
+                                    'الدين السابق:', previousDebt, font),
+                                pw.SizedBox(width: 10),
+                                _summaryRow('الدين الحالي:', currentDebt, font),
+                              ],
+                            ),
+                        ],
+                      ),
+                      pw.SizedBox(height: 6),
+                      pw.Center(
+                          child: pw.Text('شكراً لتعاملكم معنا',
+                              style: pw.TextStyle(font: font, fontSize: 11))),
+                    ],
 
-                  pw.Align(
-                    alignment: pw.Alignment.center,
-                    child: pw.Text(
-                      'صفحة ${pageIndex + 1} من $totalPages',
-                      style: pw.TextStyle(font: font, fontSize: 11),
+                    pw.Align(
+                      alignment: pw.Alignment.center,
+                      child: pw.Text(
+                        'صفحة ${pageIndex + 1} من $totalPages',
+                        style: pw.TextStyle(font: font, fontSize: 11),
+                      ),
                     ),
-                  ),
-                ],
-              ),
-            );
-          },
-        ),
-      );
+                  ],
+                ),
+              );
+            },
+          ),
+        );
+      }
+      return pdf;
+    } catch (e) {
+      print('Error generating PDF: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('حدث خطأ أثناء إنشاء ملف PDF: $e')),
+        );
+      }
+      rethrow;
     }
-    return pdf;
   }
 
   // دالة لخلايا الرأس
@@ -1151,231 +1249,274 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   Future<String> _saveInvoicePdf(
       pw.Document pdf, String customerName, DateTime invoiceDate) async {
-    final safeCustomerName =
-        customerName.replaceAll(RegExp(r'[^\w\u0600-\u06FF]+'), '_');
-    final formattedDate = DateFormat('yyyy-MM-dd').format(invoiceDate);
-    final fileName = '${safeCustomerName}_$formattedDate.pdf';
-    final directory =
-        Directory('${Platform.environment['USERPROFILE']}/Documents/invoices');
-    if (!await directory.exists()) {
-      await directory.create(recursive: true);
+    try {
+      final safeCustomerName =
+          customerName.replaceAll(RegExp(r'[^\w\u0600-\u06FF]+'), '_');
+      final formattedDate = DateFormat('yyyy-MM-dd').format(invoiceDate);
+      final fileName = '${safeCustomerName}_$formattedDate.pdf';
+      final directory = Directory(
+          '${Platform.environment['USERPROFILE']}/Documents/invoices');
+      if (!await directory.exists()) {
+        await directory.create(recursive: true);
+      }
+      final filePath = '${directory.path}/$fileName';
+      final file = File(filePath);
+      await file.writeAsBytes(await pdf.save());
+      return filePath;
+    } catch (e) {
+      print('Error saving PDF: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('حدث خطأ أثناء حفظ ملف PDF: $e')),
+        );
+      }
+      rethrow;
     }
-    final filePath = '${directory.path}/$fileName';
-    final file = File(filePath);
-    await file.writeAsBytes(await pdf.save());
-    return filePath;
   }
 
   Future<void> _printInvoice() async {
-    final pdf = await _generateInvoicePdf();
-    if (Platform.isWindows) {
-      final filePath = await _saveInvoicePdf(
-          pdf, _customerNameController.text, _selectedDate);
-      await Process.start('cmd', ['/c', 'start', '/min', '', filePath, '/p']);
+    try {
+      final pdf = await _generateInvoicePdf();
+      if (Platform.isWindows) {
+        final filePath = await _saveInvoicePdf(
+            pdf, _customerNameController.text, _selectedDate);
+        await Process.start('cmd', ['/c', 'start', '/min', '', filePath, '/p']);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('تم إرسال الفاتورة للطابعة مباشرة!')),
+          );
+        }
+        return;
+      }
+      if (Platform.isAndroid) {
+        if (_selectedPrinter == null) {
+          List<PrinterDevice> printers = [];
+          final bluetoothPrinters =
+              await _printingService.findBluetoothPrinters();
+          final systemPrinters = await _printingService.findSystemPrinters();
+          printers = [...bluetoothPrinters, ...systemPrinters];
+          if (printers.isEmpty) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('لا توجد طابعات متاحة.')),
+              );
+            }
+            return;
+          }
+          final selected = await showDialog<PrinterDevice>(
+            context: context,
+            builder: (context) {
+              return AlertDialog(
+                title: const Text('اختر الطابعة'),
+                content: SizedBox(
+                  width: double.maxFinite,
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: printers.length,
+                    itemBuilder: (context, index) {
+                      final printer = printers[index];
+                      return ListTile(
+                        title: Text(printer.name),
+                        subtitle: Text(printer.connectionType.name),
+                        onTap: () => Navigator.of(context).pop(printer),
+                      );
+                    },
+                  ),
+                ),
+              );
+            },
+          );
+          if (selected == null) return;
+          setState(() {
+            _selectedPrinter = selected;
+          });
+        }
+        if (_selectedPrinter != null) {
+          try {
+            await _printingService.printData(
+              await pdf.save(),
+              printerDevice: _selectedPrinter,
+              escPosCommands: null,
+            );
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                    content: Text(
+                        'تم إرسال الفاتورة إلى الطابعة: ${_selectedPrinter!.name}')),
+              );
+            }
+          } catch (e) {
+            print('Error during print: $e');
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                    content: Text('حدث خطأ أثناء الطباعة: ${e.toString()}')),
+              );
+            }
+          }
+        }
+        return;
+      }
+    } catch (e) {
+      print('Error printing invoice: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تم إرسال الفاتورة للطابعة مباشرة!')),
+          SnackBar(content: Text('حدث خطأ أثناء الطباعة: $e')),
         );
       }
-      return;
-    }
-    if (Platform.isAndroid) {
-      if (_selectedPrinter == null) {
-        List<PrinterDevice> printers = [];
-        final bluetoothPrinters =
-            await _printingService.findBluetoothPrinters();
-        final systemPrinters = await _printingService.findSystemPrinters();
-        printers = [...bluetoothPrinters, ...systemPrinters];
-        if (printers.isEmpty) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('لا توجد طابعات متاحة.')),
-            );
-          }
-          return;
-        }
-        final selected = await showDialog<PrinterDevice>(
-          context: context,
-          builder: (context) {
-            return AlertDialog(
-              title: const Text('اختر الطابعة'),
-              content: SizedBox(
-                width: double.maxFinite,
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: printers.length,
-                  itemBuilder: (context, index) {
-                    final printer = printers[index];
-                    return ListTile(
-                      title: Text(printer.name),
-                      subtitle: Text(printer.connectionType.name),
-                      onTap: () => Navigator.of(context).pop(printer),
-                    );
-                  },
-                ),
-              ),
-            );
-          },
-        );
-        if (selected == null) return;
-        setState(() {
-          _selectedPrinter = selected;
-        });
-      }
-      if (_selectedPrinter != null) {
-        try {
-          await _printingService.printData(
-            await pdf.save(),
-            printerDevice: _selectedPrinter,
-            escPosCommands: null,
-          );
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                  content: Text(
-                      'تم إرسال الفاتورة إلى الطابعة: ${_selectedPrinter!.name}')),
-            );
-          }
-        } catch (e) {
-          print('Error during print: $e');
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('حدث خطأ أثناء الطباعة: ${e.toString()}')),
-            );
-          }
-        }
-      }
-      return;
     }
   }
 
   void _resetInvoice() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('فاتورة جديدة'),
-        content: const Text(
-            'هل تريد بدء فاتورة جديدة؟ سيتم مسح جميع البيانات الحالية.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('إلغاء'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _performReset();
-            },
-            child: const Text('نعم'),
-          ),
-        ],
-      ),
-    );
+    try {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('فاتورة جديدة'),
+          content: const Text(
+              'هل تريد بدء فاتورة جديدة؟ سيتم مسح جميع البيانات الحالية.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('إلغاء'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _performReset();
+              },
+              child: const Text('نعم'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      print('Error resetting invoice: $e');
+    }
   }
 
   void _performReset() {
-    setState(() {
-      _customerNameController.clear();
-      _customerPhoneController.clear();
-      _customerAddressController.clear();
-      _installerNameController.clear();
-      _productSearchController.clear();
-      _quantityController.clear();
-      _paidAmountController.clear();
-      _discountController.clear();
-      _discount = 0.0;
-      _selectedPriceLevel = null;
-      _selectedProduct = null;
-      _useLargeUnit = false;
-      _paymentType = 'نقد';
-      _selectedDate = DateTime.now();
-      _invoiceItems.clear();
-      _searchResults.clear();
-      _totalAmountController.text = '0';
-      _savedOrSuspended = false;
-      // حذف البيانات المؤقتة
-      _storage.remove('temp_invoice_data');
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('تم بدء فاتورة جديدة')),
-    );
+    try {
+      setState(() {
+        _customerNameController.clear();
+        _customerPhoneController.clear();
+        _customerAddressController.clear();
+        _installerNameController.clear();
+        _productSearchController.clear();
+        _quantityController.clear();
+        _paidAmountController.clear();
+        _discountController.clear();
+        _discount = 0.0;
+        _selectedPriceLevel = null;
+        _selectedProduct = null;
+        _useLargeUnit = false;
+        _paymentType = 'نقد';
+        _selectedDate = DateTime.now();
+        _invoiceItems.clear();
+        _searchResults.clear();
+        _totalAmountController.text = '0';
+        _savedOrSuspended = false;
+        // حذف البيانات المؤقتة
+        _storage.remove('temp_invoice_data');
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('تم بدء فاتورة جديدة')),
+      );
+    } catch (e) {
+      print('Error performing reset: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('حدث خطأ أثناء بدء فاتورة جديدة: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _saveReturnAmount(double value) async {
-    if (_invoiceToManage == null || _invoiceToManage!.isLocked) return;
-    // تحديث الفاتورة في قاعدة البيانات
-    final updatedInvoice =
-        _invoiceToManage!.copyWith(returnAmount: value, isLocked: true);
-    await _db.updateInvoice(updatedInvoice);
-    // إذا كان هناك مؤسس، اطرح الراجع من رصيده
-    if (updatedInvoice.installerName != null &&
-        updatedInvoice.installerName!.isNotEmpty) {
-      final installer =
-          await _db.getInstallerByName(updatedInvoice.installerName!);
-      if (installer != null) {
-        final newTotal = (installer.totalBilledAmount - value.toDouble())
-            .clamp(0.0, double.infinity);
-        final updatedInstaller =
-            installer.copyWith(totalBilledAmount: newTotal as double?);
-        await _db.updateInstaller(updatedInstaller);
+    try {
+      if (_invoiceToManage == null || _invoiceToManage!.isLocked) return;
+      // تحديث الفاتورة في قاعدة البيانات
+      final updatedInvoice =
+          _invoiceToManage!.copyWith(returnAmount: value, isLocked: true);
+      await _db.updateInvoice(updatedInvoice);
+      // إذا كان هناك مؤسس، اطرح الراجع من رصيده
+      if (updatedInvoice.installerName != null &&
+          updatedInvoice.installerName!.isNotEmpty) {
+        final installer =
+            await _db.getInstallerByName(updatedInvoice.installerName!);
+        if (installer != null) {
+          final newTotal = (installer.totalBilledAmount - value.toDouble())
+              .clamp(0.0, double.infinity);
+          final updatedInstaller =
+              installer.copyWith(totalBilledAmount: newTotal as double?);
+          await _db.updateInstaller(updatedInstaller);
+        }
       }
-    }
-    // تحديث دين العميل وتسجيل معاملة تسديد راجع
-    if (updatedInvoice.paymentType == 'دين' &&
-        updatedInvoice.customerId != null &&
-        value > 0) {
-      final customer = await _db.getCustomerById(updatedInvoice.customerId!);
-      if (customer != null) {
-        final newDebt =
-            (customer.currentTotalDebt - value).clamp(0.0, double.infinity);
-        final updatedCustomer = customer.copyWith(
-          currentTotalDebt: newDebt,
-          lastModifiedAt: DateTime.now(),
-        );
-        await _db.updateCustomer(updatedCustomer);
-        // سجل معاملة تسديد راجع
-        await _db.insertTransaction(
-          DebtTransaction(
-            id: null,
-            customerId: customer.id!,
-            invoiceId: updatedInvoice.id!,
-            amountChanged: -value, // سالبة لأنها تسديد
-            transactionDate: DateTime.now(),
-            newBalanceAfterTransaction: newDebt,
-            transactionNote: 'تسديد راجع على الفاتورة رقم ${updatedInvoice.id}',
-            transactionType: 'return_payment',
-            createdAt: DateTime.now(),
+      // تحديث دين العميل وتسجيل معاملة تسديد راجع
+      if (updatedInvoice.paymentType == 'دين' &&
+          updatedInvoice.customerId != null &&
+          value > 0) {
+        final customer = await _db.getCustomerById(updatedInvoice.customerId!);
+        if (customer != null) {
+          final newDebt =
+              (customer.currentTotalDebt - value).clamp(0.0, double.infinity);
+          final updatedCustomer = customer.copyWith(
+            currentTotalDebt: newDebt,
+            lastModifiedAt: DateTime.now(),
+          );
+          await _db.updateCustomer(updatedCustomer);
+          // سجل معاملة تسديد راجع
+          await _db.insertTransaction(
+            DebtTransaction(
+              id: null,
+              customerId: customer.id!,
+              invoiceId: updatedInvoice.id!,
+              amountChanged: -value, // سالبة لأنها تسديد
+              transactionDate: DateTime.now(),
+              newBalanceAfterTransaction: newDebt,
+              transactionNote:
+                  'تسديد راجع على الفاتورة رقم ${updatedInvoice.id}',
+              transactionType: 'return_payment',
+              createdAt: DateTime.now(),
+            ),
+          );
+        }
+      }
+      // جلب أحدث نسخة من الفاتورة بعد الحفظ
+      final updatedInvoiceFromDb =
+          await _db.getInvoiceById(_invoiceToManage!.id!);
+      setState(() {
+        _invoiceToManage = updatedInvoiceFromDb;
+      });
+      setState(() {
+        _isViewOnly = true; // تفعيل وضع العرض فقط
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('تم حفظ الراجع وقفل الفاتورة!'),
+            duration: Duration(seconds: 2),
           ),
         );
+        Navigator.of(context)
+            .popUntil((route) => route.isFirst); // العودة للصفحة الرئيسية
       }
-    }
-    // جلب أحدث نسخة من الفاتورة بعد الحفظ
-    final updatedInvoiceFromDb =
-        await _db.getInvoiceById(_invoiceToManage!.id!);
-    setState(() {
-      _invoiceToManage = updatedInvoiceFromDb;
-    });
-    setState(() {
-      _isViewOnly = true; // تفعيل وضع العرض فقط
-    });
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('تم حفظ الراجع وقفل الفاتورة!'),
-          duration: Duration(seconds: 2),
-        ),
-      );
-      Navigator.of(context)
-          .popUntil((route) => route.isFirst); // العودة للصفحة الرئيسية
+    } catch (e) {
+      print('Error saving return amount: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('حدث خطأ أثناء حفظ الراجع: $e')),
+        );
+      }
     }
   }
 
   // دالة الحفظ التلقائي للفواتير المعلقة
   Future<void> autoSaveSuspendedInvoice() async {
-    if (_invoiceToManage == null ||
-        _invoiceToManage!.status != 'معلقة' ||
-        _invoiceToManage!.isLocked) return;
     try {
+      if (_invoiceToManage == null ||
+          _invoiceToManage!.status != 'معلقة' ||
+          _invoiceToManage!.isLocked) return;
       Customer? customer;
       if (_customerNameController.text.trim().isNotEmpty) {
         final customers = await _db.getAllCustomers();
@@ -1438,79 +1579,100 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   // 2. أضف دالة توليد الوحدات:
   void _onProductSelected(Product product) {
-    setState(() {
-      _selectedProduct = product;
-      _quantityController.clear();
-      _currentUnitHierarchy = [];
-      _currentUnitOptions = [];
-      if (product.unit == 'piece') {
-        _currentUnitOptions.add('قطعة');
-        _selectedUnitForItem = 'قطعة';
-        if (product.unitHierarchy != null &&
-            product.unitHierarchy!.isNotEmpty) {
-          try {
-            final List<dynamic> parsed =
-                json.decode(product.unitHierarchy!.replaceAll("'", '"'));
-            _currentUnitHierarchy =
-                parsed.map((e) => Map<String, dynamic>.from(e)).toList();
-            _currentUnitOptions.addAll(_currentUnitHierarchy
-                .map((e) => (e['unit_name'] ?? e['name'] ?? '').toString()));
-            print(
-                'DEBUG: product.unitHierarchy = \u001b[32m${product.unitHierarchy}\u001b[0m');
-            print(
-                'DEBUG: _currentUnitOptions = \u001b[36m$_currentUnitOptions\u001b[0m');
-            print(
-                'DEBUG: _currentUnitHierarchy = \u001b[35m$_currentUnitHierarchy\u001b[0m');
-          } catch (e) {
-            print('Error parsing unit hierarchy for ${product.name}: $e');
+    try {
+      setState(() {
+        _selectedProduct = product;
+        _quantityController.clear();
+        _currentUnitHierarchy = [];
+        _currentUnitOptions = [];
+        if (product.unit == 'piece') {
+          _currentUnitOptions.add('قطعة');
+          _selectedUnitForItem = 'قطعة';
+          if (product.unitHierarchy != null &&
+              product.unitHierarchy!.isNotEmpty) {
+            try {
+              final List<dynamic> parsed =
+                  json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+              _currentUnitHierarchy =
+                  parsed.map((e) => Map<String, dynamic>.from(e)).toList();
+              _currentUnitOptions.addAll(_currentUnitHierarchy
+                  .map((e) => (e['unit_name'] ?? e['name'] ?? '').toString()));
+              print(
+                  'DEBUG: product.unitHierarchy = \u001b[32m${product.unitHierarchy}\u001b[0m');
+              print(
+                  'DEBUG: _currentUnitOptions = \u001b[36m$_currentUnitOptions\u001b[0m');
+              print(
+                  'DEBUG: _currentUnitHierarchy = \u001b[35m$_currentUnitHierarchy\u001b[0m');
+            } catch (e) {
+              print('Error parsing unit hierarchy for ${product.name}: $e');
+            }
+          }
+        } else if (product.unit == 'meter') {
+          _currentUnitOptions = ['متر'];
+          _selectedUnitForItem = 'متر';
+          if (product.lengthPerUnit != null && product.lengthPerUnit! > 0) {
+            _currentUnitOptions.add('لفة');
+          }
+        } else {
+          _currentUnitOptions.add(product.unit);
+          _selectedUnitForItem = product.unit;
+        }
+        double? newPriceLevel;
+        switch (_selectedListType) {
+          case 'مفرد':
+            newPriceLevel = product.price1;
+            break;
+          case 'جملة':
+            newPriceLevel = product.price2;
+            break;
+          case 'جملة بيوت':
+            newPriceLevel = product.price3;
+            break;
+          case 'بيوت':
+            newPriceLevel = product.price4;
+            break;
+          case 'أخرى':
+            newPriceLevel = product.price5;
+            break;
+          default:
+            newPriceLevel = product.price1;
+        }
+        if (newPriceLevel == null || newPriceLevel == 0) {
+          _selectedPriceLevel = null;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('المنتج المحدد لا يملك سعر "$_selectedListType".'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        } else {
+          // تحقق أن السعر موجود في قائمة الأسعار
+          final validPrices = [
+            product.price1,
+            product.price2,
+            product.price3,
+            product.price4,
+            product.price5
+          ].where((p) => p != null && p > 0).toList();
+          if (validPrices.contains(newPriceLevel)) {
+            _selectedPriceLevel = newPriceLevel;
+          } else {
+            _selectedPriceLevel = null;
           }
         }
-      } else if (product.unit == 'meter') {
-        _currentUnitOptions = ['متر'];
-        _selectedUnitForItem = 'متر';
-        if (product.lengthPerUnit != null && product.lengthPerUnit! > 0) {
-          _currentUnitOptions.add('لفة');
-        }
-      } else {
-        _currentUnitOptions.add(product.unit);
-        _selectedUnitForItem = product.unit;
-      }
-      double? newPriceLevel;
-      switch (_selectedListType) {
-        case 'مفرد':
-          newPriceLevel = product.price1;
-          break;
-        case 'جملة':
-          newPriceLevel = product.price2;
-          break;
-        case 'جملة بيوت':
-          newPriceLevel = product.price3;
-          break;
-        case 'بيوت':
-          newPriceLevel = product.price4;
-          break;
-        case 'أخرى':
-          newPriceLevel = product.price5;
-          break;
-        default:
-          newPriceLevel = product.price1;
-      }
-      if (newPriceLevel == null || newPriceLevel == 0) {
-        newPriceLevel = product.unitPrice;
+        _suppressSearch = true;
+        _productSearchController.text = product.name;
+        _searchResults = [];
+        _quantityAutofocus = true;
+      });
+    } catch (e) {
+      print('Error selecting product: $e');
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-                'المنتج "${product.name}" لا يملك سعر "$_selectedListType". تم اختيار سعر الوحدة الأصلي.'),
-            backgroundColor: Colors.orange,
-          ),
+          SnackBar(content: Text('حدث خطأ أثناء اختيار المنتج: $e')),
         );
       }
-      _selectedPriceLevel = newPriceLevel;
-      _suppressSearch = true;
-      _productSearchController.text = product.name;
-      _searchResults = [];
-      _quantityAutofocus = true;
-    });
+    }
   }
 
   // دالة مساعدة لبناء سلسلة التحويل للوحدة المختارة
@@ -1563,6 +1725,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     } catch (e) {
       return item.unitsInLargeUnit?.toString() ?? '';
     }
+  }
+
+  void _recalculateTotals() {
+    double total = _invoiceItems.fold(0, (sum, item) => sum + item.itemTotal);
+    _totalAmountController.text = total.toStringAsFixed(2);
+    if (_paymentType == 'نقد') {
+      _paidAmountController.text = (total - _discount).toStringAsFixed(2);
+    }
+    setState(() {});
   }
 
   @override
@@ -1908,13 +2079,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         const SizedBox(width: 8.0),
                         Expanded(
                           flex: 1,
-                          child: DropdownButtonFormField<double?>(
-                            decoration:
-                                const InputDecoration(labelText: 'مستوى السعر'),
-                            value: _selectedPriceLevel,
-                            items: () {
-                              final List<DropdownMenuItem<double?>> priceItems =
-                                  [];
+                          child: Builder(
+                            builder: (context) {
                               final product = _selectedProduct!;
                               final List<Map<String, dynamic>> priceOptions = [
                                 {
@@ -1942,122 +2108,149 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                   'label': 'سعر أخرى (سعر 5)',
                                   'number': 5,
                                 },
-                                {
-                                  'value': product.unitPrice ?? 0.0,
-                                  'label': 'سعر الوحدة الأصلي',
-                                  'number': null,
-                                  'alwaysShow': true,
-                                },
                               ];
+                              final List<DropdownMenuItem<double?>> priceItems =
+                                  [];
+                              final Set<double?> seenValues = {};
                               for (var option in priceOptions) {
-                                if ((option['value'] != null &&
-                                        option['value'] > 0) ||
+                                final val = option['value'];
+                                if ((val != null &&
+                                        val > 0 &&
+                                        !seenValues.contains(val)) ||
                                     option['alwaysShow'] == true) {
-                                  String text =
-                                      option['label'] + ': ${option['value']}';
+                                  String text = option['label'] + ': ${val}';
                                   priceItems.add(DropdownMenuItem(
-                                    value: option['value'],
+                                    value: val,
                                     child: Text(text),
                                   ));
+                                  seenValues.add(val);
                                 }
                               }
-                              // إضافة خيار سعر التكلفة (غير قابل للاختيار)
-                              if (product.costPrice != null &&
-                                  product.costPrice! > 0) {
-                                priceItems.add(DropdownMenuItem(
-                                  value: null,
-                                  enabled: false,
-                                  child: Text(
-                                      'سعر التكلفة: ${product.costPrice}',
-                                      style: TextStyle(color: Colors.grey)),
-                                ));
+                              // إذا كانت قيمة _selectedPriceLevel غير موجودة في القائمة وأكبر من 0 (أي سعر مخصص)، أضفها مؤقتًا
+                              if (_selectedPriceLevel != null &&
+                                  _selectedPriceLevel! > 0 &&
+                                  !seenValues.contains(_selectedPriceLevel)) {
+                                priceItems.add(
+                                  DropdownMenuItem(
+                                    value: _selectedPriceLevel,
+                                    child: Text(
+                                        'سعر مخصص: ${_selectedPriceLevel!.toStringAsFixed(2)}'),
+                                  ),
+                                );
+                                seenValues.add(_selectedPriceLevel);
                               }
                               priceItems.add(const DropdownMenuItem(
                                   value: -1, child: Text('سعر مخصص')));
-                              return priceItems;
-                            }(),
-                            onChanged: isViewOnly
-                                ? null
-                                : (value) async {
-                                    if (value == -1) {
-                                      final customPrice =
-                                          await showDialog<double>(
-                                        context: context,
-                                        builder: (context) {
-                                          final controller =
-                                              TextEditingController();
-                                          String? errorText;
-                                          return StatefulBuilder(
-                                            builder: (context, setState) {
-                                              return AlertDialog(
-                                                title: const Text(
-                                                    'إدخال سعر مخصص'),
-                                                content: TextField(
-                                                  controller: controller,
-                                                  keyboardType:
-                                                      const TextInputType
-                                                          .numberWithOptions(
-                                                          decimal: true),
-                                                  decoration: InputDecoration(
-                                                      hintText: 'أدخل السعر',
-                                                      errorText: errorText),
-                                                  onChanged: (val) {
-                                                    final v = double.tryParse(
-                                                        val.trim());
-                                                    setState(() {
-                                                      if (v == null || v <= 0) {
-                                                        errorText =
-                                                            'أدخل رقمًا موجبًا';
-                                                      } else {
-                                                        errorText = null;
-                                                      }
-                                                    });
-                                                  },
-                                                ),
-                                                actions: [
-                                                  TextButton(
-                                                    onPressed: () =>
-                                                        Navigator.pop(context),
-                                                    child: const Text('إلغاء'),
-                                                  ),
-                                                  TextButton(
-                                                    onPressed: () {
-                                                      final v = double.tryParse(
-                                                          controller.text
-                                                              .trim());
-                                                      if (v != null && v > 0) {
-                                                        Navigator.pop(
-                                                            context, v);
-                                                      }
-                                                    },
-                                                    child: const Text('موافق'),
-                                                  ),
-                                                ],
+                              // تحقق أن القيمة المختارة تظهر مرة واحدة فقط، وإلا اجعلها null
+                              final validValues =
+                                  priceItems.map((item) => item.value).toList();
+                              final dropdownValue = validValues
+                                          .where(
+                                              (v) => v == _selectedPriceLevel)
+                                          .length ==
+                                      1
+                                  ? _selectedPriceLevel
+                                  : null;
+                              return DropdownButtonFormField<double?>(
+                                decoration: const InputDecoration(
+                                    labelText: 'مستوى السعر'),
+                                value: dropdownValue,
+                                items: priceItems,
+                                onChanged: isViewOnly
+                                    ? null
+                                    : (value) async {
+                                        if (value == -1) {
+                                          final customPrice =
+                                              await showDialog<double>(
+                                            context: context,
+                                            builder: (context) {
+                                              final controller =
+                                                  TextEditingController();
+                                              String? errorText;
+                                              return StatefulBuilder(
+                                                builder: (context, setState) {
+                                                  return AlertDialog(
+                                                    title: const Text(
+                                                        'إدخال سعر مخصص'),
+                                                    content: TextField(
+                                                      controller: controller,
+                                                      keyboardType:
+                                                          const TextInputType
+                                                              .numberWithOptions(
+                                                              decimal: true),
+                                                      decoration:
+                                                          InputDecoration(
+                                                              hintText:
+                                                                  'أدخل السعر',
+                                                              errorText:
+                                                                  errorText),
+                                                      onChanged: (val) {
+                                                        final v =
+                                                            double.tryParse(
+                                                                val.trim());
+                                                        setState(() {
+                                                          if (v == null ||
+                                                              v <= 0) {
+                                                            errorText =
+                                                                'أدخل رقمًا موجبًا';
+                                                          } else {
+                                                            errorText = null;
+                                                          }
+                                                        });
+                                                      },
+                                                    ),
+                                                    actions: [
+                                                      TextButton(
+                                                        onPressed: () =>
+                                                            Navigator.pop(
+                                                                context),
+                                                        child:
+                                                            const Text('إلغاء'),
+                                                      ),
+                                                      TextButton(
+                                                        onPressed: () {
+                                                          final v =
+                                                              double.tryParse(
+                                                                  controller
+                                                                      .text
+                                                                      .trim());
+                                                          if (v != null &&
+                                                              v > 0) {
+                                                            Navigator.pop(
+                                                                context, v);
+                                                          }
+                                                        },
+                                                        child:
+                                                            const Text('موافق'),
+                                                      ),
+                                                    ],
+                                                  );
+                                                },
                                               );
                                             },
                                           );
-                                        },
-                                      );
-                                      if (customPrice != null &&
-                                          customPrice > 0) {
-                                        setState(() {
-                                          _selectedPriceLevel = customPrice;
-                                        });
-                                      }
-                                    } else {
-                                      setState(() {
-                                        _selectedPriceLevel = value;
-                                      });
-                                    }
-                                  },
-                            validator: (value) {
-                              if (value == null) {
-                                return 'الرجاء اختيار مستوى السعر';
-                              }
-                              return null;
+                                          if (customPrice != null &&
+                                              customPrice > 0) {
+                                            setState(() {
+                                              _selectedPriceLevel = customPrice;
+                                            });
+                                          }
+                                        } else {
+                                          setState(() {
+                                            _selectedPriceLevel = value;
+                                          });
+                                        }
+                                      },
+                                validator: (value) {
+                                  if (value == null) {
+                                    return 'الرجاء اختيار مستوى السعر';
+                                  }
+                                  return null;
+                                },
+                                isDense: isViewOnly,
+                                menuMaxHeight: isViewOnly ? 0 : 200,
+                              );
                             },
-                            isDense: isViewOnly,
-                            menuMaxHeight: isViewOnly ? 0 : 200,
                           ),
                         ),
                         const SizedBox(width: 8.0),
@@ -2187,83 +2380,21 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   physics: const NeverScrollableScrollPhysics(),
                   itemCount: _invoiceItems.length,
                   itemBuilder: (context, index) {
-                    final item = _invoiceItems[index];
-                    final displayQuantity =
-                        item.quantityIndividual ?? item.quantityLargeUnit ?? 0;
-                    String displayUnit;
-                    if (item.unit == 'piece') {
-                      displayUnit = item.quantityIndividual != null ? 'ق' : 'ك';
-                    } else if (item.unit == 'meter') {
-                      displayUnit = item.quantityIndividual != null ? 'م' : 'ل';
-                    } else {
-                      displayUnit = '';
-                    }
-
-                    final quantityText =
-                        displayQuantity == displayQuantity.toInt()
-                            ? displayQuantity.toInt().toString()
-                            : displayQuantity.toStringAsFixed(2);
-
-                    final itemTotalAmount = item.itemTotal;
-
-                    return Card(
-                      margin: const EdgeInsets.symmetric(
-                          vertical: 4.0, horizontal: 0.0),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 8.0, horizontal: 4.0),
-                        child: Row(
-                          children: [
-                            Expanded(
-                                flex: 1,
-                                child: Text((index + 1).toString(),
-                                    textAlign: TextAlign.center)),
-                            Expanded(
-                                flex: 2,
-                                child: Text(
-                                    formatNumber(itemTotalAmount,
-                                        forceDecimal: true),
-                                    textAlign: TextAlign.center)),
-                            Expanded(
-                                flex: 3,
-                                child: Text(item.productName,
-                                    textAlign: TextAlign.center)),
-                            Expanded(
-                                flex: 1,
-                                child: Text(
-                                    formatNumber(displayQuantity,
-                                        forceDecimal: true),
-                                    textAlign: TextAlign.center)),
-                            Expanded(
-                                flex: 1,
-                                child: Text(item.saleType ?? '',
-                                    textAlign: TextAlign.center)),
-                            Expanded(
-                                flex: 2,
-                                child: Text(
-                                    formatNumber(item.appliedPrice,
-                                        forceDecimal: true),
-                                    textAlign: TextAlign.center)),
-                            Expanded(
-                              flex: 1,
-                              child: (item.saleType == 'قطعة' ||
-                                      item.saleType == 'متر')
-                                  ? const SizedBox()
-                                  : Text(
-                                      buildUnitConversionString(
-                                          item, _allProductsForUnits ?? []),
-                                      textAlign: TextAlign.center),
-                            ),
-                            if (!isViewOnly)
-                              IconButton(
-                                icon: const Icon(Icons.delete,
-                                    color: Colors.red, size: 20),
-                                onPressed: () => _removeInvoiceItem(index),
-                                tooltip: 'حذف الصنف',
-                              ),
-                          ],
-                        ),
-                      ),
+                    return EditableInvoiceItemRow(
+                      item: _invoiceItems[index],
+                      index: index,
+                      allProducts: _allProductsForUnits ?? [],
+                      isViewOnly: isViewOnly,
+                      onItemUpdated: (updatedItem) {
+                        setState(() {
+                          _invoiceItems[index] = updatedItem;
+                          _recalculateTotals();
+                        });
+                      },
+                      onItemRemoved: (idx) {
+                        setState(() => _invoiceItems.removeAt(idx));
+                        _recalculateTotals();
+                      },
                     );
                   },
                 ),
@@ -2515,6 +2646,281 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class EditableInvoiceItemRow extends StatefulWidget {
+  final InvoiceItem item;
+  final int index;
+  final Function(InvoiceItem) onItemUpdated;
+  final Function(int) onItemRemoved;
+  final List<Product> allProducts;
+  final bool isViewOnly;
+
+  const EditableInvoiceItemRow({
+    Key? key,
+    required this.item,
+    required this.index,
+    required this.onItemUpdated,
+    required this.onItemRemoved,
+    required this.allProducts,
+    required this.isViewOnly,
+  }) : super(key: key);
+
+  @override
+  State<EditableInvoiceItemRow> createState() => _EditableInvoiceItemRowState();
+}
+
+class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
+  late InvoiceItem _currentItem;
+  late TextEditingController _quantityController;
+  late TextEditingController _priceController;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentItem = widget.item;
+    _quantityController = TextEditingController(
+      text: (_currentItem.quantityIndividual ??
+              _currentItem.quantityLargeUnit ??
+              0)
+          .toString(),
+    );
+    _priceController = TextEditingController(
+      text: _currentItem.appliedPrice.toString(),
+    );
+  }
+
+  List<DropdownMenuItem<String>> _getUnitOptions() {
+    Product? product = widget.allProducts.firstWhere(
+      (p) => p.name == _currentItem.productName,
+      orElse: () => Product(
+        id: null,
+        name: '',
+        unit: 'piece',
+        unitPrice: 0,
+        price1: 0,
+        createdAt: DateTime.now(),
+        lastModifiedAt: DateTime.now(),
+      ),
+    );
+    List<String> options = ['قطعة'];
+    if (product.unit == 'piece' &&
+        product.unitHierarchy != null &&
+        product.unitHierarchy!.isNotEmpty) {
+      try {
+        List<dynamic> hierarchy =
+            json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+        options.addAll(
+            hierarchy.map((e) => (e['unit_name'] ?? e['name']).toString()));
+      } catch (e) {}
+    } else if (product.unit == 'meter' && product.lengthPerUnit != null) {
+      options = ['متر'];
+      options.add('لفة');
+    } else if (product.unit != 'piece' && product.unit != 'meter') {
+      options = [product.unit];
+    }
+    return options
+        .map((unit) => DropdownMenuItem(
+              value: unit,
+              child: Text(unit, textAlign: TextAlign.center),
+            ))
+        .toList();
+  }
+
+  void _updateQuantity(String value) {
+    double? newQuantity = double.tryParse(value);
+    if (newQuantity == null || newQuantity <= 0) return;
+    setState(() {
+      if (_currentItem.saleType == 'قطعة' || _currentItem.saleType == 'متر') {
+        _currentItem = _currentItem.copyWith(
+          quantityIndividual: newQuantity,
+          quantityLargeUnit: null,
+          itemTotal: newQuantity * _currentItem.appliedPrice,
+        );
+      } else {
+        _currentItem = _currentItem.copyWith(
+          quantityLargeUnit: newQuantity,
+          quantityIndividual: null,
+          itemTotal: newQuantity * _currentItem.appliedPrice,
+        );
+      }
+      _priceController.text = _currentItem.appliedPrice.toStringAsFixed(2);
+      widget.onItemUpdated(_currentItem);
+    });
+  }
+
+  void _updateSaleType(String newType) {
+    Product? product = widget.allProducts.firstWhere(
+      (p) => p.name == _currentItem.productName,
+      orElse: () => Product(
+        id: null,
+        name: '',
+        unit: 'piece',
+        unitPrice: 0,
+        price1: 0,
+        createdAt: DateTime.now(),
+        lastModifiedAt: DateTime.now(),
+      ),
+    );
+    double conversionFactor = 1.0;
+    if (product != null) {
+      if (product.unit == 'piece' && newType != 'قطعة') {
+        if (product.unitHierarchy != null &&
+            product.unitHierarchy!.isNotEmpty) {
+          try {
+            List<dynamic> hierarchy =
+                json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+            for (var unit in hierarchy) {
+              if ((unit['unit_name'] ?? unit['name']) == newType) {
+                conversionFactor = unit['quantity'] is int
+                    ? (unit['quantity'] as int).toDouble()
+                    : double.tryParse(unit['quantity'].toString()) ?? 1.0;
+                break;
+              }
+            }
+          } catch (e) {}
+        }
+      } else if (product.unit == 'meter' && newType == 'لفة') {
+        conversionFactor = product.lengthPerUnit ?? 1.0;
+      }
+    }
+    setState(() {
+      double newAppliedPrice;
+      if ((product?.unit == 'piece' && newType != 'قطعة') ||
+          (product?.unit == 'meter' && newType == 'لفة')) {
+        // عند التحويل من قطعة إلى باكيت أو من متر إلى لفة: السعر للوحدة الكبيرة = السعر الحالي × عامل التحويل
+        newAppliedPrice = _currentItem.appliedPrice * conversionFactor;
+      } else if ((product?.unit == 'piece' &&
+              _currentItem.saleType != 'قطعة' &&
+              newType == 'قطعة') ||
+          (product?.unit == 'meter' &&
+              _currentItem.saleType == 'لفة' &&
+              newType == 'متر')) {
+        // عند التحويل من باكيت إلى قطعة أو من لفة إلى متر: السعر للوحدة الصغيرة = السعر الحالي ÷ عامل التحويل
+        newAppliedPrice = _currentItem.appliedPrice / conversionFactor;
+      } else {
+        newAppliedPrice = _currentItem.appliedPrice;
+      }
+      double quantity = _currentItem.quantityIndividual ??
+          _currentItem.quantityLargeUnit ??
+          1;
+      _currentItem = _currentItem.copyWith(
+        saleType: newType,
+        appliedPrice: newAppliedPrice,
+        unitsInLargeUnit: conversionFactor != 1.0 ? conversionFactor : null,
+        itemTotal: quantity * newAppliedPrice,
+        quantityIndividual:
+            (newType == 'قطعة' || newType == 'متر') ? quantity : null,
+        quantityLargeUnit:
+            (newType != 'قطعة' && newType != 'متر') ? quantity : null,
+      );
+      _quantityController.text = quantity.toString();
+      _priceController.text = newAppliedPrice.toStringAsFixed(2);
+      widget.onItemUpdated(_currentItem);
+    });
+  }
+
+  void _updatePrice(String value) {
+    double? newPrice = double.tryParse(value);
+    if (newPrice == null || newPrice <= 0) return;
+    setState(() {
+      double quantity = _currentItem.quantityIndividual ??
+          _currentItem.quantityLargeUnit ??
+          1;
+      _currentItem = _currentItem.copyWith(
+        appliedPrice: newPrice,
+        itemTotal: quantity * newPrice,
+      );
+      widget.onItemUpdated(_currentItem);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 0.0),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
+        child: Row(
+          children: [
+            Expanded(
+                flex: 1,
+                child: Text((widget.index + 1).toString(),
+                    textAlign: TextAlign.center)),
+            Expanded(
+                flex: 2,
+                child: Text(_currentItem.itemTotal.toStringAsFixed(2),
+                    textAlign: TextAlign.center)),
+            Expanded(
+                flex: 3,
+                child: Text(_currentItem.productName,
+                    textAlign: TextAlign.center)),
+            Expanded(
+              flex: 1,
+              child: TextFormField(
+                controller: _quantityController,
+                textAlign: TextAlign.center,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                enabled: !widget.isViewOnly,
+                onChanged: (value) => _updateQuantity(value),
+                decoration: const InputDecoration(
+                  border: InputBorder.none,
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ),
+            Expanded(
+              flex: 1,
+              child: DropdownButton<String>(
+                value: _currentItem.saleType,
+                items: _getUnitOptions(),
+                onChanged: widget.isViewOnly
+                    ? null
+                    : (value) => _updateSaleType(value!),
+                underline: const SizedBox(),
+                isExpanded: true,
+              ),
+            ),
+            Expanded(
+              flex: 2,
+              child: TextFormField(
+                controller: _priceController,
+                textAlign: TextAlign.center,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                enabled: !widget.isViewOnly,
+                onChanged: (value) => _updatePrice(value),
+                decoration: const InputDecoration(
+                  border: InputBorder.none,
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ),
+            Expanded(
+              flex: 1,
+              child: (_currentItem.saleType == 'قطعة' ||
+                      _currentItem.saleType == 'متر')
+                  ? const SizedBox()
+                  : Text(_currentItem.unitsInLargeUnit?.toString() ?? '',
+                      textAlign: TextAlign.center),
+            ),
+            if (!widget.isViewOnly)
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.delete, color: Colors.red, size: 20),
+                    onPressed: () => widget.onItemRemoved(widget.index),
+                    tooltip: 'حذف الصنف',
+                  ),
+                ],
+              ),
+          ],
         ),
       ),
     );
