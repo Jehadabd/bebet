@@ -1,4 +1,5 @@
 // screens/product_entry_screen.dart
+// screens/product_entry_screen.dart
 import 'package:flutter/material.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
@@ -17,7 +18,8 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
   String _selectedUnit = 'piece'; // Default unit
   final _unitPriceController = TextEditingController();
   final _costPriceController = TextEditingController();
-  final _piecesPerUnitController = TextEditingController();
+  final _piecesPerUnitController =
+      TextEditingController(); // Controller exists, but no direct UI field for it in original.
   final _lengthPerUnitController = TextEditingController();
   final _price1Controller = TextEditingController();
   final _price2Controller = TextEditingController();
@@ -121,9 +123,11 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
             });
           }
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('لا يمكن تكرار نفس السعر في أكثر من مستوى!'),
-              backgroundColor: Colors.red,
+            SnackBar(
+              content: const Text('لا يمكن تكرار نفس السعر في أكثر من مستوى!'),
+              backgroundColor: Theme.of(context)
+                  .colorScheme
+                  .error, // استخدام لون الخطأ من الثيم
             ),
           );
           return;
@@ -158,9 +162,12 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
           (_unitHierarchyList.isNotEmpty &&
               (unitHierarchyJson == null || unitHierarchyJson == '[]'))) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('يرجى تعبئة جميع وحدات البيع الهيراركية بشكل صحيح!'),
-            backgroundColor: Colors.red,
+          SnackBar(
+            content:
+                const Text('يرجى تعبئة جميع وحدات البيع الهيراركية بشكل صحيح!'),
+            backgroundColor: Theme.of(context)
+                .colorScheme
+                .error, // استخدام لون الخطأ من الثيم
           ),
         );
         return;
@@ -201,19 +208,23 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
           (p) => normalizeProductNameForCompare(p.name) == inputNameForCompare);
       if (exists) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content:
-                  Text('يوجد منتج آخر بنفس الاسم (بغض النظر عن الفراغات)!'),
-              backgroundColor: Colors.red),
+          SnackBar(
+              content: const Text(
+                  'يوجد منتج آخر بنفس الاسم (بغض النظر عن الفراغات)!'),
+              backgroundColor: Theme.of(context)
+                  .colorScheme
+                  .error), // استخدام لون الخطأ من الثيم
         );
         return;
       }
       try {
         await _db.insertProduct(newProduct);
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('تم حفظ المنتج بنجاح!'),
-            backgroundColor: Colors.green,
+          SnackBar(
+            content: const Text('تم حفظ المنتج بنجاح!'),
+            backgroundColor: Theme.of(context)
+                .colorScheme
+                .tertiary, // استخدام لون النجاح من الثيم
           ),
         );
         _nameController.clear();
@@ -228,6 +239,7 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
         _price5Controller.clear();
         setState(() {
           _selectedUnit = 'piece';
+          // لا يتم مسح _unitHierarchyList هنا للحفاظ على السلوك الأصلي للواجهة.
         });
       } catch (e) {
         String errorMessage = 'فشل حفظ المنتج: ${e.toString()}';
@@ -237,7 +249,9 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(errorMessage),
-            backgroundColor: Colors.red,
+            backgroundColor: Theme.of(context)
+                .colorScheme
+                .error, // استخدام لون الخطأ من الثيم
           ),
         );
       }
@@ -246,168 +260,370 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('إدخال البضاعة'),
-        centerTitle: true,
+    // تعريف حافة متناسقة لجميع حقول الإدخال
+    const OutlineInputBorder outlineInputBorder = OutlineInputBorder(
+      borderRadius: BorderRadius.all(Radius.circular(10.0)), // زوايا أكثر نعومة
+      borderSide:
+          BorderSide(color: Color(0xFFC5CAE9)), // أزرق رمادي فاتح للحدود
+    );
+
+    // الألوان الرئيسية لتصميم عصري وجذاب
+    final Color primaryColor = Color(0xFF3F51B5); // Indigo
+    final Color accentColor = Color(0xFF8C9EFF); // Light Indigo Accent
+    final Color textColor = Color(0xFF212121); // رمادي داكن للنص الأساسي
+    final Color lightBackgroundColor =
+        Color(0xFFF8F8F8); // خلفية فاتحة جداً للحقول
+
+    return Theme(
+      data: ThemeData(
+        // تطبيق نظام ألوان متناسق
+        colorScheme: ColorScheme.light(
+          primary: primaryColor,
+          onPrimary: Colors.white,
+          secondary: accentColor,
+          onSecondary: Colors.black,
+          surface: Colors.white,
+          onSurface: textColor,
+          background: Colors.white,
+          onBackground: textColor,
+          error: Colors.red[700]!, // أحمر داكن للأخطاء
+          onError: Colors.white,
+          tertiary: Colors.green[600]!, // أخضر للرسائل الناجحة
+        ),
+        // تطبيق أنماط خطوط متناسقة
+        fontFamily: 'Roboto', // خط نظيف وحديث
+        textTheme: TextTheme(
+          titleLarge: TextStyle(
+              fontSize: 22.0,
+              fontWeight: FontWeight.bold,
+              color: Colors.white), // عنوان AppBar
+          titleMedium: TextStyle(
+              fontSize: 18.0,
+              fontWeight: FontWeight.w600,
+              color: textColor), // عناوين الأقسام
+          bodyMedium: TextStyle(fontSize: 16.0, color: textColor), // نص عادي
+          labelLarge: TextStyle(
+              fontSize: 16.0,
+              color: Colors.white,
+              fontWeight: FontWeight.w600), // نص الأزرار
+          labelMedium: TextStyle(
+              fontSize: 14.0, color: Colors.grey[600]), // تسميات الحقول
+        ),
+        // ثيم لتزيين حقول الإدخال
+        inputDecorationTheme: InputDecorationTheme(
+          border: outlineInputBorder,
+          enabledBorder: outlineInputBorder,
+          focusedBorder: outlineInputBorder.copyWith(
+            borderSide: BorderSide(color: primaryColor, width: 2.0),
+          ),
+          errorBorder: outlineInputBorder.copyWith(
+            borderSide: BorderSide(color: Colors.red[700]!, width: 2.0),
+          ),
+          focusedErrorBorder: outlineInputBorder.copyWith(
+            borderSide: BorderSide(color: Colors.red[700]!, width: 2.0),
+          ),
+          labelStyle: TextStyle(color: Colors.grey[700]),
+          hintStyle: TextStyle(color: Colors.grey[500]),
+          contentPadding: const EdgeInsets.symmetric(
+              vertical: 16.0, horizontal: 16.0), // مساحة داخلية مريحة
+          filled: true,
+          fillColor: lightBackgroundColor, // خلفية فاتحة لحقول الإدخال
+        ),
+        // ثيم لزر ElevatedButton
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: primaryColor,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius:
+                  BorderRadius.circular(10.0), // تطابق زوايا حقول الإدخال
+            ),
+            padding: const EdgeInsets.symmetric(
+                vertical: 16.0, horizontal: 20.0), // مساحة داخلية أكبر للزر
+            elevation: 3, // ظل خفيف
+            textStyle: TextStyle(fontSize: 18.0, fontWeight: FontWeight.bold),
+          ),
+        ),
+        // ثيم لزر TextButton
+        textButtonTheme: TextButtonThemeData(
+          style: TextButton.styleFrom(
+            foregroundColor: primaryColor,
+            textStyle: TextStyle(fontSize: 16.0, fontWeight: FontWeight.w600),
+          ),
+        ),
+        // ثيم للأيقونات
+        iconTheme: IconThemeData(
+          color: Colors.grey[700], // لون الأيقونات الافتراضي
+        ),
+        // ثيم لشريط التطبيق
+        appBarTheme: AppBarTheme(
+          backgroundColor: primaryColor,
+          foregroundColor: Colors.white,
+          centerTitle: true,
+          elevation: 4, // ظل أوضح لشريط التطبيق
+          titleTextStyle: TextStyle(
+            fontSize: 24.0,
+            fontWeight: FontWeight.w600,
+            color: Colors.white,
+          ),
+        ),
+        cardTheme: CardThemeData(
+          elevation: 1.5,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12.0),
+          ),
+          margin: EdgeInsets.zero, // لإدارة الهوامش يدوياً
+        ),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Form(
-          key: _formKey,
-          child: ListView(
-            children: <Widget>[
-              TextFormField(
-                controller: _nameController,
-                decoration: const InputDecoration(labelText: 'اسم البضاعة'),
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'الرجاء إدخال اسم البضاعة';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16.0),
-              DropdownButtonFormField<String>(
-                value: _selectedUnit,
-                decoration: const InputDecoration(labelText: 'وحدة البيع'),
-                items: const [
-                  DropdownMenuItem(value: 'piece', child: Text('قطعة')),
-                  DropdownMenuItem(value: 'meter', child: Text('متر')),
-                ],
-                onChanged: (value) {
-                  if (value != null) {
-                    setState(() {
-                      _selectedUnit = value;
-                      _piecesPerUnitController.clear();
-                      _lengthPerUnitController.clear();
-                    });
-                  }
-                },
-              ),
-              const SizedBox(height: 16.0),
-              TextFormField(
-                controller: _costPriceController,
-                decoration:
-                    const InputDecoration(labelText: 'سعر التكلفة للوحدة'),
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('إدخال البضاعة'),
+          // نمط العنوان يُدار الآن بواسطة appBarTheme.titleTextStyle
+        ),
+        body: Padding(
+          padding:
+              const EdgeInsets.all(24.0), // مسافة داخلية أكبر لتبدو الشاشة أوسع
+          child: Form(
+            key: _formKey,
+            child: ListView(
+              children: <Widget>[
+                TextFormField(
+                  controller: _nameController,
+                  decoration: const InputDecoration(labelText: 'اسم البضاعة'),
+                  validator: (value) {
+                    if (value == null || value.isEmpty) {
+                      return 'الرجاء إدخال اسم البضاعة';
+                    }
                     return null;
-                  }
-                  if (double.tryParse(value) == null) {
-                    return 'الرجاء إدخال رقم صحيح';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16.0),
-              Visibility(
-                visible: _selectedUnit == 'piece',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SizedBox(height: 16.0),
-                    const Text(
-                      'إضافة وحدات أكبر (اختياري):',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    ..._unitHierarchyList.asMap().entries.map((entry) {
-                      int idx = entry.key;
-                      var row = entry.value;
-                      String prevUnit = idx == 0
-                          ? 'قطعة'
-                          : (_unitHierarchyList[idx - 1]['unit_name'] ?? '');
-                      String label = idx == 0
-                          ? 'كم $prevUnit في ${row['unit_name'] ?? 'الوحدة'}؟'
-                          : 'كم $prevUnit في ${row['unit_name'] ?? 'الوحدة'}؟';
-                      return Row(
-                        children: [
-                          Expanded(
-                            flex: 2,
-                            child: DropdownButtonFormField<String>(
-                              value: row['unit_name'],
-                              decoration: const InputDecoration(
-                                  labelText: 'اسم الوحدة'),
-                              items: _availableUnitOptions(idx)
-                                  .map((unit) => DropdownMenuItem(
-                                        value: unit,
-                                        child: Text(unit),
-                                      ))
-                                  .toList(),
-                              onChanged: (val) {
-                                setState(() {
-                                  _unitHierarchyList[idx]['unit_name'] = val;
-                                  // إذا اختار وحدة نهائية، احذف كل ما بعدها
-                                  if (val != null &&
-                                      _terminalUnits.contains(val) &&
-                                      idx < _unitHierarchyList.length - 1) {
-                                    _unitHierarchyList.removeRange(
-                                        idx + 1, _unitHierarchyList.length);
-                                  }
-                                });
-                              },
-                              validator: (val) {
-                                if (val == null || val.isEmpty) {
-                                  return 'اختر اسم الوحدة';
-                                }
-                                return null;
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            flex: 2,
-                            child: TextFormField(
-                              initialValue: row['quantity']?.toString(),
-                              decoration: InputDecoration(labelText: label),
-                              keyboardType: TextInputType.number,
-                              onChanged: (val) {
-                                _unitHierarchyList[idx]['quantity'] = val;
-                              },
-                              validator: (val) {
-                                if (val == null || val.isEmpty) {
-                                  return 'أدخل العدد';
-                                }
-                                if (int.tryParse(val) == null) {
-                                  return 'أدخل رقم صحيح';
-                                }
-                                return null;
-                              },
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.delete, color: Colors.red),
-                            onPressed: () => _removeUnitHierarchyRow(idx),
-                          ),
-                        ],
-                      );
-                    }).toList(),
-                    if (_canAddMoreUnits)
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: TextButton.icon(
-                          icon: const Icon(Icons.add),
-                          label: const Text('إضافة وحدة أكبر'),
-                          onPressed: _addUnitHierarchyRow,
-                        ),
-                      ),
-                  ],
+                  },
                 ),
-              ),
-              const SizedBox(height: 16.0),
-              Visibility(
-                visible: _selectedUnit == 'meter',
-                child: TextFormField(
-                  controller: _lengthPerUnitController,
-                  decoration: const InputDecoration(
-                      labelText: 'طول القطعة الكاملة (بالمتر)'),
+                const SizedBox(height: 20.0), // مسافة أكبر
+                DropdownButtonFormField<String>(
+                  value: _selectedUnit,
+                  decoration: const InputDecoration(labelText: 'وحدة البيع'),
+                  items: const [
+                    DropdownMenuItem(value: 'piece', child: Text('قطعة')),
+                    DropdownMenuItem(value: 'meter', child: Text('متر')),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() {
+                        _selectedUnit = value;
+                        _lengthPerUnitController.clear();
+                        // لا يتم مسح _unitHierarchyList هنا
+                      });
+                    }
+                  },
+                ),
+                const SizedBox(height: 20.0),
+                TextFormField(
+                  controller: _costPriceController,
+                  decoration:
+                      const InputDecoration(labelText: 'سعر التكلفة للوحدة'),
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
                   validator: (value) {
-                    if (_selectedUnit == 'meter' &&
-                        value != null &&
+                    if (value == null || value.isEmpty) {
+                      return null; // سعر التكلفة اختياري حسب الفاليجاتور الأصلي
+                    }
+                    if (double.tryParse(value) == null) {
+                      return 'الرجاء إدخال رقم صحيح';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 24.0), // مسافة أكبر قبل القسم الجديد
+                Visibility(
+                  visible: _selectedUnit == 'piece',
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'إضافة وحدات أكبر (اختياري):',
+                        style:
+                            Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .primary, // لون أساسي لعنوان القسم
+                                  fontWeight: FontWeight.bold,
+                                ),
+                      ),
+                      const SizedBox(height: 12.0), // مسافة تحت العنوان
+                      ..._unitHierarchyList.asMap().entries.map((entry) {
+                        int idx = entry.key;
+                        var row = entry.value;
+                        String prevUnit = idx == 0
+                            ? 'قطعة'
+                            : (_unitHierarchyList[idx - 1]['unit_name'] ??
+                                'الوحدة السابقة');
+                        String label =
+                            'كم $prevUnit في ${row['unit_name'] ?? 'الوحدة الجديدة'}؟';
+
+                        return Padding(
+                          padding: const EdgeInsets.only(
+                              bottom: 16.0), // مسافة بين صفوف الوحدات
+                          child: Card(
+                            // يتم تطبيق الثيم على البطاقة
+                            child: Padding(
+                              padding: const EdgeInsets.all(
+                                  16.0), // مساحة داخلية للبطاقة
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    flex: 2,
+                                    child: DropdownButtonFormField<String>(
+                                      value: row['unit_name'],
+                                      decoration: const InputDecoration(
+                                        labelText: 'اسم الوحدة',
+                                        isDense:
+                                            true, // لجعل حقل القائمة المنسدلة أكثر إحكاماً
+                                        contentPadding: EdgeInsets.symmetric(
+                                            vertical: 12.0, horizontal: 10.0),
+                                      ),
+                                      items: _availableUnitOptions(idx)
+                                          .map((unit) => DropdownMenuItem(
+                                                value: unit,
+                                                child: Text(unit,
+                                                    style: Theme.of(context)
+                                                        .textTheme
+                                                        .bodyMedium),
+                                              ))
+                                          .toList(),
+                                      onChanged: (val) {
+                                        setState(() {
+                                          _unitHierarchyList[idx]['unit_name'] =
+                                              val;
+                                          if (val != null &&
+                                              _terminalUnits.contains(val) &&
+                                              idx <
+                                                  _unitHierarchyList.length -
+                                                      1) {
+                                            _unitHierarchyList.removeRange(
+                                                idx + 1,
+                                                _unitHierarchyList.length);
+                                          }
+                                        });
+                                      },
+                                      validator: (val) {
+                                        if (val == null || val.isEmpty) {
+                                          return 'اختر اسم الوحدة';
+                                        }
+                                        return null;
+                                      },
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    flex: 2,
+                                    child: TextFormField(
+                                      initialValue: row['quantity']?.toString(),
+                                      decoration: InputDecoration(
+                                        labelText: label,
+                                        isDense:
+                                            true, // لجعل حقل النص أكثر إحكاماً
+                                        contentPadding: EdgeInsets.symmetric(
+                                            vertical: 12.0, horizontal: 10.0),
+                                      ),
+                                      keyboardType: TextInputType.number,
+                                      onChanged: (val) {
+                                        _unitHierarchyList[idx]['quantity'] =
+                                            val;
+                                      },
+                                      validator: (val) {
+                                        if (val == null || val.isEmpty) {
+                                          return 'أدخل العدد';
+                                        }
+                                        if (int.tryParse(val) == null) {
+                                          return 'أدخل رقم صحيح';
+                                        }
+                                        return null;
+                                      },
+                                    ),
+                                  ),
+                                  IconButton(
+                                    icon: Icon(Icons.delete_outline,
+                                        color:
+                                            Theme.of(context).colorScheme.error,
+                                        size: 28), // أيقونة حذف عصرية
+                                    onPressed: () =>
+                                        _removeUnitHierarchyRow(idx),
+                                    tooltip: 'حذف الوحدة', // تلميح للمستخدم
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                      if (_canAddMoreUnits)
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton.icon(
+                            icon: const Icon(Icons.add_circle_outline,
+                                size: 28), // أيقونة إضافة عصرية
+                            label: const Text('إضافة وحدة أكبر'),
+                            onPressed: _addUnitHierarchyRow,
+                            style: TextButton.styleFrom(
+                              foregroundColor: Theme.of(context)
+                                  .colorScheme
+                                  .primary, // لون أساسي لزر النص
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 0,
+                                  vertical: 12), // ضبط المساحة الداخلية
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 24.0), // مسافة أكبر
+                Visibility(
+                  visible: _selectedUnit == 'meter',
+                  child: TextFormField(
+                    controller: _lengthPerUnitController,
+                    decoration: const InputDecoration(
+                        labelText: 'طول القطعة الكاملة (بالمتر)'),
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    validator: (value) {
+                      if (_selectedUnit == 'meter' &&
+                          value != null &&
+                          value.isNotEmpty &&
+                          double.tryParse(value) == null) {
+                        return 'الرجاء إدخال رقم صحيح';
+                      }
+                      return null;
+                    },
+                  ),
+                ),
+                const SizedBox(height: 24.0), // مسافة قبل حقول الأسعار
+                TextFormField(
+                  controller: _price1Controller,
+                  decoration:
+                      const InputDecoration(labelText: 'سعر 1 (المفرد)'),
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  onChanged: (_) => _checkDuplicatePrices('price1'),
+                  validator: (value) {
+                    if (value == null || value.isEmpty) {
+                      return 'الرجاء إدخال السعر الأول';
+                    }
+                    if (double.tryParse(value) == null) {
+                      return 'الرجاء إدخال رقم صحيح';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 20.0), // مسافة أكبر
+                TextFormField(
+                  controller: _price2Controller,
+                  decoration:
+                      const InputDecoration(labelText: 'سعر 2 (الجملة)'),
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  onChanged: (_) => _checkDuplicatePrices('price2'),
+                  validator: (value) {
+                    if (value != null &&
                         value.isNotEmpty &&
                         double.tryParse(value) == null) {
                       return 'الرجاء إدخال رقم صحيح';
@@ -415,95 +631,63 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                     return null;
                   },
                 ),
-              ),
-              const SizedBox(height: 16.0),
-              TextFormField(
-                controller: _price1Controller,
-                decoration: const InputDecoration(labelText: 'سعر 1 (المفرد)'),
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                onChanged: (_) => _checkDuplicatePrices('price1'),
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'الرجاء إدخال السعر الأول';
-                  }
-                  if (double.tryParse(value) == null) {
-                    return 'الرجاء إدخال رقم صحيح';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16.0),
-              TextFormField(
-                controller: _price2Controller,
-                decoration: const InputDecoration(labelText: 'سعر 2 (الجملة)'),
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                onChanged: (_) => _checkDuplicatePrices('price2'),
-                validator: (value) {
-                  if (value != null &&
-                      value.isNotEmpty &&
-                      double.tryParse(value) == null) {
-                    return 'الرجاء إدخال رقم صحيح';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16.0),
-              TextFormField(
-                controller: _price3Controller,
-                decoration:
-                    const InputDecoration(labelText: 'سعر 3 (جملة بيوت)'),
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                onChanged: (_) => _checkDuplicatePrices('price3'),
-                validator: (value) {
-                  if (value != null &&
-                      value.isNotEmpty &&
-                      double.tryParse(value) == null) {
-                    return 'الرجاء إدخال رقم صحيح';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16.0),
-              TextFormField(
-                controller: _price4Controller,
-                decoration: const InputDecoration(labelText: 'سعر 4 (بيوت)'),
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                onChanged: (_) => _checkDuplicatePrices('price4'),
-                validator: (value) {
-                  if (value != null &&
-                      value.isNotEmpty &&
-                      double.tryParse(value) == null) {
-                    return 'الرجاء إدخال رقم صحيح';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16.0),
-              TextFormField(
-                controller: _price5Controller,
-                decoration: const InputDecoration(labelText: 'سعر 5 (أخرى)'),
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                onChanged: (_) => _checkDuplicatePrices('price5'),
-                validator: (value) {
-                  if (value != null &&
-                      value.isNotEmpty &&
-                      double.tryParse(value) == null) {
-                    return 'الرجاء إدخال رقم صحيح';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 24.0),
-              ElevatedButton(
-                onPressed: _saveProduct,
-                child: const Text('حفظ المنتج'),
-              ),
-            ],
+                const SizedBox(height: 20.0),
+                TextFormField(
+                  controller: _price3Controller,
+                  decoration:
+                      const InputDecoration(labelText: 'سعر 3 (جملة بيوت)'),
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  onChanged: (_) => _checkDuplicatePrices('price3'),
+                  validator: (value) {
+                    if (value != null &&
+                        value.isNotEmpty &&
+                        double.tryParse(value) == null) {
+                      return 'الرجاء إدخال رقم صحيح';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 20.0),
+                TextFormField(
+                  controller: _price4Controller,
+                  decoration: const InputDecoration(labelText: 'سعر 4 (بيوت)'),
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  onChanged: (_) => _checkDuplicatePrices('price4'),
+                  validator: (value) {
+                    if (value != null &&
+                        value.isNotEmpty &&
+                        double.tryParse(value) == null) {
+                      return 'الرجاء إدخال رقم صحيح';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 20.0),
+                TextFormField(
+                  controller: _price5Controller,
+                  decoration: const InputDecoration(labelText: 'سعر 5 (أخرى)'),
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  onChanged: (_) => _checkDuplicatePrices('price5'),
+                  validator: (value) {
+                    if (value != null &&
+                        value.isNotEmpty &&
+                        double.tryParse(value) == null) {
+                      return 'الرجاء إدخال رقم صحيح';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 32.0), // مسافة أكبر قبل زر الحفظ
+                ElevatedButton(
+                  onPressed: _saveProduct,
+                  child: const Text('حفظ المنتج'),
+                ),
+                const SizedBox(height: 24.0), // مسافة في الأسفل
+              ],
+            ),
           ),
         ),
       ),

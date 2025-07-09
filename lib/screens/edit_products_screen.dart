@@ -586,6 +586,18 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
             const SizedBox(height: 24),
             ElevatedButton(
               onPressed: _save,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF3F51B5),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10.0),
+                ),
+                padding: const EdgeInsets.symmetric(
+                    vertical: 16.0, horizontal: 20.0),
+                elevation: 3,
+                textStyle: const TextStyle(
+                    fontSize: 18.0, fontWeight: FontWeight.bold),
+              ),
               child: const Text('حفظ التعديلات'),
             ),
             const SizedBox(height: 16),

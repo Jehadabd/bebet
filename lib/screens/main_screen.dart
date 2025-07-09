@@ -1,14 +1,11 @@
 // screens/main_screen.dart
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart'; // Import for date formatting
+import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
 import '../services/database_service.dart';
 import '../models/customer.dart';
 import 'package:url_launcher/url_launcher.dart';
-import '../services/password_service.dart'; // Import PasswordService
-// import 'home_screen.dart'; // No longer needed with named routes
-// import 'product_entry_screen.dart'; // No longer needed with named routes
-// import 'create_invoice_screen.dart'; // No longer needed with named routes
+import '../services/password_service.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -19,8 +16,10 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> {
   String _currentMonthYear = '';
-  final PasswordService _passwordService =
-      PasswordService(); // Initialize PasswordService
+  final PasswordService _passwordService = PasswordService();
+  final Color _primaryColor = const Color(0xFF6C63FF);
+  final Color _accentColor = const Color(0xFFFFD54F);
+  final Color _backgroundColor = const Color(0xFFF5F7FB);
 
   @override
   void initState() {
@@ -30,8 +29,7 @@ class _MainScreenState extends State<MainScreen> {
 
   void _updateCurrentMonthYear() {
     final now = DateTime.now();
-    _currentMonthYear = DateFormat.yMMMM('ar')
-        .format(now); // Format current month and year in Arabic
+    _currentMonthYear = DateFormat.yMMMM('ar').format(now);
   }
 
   Future<bool> _showPasswordDialog() async {
@@ -39,27 +37,41 @@ class _MainScreenState extends State<MainScreen> {
     bool? result = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('الرجاء إدخال كلمة السر'),
+        title: const Text('الرجاء إدخال كلمة السر',
+            style: TextStyle(fontSize: 20)),
         content: TextField(
           controller: passwordController,
           obscureText: true,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             labelText: 'كلمة السر',
-            border: OutlineInputBorder(),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            prefixIcon: const Icon(Icons.lock, size: 28),
+            contentPadding:
+                const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
           ),
+          style: const TextStyle(fontSize: 18),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('إلغاء'),
+            child: const Text('إلغاء', style: TextStyle(fontSize: 18)),
           ),
           ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _primaryColor,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+            ),
             onPressed: () async {
               final bool isCorrect = await _passwordService
                   .verifyPassword(passwordController.text);
               Navigator.of(context).pop(isCorrect);
             },
-            child: const Text('تأكيد'),
+            child: const Text('تأكيد', style: TextStyle(fontSize: 18)),
           ),
         ],
       ),
@@ -67,322 +79,372 @@ class _MainScreenState extends State<MainScreen> {
     return result ?? false;
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('دفتر ديوني - الشاشة الرئيسية'),
-        centerTitle: true,
-      ),
-      body: Center(
+  Widget _buildFeatureButton({
+    required IconData icon,
+    required String title,
+    required VoidCallback onTap,
+    Color color = const Color(0xFF6C63FF),
+    double fontSize = 40,
+    double iconSize = 30,
+    double padding = 6,
+    double spacing = 4,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: EdgeInsets.all(padding),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withOpacity(0.3), width: 1),
+        ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: <Widget>[
-            Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-              child: ElevatedButton(
-                onPressed: () {
-                  // Navigate to Debt Register Screen
-                  // Navigator.push( // Use Navigator.push to go to HomeScreen
-                  //   context,
-                  //   MaterialPageRoute(builder: (context) => const HomeScreen()),
-                  // );
-                  Navigator.pushNamed(
-                      context, '/debt_register'); // Use named route
-                },
-                child: const Text('سجل الديون'),
-              ),
-            ),
-            Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-              child: ElevatedButton(
-                onPressed: () {
-                  // Navigate to Product Entry Screen
-                  Navigator.pushNamed(
-                      context, '/product_entry'); // Use named route
-                },
-                child: const Text('إدخال البضاعة'),
-              ),
-            ),
-            Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-              child: ElevatedButton(
-                onPressed: () {
-                  // Navigate to Create Invoice Screen
-                  Navigator.pushNamed(
-                      context, '/create_invoice'); // Use named route
-                },
-                child: const Text('إنشاء قائمة'),
-              ),
-            ),
-            Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-              child: ElevatedButton(
-                onPressed: () async {
-                  final TextEditingController _monthsController =
-                      TextEditingController();
-                  int? selectedMonths;
-                  await showDialog<int>(
-                    context: context,
-                    builder: (context) {
-                      return AlertDialog(
-                        title: const Text('أدخل عدد الأشهر'),
-                        content: TextField(
-                          controller: _monthsController,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            hintText: 'على سبيل المثال: 10',
-                            labelText: 'عدد الأشهر',
-                          ),
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.of(context).pop(),
-                            child: const Text('إلغاء'),
-                          ),
-                          ElevatedButton(
-                            onPressed: () {
-                              final input =
-                                  int.tryParse(_monthsController.text);
-                              if (input != null && input > 0) {
-                                Navigator.of(context).pop(input);
-                              } else {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                      content: Text(
-                                          'الرجاء إدخال عدد صحيح موجب للأشهر.')),
-                                );
-                              }
-                            },
-                            child: const Text('بحث'),
-                          ),
-                        ],
-                      );
-                    },
-                  ).then((value) {
-                    selectedMonths = value;
-                  });
-
-                  if (selectedMonths != null) {
-                    final db = DatabaseService();
-                    final lateCustomers =
-                        await db.getLateCustomers(selectedMonths!);
-                    showDialog(
-                      context: context,
-                      builder: (context) => AlertDialog(
-                        title:
-                            Text('المتأخرون عن السداد ($selectedMonths شهر)'),
-                        content: lateCustomers.isEmpty
-                            ? const Text(
-                                'لا يوجد عملاء متأخرون عن السداد لهذا المدى.')
-                            : SizedBox(
-                                width: double.maxFinite,
-                                child: ListView.builder(
-                                  shrinkWrap: true,
-                                  itemCount: lateCustomers.length,
-                                  itemBuilder: (context, i) {
-                                    final c = lateCustomers[i];
-                                    return ListTile(
-                                      title: Text(c.name),
-                                      subtitle:
-                                          Text('العنوان: ${c.address ?? "-"}'),
-                                      trailing: Text(
-                                          'الدين: ${c.currentTotalDebt.toStringAsFixed(2)}'),
-                                    );
-                                  },
-                                ),
-                              ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.of(context).pop(),
-                            child: const Text('إغلاق'),
-                          ),
-                        ],
-                      ),
-                    );
-                  }
-                },
-                child: const Text('المتأخرين عن الديون'),
-              ),
-            ),
-            Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-              child: ElevatedButton(
-                onPressed: () async {
-                  final db = DatabaseService();
-                  final allCustomers = await db.getAllCustomers();
-                  // استخرج كل الأشهر التي فيها عملاء
-                  final months = <String>{};
-                  for (final c in allCustomers) {
-                    final dt = c.lastModifiedAt;
-                    final key =
-                        '${dt.year}-${dt.month.toString().padLeft(2, '0')}';
-                    months.add(key);
-                  }
-                  final sortedMonths = months.toList()
-                    ..sort((a, b) => b.compareTo(a));
-                  String? selectedMonth;
-                  await showDialog(
-                    context: context,
-                    builder: (context) {
-                      return AlertDialog(
-                        title: const Text('اختر الشهر'),
-                        content: SizedBox(
-                          width: double.maxFinite,
-                          child: ListView.builder(
-                            shrinkWrap: true,
-                            itemCount: sortedMonths.length,
-                            itemBuilder: (context, index) {
-                              final m = sortedMonths[index];
-                              return ListTile(
-                                title: Text('ديون شهر $m'),
-                                onTap: () {
-                                  selectedMonth = m;
-                                  Navigator.of(context).pop();
-                                },
-                              );
-                            },
-                          ),
-                        ),
-                      );
-                    },
-                  );
-                  if (selectedMonth != null) {
-                    final parts = selectedMonth!.split('-');
-                    final year = int.parse(parts[0]);
-                    final month = int.parse(parts[1]);
-                    final customers =
-                        await db.getCustomersForMonth(year, month);
-                    final file = await db.generateMonthlyDebtsPdf(
-                        customers, year, month);
-                    await Share.shareFiles([file.path],
-                        text: 'سجل ديون شهر $selectedMonth');
-                    // بعد المشاركة، اعرض Dialog فيه زر لفتح المجلد
-                    final dirPath = file.parent.path;
-                    showDialog(
-                      context: context,
-                      builder: (context) => AlertDialog(
-                        title: const Text('مشاركة الملف'),
-                        content: const Text(
-                            'إذا لم يظهر التطبيق المطلوب، يمكنك فتح المجلد وإرسال الملف يدويًا عبر أي تطبيق (بلوتوث، تيليجرام، واتساب...)'),
-                        actions: [
-                          TextButton(
-                            onPressed: () async {
-                              final uri = Uri.file(dirPath);
-                              await launchUrl(uri);
-                            },
-                            child: const Text('فتح المجلد'),
-                          ),
-                          TextButton(
-                            onPressed: () => Navigator.of(context).pop(),
-                            child: const Text('إغلاق'),
-                          ),
-                        ],
-                      ),
-                    );
-                  }
-                },
-                child: const Text('مشاركة الديون PDF'),
-              ),
-            ),
-            Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-              child: ElevatedButton(
-                onPressed: () {
-                  Navigator.pushNamed(context, '/printer_settings');
-                },
-                child: const Text('إعدادات الطابعة'),
+          children: [
+            Icon(icon, size: iconSize, color: color),
+            SizedBox(height: spacing),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: fontSize,
+                fontWeight: FontWeight.bold,
+                color: color,
               ),
             ),
           ],
         ),
       ),
-      bottomNavigationBar: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 12.0),
-        child: Row(
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isLargeScreen = screenWidth > 600;
+    final crossAxisCount = isLargeScreen ? 6 : 5;
+    final childAspectRatio = 0.7;
+    final buttonFontSize = 40.0;
+    final iconSize = 60.0;
+    final buttonPadding = 4.0;
+    final buttonSpacing = 4.0;
+    final gridSpacing = 32.0;
+
+    return Scaffold(
+      backgroundColor: _backgroundColor,
+      appBar: AppBar(
+        title: const Text('دفتر ديوني', style: TextStyle(fontSize: 24)),
+        centerTitle: true,
+        backgroundColor: _primaryColor,
+        elevation: 0,
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: GridView.count(
+          crossAxisCount: crossAxisCount,
+          mainAxisSpacing: gridSpacing,
+          crossAxisSpacing: gridSpacing,
+          childAspectRatio: childAspectRatio,
           children: [
-            Expanded(
-              child: ElevatedButton.icon(
-                icon: const Icon(Icons.book),
-                label: const Text('سجل الديون'),
-                onPressed: () {
-                  Navigator.pushNamed(context, '/debt_register');
-                },
-              ),
+            _buildFeatureButton(
+              icon: Icons.book,
+              title: 'سجل الديون',
+              onTap: () => Navigator.pushNamed(context, '/debt_register'),
+              color: _primaryColor,
+              fontSize: buttonFontSize,
+              iconSize: iconSize,
+              padding: buttonPadding,
+              spacing: buttonSpacing,
             ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: ElevatedButton.icon(
-                icon: const Icon(Icons.add_box),
-                label: const Text('إدخال البضاعة'),
-                onPressed: () {
-                  Navigator.pushNamed(context, '/product_entry');
-                },
-              ),
+            _buildFeatureButton(
+              icon: Icons.inventory,
+              title: 'إدخال البضاعة',
+              onTap: () => Navigator.pushNamed(context, '/product_entry'),
+              color: const Color(0xFF4CAF50),
+              fontSize: buttonFontSize,
+              iconSize: iconSize,
+              padding: buttonPadding,
+              spacing: buttonSpacing,
             ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: ElevatedButton.icon(
-                icon: const Icon(Icons.playlist_add),
-                label: const Text('إنشاء قائمة'),
-                onPressed: () {
-                  Navigator.pushNamed(context, '/create_invoice');
-                },
-              ),
+            _buildFeatureButton(
+              icon: Icons.list_alt,
+              title: 'إنشاء قائمة',
+              onTap: () => Navigator.pushNamed(context, '/create_invoice'),
+              color: const Color(0xFF2196F3),
+              fontSize: buttonFontSize,
+              iconSize: iconSize,
+              padding: buttonPadding,
+              spacing: buttonSpacing,
             ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: ElevatedButton.icon(
-                icon: const Icon(Icons.edit_note),
-                label: const Text('تعديل القوائم'),
-                onPressed: () {
-                  Navigator.pushNamed(context, '/edit_invoices');
-                },
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: ElevatedButton.icon(
-                icon: const Icon(Icons.edit),
-                label: const Text('تعديل البضاعة'),
-                onPressed: () {
-                  Navigator.pushNamed(context, '/edit_products');
-                },
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: ElevatedButton.icon(
-                icon: const Icon(Icons.business),
-                label: const Text('المؤسسين'),
-                onPressed: () {
-                  Navigator.pushNamed(context, '/installers');
-                },
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: ElevatedButton.icon(
-                icon: const Icon(Icons.inventory),
-                label: Text('الجرد ($_currentMonthYear)'),
-                onPressed: () async {
-                  final bool canAccess = await _showPasswordDialog();
-                  if (canAccess) {
-                    Navigator.pushNamed(context, '/inventory');
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('كلمة السر غير صحيحة.')),
+            _buildFeatureButton(
+              icon: Icons.warning,
+              title: 'المتأخرين عن الديون',
+              onTap: () async {
+                final TextEditingController _monthsController =
+                    TextEditingController();
+                int? selectedMonths;
+                await showDialog<int>(
+                  context: context,
+                  builder: (context) {
+                    return AlertDialog(
+                      title: const Text('أدخل عدد الأشهر',
+                          style: TextStyle(fontSize: 20)),
+                      content: TextField(
+                        controller: _monthsController,
+                        keyboardType: TextInputType.number,
+                        decoration: InputDecoration(
+                          hintText: 'على سبيل المثال: 10',
+                          labelText: 'عدد الأشهر',
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(
+                              vertical: 16, horizontal: 16),
+                        ),
+                        style: const TextStyle(fontSize: 18),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          child: const Text('إلغاء',
+                              style: TextStyle(fontSize: 18)),
+                        ),
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: _primaryColor,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          onPressed: () {
+                            final input = int.tryParse(_monthsController.text);
+                            if (input != null && input > 0) {
+                              Navigator.of(context).pop(input);
+                            } else {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                      'الرجاء إدخال عدد صحيح موجب للأشهر.',
+                                      style: TextStyle(fontSize: 16)),
+                                ),
+                              );
+                            }
+                          },
+                          child:
+                              const Text('بحث', style: TextStyle(fontSize: 18)),
+                        ),
+                      ],
                     );
-                  }
-                },
-              ),
+                  },
+                ).then((value) {
+                  selectedMonths = value;
+                });
+
+                if (selectedMonths != null) {
+                  final db = DatabaseService();
+                  final lateCustomers =
+                      await db.getLateCustomers(selectedMonths!);
+                  showDialog(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: Text('المتأخرون عن السداد ($selectedMonths شهر)',
+                          style: const TextStyle(fontSize: 20)),
+                      content: lateCustomers.isEmpty
+                          ? const Text(
+                              'لا يوجد عملاء متأخرون عن السداد لهذا المدى.',
+                              style: TextStyle(fontSize: 18))
+                          : SizedBox(
+                              width: double.maxFinite,
+                              child: ListView.builder(
+                                shrinkWrap: true,
+                                itemCount: lateCustomers.length,
+                                itemBuilder: (context, i) {
+                                  final c = lateCustomers[i];
+                                  return ListTile(
+                                    title: Text(c.name,
+                                        style: const TextStyle(fontSize: 18)),
+                                    subtitle: Text(
+                                        'العنوان: ${c.address ?? "-"}',
+                                        style: const TextStyle(fontSize: 16)),
+                                    trailing: Text(
+                                        'الدين: ${c.currentTotalDebt.toStringAsFixed(2)}',
+                                        style: const TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold)),
+                                  );
+                                },
+                              ),
+                            ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          child: const Text('إغلاق',
+                              style: TextStyle(fontSize: 18)),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+              },
+              color: const Color(0xFFF44336),
+              fontSize: buttonFontSize,
+              iconSize: iconSize,
+              padding: buttonPadding,
+              spacing: buttonSpacing,
+            ),
+            _buildFeatureButton(
+              icon: Icons.share,
+              title: 'مشاركة الديون PDF',
+              onTap: () async {
+                final db = DatabaseService();
+                final allCustomers = await db.getAllCustomers();
+                final months = <String>{};
+                for (final c in allCustomers) {
+                  final dt = c.lastModifiedAt;
+                  final key =
+                      '${dt.year}-${dt.month.toString().padLeft(2, '0')}';
+                  months.add(key);
+                }
+                final sortedMonths = months.toList()
+                  ..sort((a, b) => b.compareTo(a));
+                String? selectedMonth;
+                await showDialog(
+                  context: context,
+                  builder: (context) {
+                    return AlertDialog(
+                      title: const Text('اختر الشهر',
+                          style: TextStyle(fontSize: 20)),
+                      content: SizedBox(
+                        width: double.maxFinite,
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: sortedMonths.length,
+                          itemBuilder: (context, index) {
+                            final m = sortedMonths[index];
+                            return Card(
+                              elevation: 2,
+                              margin: const EdgeInsets.only(bottom: 8),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: ListTile(
+                                title: Text('ديون شهر $m',
+                                    style: const TextStyle(fontSize: 18)),
+                                onTap: () {
+                                  selectedMonth = m;
+                                  Navigator.of(context).pop();
+                                },
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    );
+                  },
+                );
+                if (selectedMonth != null) {
+                  final parts = selectedMonth!.split('-');
+                  final year = int.parse(parts[0]);
+                  final month = int.parse(parts[1]);
+                  final customers = await db.getCustomersForMonth(year, month);
+                  final file =
+                      await db.generateMonthlyDebtsPdf(customers, year, month);
+                  await Share.shareFiles([file.path],
+                      text: 'سجل ديون شهر $selectedMonth');
+                  showDialog(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: const Text('مشاركة الملف',
+                          style: TextStyle(fontSize: 20)),
+                      content: const Text(
+                          'إذا لم يظهر التطبيق المطلوب، يمكنك فتح المجلد وإرسال الملف يدويًا عبر أي تطبيق',
+                          style: TextStyle(fontSize: 18)),
+                      actions: [
+                        TextButton(
+                          onPressed: () async {
+                            final dirPath = file.parent.path;
+                            final uri = Uri.file(dirPath);
+                            await launchUrl(uri);
+                          },
+                          child: const Text('فتح المجلد',
+                              style: TextStyle(fontSize: 18)),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          child: const Text('إغلاق',
+                              style: TextStyle(fontSize: 18)),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+              },
+              color: const Color(0xFF9C27B0),
+              fontSize: buttonFontSize,
+              iconSize: iconSize,
+              padding: buttonPadding,
+              spacing: buttonSpacing,
+            ),
+            _buildFeatureButton(
+              icon: Icons.print,
+              title: 'إعدادات الطابعة',
+              onTap: () => Navigator.pushNamed(context, '/printer_settings'),
+              color: const Color(0xFF607D8B),
+              fontSize: buttonFontSize,
+              iconSize: iconSize,
+              padding: buttonPadding,
+              spacing: buttonSpacing,
+            ),
+            _buildFeatureButton(
+              icon: Icons.edit_note,
+              title: 'تعديل القوائم',
+              onTap: () => Navigator.pushNamed(context, '/edit_invoices'),
+              color: const Color(0xFF795548),
+              fontSize: buttonFontSize,
+              iconSize: iconSize,
+              padding: buttonPadding,
+              spacing: buttonSpacing,
+            ),
+            _buildFeatureButton(
+              icon: Icons.edit,
+              title: 'تعديل البضاعة',
+              onTap: () => Navigator.pushNamed(context, '/edit_products'),
+              color: const Color(0xFF009688),
+              fontSize: buttonFontSize,
+              iconSize: iconSize,
+              padding: buttonPadding,
+              spacing: buttonSpacing,
+            ),
+            _buildFeatureButton(
+              icon: Icons.business,
+              title: 'المؤسسين',
+              onTap: () => Navigator.pushNamed(context, '/installers'),
+              color: const Color(0xFFE91E63),
+              fontSize: buttonFontSize,
+              iconSize: iconSize,
+              padding: buttonPadding,
+              spacing: buttonSpacing,
+            ),
+            _buildFeatureButton(
+              icon: Icons.folder,
+              title: 'الجرد\n$_currentMonthYear',
+              onTap: () async {
+                final bool canAccess = await _showPasswordDialog();
+                if (canAccess) {
+                  Navigator.pushNamed(context, '/inventory');
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('كلمة السر غير صحيحة.',
+                        style: TextStyle(fontSize: 16)),
+                  ));
+                }
+              },
+              color: _accentColor,
+              fontSize: buttonFontSize,
+              iconSize: iconSize,
+              padding: buttonPadding,
+              spacing: buttonSpacing,
             ),
           ],
         ),
