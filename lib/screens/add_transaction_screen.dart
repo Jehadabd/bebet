@@ -7,6 +7,11 @@ import '../providers/app_provider.dart';
 import '../models/customer.dart';
 import '../models/transaction.dart';
 import 'package:intl/intl.dart'; // For currency formatting
+import 'package:flutter_sound/flutter_sound.dart';
+import 'package:path_provider/path_provider.dart';
+import 'dart:io';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:record/record.dart';
 
 class AddTransactionScreen extends StatefulWidget {
   final Customer customer;
@@ -25,17 +30,39 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   final _amountController = TextEditingController();
   final _noteController = TextEditingController();
   bool _isDebt = true; // true for adding debt, false for paying debt
+  final AudioRecorder _recorder = AudioRecorder();
+  FlutterSoundPlayer? _audioPlayer;
+  AudioPlayer? _audioPlayer2;
+  bool _isRecording = false;
+  String? _audioNotePath;
+
+  @override
+  void initState() {
+    super.initState();
+    _audioPlayer = FlutterSoundPlayer();
+    _audioPlayer2 = AudioPlayer();
+    _initAudio();
+  }
+
+  Future<void> _initAudio() async {
+    if (!Platform.isWindows) {
+      await _audioPlayer!.openPlayer();
+    }
+  }
 
   @override
   void dispose() {
-    _amountController.dispose();
-    _noteController.dispose();
+    if (!Platform.isWindows) {
+      _audioPlayer?.closePlayer();
+    }
+    _audioPlayer2?.dispose();
+    _recorder.dispose();
     super.dispose();
   }
 
   // Helper to format currency consistently with 2 decimal places
   String formatCurrency(num value) {
-    return NumberFormat('0.00', 'en_US')
+    return NumberFormat('', 'en_US')
         .format(value); // Always two decimal places
   }
 
@@ -55,6 +82,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
             _isDebt ? 'manual_debt' : 'manual_payment', // Use specific types
         createdAt: DateTime.now(), // Add createdAt for consistency
         transactionDate: DateTime.now(), // Add transactionDate for consistency
+        audioNotePath: _audioNotePath,
       );
 
       await context.read<AppProvider>().addTransaction(transaction);
@@ -75,6 +103,53 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
           backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
+    }
+  }
+
+  Future<void> _startRecording() async {
+    if (await _recorder.hasPermission()) {
+      final dir = await getApplicationDocumentsDirectory();
+      final filePath =
+          '${dir.path}/audio_note_${DateTime.now().millisecondsSinceEpoch}.m4a';
+      await _recorder.start(
+        RecordConfig(
+          encoder: AudioEncoder.aacLc,
+          bitRate: 128000,
+          sampleRate: 44100,
+        ),
+        path: filePath,
+      );
+      setState(() {
+        _isRecording = true;
+        _audioNotePath = filePath;
+      });
+    }
+  }
+
+  Future<void> _stopRecording() async {
+    final path = await _recorder.stop();
+    setState(() {
+      _isRecording = false;
+      if (path != null) _audioNotePath = path;
+    });
+  }
+
+  void _deleteRecording() {
+    if (_audioNotePath != null) {
+      File(_audioNotePath!).deleteSync();
+      setState(() {
+        _audioNotePath = null;
+      });
+    }
+  }
+
+  Future<void> _playAudioNote() async {
+    if (_audioNotePath != null && File(_audioNotePath!).existsSync()) {
+      if (Platform.isWindows) {
+        await Process.run('start', [_audioNotePath!], runInShell: true);
+      } else {
+        await _audioPlayer2!.play(DeviceFileSource(_audioNotePath!));
+      }
     }
   }
 
@@ -365,11 +440,26 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                   labelText: 'ملاحظات',
                   hintText: 'أدخل ملاحظات إضافية (اختياري)',
                   prefixIcon: Icon(Icons.notes_outlined,
-                      color:
-                          Theme.of(context).colorScheme.primary), // Themed icon
+                      color: Theme.of(context).colorScheme.primary),
+                  suffixIcon: IconButton(
+                    icon: Icon(_isRecording ? Icons.stop_circle : Icons.mic),
+                    color: _isRecording
+                        ? Colors.red
+                        : Theme.of(context).colorScheme.primary,
+                    tooltip:
+                        _isRecording ? 'إيقاف التسجيل' : 'تسجيل ملاحظة صوتية',
+                    onPressed: _isRecording ? _stopRecording : _startRecording,
+                  ),
                 ),
                 maxLines: 3,
               ),
+              if (_audioNotePath != null)
+                ListTile(
+                  leading: Icon(Icons.play_circle_fill,
+                      color: Theme.of(context).colorScheme.primary),
+                  title: Text('تشغيل الملاحظة الصوتية'),
+                  onTap: _playAudioNote,
+                ),
               const SizedBox(height: 32.0), // Increased spacing before button
               ElevatedButton.icon(
                 onPressed: _saveTransaction,

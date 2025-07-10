@@ -1,3 +1,4 @@
+// models/customer.dart
 class Customer {
   final int? id;
   final String name;
@@ -7,6 +8,7 @@ class Customer {
   final String? address;
   final DateTime createdAt;
   final DateTime lastModifiedAt;
+  final String? audioNotePath;
 
   Customer({
     this.id,
@@ -17,6 +19,7 @@ class Customer {
     this.address,
     DateTime? createdAt,
     DateTime? lastModifiedAt,
+    this.audioNotePath,
   })  : createdAt = createdAt ?? DateTime.now(),
         lastModifiedAt = lastModifiedAt ?? DateTime.now();
 
@@ -30,6 +33,7 @@ class Customer {
       'address': address,
       'created_at': createdAt.toIso8601String(),
       'last_modified_at': lastModifiedAt.toIso8601String(),
+      'audio_note_path': audioNotePath,
     };
   }
 
@@ -43,6 +47,7 @@ class Customer {
       address: map['address'] as String?,
       createdAt: DateTime.parse(map['created_at'] as String),
       lastModifiedAt: DateTime.parse(map['last_modified_at'] as String),
+      audioNotePath: map['audio_note_path'] as String?,
     );
   }
 
@@ -55,6 +60,7 @@ class Customer {
     String? address,
     DateTime? createdAt,
     DateTime? lastModifiedAt,
+    String? audioNotePath,
   }) {
     return Customer(
       id: id ?? this.id,
@@ -65,6 +71,7 @@ class Customer {
       address: address ?? this.address,
       createdAt: createdAt ?? this.createdAt,
       lastModifiedAt: lastModifiedAt ?? this.lastModifiedAt,
+      audioNotePath: audioNotePath ?? this.audioNotePath,
     );
   }
-} 
+}

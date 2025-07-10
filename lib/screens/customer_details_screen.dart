@@ -16,6 +16,7 @@ import 'dart:io';
 // import 'package:share_plus/share_plus.dart'; // Not directly used here
 import 'package:intl/intl.dart';
 import 'package:process/process.dart'; // For Process.start on Windows
+import 'package:audioplayers/audioplayers.dart';
 
 class CustomerDetailsScreen extends StatefulWidget {
   final Customer customer;
@@ -580,6 +581,29 @@ class TransactionListTile extends StatelessWidget {
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     fontStyle: FontStyle.italic,
                     color: Colors.grey[600]), // Themed text style
+              ),
+            if (transaction.audioNotePath != null &&
+                transaction.audioNotePath!.isNotEmpty)
+              Row(
+                children: [
+                  IconButton(
+                    icon: Icon(Icons.play_circle_fill,
+                        color: Theme.of(context).colorScheme.primary),
+                    tooltip: 'تشغيل الملاحظة الصوتية',
+                    onPressed: () async {
+                      final player = AudioPlayer();
+                      if (File(transaction.audioNotePath!).existsSync()) {
+                        await player
+                            .play(DeviceFileSource(transaction.audioNotePath!));
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('ملف الصوت غير موجود')),
+                        );
+                      }
+                    },
+                  ),
+                  const Text('تشغيل الملاحظة الصوتية'),
+                ],
               ),
           ],
         ),

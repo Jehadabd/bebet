@@ -10,6 +10,7 @@ class DebtTransaction {
   final String? description;
   final int? invoiceId;
   final DateTime createdAt;
+  final String? audioNotePath;
 
   DebtTransaction({
     this.id,
@@ -22,6 +23,7 @@ class DebtTransaction {
     this.description,
     this.invoiceId,
     DateTime? createdAt,
+    this.audioNotePath,
   })  : transactionDate = transactionDate ?? DateTime.now(),
         createdAt = createdAt ?? DateTime.now();
 
@@ -37,6 +39,7 @@ class DebtTransaction {
       'description': description,
       'invoice_id': invoiceId,
       'created_at': createdAt.toIso8601String(),
+      'audio_note_path': audioNotePath,
     };
   }
 
@@ -46,12 +49,14 @@ class DebtTransaction {
       customerId: map['customer_id'] as int,
       transactionDate: DateTime.parse(map['transaction_date'] as String),
       amountChanged: map['amount_changed'] as double,
-      newBalanceAfterTransaction: map['new_balance_after_transaction'] as double?,
+      newBalanceAfterTransaction:
+          map['new_balance_after_transaction'] as double?,
       transactionNote: map['transaction_note'] as String?,
       transactionType: map['transaction_type'] as String,
       description: map['description'] as String?,
       invoiceId: map['invoice_id'] as int?,
       createdAt: DateTime.parse(map['created_at'] as String),
+      audioNotePath: map['audio_note_path'] as String?,
     );
   }
 
@@ -66,18 +71,21 @@ class DebtTransaction {
     String? description,
     int? invoiceId,
     DateTime? createdAt,
+    String? audioNotePath,
   }) {
     return DebtTransaction(
       id: id ?? this.id,
       customerId: customerId ?? this.customerId,
       transactionDate: transactionDate ?? this.transactionDate,
       amountChanged: amountChanged ?? this.amountChanged,
-      newBalanceAfterTransaction: newBalanceAfterTransaction ?? this.newBalanceAfterTransaction,
+      newBalanceAfterTransaction:
+          newBalanceAfterTransaction ?? this.newBalanceAfterTransaction,
       transactionNote: transactionNote ?? this.transactionNote,
       transactionType: transactionType ?? this.transactionType,
       description: description ?? this.description,
       invoiceId: invoiceId ?? this.invoiceId,
       createdAt: createdAt ?? this.createdAt,
+      audioNotePath: audioNotePath ?? this.audioNotePath,
     );
   }
-} 
+}

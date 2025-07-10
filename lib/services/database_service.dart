@@ -78,7 +78,8 @@ class DatabaseService {
     }
     return await openDatabase(
       newPath,
-      version: 22, // رفع رقم النسخة لتفعيل الترقية وإضافة عمود unit_hierarchy
+      version:
+          24, // رفع رقم النسخة لتفعيل الترقية وإضافة عمود audio_note_path للعملاء
       onCreate: _createDatabase,
       onUpgrade: _onUpgrade,
     );
@@ -314,6 +315,28 @@ class DatabaseService {
       } catch (e) {
         print(
             "DEBUG DB Error: Failed to add column 'units_in_large_unit' to invoice_items table or it already exists: $e");
+      }
+    }
+    if (oldVersion < 23) {
+      try {
+        await db.execute(
+            'ALTER TABLE transactions ADD COLUMN audio_note_path TEXT;');
+        print(
+            'DEBUG DB: audio_note_path column added successfully to transactions table.');
+      } catch (e) {
+        print(
+            "DEBUG DB Error: Failed to add column 'audio_note_path' to transactions table or it already exists: $e");
+      }
+    }
+    if (oldVersion < 24) {
+      try {
+        await db
+            .execute('ALTER TABLE customers ADD COLUMN audio_note_path TEXT;');
+        print(
+            'DEBUG DB: audio_note_path column added successfully to customers table.');
+      } catch (e) {
+        print(
+            "DEBUG DB Error: Failed to add column 'audio_note_path' to customers table or it already exists: $e");
       }
     }
   }

@@ -43,6 +43,9 @@ dependencies:
   flutter_nsd: ^1.6.0
   get_storage: ^2.1.1
   process: ^4.2.4
+  flutter_sound: ^9.28.0
+  audioplayers: ^6.5.0
+  record: ^6.0.0
 
 dev_dependencies:
   flutter_test:
