@@ -1,4 +1,5 @@
 // screens/create_invoice_screen.dart
+// screens/create_invoice_screen.dart
 import 'package:flutter/material.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
@@ -183,6 +184,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       });
     } catch (e) {
       print('Error in initState: $e');
+    }
+    if (_invoiceItems.isEmpty) {
+      _invoiceItems.add(InvoiceItem(
+        invoiceId: 0,
+        productName: '',
+        unit: '',
+        unitPrice: 0.0,
+        appliedPrice: 0.0,
+        itemTotal: 0.0,
+      ));
     }
   }
 
@@ -549,6 +560,21 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               _invoiceToManage!.status == 'معلقة' &&
               (_invoiceToManage?.isLocked ?? false)) {
             autoSaveSuspendedInvoice();
+          }
+          // --- معالجة الصفوف الفارغة ---
+          // احذف جميع الصفوف الفارغة (غير المكتملة)
+          _invoiceItems.removeWhere((item) => !_isInvoiceItemComplete(item));
+          // ثم أضف صف فارغ جديد إذا كان آخر صف مكتمل أو القائمة فارغة
+          if (_invoiceItems.isEmpty ||
+              _isInvoiceItemComplete(_invoiceItems.last)) {
+            _invoiceItems.add(InvoiceItem(
+              invoiceId: 0,
+              productName: '',
+              unit: '',
+              unitPrice: 0.0,
+              appliedPrice: 0.0,
+              itemTotal: 0.0,
+            ));
           }
         });
       }
@@ -1418,6 +1444,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         _paymentType = 'نقد';
         _selectedDate = DateTime.now();
         _invoiceItems.clear();
+        // أضف صف فارغ جديد بعد التفريغ
+        _invoiceItems.add(InvoiceItem(
+          invoiceId: 0,
+          productName: '',
+          unit: '',
+          unitPrice: 0.0,
+          appliedPrice: 0.0,
+          itemTotal: 0.0,
+        ));
         _searchResults.clear();
         _totalAmountController.text = '0';
         _savedOrSuspended = false;
@@ -2485,15 +2520,32 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   physics: const NeverScrollableScrollPhysics(),
                   itemCount: _invoiceItems.length,
                   itemBuilder: (context, index) {
+                    final isLast = index == _invoiceItems.length - 1;
                     return EditableInvoiceItemRow(
                       item: _invoiceItems[index],
                       index: index,
                       allProducts: _allProductsForUnits ?? [],
                       isViewOnly: _isViewOnly,
+                      isPlaceholder: isLast,
                       onItemUpdated: (updatedItem) {
                         setState(() {
                           _invoiceItems[index] = updatedItem;
                           _recalculateTotals();
+                          // عند إضافة صف فارغ جديد:
+                          if (isLast && _isInvoiceItemComplete(updatedItem)) {
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              setState(() {
+                                _invoiceItems.add(InvoiceItem(
+                                  invoiceId: 0,
+                                  productName: '',
+                                  unit: '',
+                                  unitPrice: 0.0,
+                                  appliedPrice: 0.0,
+                                  itemTotal: 0.0,
+                                ));
+                              });
+                            });
+                          }
                         });
                       },
                       onItemRemoved: (idx) {
@@ -2765,6 +2817,10 @@ class EditableInvoiceItemRow extends StatefulWidget {
   final Function(int) onItemRemoved;
   final List<Product> allProducts;
   final bool isViewOnly;
+  final bool isPlaceholder;
+  final FocusNode? detailsFocusNode; // جديد: لقبول FocusNode لحقل التفاصيل
+  final VoidCallback?
+      onRequestFocusQuantity; // جديد: لطلب التركيز على العدد من الخارج
 
   const EditableInvoiceItemRow({
     Key? key,
@@ -2774,6 +2830,9 @@ class EditableInvoiceItemRow extends StatefulWidget {
     required this.onItemRemoved,
     required this.allProducts,
     required this.isViewOnly,
+    required this.isPlaceholder,
+    this.detailsFocusNode,
+    this.onRequestFocusQuantity,
   }) : super(key: key);
 
   @override
@@ -2784,20 +2843,42 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   late InvoiceItem _currentItem;
   late TextEditingController _quantityController;
   late TextEditingController _priceController;
+  late FocusNode _quantityFocusNode;
+  late FocusNode _priceFocusNode;
+  late FocusNode _detailsFocusNode;
+  late FocusNode _saleTypeFocusNode;
+  bool _openSaleTypeDropdown = false;
+  bool _openPriceDropdown = false;
 
   @override
   void initState() {
     super.initState();
     _currentItem = widget.item;
+    double? qty =
+        _currentItem.quantityIndividual ?? _currentItem.quantityLargeUnit;
     _quantityController = TextEditingController(
-      text: (_currentItem.quantityIndividual ??
-              _currentItem.quantityLargeUnit ??
-              0)
-          .toString(),
+      text: (qty != null && qty > 0) ? qty.toString() : '',
     );
     _priceController = TextEditingController(
-      text: _currentItem.appliedPrice.toString(),
+      text: (_currentItem.appliedPrice > 0)
+          ? _currentItem.appliedPrice.toString()
+          : '',
     );
+    _quantityFocusNode = FocusNode();
+    _priceFocusNode = FocusNode();
+    _detailsFocusNode = widget.detailsFocusNode ?? FocusNode();
+    _saleTypeFocusNode = FocusNode();
+  }
+
+  @override
+  void dispose() {
+    _quantityFocusNode.dispose();
+    _priceFocusNode.dispose();
+    if (widget.detailsFocusNode == null) {
+      _detailsFocusNode.dispose();
+    }
+    _saleTypeFocusNode.dispose();
+    super.dispose();
   }
 
   List<DropdownMenuItem<String>> _getUnitOptions() {
@@ -2933,8 +3014,14 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
             (newType != 'قطعة' && newType != 'متر') ? quantity : null,
       );
       _quantityController.text = quantity.toString();
-      _priceController.text = newAppliedPrice.toStringAsFixed(2);
+      _priceController.text =
+          (newAppliedPrice > 0) ? newAppliedPrice.toString() : '';
       widget.onItemUpdated(_currentItem);
+      // بعد اختيار نوع البيع، انتقل تلقائياً إلى السعر وافتح قائمة الأسعار
+      FocusScope.of(context).requestFocus(_priceFocusNode);
+      setState(() {
+        _openPriceDropdown = true;
+      });
     });
   }
 
@@ -2980,10 +3067,66 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                         fontWeight: FontWeight.bold,
                         color: Theme.of(context).colorScheme.primary))),
             Expanded(
-                flex: 3,
-                child: Text(_currentItem.productName,
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodyMedium)),
+              flex: 3,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                child: widget.isViewOnly
+                    ? Text(_currentItem.productName,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium)
+                    : Autocomplete<String>(
+                        initialValue:
+                            TextEditingValue(text: _currentItem.productName),
+                        optionsBuilder: (TextEditingValue textEditingValue) {
+                          if (textEditingValue.text == '') {
+                            return const Iterable<String>.empty();
+                          }
+                          return widget.allProducts.map((p) => p.name).where(
+                              (option) =>
+                                  option.contains(textEditingValue.text));
+                        },
+                        onSelected: (String selection) {
+                          setState(() {
+                            _currentItem =
+                                _currentItem.copyWith(productName: selection);
+                            widget.onItemUpdated(_currentItem);
+                          });
+                          // عند اختيار المنتج، ركز على العدد
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            _quantityFocusNode.requestFocus();
+                            if (widget.onRequestFocusQuantity != null) {
+                              widget.onRequestFocusQuantity!();
+                            }
+                          });
+                        },
+                        fieldViewBuilder:
+                            (context, controller, focusNode, onFieldSubmitted) {
+                          return TextField(
+                            controller: controller,
+                            focusNode: focusNode,
+                            enabled: !widget.isViewOnly,
+                            decoration: const InputDecoration(
+                              border: InputBorder.none,
+                              contentPadding: EdgeInsets.symmetric(
+                                  horizontal: 0, vertical: 8),
+                              isDense: true,
+                            ),
+                            style: Theme.of(context).textTheme.bodyMedium,
+                            onChanged: (val) {
+                              setState(() {
+                                _currentItem =
+                                    _currentItem.copyWith(productName: val);
+                                widget.onItemUpdated(_currentItem);
+                              });
+                            },
+                            onSubmitted: (val) {
+                              onFieldSubmitted();
+                            },
+                          );
+                        },
+                      ),
+              ),
+            ),
             Expanded(
               flex: 2,
               child: Padding(
@@ -2995,6 +3138,14 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                       const TextInputType.numberWithOptions(decimal: true),
                   enabled: !widget.isViewOnly,
                   onChanged: _updateQuantity,
+                  focusNode: _quantityFocusNode,
+                  onFieldSubmitted: (val) {
+                    // عند الضغط Enter في العدد، ركز على نوع البيع وافتح القائمة فوراً
+                    _saleTypeFocusNode.requestFocus();
+                    setState(() {
+                      _openSaleTypeDropdown = true;
+                    });
+                  },
                   style: Theme.of(context).textTheme.bodyMedium,
                   decoration: const InputDecoration(
                     border: InputBorder.none,
@@ -3020,6 +3171,13 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                     alignment: AlignmentDirectional.center,
                     style: Theme.of(context).textTheme.bodyMedium,
                     itemHeight: 48,
+                    autofocus: _openSaleTypeDropdown,
+                    focusNode: _saleTypeFocusNode,
+                    onTap: () {
+                      setState(() {
+                        _openSaleTypeDropdown = false;
+                      });
+                    },
                   ),
                 ),
               ),
@@ -3035,6 +3193,13 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                       const TextInputType.numberWithOptions(decimal: true),
                   enabled: !widget.isViewOnly,
                   onChanged: _updatePrice,
+                  focusNode: _priceFocusNode,
+                  onFieldSubmitted: (val) {
+                    // عند الضغط Enter في السعر، انتقل إلى التفاصيل في الصف الجديد
+                    if (widget.onRequestFocusQuantity != null) {
+                      widget.onRequestFocusQuantity!();
+                    }
+                  },
                   style: Theme.of(context).textTheme.bodyMedium,
                   decoration: const InputDecoration(
                     border: InputBorder.none,
@@ -3055,7 +3220,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodyMedium),
             ),
-            if (!widget.isViewOnly)
+            if (!widget.isViewOnly && !widget.isPlaceholder)
               SizedBox(
                 width: 40,
                 child: IconButton(
@@ -3072,4 +3237,13 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
       ),
     );
   }
+}
+
+// أضف دالة مساعدة للتحقق من اكتمال الصف
+bool _isInvoiceItemComplete(InvoiceItem item) {
+  return (item.productName.isNotEmpty &&
+      (item.quantityIndividual != null || item.quantityLargeUnit != null) &&
+      item.appliedPrice > 0 &&
+      item.itemTotal > 0 &&
+      (item.saleType != null && item.saleType!.isNotEmpty));
 }
