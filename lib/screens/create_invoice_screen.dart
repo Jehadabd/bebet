@@ -24,6 +24,7 @@ import 'package:alnaser/services/pdf_service.dart';
 import 'package:alnaser/services/printing_service_platform_io.dart';
 import 'package:get_storage/get_storage.dart';
 import 'dart:convert';
+import 'package:flutter/scheduler.dart';
 
 // تعريف EditableInvoiceItemRow موجود هنا (أو تأكد من وجوده قبل استخدامه في ListView)
 // إذا كان التعريف موجود بالفعل، لا داعي لأي تعديل إضافي هنا.
@@ -107,6 +108,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   List<Product>? _allProductsForUnits;
 
   late TextEditingController _loadingFeeController;
+
+  List<LineItemFocusNodes> focusNodesList = [];
 
   @override
   void initState() {
@@ -354,6 +357,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       _quantityFocusNode.dispose(); // تنظيف FocusNode
       _searchFocusNode.dispose();
       _loadingFeeController.dispose();
+      // --- تخلص من جميع FocusNodes الخاصة بالصفوف ---
+      for (final node in focusNodesList) {
+        node.dispose();
+      }
+      focusNodesList.clear();
+      // --- نهاية التخصيص ---
       super.dispose();
     } catch (e) {
       print('Error in dispose: $e');
@@ -591,6 +600,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   void _removeInvoiceItem(int index) {
     try {
       setState(() {
+        focusNodesList[index].dispose();
+        focusNodesList.removeAt(index);
         _invoiceItems.removeAt(index);
         _guardDiscount();
         _updatePaidAmountIfCash();
@@ -1443,22 +1454,34 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         _useLargeUnit = false;
         _paymentType = 'نقد';
         _selectedDate = DateTime.now();
-        _invoiceItems.clear();
-        // أضف صف فارغ جديد بعد التفريغ
-        _invoiceItems.add(InvoiceItem(
-          invoiceId: 0,
-          productName: '',
-          unit: '',
-          unitPrice: 0.0,
-          appliedPrice: 0.0,
-          itemTotal: 0.0,
-        ));
+        _invoiceItems.clear(); // حذف جميع الأصناف فورًا
+        for (final node in focusNodesList) {
+          node.dispose();
+        }
+        focusNodesList.clear();
         _searchResults.clear();
         _totalAmountController.text = '0';
         _savedOrSuspended = false;
-        // حذف البيانات المؤقتة
         _storage.remove('temp_invoice_data');
       });
+
+      // بعد ثانية واحدة أضف عنصر فارغ جديد
+      Future.delayed(const Duration(seconds: 1), () {
+        if (mounted) {
+          setState(() {
+            _invoiceItems.add(InvoiceItem(
+              invoiceId: 0,
+              productName: '',
+              unit: '',
+              unitPrice: 0.0,
+              appliedPrice: 0.0,
+              itemTotal: 0.0,
+            ));
+            focusNodesList.add(LineItemFocusNodes());
+          });
+        }
+      });
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('تم بدء فاتورة جديدة')),
       );
@@ -1957,17 +1980,20 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                               },
                               fieldViewBuilder: (context, controller, focusNode,
                                   onFieldSubmitted) {
-                                // مزامنة النص بين المتحكمين
-                                if (controller.text !=
-                                    _customerNameController.text) {
-                                  controller.text =
-                                      _customerNameController.text;
-                                  controller.selection =
-                                      TextSelection.fromPosition(
-                                    TextPosition(
-                                        offset: controller.text.length),
-                                  );
-                                }
+                                // مزامنة النص بين المتحكمين بعد انتهاء عملية البناء
+                                WidgetsBinding.instance
+                                    .addPostFrameCallback((_) {
+                                  if (controller.text !=
+                                      _customerNameController.text) {
+                                    controller.text =
+                                        _customerNameController.text;
+                                    controller.selection =
+                                        TextSelection.fromPosition(
+                                      TextPosition(
+                                          offset: controller.text.length),
+                                    );
+                                  }
+                                });
                                 return TextFormField(
                                   controller: controller,
                                   focusNode: focusNode,
@@ -2188,7 +2214,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           flex: 2,
                           child: TextFormField(
                             controller: _quantityController,
-                            focusNode: _quantityFocusNode, // ربط FocusNode
+                            focusNode: focusNodesList.length > 0
+                                ? focusNodesList[0].quantity
+                                : null,
                             autofocus: _quantityAutofocus, // ربط autofocus
                             decoration: InputDecoration(
                               labelText: 'الكمية (${_selectedUnitForItem})',
@@ -2522,16 +2550,25 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   itemBuilder: (context, index) {
                     final isLast = index == _invoiceItems.length - 1;
                     return EditableInvoiceItemRow(
+                      key: ValueKey('row_$index'), // مفتاح ثابت لكل صف
                       item: _invoiceItems[index],
                       index: index,
                       allProducts: _allProductsForUnits ?? [],
                       isViewOnly: _isViewOnly,
                       isPlaceholder: isLast,
+                      detailsFocusNode: focusNodesList.length > index
+                          ? focusNodesList[index].details
+                          : null,
+                      quantityFocusNode: focusNodesList.length > index
+                          ? focusNodesList[index].quantity
+                          : null,
+                      priceFocusNode: focusNodesList.length > index
+                          ? focusNodesList[index].price
+                          : null,
                       onItemUpdated: (updatedItem) {
                         setState(() {
                           _invoiceItems[index] = updatedItem;
                           _recalculateTotals();
-                          // عند إضافة صف فارغ جديد:
                           if (isLast && _isInvoiceItemComplete(updatedItem)) {
                             WidgetsBinding.instance.addPostFrameCallback((_) {
                               setState(() {
@@ -2543,14 +2580,19 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                   appliedPrice: 0.0,
                                   itemTotal: 0.0,
                                 ));
+                                focusNodesList.add(LineItemFocusNodes());
                               });
                             });
                           }
                         });
                       },
                       onItemRemoved: (idx) {
-                        setState(() => _invoiceItems.removeAt(idx));
-                        _recalculateTotals();
+                        setState(() {
+                          focusNodesList[idx].dispose();
+                          focusNodesList.removeAt(idx);
+                          _invoiceItems.removeAt(idx);
+                          _recalculateTotals();
+                        });
                       },
                     );
                   },
@@ -2819,8 +2861,8 @@ class EditableInvoiceItemRow extends StatefulWidget {
   final bool isViewOnly;
   final bool isPlaceholder;
   final FocusNode? detailsFocusNode; // جديد: لقبول FocusNode لحقل التفاصيل
-  final VoidCallback?
-      onRequestFocusQuantity; // جديد: لطلب التركيز على العدد من الخارج
+  final FocusNode? quantityFocusNode; // جديد: لطلب التركيز على العدد من الخارج
+  final FocusNode? priceFocusNode; // جديد: لطلب التركيز على السعر من الخارج
 
   const EditableInvoiceItemRow({
     Key? key,
@@ -2832,7 +2874,8 @@ class EditableInvoiceItemRow extends StatefulWidget {
     required this.isViewOnly,
     required this.isPlaceholder,
     this.detailsFocusNode,
-    this.onRequestFocusQuantity,
+    this.quantityFocusNode,
+    this.priceFocusNode,
   }) : super(key: key);
 
   @override
@@ -3091,11 +3134,11 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                                 _currentItem.copyWith(productName: selection);
                             widget.onItemUpdated(_currentItem);
                           });
-                          // عند اختيار المنتج، ركز على العدد
+                          // فقط بعد اختيار منتج من القائمة يتم تحريك المؤشر إلى الكمية
                           WidgetsBinding.instance.addPostFrameCallback((_) {
                             _quantityFocusNode.requestFocus();
-                            if (widget.onRequestFocusQuantity != null) {
-                              widget.onRequestFocusQuantity!();
+                            if (widget.quantityFocusNode != null) {
+                              widget.quantityFocusNode!.requestFocus();
                             }
                           });
                         },
@@ -3137,10 +3180,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
                   enabled: !widget.isViewOnly,
-                  onChanged: _updateQuantity,
+                  onChanged: _updateQuantity, // لا تحريك للمؤشر هنا إطلاقًا
                   focusNode: _quantityFocusNode,
                   onFieldSubmitted: (val) {
-                    // عند الضغط Enter في العدد، ركز على نوع البيع وافتح القائمة فوراً
+                    // عند الضغط Enter في العدد، ركز على نوع البيع وافتح القائمة فوراً فقط
                     _saleTypeFocusNode.requestFocus();
                     setState(() {
                       _openSaleTypeDropdown = true;
@@ -3192,12 +3235,12 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
                   enabled: !widget.isViewOnly,
-                  onChanged: _updatePrice,
+                  onChanged: _updatePrice, // لا تحريك للمؤشر هنا إطلاقًا
                   focusNode: _priceFocusNode,
                   onFieldSubmitted: (val) {
-                    // عند الضغط Enter في السعر، انتقل إلى التفاصيل في الصف الجديد
-                    if (widget.onRequestFocusQuantity != null) {
-                      widget.onRequestFocusQuantity!();
+                    // عند الضغط Enter في السعر، انتقل إلى التفاصيل في الصف الجديد فقط
+                    if (widget.priceFocusNode != null) {
+                      widget.priceFocusNode!.requestFocus();
                     }
                   },
                   style: Theme.of(context).textTheme.bodyMedium,
@@ -3246,4 +3289,16 @@ bool _isInvoiceItemComplete(InvoiceItem item) {
       item.appliedPrice > 0 &&
       item.itemTotal > 0 &&
       (item.saleType != null && item.saleType!.isNotEmpty));
+}
+
+// إدارة FocusNode لكل صف
+class LineItemFocusNodes {
+  FocusNode details = FocusNode();
+  FocusNode quantity = FocusNode();
+  FocusNode price = FocusNode();
+  void dispose() {
+    details.dispose();
+    quantity.dispose();
+    price.dispose();
+  }
 }
