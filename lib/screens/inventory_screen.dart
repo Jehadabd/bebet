@@ -202,74 +202,190 @@ class _InventoryScreenState extends State<InventoryScreen> {
                           date.year == now.year && date.month == now.month;
 
                       return Card(
-                        margin: const EdgeInsets.only(
-                            bottom: 20.0), // Spacing between cards
-                        child: Padding(
-                          padding: const EdgeInsets.all(
-                              20.0), // Increased internal padding
+                        elevation: 4,
+                        margin: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 8),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          side: BorderSide(
+                              color: isCurrentMonth
+                                  ? const Color(0xFF3F51B5).withOpacity(0.3)
+                                  : Colors.grey.withOpacity(0.2),
+                              width: 1),
+                        ),
+                        child: Container(
+                          padding: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(16),
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: isCurrentMonth
+                                  ? [
+                                      const Color(0xFF3F51B5).withOpacity(0.1),
+                                      const Color(0xFF3F51B5).withOpacity(0.05),
+                                    ]
+                                  : [
+                                      Colors.grey.withOpacity(0.05),
+                                      Colors.grey.withOpacity(0.02),
+                                    ],
+                            ),
+                          ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Row(
                                 children: [
-                                  Text(
-                                    monthName,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleMedium
-                                        ?.copyWith(
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .primary,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                  ),
-                                  if (isCurrentMonth) ...[
-                                    const SizedBox(width: 8),
-                                    Icon(Icons.calendar_today,
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .secondary,
-                                        size: 20),
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      'الشهر الحالي',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodyLarge
-                                          ?.copyWith(
-                                            color: Theme.of(context)
-                                                .colorScheme
-                                                .secondary,
-                                            fontWeight: FontWeight.bold,
-                                          ),
+                                  Container(
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: isCurrentMonth
+                                          ? const Color(0xFF3F51B5)
+                                              .withOpacity(0.1)
+                                          : Colors.grey.withOpacity(0.2),
+                                      shape: BoxShape.circle,
                                     ),
-                                  ],
+                                    child: Icon(
+                                      Icons.calendar_month,
+                                      color: isCurrentMonth
+                                          ? const Color(0xFF3F51B5)
+                                          : Colors.grey[600],
+                                      size: 24,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 16),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          monthName,
+                                          style: TextStyle(
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.bold,
+                                            color: isCurrentMonth
+                                                ? const Color(0xFF3F51B5)
+                                                : Colors.grey[700],
+                                          ),
+                                        ),
+                                        if (isCurrentMonth) ...[
+                                          const SizedBox(height: 4),
+                                          Row(
+                                            children: [
+                                              Icon(
+                                                Icons.calendar_today,
+                                                color: const Color(0xFF3F51B5),
+                                                size: 16,
+                                              ),
+                                              const SizedBox(width: 4),
+                                              Text(
+                                                'الشهر الحالي',
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  color:
+                                                      const Color(0xFF3F51B5),
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
                                 ],
                               ),
-                              const Divider(
-                                  height: 24, thickness: 1.0), // Themed divider
-                              _buildSummaryRow('إجمالي المبيعات:',
-                                  summary.totalSales, context),
-                              _buildSummaryRow('إجمالي الراجع:',
-                                  summary.totalReturns, context,
-                                  valueColor:
-                                      warningColor), // Orange for returns
-                              _buildSummaryRow(
-                                  'صافي الأرباح:', summary.netProfit, context,
-                                  isBold: true), // Bold for net profit
-                              const Divider(
-                                  height: 24,
-                                  thickness:
-                                      0.5), // Lighter divider for sub-sections
-                              _buildSummaryRow(
-                                  'البيع بالنقد:', summary.cashSales, context),
-                              _buildSummaryRow('البيع بالدين:',
-                                  summary.creditSales, context),
-                              _buildSummaryRow('تسديد الديون:',
-                                  summary.totalDebtPayments, context,
-                                  valueColor:
-                                      successColor), // Green for debt payments
+                              const SizedBox(height: 16),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: _buildInfoItem(
+                                      icon: Icons.shopping_cart,
+                                      title: 'إجمالي المبيعات',
+                                      value:
+                                          '${formatCurrency(summary.totalSales)} د.ع',
+                                      color: const Color(0xFF2196F3),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: _buildInfoItem(
+                                      icon: Icons.trending_up,
+                                      title: 'صافي الأرباح',
+                                      value:
+                                          '${formatCurrency(summary.netProfit)} د.ع',
+                                      color: const Color(0xFF4CAF50),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: _buildInfoItem(
+                                      icon: Icons.money,
+                                      title: 'البيع بالنقد',
+                                      value:
+                                          '${formatCurrency(summary.cashSales)} د.ع',
+                                      color: const Color(0xFF9C27B0),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: _buildInfoItem(
+                                      icon: Icons.credit_card,
+                                      title: 'البيع بالدين',
+                                      value:
+                                          '${formatCurrency(summary.creditSales)} د.ع',
+                                      color: const Color(0xFFFF9800),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              if (summary.totalReturns > 0 ||
+                                  summary.totalDebtPayments > 0) ...[
+                                const SizedBox(height: 12),
+                                Row(
+                                  children: [
+                                    if (summary.totalReturns > 0) ...[
+                                      Expanded(
+                                        child: _buildInfoItem(
+                                          icon: Icons.assignment_return,
+                                          title: 'إجمالي الراجع',
+                                          value:
+                                              '${formatCurrency(summary.totalReturns)} د.ع',
+                                          color: const Color(0xFFF44336),
+                                        ),
+                                      ),
+                                      if (summary.totalDebtPayments > 0) ...[
+                                        const SizedBox(width: 12),
+                                        Expanded(
+                                          child: _buildInfoItem(
+                                            icon: Icons.account_balance_wallet,
+                                            title: 'تسديد الديون',
+                                            value:
+                                                '${formatCurrency(summary.totalDebtPayments)} د.ع',
+                                            color: const Color(0xFF4CAF50),
+                                          ),
+                                        ),
+                                      ],
+                                    ] else if (summary.totalDebtPayments >
+                                        0) ...[
+                                      Expanded(
+                                        child: _buildInfoItem(
+                                          icon: Icons.account_balance_wallet,
+                                          title: 'تسديد الديون',
+                                          value:
+                                              '${formatCurrency(summary.totalDebtPayments)} د.ع',
+                                          color: const Color(0xFF4CAF50),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ],
                             ],
                           ),
                         ),
@@ -304,6 +420,47 @@ class _InventoryScreenState extends State<InventoryScreen> {
                           .onSurface, // Apply custom color or default
                   fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
                 ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoItem({
+    required IconData icon,
+    required String title,
+    required String value,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: color, size: 20),
+          const SizedBox(height: 4),
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 12,
+              color: color,
+              fontWeight: FontWeight.w500,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+            textAlign: TextAlign.center,
           ),
         ],
       ),

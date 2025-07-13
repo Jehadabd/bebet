@@ -1,4 +1,5 @@
 // services/database_service.dart
+// services/database_service.dart
 
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
@@ -1265,7 +1266,492 @@ class DatabaseService {
     }
     return null;
   }
+
+  // --- دوال نظام التقارير ---
+
+  // دوال تقارير البضاعة
+  Future<Map<String, dynamic>> getProductSalesData(int productId) async {
+    final db = await database;
+    try {
+      // جلب جميع الفواتير التي تحتوي على هذا المنتج
+      final List<Map<String, dynamic>> itemMaps = await db.rawQuery('''
+        SELECT 
+          ii.quantity_individual,
+          ii.quantity_large_unit,
+          ii.units_in_large_unit,
+          ii.applied_price,
+          ii.cost_price,
+          ii.item_total,
+          p.cost_price as product_cost_price
+        FROM invoice_items ii
+        JOIN products p ON ii.product_name = p.name
+        WHERE p.id = ?
+      ''', [productId]);
+
+      double totalQuantity = 0.0;
+      double totalProfit = 0.0;
+      double totalSales = 0.0;
+
+      for (final item in itemMaps) {
+        double quantityIndividual =
+            (item['quantity_individual'] ?? 0.0) as double;
+        double quantityLargeUnit =
+            (item['quantity_large_unit'] ?? 0.0) as double;
+        double unitsInLargeUnit =
+            (item['units_in_large_unit'] ?? 1.0) as double;
+        double currentItemTotalQuantity =
+            quantityIndividual + (quantityLargeUnit * unitsInLargeUnit);
+        final sellingPrice = (item['applied_price'] ?? 0.0) as double;
+        final costPrice =
+            (item['cost_price'] ?? item['product_cost_price'] ?? 0.0) as double;
+        totalQuantity += currentItemTotalQuantity;
+        totalProfit += (sellingPrice - costPrice) * currentItemTotalQuantity;
+        totalSales += sellingPrice * currentItemTotalQuantity;
+      }
+
+      return {
+        'totalQuantity': totalQuantity,
+        'totalProfit': totalProfit,
+        'totalSales': totalSales,
+      };
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  Future<Map<int, double>> getProductYearlySales(int productId) async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT 
+          strftime('%Y', i.invoice_date) as year,
+          SUM(COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0)) as total_quantity
+        FROM invoice_items ii
+        JOIN invoices i ON ii.invoice_id = i.id
+        JOIN products p ON ii.product_name = p.name
+        WHERE p.id = ?
+        GROUP BY strftime('%Y', i.invoice_date)
+        ORDER BY year DESC
+      ''', [productId]);
+
+      final Map<int, double> yearlySales = {};
+      for (final map in maps) {
+        final year = int.parse(map['year'] as String);
+        final quantity = (map['total_quantity'] ?? 0.0) as double;
+        yearlySales[year] = quantity;
+      }
+
+      return yearlySales;
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  Future<Map<int, double>> getProductMonthlySales(
+      int productId, int year) async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT 
+          strftime('%m', i.invoice_date) as month,
+          SUM(COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0)) as total_quantity
+        FROM invoice_items ii
+        JOIN invoices i ON ii.invoice_id = i.id
+        JOIN products p ON ii.product_name = p.name
+        WHERE p.id = ? AND strftime('%Y', i.invoice_date) = ?
+        GROUP BY strftime('%m', i.invoice_date)
+        ORDER BY month ASC
+      ''', [productId, year.toString()]);
+
+      final Map<int, double> monthlySales = {};
+      for (final map in maps) {
+        final month = int.parse(map['month'] as String);
+        final quantity = (map['total_quantity'] ?? 0.0) as double;
+        monthlySales[month] = quantity;
+      }
+
+      return monthlySales;
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  Future<List<InvoiceWithProductData>> getProductInvoicesForMonth(
+      int productId, int year, int month) async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT 
+          i.*,
+          ii.quantity_individual,
+          ii.quantity_large_unit,
+          ii.units_in_large_unit,
+          ii.applied_price,
+          ii.cost_price,
+          ii.item_total,
+          p.cost_price as product_cost_price
+        FROM invoices i
+        JOIN invoice_items ii ON i.id = ii.invoice_id
+        JOIN products p ON ii.product_name = p.name
+        WHERE p.id = ? 
+          AND strftime('%Y', i.invoice_date) = ?
+          AND strftime('%m', i.invoice_date) = ?
+        ORDER BY i.invoice_date DESC
+      ''', [productId, year.toString(), month.toString().padLeft(2, '0')]);
+
+      final List<InvoiceWithProductData> invoices = [];
+      for (final map in maps) {
+        final invoice = Invoice.fromMap(map);
+        double quantityIndividual =
+            (map['quantity_individual'] ?? 0.0) as double;
+        double quantityLargeUnit =
+            (map['quantity_large_unit'] ?? 0.0) as double;
+        double unitsInLargeUnit = (map['units_in_large_unit'] ?? 1.0) as double;
+        double quantity =
+            quantityIndividual + (quantityLargeUnit * unitsInLargeUnit);
+        final sellingPrice = (map['applied_price'] ?? 0.0) as double;
+        final costPrice =
+            (map['cost_price'] ?? map['product_cost_price'] ?? 0.0) as double;
+        final profit = (sellingPrice - costPrice) * quantity;
+
+        invoices.add(InvoiceWithProductData(
+          invoice: invoice,
+          quantitySold: quantity,
+          profit: profit,
+        ));
+      }
+
+      return invoices;
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  // دوال تقارير الأشخاص
+  Future<Map<String, dynamic>> getCustomerProfitData(int customerId) async {
+    final db = await database;
+    try {
+      // جلب بيانات الفواتير
+      final List<Map<String, dynamic>> invoiceMaps = await db.rawQuery('''
+        SELECT 
+          SUM(total_amount) as total_sales,
+          COUNT(*) as total_invoices
+        FROM invoices
+        WHERE customer_id = ?
+      ''', [customerId]);
+
+      // جلب بيانات المعاملات المالية
+      final List<Map<String, dynamic>> transactionMaps = await db.rawQuery('''
+        SELECT 
+          COUNT(*) as total_transactions
+        FROM transactions
+        WHERE customer_id = ?
+      ''', [customerId]);
+
+      // حساب الأرباح من الفواتير
+      final List<Map<String, dynamic>> profitMaps = await db.rawQuery('''
+        SELECT 
+          SUM((ii.applied_price - COALESCE(ii.cost_price, p.cost_price, 0)) * 
+              (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit
+        FROM invoices i
+        JOIN invoice_items ii ON i.id = ii.invoice_id
+        JOIN products p ON ii.product_name = p.name
+        WHERE i.customer_id = ?
+      ''', [customerId]);
+
+      final totalSales = (invoiceMaps.first['total_sales'] ?? 0.0) as double;
+      final totalInvoices = (invoiceMaps.first['total_invoices'] ?? 0) as int;
+      final totalTransactions =
+          (transactionMaps.first['total_transactions'] ?? 0) as int;
+      final totalProfit = (profitMaps.first['total_profit'] ?? 0.0) as double;
+
+      return {
+        'totalSales': totalSales,
+        'totalProfit': totalProfit,
+        'totalInvoices': totalInvoices,
+        'totalTransactions': totalTransactions,
+      };
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  Future<Map<int, PersonYearData>> getCustomerYearlyData(int customerId) async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT 
+          strftime('%Y', i.invoice_date) as year,
+          SUM(i.total_amount) as total_sales,
+          SUM((ii.applied_price - COALESCE(ii.cost_price, p.cost_price, 0)) * 
+              (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit,
+          COUNT(DISTINCT i.id) as total_invoices,
+          COUNT(DISTINCT t.id) as total_transactions
+        FROM invoices i
+        LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
+        LEFT JOIN products p ON ii.product_name = p.name
+        LEFT JOIN transactions t ON i.customer_id = t.customer_id 
+          AND strftime('%Y', i.invoice_date) = strftime('%Y', t.transaction_date)
+        WHERE i.customer_id = ?
+        GROUP BY strftime('%Y', i.invoice_date)
+        ORDER BY year DESC
+      ''', [customerId]);
+
+      final Map<int, PersonYearData> yearlyData = {};
+      for (final map in maps) {
+        final year = int.parse(map['year'] as String);
+        yearlyData[year] = PersonYearData(
+          totalProfit: (map['total_profit'] ?? 0.0) as double,
+          totalSales: (map['total_sales'] ?? 0.0) as double,
+          totalInvoices: (map['total_invoices'] ?? 0) as int,
+          totalTransactions: (map['total_transactions'] ?? 0) as int,
+        );
+      }
+
+      return yearlyData;
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  Future<Map<int, PersonMonthData>> getCustomerMonthlyData(
+      int customerId, int year) async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT 
+          strftime('%m', i.invoice_date) as month,
+          SUM(i.total_amount) as total_sales,
+          SUM((ii.applied_price - COALESCE(ii.cost_price, p.cost_price, 0)) * 
+              (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit,
+          COUNT(DISTINCT i.id) as total_invoices,
+          COUNT(DISTINCT t.id) as total_transactions
+        FROM invoices i
+        LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
+        LEFT JOIN products p ON ii.product_name = p.name
+        LEFT JOIN transactions t ON i.customer_id = t.customer_id 
+          AND strftime('%Y', i.invoice_date) = strftime('%Y', t.transaction_date)
+          AND strftime('%m', i.invoice_date) = strftime('%m', t.transaction_date)
+        WHERE i.customer_id = ? AND strftime('%Y', i.invoice_date) = ?
+        GROUP BY strftime('%m', i.invoice_date)
+        ORDER BY month ASC
+      ''', [customerId, year.toString()]);
+
+      final Map<int, PersonMonthData> monthlyData = {};
+      for (final map in maps) {
+        final month = int.parse(map['month'] as String);
+        monthlyData[month] = PersonMonthData(
+          totalProfit: (map['total_profit'] ?? 0.0) as double,
+          totalSales: (map['total_sales'] ?? 0.0) as double,
+          totalInvoices: (map['total_invoices'] ?? 0) as int,
+          totalTransactions: (map['total_transactions'] ?? 0) as int,
+        );
+      }
+
+      return monthlyData;
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  Future<List<Invoice>> getCustomerInvoicesForMonth(
+      int customerId, int year, int month) async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT *
+        FROM invoices
+        WHERE customer_id = ? 
+          AND strftime('%Y', invoice_date) = ?
+          AND strftime('%m', invoice_date) = ?
+        ORDER BY invoice_date DESC
+      ''', [customerId, year.toString(), month.toString().padLeft(2, '0')]);
+
+      return List.generate(maps.length, (i) => Invoice.fromMap(maps[i]));
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  Future<List<DebtTransaction>> getCustomerTransactionsForMonth(
+      int customerId, int year, int month) async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT *
+        FROM transactions
+        WHERE customer_id = ? 
+          AND strftime('%Y', transaction_date) = ?
+          AND strftime('%m', transaction_date) = ?
+        ORDER BY transaction_date DESC
+      ''', [customerId, year.toString(), month.toString().padLeft(2, '0')]);
+
+      return List.generate(
+          maps.length, (i) => DebtTransaction.fromMap(maps[i]));
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  /// دالة لحساب ربح المنتج سنويًا
+  Future<Map<int, double>> getProductYearlyProfit(int productId) async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT 
+          strftime('%Y', i.invoice_date) as year,
+          SUM((ii.applied_price - COALESCE(ii.cost_price, p.cost_price, 0)) * 
+              (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit
+        FROM invoice_items ii
+        JOIN invoices i ON ii.invoice_id = i.id
+        JOIN products p ON ii.product_name = p.name
+        WHERE p.id = ? AND i.status = 'محفوظة'
+        GROUP BY strftime('%Y', i.invoice_date)
+        ORDER BY year DESC
+      ''', [productId]);
+
+      final Map<int, double> yearlyProfit = {};
+      for (final map in maps) {
+        final year = int.parse(map['year'] as String);
+        final profit = (map['total_profit'] ?? 0.0) as double;
+        yearlyProfit[year] = profit;
+      }
+      return yearlyProfit;
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  /// دالة لحساب ربح المنتج شهريًا لسنة معينة
+  Future<Map<int, double>> getProductMonthlyProfit(
+      int productId, int year) async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT 
+          strftime('%m', i.invoice_date) as month,
+          SUM((ii.applied_price - COALESCE(ii.cost_price, p.cost_price, 0)) * 
+              (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit
+        FROM invoice_items ii
+        JOIN invoices i ON ii.invoice_id = i.id
+        JOIN products p ON ii.product_name = p.name
+        WHERE p.id = ? AND strftime('%Y', i.invoice_date) = ? AND i.status = 'محفوظة'
+        GROUP BY strftime('%m', i.invoice_date)
+        ORDER BY month ASC
+      ''', [productId, year.toString()]);
+
+      final Map<int, double> monthlyProfit = {};
+      for (final map in maps) {
+        final month = int.parse(map['month'] as String);
+        final profit = (map['total_profit'] ?? 0.0) as double;
+        monthlyProfit[month] = profit;
+      }
+      return monthlyProfit;
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  /// جلب جميع فواتير العميل في شهر معيّن مع ربح كل فاتورة
+  Future<List<InvoiceWithProductData>> getCustomerInvoicesWithProfitForMonth(
+      int customerId, int year, int month) async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT i.*, ii.product_name, ii.applied_price, ii.cost_price, ii.quantity_individual, ii.quantity_large_unit, ii.units_in_large_unit, p.cost_price as product_cost_price
+        FROM invoices i
+        JOIN invoice_items ii ON i.id = ii.invoice_id
+        JOIN products p ON ii.product_name = p.name
+        WHERE i.customer_id = ?
+          AND strftime('%Y', i.invoice_date) = ?
+          AND strftime('%m', i.invoice_date) = ?
+          AND i.status = 'محفوظة'
+        ORDER BY i.invoice_date DESC
+      ''', [customerId, year.toString(), month.toString().padLeft(2, '0')]);
+
+      // تجميع البنود حسب الفاتورة
+      final Map<int, List<Map<String, dynamic>>> invoiceItemsMap = {};
+      for (final map in maps) {
+        final invoiceId = map['id'] as int;
+        invoiceItemsMap.putIfAbsent(invoiceId, () => []).add(map);
+      }
+
+      final List<InvoiceWithProductData> result = [];
+      for (final entry in invoiceItemsMap.entries) {
+        final invoiceId = entry.key;
+        final items = entry.value;
+        double totalProfit = 0.0;
+        double totalQuantity = 0.0;
+        for (final item in items) {
+          final sellingPrice = (item['applied_price'] ?? 0.0) as double;
+          final costPrice = (item['cost_price'] ??
+              item['product_cost_price'] ??
+              0.0) as double;
+          double quantityIndividual =
+              (item['quantity_individual'] ?? 0.0) as double;
+          double quantityLargeUnit =
+              (item['quantity_large_unit'] ?? 0.0) as double;
+          double unitsInLargeUnit =
+              (item['units_in_large_unit'] ?? 1.0) as double;
+          double quantity =
+              quantityIndividual + (quantityLargeUnit * unitsInLargeUnit);
+          totalProfit += (sellingPrice - costPrice) * quantity;
+          totalQuantity += quantity;
+        }
+        final invoice = Invoice.fromMap(items.first);
+        result.add(InvoiceWithProductData(
+          invoice: invoice,
+          quantitySold: totalQuantity,
+          profit: totalProfit,
+        ));
+      }
+      return result;
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
 } // نهاية كلاس DatabaseService
+
+// أنواع البيانات لنظام التقارير
+class InvoiceWithProductData {
+  final Invoice invoice;
+  final double quantitySold;
+  final double profit;
+
+  InvoiceWithProductData({
+    required this.invoice,
+    required this.quantitySold,
+    required this.profit,
+  });
+}
+
+class PersonYearData {
+  final double totalProfit;
+  final double totalSales;
+  final int totalInvoices;
+  final int totalTransactions;
+
+  PersonYearData({
+    required this.totalProfit,
+    required this.totalSales,
+    required this.totalInvoices,
+    required this.totalTransactions,
+  });
+}
+
+class PersonMonthData {
+  final double totalProfit;
+  final double totalSales;
+  final int totalInvoices;
+  final int totalTransactions;
+
+  PersonMonthData({
+    required this.totalProfit,
+    required this.totalSales,
+    required this.totalInvoices,
+    required this.totalTransactions,
+  });
+}
 
 //  MonthlySalesSummary class
 class MonthlySalesSummary {

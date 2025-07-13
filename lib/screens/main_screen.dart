@@ -446,6 +446,26 @@ class _MainScreenState extends State<MainScreen> {
               padding: buttonPadding,
               spacing: buttonSpacing,
             ),
+            _buildFeatureButton(
+              icon: Icons.analytics,
+              title: 'التقارير',
+              onTap: () async {
+                final bool canAccess = await _showPasswordDialog();
+                if (canAccess) {
+                  Navigator.pushNamed(context, '/reports');
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('كلمة السر غير صحيحة.',
+                        style: TextStyle(fontSize: 16)),
+                  ));
+                }
+              },
+              color: const Color(0xFF673AB7),
+              fontSize: buttonFontSize,
+              iconSize: iconSize,
+              padding: buttonPadding,
+              spacing: buttonSpacing,
+            ),
           ],
         ),
       ),
