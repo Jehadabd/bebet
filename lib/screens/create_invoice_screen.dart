@@ -305,6 +305,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     try {
       if (_invoiceToManage != null && _invoiceToManage!.id != null) {
         final items = await _db.getInvoiceItems(_invoiceToManage!.id!);
+        // تهيئة الـ controllers لكل صنف
+        for (var item in items) {
+          item.initializeControllers();
+        }
+        // تهيئة FocusNodes لكل صنف
+        focusNodesList.clear();
+        for (var _ in items) {
+          focusNodesList.add(LineItemFocusNodes());
+        }
         setState(() {
           _invoiceItems = items;
           _totalAmountController.text = _invoiceItems
@@ -624,7 +633,26 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   Future<Invoice?> _saveInvoice({bool printAfterSave = false}) async {
     if (!_formKey.currentState!.validate()) return null;
-
+    print('--- بيانات الفاتورة عند الحفظ ---');
+    print('اسم العميل: ${_customerNameController.text}');
+    print('رقم الهاتف: ${_customerPhoneController.text}');
+    print('العنوان: ${_customerAddressController.text}');
+    print('اسم المؤسس/الفني: ${_installerNameController.text}');
+    print('تاريخ الفاتورة: ${_selectedDate.toIso8601String()}');
+    print('نوع الدفع: ${_paymentType}');
+    print('الخصم: ${_discount}');
+    print('المبلغ المسدد: ${_paidAmountController.text}');
+    print('--- أصناف الفاتورة ---');
+    for (var item in _invoiceItems) {
+      print('--- صنف ---');
+      print('المنتج:  ${item.productName}');
+      print(
+          'الكمية:  ${(item.quantityIndividual ?? item.quantityLargeUnit ?? 0)}');
+      print('نوع البيع:  ${item.saleType}');
+      print('السعر:  ${item.appliedPrice}');
+      print('المبلغ:  ${item.itemTotal}');
+      print('التفاصيل:  ${item.productName != null ? item.productName : ''}');
+    }
     try {
       Customer? customer;
       if (_customerNameController.text.trim().isNotEmpty) {
@@ -827,6 +855,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   Future<void> _suspendInvoice() async {
     if (!_formKey.currentState!.validate()) return;
     try {
+      // احذف جميع الأصناف غير المكتملة قبل التعليق
+      _invoiceItems.removeWhere((item) => !_isInvoiceItemComplete(item));
       Customer? customer;
       int? customerId;
       if (_customerNameController.text.trim().isNotEmpty) {
@@ -1811,6 +1841,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     final Color successColor = Colors.green[600]!;
     final Color errorColor = Colors.red[700]!;
 
+    final displayedItems =
+        _invoiceItems.where((item) => item.productName.isNotEmpty).toList();
+    // إذا كنا في وضع إنشاء فاتورة جديدة (وليس تعديل/عرض) ولا يوجد أصناف حقيقية، أضف صف فارغ للعرض فقط
+    if (_invoiceToManage == null &&
+        displayedItems.isEmpty &&
+        !_isViewOnly &&
+        _invoiceItems.isNotEmpty) {
+      displayedItems.add(_invoiceItems.first);
+    }
+
     return Theme(
       data: ThemeData(
         colorScheme: ColorScheme.light(
@@ -2426,7 +2466,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 .toList(),
                             onChanged: _isViewOnly
                                 ? null
-                                : (value) {
+                                : (value) async {
                                     if (value != null) {
                                       setState(() {
                                         _selectedListType = value;
@@ -2470,6 +2510,20 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                           }
                                         }
                                       });
+                                      // بعد تحديث القائمة أو جلب الأصناف من قاعدة البيانات
+                                      print(
+                                          '--- العناصر الحالية بعد اختيار نوع القائمة ---');
+                                      for (var item in _invoiceItems) {
+                                        print('--- صنف ---');
+                                        print('المنتج:  ${item.productName}');
+                                        print(
+                                            'الكمية:  ${(item.quantityIndividual ?? item.quantityLargeUnit ?? 0)}');
+                                        print('نوع البيع:  ${item.saleType}');
+                                        print('السعر:  ${item.appliedPrice}');
+                                        print('المبلغ:  ${item.itemTotal}');
+                                        print(
+                                            'التفاصيل:  ${item.productName != null ? item.productName : ''}');
+                                      }
                                     }
                                   },
                           ),
@@ -2543,19 +2597,19 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     // ... existing ListView.builder code ...
                   ],
                 ),
+
                 ListView.builder(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
-                  itemCount: _invoiceItems.length,
+                  itemCount: displayedItems.length,
                   itemBuilder: (context, index) {
-                    final isLast = index == _invoiceItems.length - 1;
                     return EditableInvoiceItemRow(
-                      key: ValueKey('row_$index'), // مفتاح ثابت لكل صف
-                      item: _invoiceItems[index],
+                      key: ValueKey('row_$index'),
+                      item: displayedItems[index],
                       index: index,
                       allProducts: _allProductsForUnits ?? [],
                       isViewOnly: _isViewOnly,
-                      isPlaceholder: isLast,
+                      isPlaceholder: false,
                       detailsFocusNode: focusNodesList.length > index
                           ? focusNodesList[index].details
                           : null,
@@ -2567,22 +2621,24 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           : null,
                       onItemUpdated: (updatedItem) {
                         setState(() {
-                          _invoiceItems[index] = updatedItem;
+                          // ابحث عن العنصر الأصلي في _invoiceItems وعدله
+                          final originalIndex = _invoiceItems
+                              .indexWhere((item) => item.id == updatedItem.id);
+                          if (originalIndex != -1) {
+                            _invoiceItems[originalIndex] = updatedItem;
+                          }
                           _recalculateTotals();
-                          if (isLast && _isInvoiceItemComplete(updatedItem)) {
-                            WidgetsBinding.instance.addPostFrameCallback((_) {
-                              setState(() {
-                                _invoiceItems.add(InvoiceItem(
-                                  invoiceId: 0,
-                                  productName: '',
-                                  unit: '',
-                                  unitPrice: 0.0,
-                                  appliedPrice: 0.0,
-                                  itemTotal: 0.0,
-                                ));
-                                focusNodesList.add(LineItemFocusNodes());
-                              });
-                            });
+                          // إذا كان آخر صف مكتمل، أضف صف فارغ جديد تلقائيًا
+                          if (_isInvoiceItemComplete(_invoiceItems.last)) {
+                            _invoiceItems.add(InvoiceItem(
+                              invoiceId: 0,
+                              productName: '',
+                              unit: '',
+                              unitPrice: 0.0,
+                              appliedPrice: 0.0,
+                              itemTotal: 0.0,
+                            ));
+                            focusNodesList.add(LineItemFocusNodes());
                           }
                         });
                       },
@@ -2897,28 +2953,25 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   void initState() {
     super.initState();
     _currentItem = widget.item;
-    double? qty =
-        _currentItem.quantityIndividual ?? _currentItem.quantityLargeUnit;
-    _quantityController = TextEditingController(
-      text: (qty != null && qty > 0) ? qty.toString() : '',
-    );
-    _priceController = TextEditingController(
-      text: (_currentItem.appliedPrice > 0)
-          ? _currentItem.appliedPrice.toString()
-          : '',
-    );
-    _quantityFocusNode = FocusNode();
-    _priceFocusNode = FocusNode();
+    // استخدم المتحكمات الجاهزة من كائن الصنف مباشرة
+    _quantityController = widget.item.quantityIndividualController;
+    _priceController = widget.item.appliedPriceController;
     _detailsFocusNode = widget.detailsFocusNode ?? FocusNode();
+    _quantityFocusNode = widget.quantityFocusNode ?? FocusNode();
+    _priceFocusNode = widget.priceFocusNode ?? FocusNode();
     _saleTypeFocusNode = FocusNode();
   }
 
   @override
   void dispose() {
-    _quantityFocusNode.dispose();
-    _priceFocusNode.dispose();
     if (widget.detailsFocusNode == null) {
       _detailsFocusNode.dispose();
+    }
+    if (widget.quantityFocusNode == null) {
+      _quantityFocusNode.dispose();
+    }
+    if (widget.priceFocusNode == null) {
+      _priceFocusNode.dispose();
     }
     _saleTypeFocusNode.dispose();
     super.dispose();
@@ -3097,29 +3150,40 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 8.0),
         child: Row(
           children: [
+            // رقم الصف
             Expanded(
                 flex: 1,
                 child: Text((widget.index + 1).toString(),
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodyMedium)),
+            // المبلغ
             Expanded(
                 flex: 2,
-                child: Text(formatCurrency(_currentItem.itemTotal),
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: Theme.of(context).colorScheme.primary))),
+                child: widget.isViewOnly
+                    ? Text(
+                        widget.item.itemTotal.toStringAsFixed(2),
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: Theme.of(context).colorScheme.primary),
+                      )
+                    : Text(formatCurrency(_currentItem.itemTotal),
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: Theme.of(context).colorScheme.primary))),
+            // التفاصيل (اسم المنتج)
             Expanded(
               flex: 3,
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
                 child: widget.isViewOnly
-                    ? Text(_currentItem.productName,
+                    ? Text(widget.item.productName,
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodyMedium)
                     : Autocomplete<String>(
                         initialValue:
-                            TextEditingValue(text: _currentItem.productName),
+                            TextEditingValue(text: widget.item.productName),
                         optionsBuilder: (TextEditingValue textEditingValue) {
                           if (textEditingValue.text == '') {
                             return const Iterable<String>.empty();
@@ -3134,7 +3198,6 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                                 _currentItem.copyWith(productName: selection);
                             widget.onItemUpdated(_currentItem);
                           });
-                          // فقط بعد اختيار منتج من القائمة يتم تحريك المؤشر إلى الكمية
                           WidgetsBinding.instance.addPostFrameCallback((_) {
                             _quantityFocusNode.requestFocus();
                             if (widget.quantityFocusNode != null) {
@@ -3170,98 +3233,131 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                       ),
               ),
             ),
+            // العدد
             Expanded(
               flex: 2,
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                child: TextFormField(
-                  controller: _quantityController,
-                  textAlign: TextAlign.center,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
-                  enabled: !widget.isViewOnly,
-                  onChanged: _updateQuantity, // لا تحريك للمؤشر هنا إطلاقًا
-                  focusNode: _quantityFocusNode,
-                  onFieldSubmitted: (val) {
-                    // عند الضغط Enter في العدد، ركز على نوع البيع وافتح القائمة فوراً فقط
-                    _saleTypeFocusNode.requestFocus();
-                    setState(() {
-                      _openSaleTypeDropdown = true;
-                    });
-                  },
-                  style: Theme.of(context).textTheme.bodyMedium,
-                  decoration: const InputDecoration(
-                    border: InputBorder.none,
-                    contentPadding:
-                        EdgeInsets.symmetric(horizontal: 0, vertical: 8),
-                    isDense: true,
-                  ),
-                ),
+                child: widget.isViewOnly
+                    ? Text(
+                        ((widget.item.quantityIndividual ??
+                                    widget.item.quantityLargeUnit) ??
+                                '')
+                            .toString(),
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      )
+                    : TextFormField(
+                        controller: _quantityController,
+                        textAlign: TextAlign.center,
+                        keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true),
+                        enabled: !widget.isViewOnly,
+                        onChanged: _updateQuantity,
+                        focusNode: _quantityFocusNode,
+                        onFieldSubmitted: (val) {
+                          _saleTypeFocusNode.requestFocus();
+                          setState(() {
+                            _openSaleTypeDropdown = true;
+                          });
+                        },
+                        style: Theme.of(context).textTheme.bodyMedium,
+                        decoration: const InputDecoration(
+                          border: InputBorder.none,
+                          contentPadding:
+                              EdgeInsets.symmetric(horizontal: 0, vertical: 8),
+                          isDense: true,
+                        ),
+                      ),
               ),
             ),
+            // نوع البيع
             Expanded(
               flex: 2,
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    value: _currentItem.saleType,
-                    items: _getUnitOptions(),
-                    onChanged: widget.isViewOnly
-                        ? null
-                        : (value) => _updateSaleType(value!),
-                    isExpanded: true,
-                    alignment: AlignmentDirectional.center,
-                    style: Theme.of(context).textTheme.bodyMedium,
-                    itemHeight: 48,
-                    autofocus: _openSaleTypeDropdown,
-                    focusNode: _saleTypeFocusNode,
-                    onTap: () {
-                      setState(() {
-                        _openSaleTypeDropdown = false;
-                      });
-                    },
-                  ),
-                ),
+                child: widget.isViewOnly
+                    ? Text(
+                        widget.item.saleType ?? '',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      )
+                    : DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: _currentItem.saleType,
+                          items: _getUnitOptions(),
+                          onChanged: widget.isViewOnly
+                              ? null
+                              : (value) => _updateSaleType(value!),
+                          isExpanded: true,
+                          alignment: AlignmentDirectional.center,
+                          style: Theme.of(context).textTheme.bodyMedium,
+                          itemHeight: 48,
+                          autofocus: _openSaleTypeDropdown,
+                          focusNode: _saleTypeFocusNode,
+                          onTap: () {
+                            setState(() {
+                              _openSaleTypeDropdown = false;
+                            });
+                          },
+                        ),
+                      ),
               ),
             ),
+            // السعر
             Expanded(
               flex: 2,
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                child: TextFormField(
-                  controller: _priceController,
-                  textAlign: TextAlign.center,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
-                  enabled: !widget.isViewOnly,
-                  onChanged: _updatePrice, // لا تحريك للمؤشر هنا إطلاقًا
-                  focusNode: _priceFocusNode,
-                  onFieldSubmitted: (val) {
-                    // عند الضغط Enter في السعر، انتقل إلى التفاصيل في الصف الجديد فقط
-                    if (widget.priceFocusNode != null) {
-                      widget.priceFocusNode!.requestFocus();
-                    }
-                  },
-                  style: Theme.of(context).textTheme.bodyMedium,
-                  decoration: const InputDecoration(
-                    border: InputBorder.none,
-                    contentPadding:
-                        EdgeInsets.symmetric(horizontal: 0, vertical: 8),
-                    isDense: true,
-                  ),
-                ),
+                child: widget.isViewOnly
+                    ? Text(
+                        widget.item.appliedPrice.toStringAsFixed(2),
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      )
+                    : TextFormField(
+                        controller: _priceController,
+                        textAlign: TextAlign.center,
+                        keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true),
+                        enabled: !widget.isViewOnly,
+                        onChanged: _updatePrice,
+                        focusNode: _priceFocusNode,
+                        onFieldSubmitted: (val) {
+                          if (widget.priceFocusNode != null) {
+                            widget.priceFocusNode!.requestFocus();
+                          }
+                        },
+                        style: Theme.of(context).textTheme.bodyMedium,
+                        decoration: const InputDecoration(
+                          border: InputBorder.none,
+                          contentPadding:
+                              EdgeInsets.symmetric(horizontal: 0, vertical: 8),
+                          isDense: true,
+                        ),
+                      ),
               ),
             ),
+            // عدد الوحدات
             Expanded(
               flex: 2,
-              child: (_currentItem.saleType == 'قطعة' ||
-                      _currentItem.saleType == 'متر')
-                  ? const SizedBox.shrink()
-                  : Text(
-                      _currentItem.unitsInLargeUnit?.toStringAsFixed(0) ?? '',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodyMedium),
+              child: widget.isViewOnly
+                  ? ((widget.item.saleType == 'قطعة' ||
+                          widget.item.saleType == 'متر')
+                      ? const SizedBox.shrink()
+                      : Text(
+                          widget.item.unitsInLargeUnit?.toStringAsFixed(0) ??
+                              '',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodyMedium))
+                  : (_currentItem.saleType == 'قطعة' ||
+                          _currentItem.saleType == 'متر')
+                      ? const SizedBox.shrink()
+                      : Text(
+                          _currentItem.unitsInLargeUnit?.toStringAsFixed(0) ??
+                              '',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodyMedium),
             ),
             if (!widget.isViewOnly && !widget.isPlaceholder)
               SizedBox(

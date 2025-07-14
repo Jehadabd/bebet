@@ -1,4 +1,6 @@
 // models/invoice_item.dart
+import 'package:flutter/material.dart';
+
 class InvoiceItem {
   int? id;
   int invoiceId; // Foreign key to Invoice
@@ -17,6 +19,14 @@ class InvoiceItem {
   double?
       unitsInLargeUnit; // عدد القطع في الكرتون أو الأمتار في اللفة (للوحدة الكبيرة)
 
+  // Controllers for UI binding
+  late TextEditingController productNameController;
+  late TextEditingController quantityIndividualController;
+  late TextEditingController quantityLargeUnitController;
+  late TextEditingController appliedPriceController;
+  late TextEditingController itemTotalController;
+  late TextEditingController saleTypeController;
+
   InvoiceItem({
     this.id,
     required this.invoiceId,
@@ -30,7 +40,36 @@ class InvoiceItem {
     this.costPrice, // Made optional
     this.saleType, // أضف هذا
     this.unitsInLargeUnit,
-  });
+  }) {
+    // Initialize controllers with initial values
+    productNameController = TextEditingController(text: productName);
+    quantityIndividualController =
+        TextEditingController(text: (quantityIndividual ?? '').toString());
+    quantityLargeUnitController =
+        TextEditingController(text: (quantityLargeUnit ?? '').toString());
+    appliedPriceController =
+        TextEditingController(text: appliedPrice.toString());
+    itemTotalController = TextEditingController(text: itemTotal.toString());
+    saleTypeController = TextEditingController(text: saleType ?? '');
+  }
+
+  void initializeControllers() {
+    productNameController.text = productName;
+    quantityIndividualController.text = (quantityIndividual ?? '').toString();
+    quantityLargeUnitController.text = (quantityLargeUnit ?? '').toString();
+    appliedPriceController.text = appliedPrice.toString();
+    itemTotalController.text = itemTotal.toString();
+    saleTypeController.text = saleType ?? '';
+  }
+
+  void disposeControllers() {
+    productNameController.dispose();
+    quantityIndividualController.dispose();
+    quantityLargeUnitController.dispose();
+    appliedPriceController.dispose();
+    itemTotalController.dispose();
+    saleTypeController.dispose();
+  }
 
   // Convert an InvoiceItem object into a Map object
   Map<String, dynamic> toMap() {

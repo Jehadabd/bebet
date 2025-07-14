@@ -6,6 +6,7 @@ import '../providers/app_provider.dart';
 import '../models/invoice.dart';
 import 'create_invoice_screen.dart';
 import 'package:intl/intl.dart'; // Import for NumberFormat
+import '../services/database_service.dart'; // Added for DatabaseService
 
 class EditInvoicesScreen extends StatefulWidget {
   const EditInvoicesScreen({super.key});
@@ -369,7 +370,43 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                                         ),
                                       ],
                                     ),
-                                    onTap: () {
+                                    onTap: () async {
+                                      // اطبع بيانات الفاتورة المختارة
+                                      print(
+                                          '--- بيانات الفاتورة المختارة من شاشة تعديل القوائم ---');
+                                      print('رقم الفاتورة: ${invoice.id}');
+                                      print(
+                                          'اسم العميل: ${invoice.customerName}');
+                                      print(
+                                          'رقم الهاتف: ${invoice.customerPhone}');
+                                      print(
+                                          'العنوان: ${invoice.customerAddress}');
+                                      print(
+                                          'اسم المؤسس/الفني: ${invoice.installerName}');
+                                      print(
+                                          'تاريخ الفاتورة: ${invoice.invoiceDate.toIso8601String()}');
+                                      print(
+                                          'نوع الدفع: ${invoice.paymentType}');
+                                      print('الخصم: ${invoice.discount}');
+                                      print(
+                                          'المبلغ الإجمالي: ${invoice.totalAmount}');
+                                      print(
+                                          'المبلغ المسدد: ${invoice.amountPaidOnInvoice}');
+                                      print('الحالة: ${invoice.status}');
+                                      // جلب وطباعة أصناف الفاتورة
+                                      final items = await DatabaseService()
+                                          .getInvoiceItems(invoice.id!);
+                                      print('--- أصناف الفاتورة ---');
+                                      for (var item in items) {
+                                        print('--- صنف ---');
+                                        print('المنتج:  ${item.productName}');
+                                        print(
+                                            'الكمية:  ${(item.quantityIndividual ?? item.quantityLargeUnit ?? 0)}');
+                                        print('نوع البيع:  ${item.saleType}');
+                                        print('السعر:  ${item.appliedPrice}');
+                                        print('المبلغ:  ${item.itemTotal}');
+                                        print('التفاصيل: ${item.productName} ');
+                                      }
                                       Navigator.push(
                                         context,
                                         MaterialPageRoute(
@@ -381,7 +418,6 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                                           ),
                                         ),
                                       ).then((_) {
-                                        // Refresh invoices when returning from CreateInvoiceScreen
                                         _fetchInvoices();
                                       });
                                     },
