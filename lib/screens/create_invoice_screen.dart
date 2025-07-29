@@ -1841,15 +1841,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     final Color successColor = Colors.green[600]!;
     final Color errorColor = Colors.red[700]!;
 
-    final displayedItems =
-        _invoiceItems.where((item) => item.productName.isNotEmpty).toList();
-    // إذا كنا في وضع إنشاء فاتورة جديدة (وليس تعديل/عرض) ولا يوجد أصناف حقيقية، أضف صف فارغ للعرض فقط
-    if (_invoiceToManage == null &&
-        displayedItems.isEmpty &&
-        !_isViewOnly &&
-        _invoiceItems.isNotEmpty) {
-      displayedItems.add(_invoiceItems.first);
-    }
+    // استخدم القائمة الكاملة دائمًا لعرض جميع الصفوف بما في ذلك الصف الفارغ الجديد
+    final displayedItems = _invoiceItems;
 
     return Theme(
       data: ThemeData(
@@ -2601,53 +2594,49 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 ListView.builder(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
-                  itemCount: displayedItems.length,
+                  itemCount: _invoiceItems.length,
                   itemBuilder: (context, index) {
+                    final item = _invoiceItems[index];
+                    while (focusNodesList.length <= index) {
+                      focusNodesList.add(LineItemFocusNodes());
+                    }
                     return EditableInvoiceItemRow(
-                      key: ValueKey('row_$index'),
-                      item: displayedItems[index],
+                      key: ValueKey(item.uniqueId),
+                      item: item,
                       index: index,
                       allProducts: _allProductsForUnits ?? [],
                       isViewOnly: _isViewOnly,
-                      isPlaceholder: false,
-                      detailsFocusNode: focusNodesList.length > index
-                          ? focusNodesList[index].details
-                          : null,
-                      quantityFocusNode: focusNodesList.length > index
-                          ? focusNodesList[index].quantity
-                          : null,
-                      priceFocusNode: focusNodesList.length > index
-                          ? focusNodesList[index].price
-                          : null,
+                      isPlaceholder: item.productName.isEmpty,
                       onItemUpdated: (updatedItem) {
                         setState(() {
-                          // ابحث عن العنصر الأصلي في _invoiceItems وعدله
-                          final originalIndex = _invoiceItems
-                              .indexWhere((item) => item.id == updatedItem.id);
-                          if (originalIndex != -1) {
-                            _invoiceItems[originalIndex] = updatedItem;
-                          }
+                          _invoiceItems[index] = updatedItem;
                           _recalculateTotals();
-                          // إذا كان آخر صف مكتمل، أضف صف فارغ جديد تلقائيًا
-                          if (_isInvoiceItemComplete(_invoiceItems.last)) {
+                          if (index == _invoiceItems.length - 1 &&
+                              _isInvoiceItemComplete(updatedItem)) {
                             _invoiceItems.add(InvoiceItem(
-                              invoiceId: 0,
-                              productName: '',
-                              unit: '',
-                              unitPrice: 0.0,
-                              appliedPrice: 0.0,
-                              itemTotal: 0.0,
-                            ));
+                                invoiceId: 0,
+                                productName: '',
+                                unit: '',
+                                unitPrice: 0.0,
+                                appliedPrice: 0.0,
+                                itemTotal: 0.0));
                             focusNodesList.add(LineItemFocusNodes());
+                            SchedulerBinding.instance.addPostFrameCallback((_) {
+                              if (mounted && focusNodesList.isNotEmpty) {
+                                focusNodesList.last.details.requestFocus();
+                              }
+                            });
                           }
                         });
                       },
                       onItemRemoved: (idx) {
                         setState(() {
-                          focusNodesList[idx].dispose();
-                          focusNodesList.removeAt(idx);
-                          _invoiceItems.removeAt(idx);
-                          _recalculateTotals();
+                          if (_invoiceItems.length > 1) {
+                            _invoiceItems.removeAt(idx);
+                            focusNodesList[idx].dispose();
+                            focusNodesList.removeAt(idx);
+                            _recalculateTotals();
+                          }
                         });
                       },
                     );
@@ -3040,7 +3029,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         );
       }
       _priceController.text = _currentItem.appliedPrice.toStringAsFixed(2);
-      widget.onItemUpdated(_currentItem);
+      // widget.onItemUpdated(_currentItem); // <-- تم التعليق
     });
   }
 
@@ -3123,7 +3112,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
 
   void _updatePrice(String value) {
     double? newPrice = double.tryParse(value);
-    if (newPrice == null || newPrice <= 0) return;
+    if (newPrice == null || newPrice < 0) return;
     setState(() {
       double quantity = _currentItem.quantityIndividual ??
           _currentItem.quantityLargeUnit ??
@@ -3132,7 +3121,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         appliedPrice: newPrice,
         itemTotal: quantity * newPrice,
       );
-      widget.onItemUpdated(_currentItem);
+      // widget.onItemUpdated(_currentItem); // <-- تم التعليق
     });
   }
 
@@ -3185,7 +3174,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                         initialValue:
                             TextEditingValue(text: widget.item.productName),
                         optionsBuilder: (TextEditingValue textEditingValue) {
-                          if (textEditingValue.text == '') {
+                          if (textEditingValue.text.isEmpty) {
                             return const Iterable<String>.empty();
                           }
                           return widget.allProducts.map((p) => p.name).where(
@@ -3193,22 +3182,16 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                                   option.contains(textEditingValue.text));
                         },
                         onSelected: (String selection) {
-                          setState(() {
-                            _currentItem =
-                                _currentItem.copyWith(productName: selection);
-                            widget.onItemUpdated(_currentItem);
-                          });
-                          WidgetsBinding.instance.addPostFrameCallback((_) {
-                            _quantityFocusNode.requestFocus();
-                            if (widget.quantityFocusNode != null) {
-                              widget.quantityFocusNode!.requestFocus();
-                            }
-                          });
+                          _currentItem =
+                              _currentItem.copyWith(productName: selection);
+                          widget.onItemUpdated(_currentItem);
+                          FocusScope.of(context)
+                              .requestFocus(_quantityFocusNode);
                         },
-                        fieldViewBuilder:
-                            (context, controller, focusNode, onFieldSubmitted) {
+                        fieldViewBuilder: (context, textEditingController,
+                            focusNode, onFieldSubmitted) {
                           return TextField(
-                            controller: controller,
+                            controller: textEditingController,
                             focusNode: focusNode,
                             enabled: !widget.isViewOnly,
                             decoration: const InputDecoration(
@@ -3219,14 +3202,14 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                             ),
                             style: Theme.of(context).textTheme.bodyMedium,
                             onChanged: (val) {
-                              setState(() {
-                                _currentItem =
-                                    _currentItem.copyWith(productName: val);
-                                widget.onItemUpdated(_currentItem);
-                              });
+                              _currentItem =
+                                  _currentItem.copyWith(productName: val);
                             },
                             onSubmitted: (val) {
                               onFieldSubmitted();
+                              widget.onItemUpdated(_currentItem);
+                              FocusScope.of(context)
+                                  .requestFocus(_quantityFocusNode);
                             },
                           );
                         },
@@ -3253,9 +3236,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                         keyboardType: const TextInputType.numberWithOptions(
                             decimal: true),
                         enabled: !widget.isViewOnly,
-                        onChanged: _updateQuantity,
+                        onChanged: _updateQuantity, // الآن أصبح آمناً
                         focusNode: _quantityFocusNode,
                         onFieldSubmitted: (val) {
+                          widget.onItemUpdated(_currentItem);
                           _saleTypeFocusNode.requestFocus();
                           setState(() {
                             _openSaleTypeDropdown = true;
@@ -3321,12 +3305,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                         keyboardType: const TextInputType.numberWithOptions(
                             decimal: true),
                         enabled: !widget.isViewOnly,
-                        onChanged: _updatePrice,
+                        onChanged: _updatePrice, // الآن أصبح آمناً
                         focusNode: _priceFocusNode,
                         onFieldSubmitted: (val) {
-                          if (widget.priceFocusNode != null) {
-                            widget.priceFocusNode!.requestFocus();
-                          }
+                          widget.onItemUpdated(_currentItem);
                         },
                         style: Theme.of(context).textTheme.bodyMedium,
                         decoration: const InputDecoration(

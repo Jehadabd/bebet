@@ -19,6 +19,9 @@ class InvoiceItem {
   double?
       unitsInLargeUnit; // عدد القطع في الكرتون أو الأمتار في اللفة (للوحدة الكبيرة)
 
+  // --- أضف هذا الحقل ---
+  final String uniqueId;
+
   // Controllers for UI binding
   late TextEditingController productNameController;
   late TextEditingController quantityIndividualController;
@@ -40,7 +43,9 @@ class InvoiceItem {
     this.costPrice, // Made optional
     this.saleType, // أضف هذا
     this.unitsInLargeUnit,
-  }) {
+    String? uniqueId, // أضف هذا
+  }) : this.uniqueId =
+            uniqueId ?? 'item_${DateTime.now().microsecondsSinceEpoch}' {
     // Initialize controllers with initial values
     productNameController = TextEditingController(text: productName);
     quantityIndividualController =
@@ -86,6 +91,7 @@ class InvoiceItem {
       'item_total': itemTotal,
       'sale_type': saleType, // أضف هذا
       'units_in_large_unit': unitsInLargeUnit,
+      'unique_id': uniqueId, // أضف هذا
     };
   }
 
@@ -105,6 +111,8 @@ class InvoiceItem {
       itemTotal: map['item_total'] ?? 0.0,
       saleType: map['sale_type'] as String?, // أضف هذا
       unitsInLargeUnit: map['units_in_large_unit'] as double?,
+      uniqueId: map['unique_id'] ??
+          'item_${DateTime.now().microsecondsSinceEpoch}', // أضف هذا
     );
   }
 
@@ -121,6 +129,7 @@ class InvoiceItem {
     double? itemTotal,
     String? saleType, // أضف هذا
     double? unitsInLargeUnit,
+    String? uniqueId, // أضف هذا
   }) {
     return InvoiceItem(
       id: id ?? this.id,
@@ -135,6 +144,7 @@ class InvoiceItem {
       itemTotal: itemTotal ?? this.itemTotal,
       saleType: saleType ?? this.saleType, // أضف هذا
       unitsInLargeUnit: unitsInLargeUnit ?? this.unitsInLargeUnit,
+      uniqueId: uniqueId ?? this.uniqueId, // أضف هذا
     );
   }
 }
