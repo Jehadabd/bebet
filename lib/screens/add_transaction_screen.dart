@@ -12,6 +12,10 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:record/record.dart';
+import '../services/receipt_voucher_pdf_service.dart';
+import '../services/printing_service.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:flutter/services.dart' show rootBundle;
 
 class AddTransactionScreen extends StatefulWidget {
   final Customer customer;
@@ -62,8 +66,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
 
   // Helper to format currency consistently with 2 decimal places
   String formatCurrency(num value) {
-    return NumberFormat('', 'en_US')
-        .format(value); // Always two decimal places
+    return NumberFormat('', 'en_US').format(value); // Always two decimal places
   }
 
   Future<void> _saveTransaction() async {
@@ -71,7 +74,6 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       final amount = double.parse(_amountController.text);
       final amountChanged = _isDebt ? amount : -amount;
       final newBalance = widget.customer.currentTotalDebt + amountChanged;
-
       final transaction = DebtTransaction(
         customerId: widget.customer.id!,
         amountChanged: amountChanged,
@@ -84,7 +86,6 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
         transactionDate: DateTime.now(), // Add transactionDate for consistency
         audioNotePath: _audioNotePath,
       );
-
       await context.read<AppProvider>().addTransaction(transaction);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -94,6 +95,53 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
             backgroundColor: Theme.of(context).colorScheme.tertiary,
           ),
         );
+        // --- هنا منطق سند القبض ---
+        if (!_isDebt) {
+          final shouldPrint = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('طباعة سند قبض'),
+              content: const Text('هل تريد طباعة سند القبض لهذا التسديد؟'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('لا'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('نعم'),
+                ),
+              ],
+            ),
+          );
+          if (shouldPrint == true) {
+            final font = pw.Font.ttf(
+                await rootBundle.load('assets/fonts/Amiri-Regular.ttf'));
+            final alnaserFont = pw.Font.ttf(await rootBundle
+                .load('assets/fonts/Old Antic Outline Shaded.ttf'));
+            final logoBytes = await rootBundle
+                .load('assets/icon/AL_NASSER_logo_transparent_medium.png');
+            final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
+            final pdf =
+                await ReceiptVoucherPdfService.generateReceiptVoucherPdf(
+              customerName: widget.customer.name,
+              beforePayment: widget.customer.currentTotalDebt,
+              paidAmount: amount,
+              afterPayment: newBalance,
+              dateTime: DateTime.now(),
+              font: font,
+              alnaserFont: alnaserFont,
+              logoImage: logoImage,
+            );
+            // حفظ PDF في ملف مؤقت وفتحه في Microsoft Edge
+            final tempDir = Directory.systemTemp;
+            final filePath =
+                '${tempDir.path}/receipt_voucher_${DateTime.now().millisecondsSinceEpoch}.pdf';
+            final file = File(filePath);
+            await file.writeAsBytes(await pdf.save());
+            await Process.start('cmd', ['/c', 'start', 'msedge', filePath]);
+          }
+        }
         Navigator.pop(context);
       }
     } else {

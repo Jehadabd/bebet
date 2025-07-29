@@ -79,8 +79,7 @@ class DatabaseService {
     }
     return await openDatabase(
       newPath,
-      version:
-          24, // رفع رقم النسخة لتفعيل الترقية وإضافة عمود audio_note_path للعملاء
+      version: 25, // رفع رقم النسخة لتفعيل الترقية وإضافة عمود unique_id
       onCreate: _createDatabase,
       onUpgrade: _onUpgrade,
     );
@@ -172,6 +171,7 @@ class DatabaseService {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         invoice_id INTEGER NOT NULL,
         product_name TEXT NOT NULL,
+        unique_id TEXT NOT NULL,
         unit TEXT NOT NULL,
         unit_price REAL NOT NULL, -- سعر بيع الوحدة المطبق
         quantity_individual REAL, -- الكمية بالوحدة الصغرى (إذا كانت تطبق)
@@ -338,6 +338,14 @@ class DatabaseService {
       } catch (e) {
         print(
             "DEBUG DB Error: Failed to add column 'audio_note_path' to customers table or it already exists: $e");
+      }
+    }
+    if (oldVersion < 25) {
+      try {
+        await db.execute('ALTER TABLE invoice_items ADD COLUMN unique_id TEXT');
+        print('DEBUG DB: unique_id column added successfully to invoice_items table.');
+      } catch (e) {
+        print("DEBUG DB Error: Failed to add column 'unique_id' to invoice_items table or it already exists: $e");
       }
     }
   }

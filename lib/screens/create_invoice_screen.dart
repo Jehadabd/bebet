@@ -25,6 +25,7 @@ import 'package:alnaser/services/printing_service_platform_io.dart';
 import 'package:get_storage/get_storage.dart';
 import 'dart:convert';
 import 'package:flutter/scheduler.dart';
+import '../services/pdf_header.dart';
 
 // تعريف EditableInvoiceItemRow موجود هنا (أو تأكد من وجوده قبل استخدامه في ListView)
 // إذا كان التعريف موجود بالفعل، لا داعي لأي تعديل إضافي هنا.
@@ -1069,58 +1070,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   crossAxisAlignment: pw.CrossAxisAlignment.start,
                   children: [
                     // --- رأس الفاتورة مع اللوجو الجديد في الجهة اليمنى ---
-                    pw.Row(
-                      crossAxisAlignment: pw.CrossAxisAlignment.start,
-                      children: [
-                        // بقية رأس الفاتورة (العنوان والمعلومات)
-                        pw.Expanded(
-                          child: pw.Column(
-                            children: [
-                              pw.SizedBox(height: 0),
-                              pw.Center(
-                                child: pw.Text(
-                                  'الــــــنــــــاصــــــر',
-                                  style: pw.TextStyle(
-                                    font: alnaserFont,
-                                    fontSize: 45,
-                                    height: 0,
-                                    fontWeight: pw.FontWeight.bold,
-                                    color: PdfColors.black,
-                                  ),
-                                ),
-                              ),
-                              pw.Center(
-                                child: pw.Text(
-                                    'لتجارة المواد الصحية والعدد اليدوية والانشائية ',
-                                    style:
-                                        pw.TextStyle(font: font, fontSize: 17)),
-                              ),
-                              pw.Center(
-                                child: pw.Text(
-                                  'الموصل - الجدعة - مقابل البرج',
-                                  style: pw.TextStyle(font: font, fontSize: 13),
-                                ),
-                              ),
-                              pw.Center(
-                                child: pw.Text(
-                                    '0771 406 3064  |  0770 305 1353',
-                                    style: pw.TextStyle(
-                                        font: font,
-                                        fontSize: 13,
-                                        color: PdfColors.black)),
-                              ),
-                            ],
-                          ),
-                        ),
-                        pw.SizedBox(width: 12),
-                        pw.Container(
-                          width: 150,
-                          height: 150,
-                          // تم حذف border
-                          child: pw.Image(logoImage, fit: pw.BoxFit.contain),
-                        ),
-                      ],
-                    ),
+                    buildPdfHeader(font, alnaserFont, logoImage),
                     pw.SizedBox(height: 4),
                     // --- معلومات العميل والتاريخ ---
                     pw.Row(

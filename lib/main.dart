@@ -18,6 +18,8 @@ import 'screens/reports_screen.dart';
 import 'services/password_service.dart';
 import 'screens/password_setup_screen.dart';
 import 'screens/printer_settings_screen.dart';
+import 'services/printing_service_windows.dart';
+import 'services/printing_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,8 +52,11 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => AppProvider(),
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => AppProvider()),
+        Provider<PrintingService>(create: (_) => PrintingServiceWindows()),
+      ],
       child: MaterialApp(
         title: 'دفتر ديوني',
         theme: ThemeData(
