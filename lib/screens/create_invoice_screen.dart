@@ -505,15 +505,23 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 baseUnitsPerSelectedUnit = double.tryParse(
                         selectedHierarchyUnit['quantity'].toString()) ??
                     1.0;
-                finalAppliedPrice =
-                    _selectedPriceLevel! * baseUnitsPerSelectedUnit;
+                if (_isCustomPrice) {
+                  finalAppliedPrice = _selectedPriceLevel!;
+                } else {
+                  finalAppliedPrice =
+                      _selectedPriceLevel! * baseUnitsPerSelectedUnit;
+                }
               }
             }
           }
         } else if (_selectedProduct!.unit == 'meter' &&
             _selectedUnitForItem == 'لفة') {
           baseUnitsPerSelectedUnit = _selectedProduct!.lengthPerUnit ?? 1.0;
-          finalAppliedPrice = _selectedPriceLevel! * baseUnitsPerSelectedUnit;
+          if (_isCustomPrice) {
+            finalAppliedPrice = _selectedPriceLevel!;
+          } else {
+            finalAppliedPrice = _selectedPriceLevel! * baseUnitsPerSelectedUnit;
+          }
         }
         final double totalBaseUnitsSold =
             inputQuantity * baseUnitsPerSelectedUnit;
@@ -2893,7 +2901,9 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     super.initState();
     _currentItem = widget.item;
     // استخدم المتحكمات الجاهزة من كائن الصنف مباشرة
-    _quantityController = widget.item.quantityIndividualController;
+    _quantityController = TextEditingController(
+  text: (widget.item.quantityIndividual ?? widget.item.quantityLargeUnit ?? '').toString(),
+);
     _priceController = widget.item.appliedPriceController;
     _detailsFocusNode = widget.detailsFocusNode ?? FocusNode();
     _quantityFocusNode = widget.quantityFocusNode ?? FocusNode();
@@ -2962,26 +2972,19 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   }
 
   void _updateQuantity(String value) {
-    double? newQuantity = double.tryParse(value);
-    if (newQuantity == null || newQuantity <= 0) return;
-    setState(() {
-      if (_currentItem.saleType == 'قطعة' || _currentItem.saleType == 'متر') {
-        _currentItem = _currentItem.copyWith(
-          quantityIndividual: newQuantity,
-          quantityLargeUnit: null,
-          itemTotal: newQuantity * _currentItem.appliedPrice,
-        );
-      } else {
-        _currentItem = _currentItem.copyWith(
-          quantityLargeUnit: newQuantity,
-          quantityIndividual: null,
-          itemTotal: newQuantity * _currentItem.appliedPrice,
-        );
-      }
-      _priceController.text = _currentItem.appliedPrice.toStringAsFixed(2);
-      // widget.onItemUpdated(_currentItem); // <-- تم التعليق
-    });
-  }
+  double? newQuantity = double.tryParse(value);
+  if (newQuantity == null || newQuantity <= 0) return;
+  setState(() {
+    // منطق موحد: دائماً المبلغ = السعر الحالي × العدد الحالي مباشرة
+    _currentItem = _currentItem.copyWith(
+      quantityIndividual: (_currentItem.saleType == 'قطعة' || _currentItem.saleType == 'متر') ? newQuantity : null,
+      quantityLargeUnit: (_currentItem.saleType != 'قطعة' && _currentItem.saleType != 'متر') ? newQuantity : null,
+      itemTotal: newQuantity * _currentItem.appliedPrice,
+    );
+    _priceController.text = _currentItem.appliedPrice.toStringAsFixed(2);
+  });
+  widget.onItemUpdated(_currentItem);
+}
 
   void _updateSaleType(String newType) {
     Product? product = widget.allProducts.firstWhere(
@@ -3067,12 +3070,30 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
       double quantity = _currentItem.quantityIndividual ??
           _currentItem.quantityLargeUnit ??
           1;
+      // منطق السعر المخصص: إذا كان المستخدم أدخل سعراً يدوياً (غير مطابق لسعر الوحدة أو سعر التكلفة)
+      bool isCustomPrice = true;
+      double? costPrice = _currentItem.costPrice;
+      double unitPrice = _currentItem.unitPrice;
+
+      // تحقق من السعر المنخفض
+      if ((costPrice != null && newPrice < costPrice) || newPrice < unitPrice) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('⚠️ السعر المدخل أقل من سعر التكلفة أو سعر الوحدة!'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        });
+      }
+      // الحساب: المبلغ = السعر * العدد مباشرة بغض النظر عن نوع الوحدة
       _currentItem = _currentItem.copyWith(
         appliedPrice: newPrice,
         itemTotal: quantity * newPrice,
       );
-      // widget.onItemUpdated(_currentItem); // <-- تم التعليق
     });
+    widget.onItemUpdated(_currentItem);
   }
 
   String formatCurrency(num value) {
