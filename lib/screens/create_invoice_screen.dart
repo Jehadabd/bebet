@@ -105,6 +105,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   List<Map<String, dynamic>> _currentUnitHierarchy = [];
   List<String> _currentUnitOptions = ['قطعة'];
   String _selectedUnitForItem = 'قطعة';
+  
+  // متغير للتحكم في السعر المخصص
+  bool _isCustomPrice = false;
 
   List<Product>? _allProductsForUnits;
 
@@ -197,6 +200,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         unitPrice: 0.0,
         appliedPrice: 0.0,
         itemTotal: 0.0,
+        uniqueId: 'placeholder_${DateTime.now().microsecondsSinceEpoch}',
       ));
     }
   }
@@ -239,6 +243,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             itemTotal: item['itemTotal'],
             saleType: item['saleType'],
             unitsInLargeUnit: item['unitsInLargeUnit'],
+            uniqueId: item['uniqueId'] ?? 'item_${DateTime.now().microsecondsSinceEpoch}',
           );
         }).toList();
 
@@ -279,6 +284,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   'itemTotal': item.itemTotal,
                   'saleType': item.saleType,
                   'unitsInLargeUnit': item.unitsInLargeUnit,
+                  'uniqueId': item.uniqueId,
                 })
             .toList(),
       };
@@ -601,6 +607,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               unitPrice: 0.0,
               appliedPrice: 0.0,
               itemTotal: 0.0,
+              uniqueId: 'placeholder_${DateTime.now().microsecondsSinceEpoch}',
             ));
           }
         });
@@ -617,12 +624,31 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   void _removeInvoiceItem(int index) {
     try {
+      if (index < 0 || index >= _invoiceItems.length) return;
+      _removeInvoiceItemByUid(_invoiceItems[index].uniqueId);
+    } catch (e) {
+      print('Error removing invoice item: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('حدث خطأ أثناء حذف الصنف: $e')),
+        );
+      }
+    }
+  }
+
+  void _removeInvoiceItemByUid(String uid) {
+    try {
       setState(() {
-        focusNodesList[index].dispose();
-        focusNodesList.removeAt(index);
+        final index = _invoiceItems.indexWhere((it) => it.uniqueId == uid);
+        if (index == -1) return;
+        if (index < focusNodesList.length) {
+          focusNodesList[index].dispose();
+          focusNodesList.removeAt(index);
+        }
         _invoiceItems.removeAt(index);
         _guardDiscount();
         _updatePaidAmountIfCash();
+        _recalculateTotals();
         _autoSave();
         if (_invoiceToManage != null &&
             _invoiceToManage!.status == 'معلقة' &&
@@ -631,7 +657,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         }
       });
     } catch (e) {
-      print('Error removing invoice item: $e');
+      print('Error removing invoice item by uid: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('حدث خطأ أثناء حذف الصنف: $e')),
@@ -1464,6 +1490,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               unitPrice: 0.0,
               appliedPrice: 0.0,
               itemTotal: 0.0,
+              uniqueId: 'placeholder_${DateTime.now().microsecondsSinceEpoch}',
             ));
             focusNodesList.add(LineItemFocusNodes());
           });
@@ -2567,9 +2594,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       isPlaceholder: item.productName.isEmpty,
                       onItemUpdated: (updatedItem) {
                         setState(() {
-                          _invoiceItems[index] = updatedItem;
+                          final i = _invoiceItems.indexWhere(
+                              (it) => it.uniqueId == updatedItem.uniqueId);
+                          if (i != -1) {
+                            _invoiceItems[i] = updatedItem;
+                          }
                           _recalculateTotals();
-                          if (index == _invoiceItems.length - 1 &&
+                          final lastIndex = _invoiceItems.length - 1;
+                          if (i == lastIndex &&
                               _isInvoiceItemComplete(updatedItem)) {
                             _invoiceItems.add(InvoiceItem(
                                 invoiceId: 0,
@@ -2577,7 +2609,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 unit: '',
                                 unitPrice: 0.0,
                                 appliedPrice: 0.0,
-                                itemTotal: 0.0));
+                                itemTotal: 0.0,
+                                uniqueId: 'placeholder_${DateTime.now().microsecondsSinceEpoch}'));
                             focusNodesList.add(LineItemFocusNodes());
                             SchedulerBinding.instance.addPostFrameCallback((_) {
                               if (mounted && focusNodesList.isNotEmpty) {
@@ -2587,16 +2620,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           }
                         });
                       },
-                      onItemRemoved: (idx) {
-                        setState(() {
-                          if (_invoiceItems.length > 1) {
-                            _invoiceItems.removeAt(idx);
-                            focusNodesList[idx].dispose();
-                            focusNodesList.removeAt(idx);
-                            _recalculateTotals();
-                          }
-                        });
-                      },
+                      onItemRemovedByUid: _removeInvoiceItemByUid,
                     );
                   },
                 ),
@@ -2859,7 +2883,7 @@ class EditableInvoiceItemRow extends StatefulWidget {
   final InvoiceItem item;
   final int index;
   final Function(InvoiceItem) onItemUpdated;
-  final Function(int) onItemRemoved;
+  final Function(String) onItemRemovedByUid;
   final List<Product> allProducts;
   final bool isViewOnly;
   final bool isPlaceholder;
@@ -2872,7 +2896,7 @@ class EditableInvoiceItemRow extends StatefulWidget {
     required this.item,
     required this.index,
     required this.onItemUpdated,
-    required this.onItemRemoved,
+    required this.onItemRemovedByUid,
     required this.allProducts,
     required this.isViewOnly,
     required this.isPlaceholder,
@@ -2902,8 +2926,11 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     _currentItem = widget.item;
     // استخدم المتحكمات الجاهزة من كائن الصنف مباشرة
     _quantityController = TextEditingController(
-  text: (widget.item.quantityIndividual ?? widget.item.quantityLargeUnit ?? '').toString(),
-);
+      text: (widget.item.quantityIndividual ??
+              widget.item.quantityLargeUnit ??
+              '')
+          .toString(),
+    );
     _priceController = widget.item.appliedPriceController;
     _detailsFocusNode = widget.detailsFocusNode ?? FocusNode();
     _quantityFocusNode = widget.quantityFocusNode ?? FocusNode();
@@ -2972,19 +2999,25 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   }
 
   void _updateQuantity(String value) {
-  double? newQuantity = double.tryParse(value);
-  if (newQuantity == null || newQuantity <= 0) return;
-  setState(() {
-    // منطق موحد: دائماً المبلغ = السعر الحالي × العدد الحالي مباشرة
-    _currentItem = _currentItem.copyWith(
-      quantityIndividual: (_currentItem.saleType == 'قطعة' || _currentItem.saleType == 'متر') ? newQuantity : null,
-      quantityLargeUnit: (_currentItem.saleType != 'قطعة' && _currentItem.saleType != 'متر') ? newQuantity : null,
-      itemTotal: newQuantity * _currentItem.appliedPrice,
-    );
-    _priceController.text = _currentItem.appliedPrice.toStringAsFixed(2);
-  });
-  widget.onItemUpdated(_currentItem);
-}
+    double? newQuantity = double.tryParse(value);
+    if (newQuantity == null || newQuantity <= 0) return;
+    setState(() {
+      // منطق موحد: دائماً المبلغ = السعر الحالي × العدد الحالي مباشرة
+      _currentItem = _currentItem.copyWith(
+        quantityIndividual:
+            (_currentItem.saleType == 'قطعة' || _currentItem.saleType == 'متر')
+                ? newQuantity
+                : null,
+        quantityLargeUnit:
+            (_currentItem.saleType != 'قطعة' && _currentItem.saleType != 'متر')
+                ? newQuantity
+                : null,
+        itemTotal: newQuantity * _currentItem.appliedPrice,
+      );
+      _priceController.text = _currentItem.appliedPrice.toStringAsFixed(2);
+    });
+    widget.onItemUpdated(_currentItem);
+  }
 
   void _updateSaleType(String newType) {
     Product? product = widget.allProducts.firstWhere(
@@ -3080,7 +3113,8 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('⚠️ السعر المدخل أقل من سعر التكلفة أو سعر الوحدة!'),
+              content:
+                  Text('⚠️ السعر المدخل أقل من سعر التكلفة أو سعر الوحدة!'),
               backgroundColor: Colors.orange,
               duration: Duration(seconds: 3),
             ),
@@ -3318,7 +3352,8 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 child: IconButton(
                   icon: const Icon(Icons.delete_outline,
                       color: Colors.red, size: 24),
-                  onPressed: () => widget.onItemRemoved(widget.index),
+                  onPressed: () =>
+                      widget.onItemRemovedByUid(widget.item.uniqueId),
                   tooltip: 'حذف الصنف',
                 ),
               )

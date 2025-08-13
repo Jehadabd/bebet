@@ -9,7 +9,7 @@ class EditableInvoiceItemRow extends StatefulWidget {
   final InvoiceItem item;
   final int index;
   final Function(InvoiceItem) onItemUpdated;
-  final Function(int) onItemRemoved;
+  final Function(String) onItemRemovedByUid;
   final List<Product> allProducts;
   final bool isViewOnly;
   final bool isPlaceholder;
@@ -22,7 +22,7 @@ class EditableInvoiceItemRow extends StatefulWidget {
     required this.item,
     required this.index,
     required this.onItemUpdated,
-    required this.onItemRemoved,
+    required this.onItemRemovedByUid,
     required this.allProducts,
     required this.isViewOnly,
     required this.isPlaceholder,
@@ -455,7 +455,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 child: IconButton(
                   icon: const Icon(Icons.delete_outline,
                       color: Colors.red, size: 24),
-                  onPressed: () => widget.onItemRemoved(widget.index),
+                  onPressed: () => widget.onItemRemovedByUid(widget.item.uniqueId),
                   tooltip: 'حذف الصنف',
                 ),
               )
