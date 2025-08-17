@@ -41,6 +41,7 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
           totalQuantitySold: salesData['totalQuantity'] ?? 0.0,
           totalProfit: salesData['totalProfit'] ?? 0.0,
           totalSales: salesData['totalSales'] ?? 0.0,
+          averageSellingPrice: salesData['averageSellingPrice'] ?? 0.0,
         ));
       }
 
@@ -226,6 +227,30 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
                   ),
                 ],
               ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildInfoItem(
+                      icon: Icons.price_change,
+                      title: 'التكلفة',
+                      value: product.product.costPrice != null
+                          ? '${product.product.costPrice!.toStringAsFixed(2)} د.ع'
+                          : 'غير محدد',
+                      color: const Color(0xFFF44336),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _buildInfoItem(
+                      icon: Icons.attach_money,
+                      title: 'متوسط سعر البيع',
+                      value: '${product.averageSellingPrice.toStringAsFixed(2)} د.ع',
+                      color: const Color(0xFFFF9800),
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
@@ -278,11 +303,13 @@ class ProductReportData {
   final double totalQuantitySold;
   final double totalProfit;
   final double totalSales;
+  final double averageSellingPrice;
 
   ProductReportData({
     required this.product,
     required this.totalQuantitySold,
     required this.totalProfit,
     required this.totalSales,
+    required this.averageSellingPrice,
   });
 }

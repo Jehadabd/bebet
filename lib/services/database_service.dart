@@ -18,6 +18,7 @@ import 'package:flutter/services.dart' show rootBundle;
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
   static Database? _database;
+  static const int _databaseVersion = 2;
 
   factory DatabaseService() => _instance;
 
@@ -79,7 +80,7 @@ class DatabaseService {
     }
     return await openDatabase(
       newPath,
-      version: 25, // رفع رقم النسخة لتفعيل الترقية وإضافة عمود unique_id
+      version: _databaseVersion, // رفع رقم النسخة لتفعيل الترقية وإضافة عمود unique_id
       onCreate: _createDatabase,
       onUpgrade: _onUpgrade,
     );
@@ -117,12 +118,12 @@ class DatabaseService {
     ''');
 
     await db.execute('''
-      CREATE TABLE products(
+      CREATE TABLE IF NOT EXISTS products (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
         unit TEXT NOT NULL,
         unit_price REAL NOT NULL,
-        cost_price REAL, -- تكلفة الوحدة للمنتج
+        cost_price REAL,
         pieces_per_unit INTEGER,
         length_per_unit REAL,
         price1 REAL NOT NULL,
@@ -130,6 +131,7 @@ class DatabaseService {
         price3 REAL,
         price4 REAL,
         price5 REAL,
+        unit_hierarchy TEXT,
         created_at TEXT NOT NULL,
         last_modified_at TEXT NOT NULL
       )
@@ -144,43 +146,43 @@ class DatabaseService {
     ''');
 
     await db.execute('''
-      CREATE TABLE invoices (
+      CREATE TABLE IF NOT EXISTS invoices (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        customer_name TEXT NOT NULL, 
+        customer_name TEXT NOT NULL,
         customer_phone TEXT,
         customer_address TEXT,
         installer_name TEXT,
-        invoice_date TEXT NOT NULL, --  يُخزن كـ ISO8601 String
-        payment_type TEXT NOT NULL DEFAULT 'نقد', -- 'نقد' أو 'دين'
+        invoice_date TEXT NOT NULL,
+        payment_type TEXT NOT NULL,
         total_amount REAL NOT NULL,
-        amount_paid_on_invoice REAL DEFAULT 0.0, -- المبلغ المدفوع مباشرة على هذه الفاتورة
-        discount REAL NOT NULL DEFAULT 0.0,
-        created_at TEXT NOT NULL, --  يُخزن كـ ISO8601 String
-        last_modified_at TEXT NOT NULL, --  يُخزن كـ ISO8601 String
-        customer_id INTEGER, -- أضف حقل customer_id هنا
-        status TEXT NOT NULL DEFAULT 'محفوظة',
-        return_amount REAL DEFAULT 0.0,
-        is_locked INTEGER DEFAULT 0,
-        FOREIGN KEY (installer_name) REFERENCES installers (name) ON UPDATE CASCADE ON DELETE SET NULL, --  تحسين سلوك المفتاح الأجنبي
-        FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE SET NULL -- أضف المفتاح الأجنبي لـ customer_id
+        discount REAL NOT NULL,
+        amount_paid_on_invoice REAL NOT NULL,
+        created_at TEXT NOT NULL,
+        last_modified_at TEXT NOT NULL,
+        customer_id INTEGER,
+        status TEXT NOT NULL DEFAULT 'مسودة',
+        return_amount REAL NOT NULL DEFAULT 0,
+        is_locked INTEGER NOT NULL DEFAULT 0,
+        loading_fee REAL DEFAULT 0
       )
     ''');
 
     await db.execute('''
-      CREATE TABLE invoice_items(
+      CREATE TABLE IF NOT EXISTS invoice_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         invoice_id INTEGER NOT NULL,
         product_name TEXT NOT NULL,
-        unique_id TEXT NOT NULL,
         unit TEXT NOT NULL,
-        unit_price REAL NOT NULL, -- سعر بيع الوحدة المطبق
-        quantity_individual REAL, -- الكمية بالوحدة الصغرى (إذا كانت تطبق)
-        quantity_large_unit REAL, -- الكمية بالوحدة الكبرى (إذا كانت تطبق)
-        applied_price REAL NOT NULL, -- السعر الذي تم تطبيقه فعليًا (price1, price2, etc.)
-        item_total REAL NOT NULL, -- الإجمالي لهذا البند (applied_price * quantity)
-        cost_price REAL, --  التكلفة الإجمالية لهذا البند (cost_per_unit_of_product * total_quantity_of_this_item)
+        unit_price REAL NOT NULL,
+        cost_price REAL,
+        actual_cost_price REAL,
+        quantity_individual REAL,
+        quantity_large_unit REAL,
+        applied_price REAL NOT NULL,
+        item_total REAL NOT NULL,
         sale_type TEXT,
         units_in_large_unit REAL,
+        unique_id TEXT NOT NULL,
         FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
       )
     ''');
@@ -346,6 +348,15 @@ class DatabaseService {
         print('DEBUG DB: unique_id column added successfully to invoice_items table.');
       } catch (e) {
         print("DEBUG DB Error: Failed to add column 'unique_id' to invoice_items table or it already exists: $e");
+      }
+    }
+    if (oldVersion < 2) {
+      // إضافة عمود actual_cost_price إلى جدول invoice_items
+      try {
+        await db.execute('ALTER TABLE invoice_items ADD COLUMN actual_cost_price REAL');
+        print('تم إضافة عمود actual_cost_price بنجاح');
+      } catch (e) {
+        print('العمود موجود بالفعل أو حدث خطأ: $e');
       }
     }
   }
@@ -790,7 +801,22 @@ class DatabaseService {
   Future<int> insertInvoiceItem(InvoiceItem item) async {
     final db = await database;
     try {
-      return await db.insert('invoice_items', item.toMap());
+      final result = await db.insert('invoice_items', {
+        'invoice_id': item.invoiceId,
+        'product_name': item.productName,
+        'unit': item.unit,
+        'unit_price': item.unitPrice,
+        'cost_price': item.costPrice,
+        'actual_cost_price': item.actualCostPrice, // التكلفة الفعلية للمنتج في وقت البيع
+        'quantity_individual': item.quantityIndividual,
+        'quantity_large_unit': item.quantityLargeUnit,
+        'applied_price': item.appliedPrice,
+        'item_total': item.itemTotal,
+        'sale_type': item.saleType,
+        'units_in_large_unit': item.unitsInLargeUnit,
+        'unique_id': item.uniqueId,
+      });
+      return result;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
@@ -799,12 +825,25 @@ class DatabaseService {
   Future<int> updateInvoiceItem(InvoiceItem item) async {
     final db = await database;
     try {
-      return await db.update(
+      final result = await db.update(
         'invoice_items',
-        item.toMap(),
+        {
+          'product_name': item.productName,
+          'unit': item.unit,
+          'unit_price': item.unitPrice,
+          'cost_price': item.costPrice,
+          'actual_cost_price': item.actualCostPrice, // التكلفة الفعلية للمنتج في وقت البيع
+          'quantity_individual': item.quantityIndividual,
+          'quantity_large_unit': item.quantityLargeUnit,
+          'applied_price': item.appliedPrice,
+          'item_total': item.itemTotal,
+          'sale_type': item.saleType,
+          'units_in_large_unit': item.unitsInLargeUnit,
+        },
         where: 'id = ?',
-        whereArgs: [item.id!],
+        whereArgs: [item.id],
       );
+      return result;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
@@ -1289,6 +1328,7 @@ class DatabaseService {
           ii.units_in_large_unit,
           ii.applied_price,
           ii.cost_price,
+          ii.actual_cost_price,
           ii.item_total,
           p.cost_price as product_cost_price
         FROM invoice_items ii
@@ -1299,6 +1339,7 @@ class DatabaseService {
       double totalQuantity = 0.0;
       double totalProfit = 0.0;
       double totalSales = 0.0;
+      double averageSellingPrice = 0.0;
 
       for (final item in itemMaps) {
         double quantityIndividual =
@@ -1310,17 +1351,26 @@ class DatabaseService {
         double currentItemTotalQuantity =
             quantityIndividual + (quantityLargeUnit * unitsInLargeUnit);
         final sellingPrice = (item['applied_price'] ?? 0.0) as double;
-        final costPrice =
-            (item['cost_price'] ?? item['product_cost_price'] ?? 0.0) as double;
+        // استخدام actual_cost_price إذا كان متوفراً، وإلا استخدم cost_price أو product_cost_price
+        final costPrice = (item['actual_cost_price'] ?? 
+                          item['cost_price'] ?? 
+                          item['product_cost_price'] ?? 0.0) as double;
         totalQuantity += currentItemTotalQuantity;
         totalProfit += (sellingPrice - costPrice) * currentItemTotalQuantity;
         totalSales += sellingPrice * currentItemTotalQuantity;
+        averageSellingPrice += sellingPrice * currentItemTotalQuantity;
+      }
+
+      // حساب متوسط سعر البيع
+      if (totalQuantity > 0) {
+        averageSellingPrice = averageSellingPrice / totalQuantity;
       }
 
       return {
         'totalQuantity': totalQuantity,
         'totalProfit': totalProfit,
         'totalSales': totalSales,
+        'averageSellingPrice': averageSellingPrice,
       };
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -1396,6 +1446,7 @@ class DatabaseService {
           ii.units_in_large_unit,
           ii.applied_price,
           ii.cost_price,
+          ii.actual_cost_price,
           ii.item_total,
           p.cost_price as product_cost_price
         FROM invoices i
@@ -1418,14 +1469,17 @@ class DatabaseService {
         double quantity =
             quantityIndividual + (quantityLargeUnit * unitsInLargeUnit);
         final sellingPrice = (map['applied_price'] ?? 0.0) as double;
-        final costPrice =
-            (map['cost_price'] ?? map['product_cost_price'] ?? 0.0) as double;
+        // استخدام actual_cost_price إذا كان متوفراً، وإلا استخدم cost_price أو product_cost_price
+        final costPrice = (map['actual_cost_price'] ?? 
+                          map['cost_price'] ?? 
+                          map['product_cost_price'] ?? 0.0) as double;
         final profit = (sellingPrice - costPrice) * quantity;
 
         invoices.add(InvoiceWithProductData(
           invoice: invoice,
           quantitySold: quantity,
           profit: profit,
+          sellingPrice: sellingPrice,
         ));
       }
 
@@ -1459,8 +1513,10 @@ class DatabaseService {
       // حساب الأرباح من الفواتير
       final List<Map<String, dynamic>> profitMaps = await db.rawQuery('''
         SELECT 
-          SUM((ii.applied_price - COALESCE(ii.cost_price, p.cost_price, 0)) * 
-              (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit
+          SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
+              (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit,
+          SUM(ii.applied_price * (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_selling_price,
+          SUM(COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0)) as total_quantity
         FROM invoices i
         JOIN invoice_items ii ON i.id = ii.invoice_id
         JOIN products p ON ii.product_name = p.name
@@ -1472,12 +1528,22 @@ class DatabaseService {
       final totalTransactions =
           (transactionMaps.first['total_transactions'] ?? 0) as int;
       final totalProfit = (profitMaps.first['total_profit'] ?? 0.0) as double;
+      final totalSellingPrice = (profitMaps.first['total_selling_price'] ?? 0.0) as double;
+      final totalQuantity = (profitMaps.first['total_quantity'] ?? 0.0) as double;
+      
+      // حساب متوسط سعر البيع
+      double averageSellingPrice = 0.0;
+      if (totalQuantity > 0) {
+        averageSellingPrice = totalSellingPrice / totalQuantity;
+      }
 
       return {
         'totalSales': totalSales,
         'totalProfit': totalProfit,
         'totalInvoices': totalInvoices,
         'totalTransactions': totalTransactions,
+        'averageSellingPrice': averageSellingPrice,
+        'totalQuantity': totalQuantity,
       };
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -1491,10 +1557,12 @@ class DatabaseService {
         SELECT 
           strftime('%Y', i.invoice_date) as year,
           SUM(i.total_amount) as total_sales,
-          SUM((ii.applied_price - COALESCE(ii.cost_price, p.cost_price, 0)) * 
+          SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
               (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit,
           COUNT(DISTINCT i.id) as total_invoices,
-          COUNT(DISTINCT t.id) as total_transactions
+          COUNT(DISTINCT t.id) as total_transactions,
+          SUM(ii.applied_price * (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_selling_price,
+          SUM(COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0)) as total_quantity
         FROM invoices i
         LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
         LEFT JOIN products p ON ii.product_name = p.name
@@ -1508,11 +1576,22 @@ class DatabaseService {
       final Map<int, PersonYearData> yearlyData = {};
       for (final map in maps) {
         final year = int.parse(map['year'] as String);
+        final totalSellingPrice = (map['total_selling_price'] ?? 0.0) as double;
+        final totalQuantity = (map['total_quantity'] ?? 0.0) as double;
+        
+        // حساب متوسط سعر البيع
+        double averageSellingPrice = 0.0;
+        if (totalQuantity > 0) {
+          averageSellingPrice = totalSellingPrice / totalQuantity;
+        }
+        
         yearlyData[year] = PersonYearData(
           totalProfit: (map['total_profit'] ?? 0.0) as double,
           totalSales: (map['total_sales'] ?? 0.0) as double,
           totalInvoices: (map['total_invoices'] ?? 0) as int,
           totalTransactions: (map['total_transactions'] ?? 0) as int,
+          averageSellingPrice: averageSellingPrice,
+          totalQuantity: totalQuantity,
         );
       }
 
@@ -1530,10 +1609,12 @@ class DatabaseService {
         SELECT 
           strftime('%m', i.invoice_date) as month,
           SUM(i.total_amount) as total_sales,
-          SUM((ii.applied_price - COALESCE(ii.cost_price, p.cost_price, 0)) * 
+          SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
               (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit,
           COUNT(DISTINCT i.id) as total_invoices,
-          COUNT(DISTINCT t.id) as total_transactions
+          COUNT(DISTINCT t.id) as total_transactions,
+          SUM(ii.applied_price * (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_selling_price,
+          SUM(COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0)) as total_quantity
         FROM invoices i
         LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
         LEFT JOIN products p ON ii.product_name = p.name
@@ -1548,11 +1629,22 @@ class DatabaseService {
       final Map<int, PersonMonthData> monthlyData = {};
       for (final map in maps) {
         final month = int.parse(map['month'] as String);
+        final totalSellingPrice = (map['total_selling_price'] ?? 0.0) as double;
+        final totalQuantity = (map['total_quantity'] ?? 0.0) as double;
+        
+        // حساب متوسط سعر البيع
+        double averageSellingPrice = 0.0;
+        if (totalQuantity > 0) {
+          averageSellingPrice = totalSellingPrice / totalQuantity;
+        }
+        
         monthlyData[month] = PersonMonthData(
           totalProfit: (map['total_profit'] ?? 0.0) as double,
           totalSales: (map['total_sales'] ?? 0.0) as double,
           totalInvoices: (map['total_invoices'] ?? 0) as int,
           totalTransactions: (map['total_transactions'] ?? 0) as int,
+          averageSellingPrice: averageSellingPrice,
+          totalQuantity: totalQuantity,
         );
       }
 
@@ -1608,8 +1700,10 @@ class DatabaseService {
       final List<Map<String, dynamic>> maps = await db.rawQuery('''
         SELECT 
           strftime('%Y', i.invoice_date) as year,
-          SUM((ii.applied_price - COALESCE(ii.cost_price, p.cost_price, 0)) * 
-              (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit
+          SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
+              (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit,
+          SUM(ii.applied_price * (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_selling_price,
+          SUM(COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0)) as total_quantity
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         JOIN products p ON ii.product_name = p.name
@@ -1638,8 +1732,10 @@ class DatabaseService {
       final List<Map<String, dynamic>> maps = await db.rawQuery('''
         SELECT 
           strftime('%m', i.invoice_date) as month,
-          SUM((ii.applied_price - COALESCE(ii.cost_price, p.cost_price, 0)) * 
-              (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit
+          SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
+              (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit,
+          SUM(ii.applied_price * (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_selling_price,
+          SUM(COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0)) as total_quantity
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         JOIN products p ON ii.product_name = p.name
@@ -1666,7 +1762,7 @@ class DatabaseService {
     final db = await database;
     try {
       final List<Map<String, dynamic>> maps = await db.rawQuery('''
-        SELECT i.*, ii.product_name, ii.applied_price, ii.cost_price, ii.quantity_individual, ii.quantity_large_unit, ii.units_in_large_unit, p.cost_price as product_cost_price
+        SELECT i.*, ii.product_name, ii.applied_price, ii.cost_price, ii.actual_cost_price, ii.quantity_individual, ii.quantity_large_unit, ii.units_in_large_unit, p.cost_price as product_cost_price
         FROM invoices i
         JOIN invoice_items ii ON i.id = ii.invoice_id
         JOIN products p ON ii.product_name = p.name
@@ -1692,7 +1788,9 @@ class DatabaseService {
         double totalQuantity = 0.0;
         for (final item in items) {
           final sellingPrice = (item['applied_price'] ?? 0.0) as double;
-          final costPrice = (item['cost_price'] ??
+          // استخدام actual_cost_price إذا كان متوفراً، وإلا استخدم cost_price أو product_cost_price
+          final costPrice = (item['actual_cost_price'] ??
+              item['cost_price'] ??
               item['product_cost_price'] ??
               0.0) as double;
           double quantityIndividual =
@@ -1711,9 +1809,101 @@ class DatabaseService {
           invoice: invoice,
           quantitySold: totalQuantity,
           profit: totalProfit,
+          sellingPrice: totalQuantity > 0 ? totalProfit / totalQuantity : 0.0, // متوسط سعر البيع
         ));
       }
       return result;
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  /// دالة اختبار لحساب الأرباح - للتأكد من صحة الحسابات
+  Future<Map<String, dynamic>> testProfitCalculation(int productId) async {
+    final db = await database;
+    try {
+      // جلب بيانات المنتج
+      final productMaps = await db.rawQuery('''
+        SELECT * FROM products WHERE id = ?
+      ''', [productId]);
+      
+      if (productMaps.isEmpty) {
+        throw Exception('المنتج غير موجود');
+      }
+      
+      final product = productMaps.first;
+      final costPrice = (product['cost_price'] ?? 0.0) as double;
+      
+      // جلب جميع الفواتير التي تحتوي على هذا المنتج
+      final List<Map<String, dynamic>> itemMaps = await db.rawQuery('''
+        SELECT 
+          ii.quantity_individual,
+          ii.quantity_large_unit,
+          ii.units_in_large_unit,
+          ii.applied_price,
+          ii.cost_price,
+          ii.item_total,
+          i.id as invoice_id,
+          i.invoice_date
+        FROM invoice_items ii
+        JOIN invoices i ON ii.invoice_id = i.id
+        WHERE ii.product_name = ?
+        ORDER BY i.invoice_date DESC
+      ''', [product['name']]);
+
+      final List<Map<String, dynamic>> detailedResults = [];
+      double totalQuantity = 0.0;
+      double totalProfit = 0.0;
+      double totalSales = 0.0;
+      double totalCost = 0.0;
+
+      for (final item in itemMaps) {
+        double quantityIndividual =
+            (item['quantity_individual'] ?? 0.0) as double;
+        double quantityLargeUnit =
+            (item['quantity_large_unit'] ?? 0.0) as double;
+        double unitsInLargeUnit =
+            (item['units_in_large_unit'] ?? 1.0) as double;
+        double currentItemTotalQuantity =
+            quantityIndividual + (quantityLargeUnit * unitsInLargeUnit);
+        final sellingPrice = (item['applied_price'] ?? 0.0) as double;
+        // استخدام actual_cost_price إذا كان متوفراً، وإلا استخدم cost_price أو product_cost_price
+        final itemCostPrice = (item['actual_cost_price'] ?? 
+                              item['cost_price'] ?? 
+                              costPrice) as double;
+        
+        final profit = (sellingPrice - itemCostPrice) * currentItemTotalQuantity;
+        final sales = sellingPrice * currentItemTotalQuantity;
+        final cost = itemCostPrice * currentItemTotalQuantity;
+        
+        totalQuantity += currentItemTotalQuantity;
+        totalProfit += profit;
+        totalSales += sales;
+        totalCost += cost;
+        
+        detailedResults.add({
+          'invoice_id': item['invoice_id'],
+          'date': item['invoice_date'],
+          'quantity': currentItemTotalQuantity,
+          'cost_price': itemCostPrice,
+          'selling_price': sellingPrice,
+          'profit': profit,
+          'sales': sales,
+          'cost': cost,
+        });
+      }
+
+      return {
+        'product_name': product['name'],
+        'product_cost_price': costPrice,
+        'total_quantity': totalQuantity,
+        'total_profit': totalProfit,
+        'total_sales': totalSales,
+        'total_cost': totalCost,
+        'detailed_results': detailedResults,
+        'calculation_formula': 'الربح = (سعر البيع - سعر التكلفة) × الكمية',
+        'verification': totalProfit == (totalSales - totalCost) ? 'صحيح' : 'خطأ',
+      };
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
@@ -1725,11 +1915,13 @@ class InvoiceWithProductData {
   final Invoice invoice;
   final double quantitySold;
   final double profit;
+  final double sellingPrice;
 
   InvoiceWithProductData({
     required this.invoice,
     required this.quantitySold,
     required this.profit,
+    required this.sellingPrice,
   });
 }
 
@@ -1738,12 +1930,16 @@ class PersonYearData {
   final double totalSales;
   final int totalInvoices;
   final int totalTransactions;
+  final double averageSellingPrice;
+  final double totalQuantity;
 
   PersonYearData({
     required this.totalProfit,
     required this.totalSales,
     required this.totalInvoices,
     required this.totalTransactions,
+    required this.averageSellingPrice,
+    required this.totalQuantity,
   });
 }
 
@@ -1752,12 +1948,16 @@ class PersonMonthData {
   final double totalSales;
   final int totalInvoices;
   final int totalTransactions;
+  final double averageSellingPrice;
+  final double totalQuantity;
 
   PersonMonthData({
     required this.totalProfit,
     required this.totalSales,
     required this.totalInvoices,
     required this.totalTransactions,
+    required this.averageSellingPrice,
+    required this.totalQuantity,
   });
 }
 

@@ -7,17 +7,16 @@ class InvoiceItem {
   String productName;
   String unit;
   double unitPrice; // This is the *selling* unit price from the product
-  double?
-      costPrice; // Added: The cost price of the item at the time of sale (made nullable)
+  double? costPrice; // Added: The cost price of the item at the time of sale (made nullable)
+  double? actualCostPrice; // التكلفة الفعلية للمنتج في وقت البيع - للحسابات الدقيقة
   // الكميات - حقل واحد فقط يُستخدم في كل مرة
   double? quantityIndividual; // Quantity in pieces or meters
   double? quantityLargeUnit; // Quantity in cartons/packets or full meters
   // الأسعار - السعر المطبق لهذا البند المحدد
-  double appliedPrice; // The price used for calculation (price1, price2, etc.)
+  double appliedPrice;
   double itemTotal;
   String? saleType; // نوع البيع بالحرف العربي: ق/ك/م/ل
-  double?
-      unitsInLargeUnit; // عدد القطع في الكرتون أو الأمتار في اللفة (للوحدة الكبيرة)
+  double? unitsInLargeUnit; // عدد القطع في الكرتون أو الأمتار في اللفة (للوحدة الكبيرة)
 
   // --- أضف هذا الحقل ---
   final String uniqueId;
@@ -41,6 +40,7 @@ class InvoiceItem {
     required this.appliedPrice,
     required this.itemTotal,
     this.costPrice, // Made optional
+    this.actualCostPrice, // التكلفة الفعلية للمنتج في وقت البيع
     this.saleType, // أضف هذا
     this.unitsInLargeUnit,
     String? uniqueId, // أضف هذا
@@ -85,6 +85,7 @@ class InvoiceItem {
       'unit': unit,
       'unit_price': unitPrice, // Selling unit price
       'cost_price': costPrice, // Can now be null
+      'actual_cost_price': actualCostPrice, // التكلفة الفعلية للمنتج في وقت البيع
       'quantity_individual': quantityIndividual,
       'quantity_large_unit': quantityLargeUnit,
       'applied_price': appliedPrice,
@@ -103,16 +104,15 @@ class InvoiceItem {
       productName: map['product_name'] ?? '',
       unit: map['unit'] ?? '',
       unitPrice: map['unit_price'] as double,
-      costPrice: map['cost_price']
-          as double?, // Retrieve as double?, defaults to null if not present
+      costPrice: map['cost_price'] as double?,
+      actualCostPrice: map['actual_cost_price'] as double?, // التكلفة الفعلية للمنتج في وقت البيع
       quantityIndividual: map['quantity_individual'] as double?,
       quantityLargeUnit: map['quantity_large_unit'] as double?,
       appliedPrice: map['applied_price'] ?? 0.0,
       itemTotal: map['item_total'] ?? 0.0,
-      saleType: map['sale_type'] as String?, // أضف هذا
+      saleType: map['sale_type'] as String?,
       unitsInLargeUnit: map['units_in_large_unit'] as double?,
-      uniqueId: map['unique_id'] ??
-          'item_${DateTime.now().microsecondsSinceEpoch}', // أضف هذا
+      uniqueId: map['unique_id'] ?? 'item_${DateTime.now().microsecondsSinceEpoch}',
     );
   }
 
@@ -123,6 +123,7 @@ class InvoiceItem {
     String? unit,
     double? unitPrice,
     double? costPrice, // Made nullable in copyWith
+    double? actualCostPrice, // التكلفة الفعلية للمنتج في وقت البيع
     double? quantityIndividual,
     double? quantityLargeUnit,
     double? appliedPrice,
@@ -138,6 +139,7 @@ class InvoiceItem {
       unit: unit ?? this.unit,
       unitPrice: unitPrice ?? this.unitPrice,
       costPrice: costPrice ?? this.costPrice,
+      actualCostPrice: actualCostPrice ?? this.actualCostPrice, // التكلفة الفعلية للمنتج في وقت البيع
       quantityIndividual: quantityIndividual ?? this.quantityIndividual,
       quantityLargeUnit: quantityLargeUnit ?? this.quantityLargeUnit,
       appliedPrice: appliedPrice ?? this.appliedPrice,

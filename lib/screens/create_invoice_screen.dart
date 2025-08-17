@@ -796,8 +796,29 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           await _db.deleteInvoiceItem(oldItem.id!);
         }
         for (var item in _invoiceItems) {
-          item.invoiceId = invoiceId;
-          await _db.insertInvoiceItem(item);
+          if (_isInvoiceItemComplete(item)) {
+            // البحث عن المنتج لجلب التكلفة الفعلية
+            final products = await _db.getAllProducts();
+            final matchedProduct = products.firstWhere(
+              (p) => p.name == item.productName,
+              orElse: () => Product(
+                name: '',
+                unit: '',
+                unitPrice: 0.0,
+                price1: 0.0,
+                createdAt: DateTime.now(),
+                lastModifiedAt: DateTime.now(),
+              ),
+            );
+            
+            // إنشاء عنصر فاتورة مع التكلفة الفعلية
+            final invoiceItem = item.copyWith(
+              invoiceId: invoiceId,
+              actualCostPrice: matchedProduct.costPrice, // التكلفة الفعلية للمنتج في وقت البيع
+            );
+            
+            await _db.insertInvoiceItem(invoiceItem);
+          }
         }
         // تحديث الفاتورة بالحالة الجديدة
         await context.read<AppProvider>().updateInvoice(invoice);
@@ -814,8 +835,29 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         }
         // إضافة أصناف الفاتورة الجديدة
         for (var item in _invoiceItems) {
-          item.invoiceId = invoiceId;
-          await _db.insertInvoiceItem(item);
+          if (_isInvoiceItemComplete(item)) {
+            // البحث عن المنتج لجلب التكلفة الفعلية
+            final products = await _db.getAllProducts();
+            final matchedProduct = products.firstWhere(
+              (p) => p.name == item.productName,
+              orElse: () => Product(
+                name: '',
+                unit: '',
+                unitPrice: 0.0,
+                price1: 0.0,
+                createdAt: DateTime.now(),
+                lastModifiedAt: DateTime.now(),
+              ),
+            );
+            
+            // إنشاء عنصر فاتورة مع التكلفة الفعلية
+            final invoiceItem = item.copyWith(
+              invoiceId: invoiceId,
+              actualCostPrice: matchedProduct.costPrice, // التكلفة الفعلية للمنتج في وقت البيع
+            );
+            
+            await _db.insertInvoiceItem(invoiceItem);
+          }
         }
         print(
             'Inserted new invoice. Invoice ID: $invoiceId, Status: ${invoice.status}');
@@ -1020,8 +1062,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       // جلب جميع المنتجات لمطابقة الهيكل الهرمي
       final allProducts = await _db.getAllProducts();
 
+      // تصفية العناصر لإزالة الصفوف الفارغة قبل الطباعة
+      final filteredItems = _invoiceItems.where((item) => _isInvoiceItemComplete(item)).toList();
+
       final currentTotalAmount =
-          _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+          filteredItems.fold(0.0, (sum, item) => sum + item.itemTotal);
       final discount = _discount;
       final afterDiscount =
           (currentTotalAmount - discount).clamp(0, double.infinity);
@@ -1082,16 +1127,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       } else {
         invoiceId = (await _db.getLastInvoiceId()) + 1;
       }
-
+      
       const itemsPerPage = 20;
-      final totalPages = (_invoiceItems.length / itemsPerPage).ceil();
+      final totalPages = (filteredItems.length / itemsPerPage).ceil();
 
       for (var pageIndex = 0; pageIndex < totalPages; pageIndex++) {
         final start = pageIndex * itemsPerPage;
-        final end = (start + itemsPerPage) > _invoiceItems.length
-            ? _invoiceItems.length
+        final end = (start + itemsPerPage) > filteredItems.length
+            ? filteredItems.length
             : start + itemsPerPage;
-        final pageItems = _invoiceItems.sublist(start, end);
+        final pageItems = filteredItems.sublist(start, end);
 
         pdf.addPage(
           pw.Page(
@@ -1215,17 +1260,21 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             ],
                           ),
                           pw.SizedBox(height: 6),
-                          if ((_invoiceToManage?.status == 'محفوظة') &&
-                              !(_invoiceToManage?.isLocked ?? false)) ...[
+                          // إضافة المبلغ المتبقي والدين السابق والدين الحالي وأجور التحميل
+                          if (!((_invoiceToManage?.status == 'محفوظة') &&
+                              !(_invoiceToManage?.isLocked ?? false))) ...[
                             pw.Row(
                               mainAxisAlignment: pw.MainAxisAlignment.end,
                               children: [
                                 _summaryRow('المبلغ المتبقي:', remaining, font),
                                 pw.SizedBox(width: 10),
                                 _summaryRow(
-                                    'الدين السابق:', previousDebt, font),
+                                    'المبلغ المطلوب السابق:', previousDebt, font),
                                 pw.SizedBox(width: 10),
-                                _summaryRow('الدين الحالي:', currentDebt, font),
+                                _summaryRow('المبلغ المطلوب الحالي:', currentDebt, font),
+                                pw.SizedBox(width: 10),
+                                _summaryRow('اجور التحميل:', 
+                                    double.tryParse(_loadingFeeController.text) ?? 0.0, font),
                               ],
                             ),
                           ],

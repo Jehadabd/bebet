@@ -78,6 +78,11 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
             icon: const Icon(Icons.refresh),
             onPressed: _loadYearlyData,
           ),
+          IconButton(
+            icon: const Icon(Icons.bug_report),
+            onPressed: _testProfitCalculation,
+            tooltip: 'اختبار حساب الأرباح',
+          ),
         ],
       ),
       body: _isLoading
@@ -200,6 +205,32 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                       ? '${widget.product.costPrice!.toStringAsFixed(2)} د.ع'
                       : 'غير محدد',
                   color: const Color(0xFFF44336),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _buildHeaderInfo(
+                  icon: Icons.trending_up,
+                  title: 'الربح المتوقع',
+                  value: widget.product.costPrice != null
+                      ? '${(widget.product.price1 - widget.product.costPrice!).toStringAsFixed(2)} د.ع'
+                      : 'غير محدد',
+                  color: const Color(0xFF4CAF50),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: _buildHeaderInfo(
+                  icon: Icons.percent,
+                  title: 'نسبة الربح',
+                  value: widget.product.costPrice != null && widget.product.costPrice! > 0
+                      ? '${(((widget.product.price1 - widget.product.costPrice!) / widget.product.costPrice!) * 100).toStringAsFixed(1)}%'
+                      : 'غير محدد',
+                  color: const Color(0xFF9C27B0),
                 ),
               ),
             ],
@@ -337,6 +368,74 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _testProfitCalculation() async {
+    try {
+      final result = await _databaseService.testProfitCalculation(widget.product.id!);
+      
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text('اختبار حساب الأرباح - ${result['product_name']}'),
+            content: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('تكلفة المنتج: ${result['product_cost_price']} د.ع'),
+                  Text('الكمية الإجمالية: ${result['total_quantity']}'),
+                  Text('إجمالي المبيعات: ${result['total_sales']} د.ع'),
+                  Text('إجمالي التكلفة: ${result['total_cost']} د.ع'),
+                  Text('إجمالي الربح: ${result['total_profit']} د.ع'),
+                  const Divider(),
+                  Text('صيغة الحساب: ${result['calculation_formula']}'),
+                  Text('التحقق: ${result['verification']}'),
+                  const Divider(),
+                  const Text('تفاصيل الفواتير:', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  ...(result['detailed_results'] as List).map((item) => 
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[100],
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('فاتورة #${item['invoice_id']} - ${item['date']}'),
+                          Text('الكمية: ${item['quantity']}'),
+                          Text('التكلفة: ${item['cost_price']} د.ع'),
+                          Text('سعر البيع: ${item['selling_price']} د.ع'),
+                          Text('الربح: ${item['profit']} د.ع'),
+                        ],
+                      ),
+                    )
+                  ).toList(),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('إغلاق'),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('حدث خطأ في اختبار حساب الأرباح: $e'),
+          ),
+        );
+      }
+    }
   }
 
   Widget _buildInfoItem({

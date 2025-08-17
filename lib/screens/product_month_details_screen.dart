@@ -28,6 +28,7 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
   List<InvoiceWithProductData> _invoices = [];
   double _monthProfit = 0.0;
   double _monthQuantity = 0.0;
+  double _monthSellingPrice = 0.0; // إضافة متغير لحساب إجمالي سعر البيع
   bool _isLoading = true;
 
   @override
@@ -53,13 +54,16 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
       );
       final profit = monthlyProfitMap[widget.month] ?? 0.0;
       double totalQuantity = 0.0;
+      double totalSellingPrice = 0.0;
       for (final inv in invoices) {
         totalQuantity += inv.quantitySold;
+        totalSellingPrice += inv.sellingPrice! * inv.quantitySold;
       }
       setState(() {
         _invoices = invoices;
         _monthProfit = profit;
         _monthQuantity = totalQuantity;
+        _monthSellingPrice = totalSellingPrice;
         _isLoading = false;
       });
     } catch (e) {
@@ -221,17 +225,88 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                                           ),
                                           const SizedBox(height: 4),
                                           Text(
-                                            'الربح: ${_monthProfit.toStringAsFixed(2)} د.ع',
+                                            'الربح من الوحدة: ${(_monthQuantity > 0 ? (_monthProfit / _monthQuantity).toStringAsFixed(2) : '0.00')} د.ع',
                                             style: const TextStyle(
                                               fontSize: 14,
                                               color: Color(0xFF4CAF50),
                                               fontWeight: FontWeight.bold,
                                             ),
                                           ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            'إجمالي الربح: ${_monthProfit.toStringAsFixed(2)} د.ع',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: Colors.grey[600],
+                                            ),
+                                          ),
                                         ],
                                       ),
                                     ),
                                   ],
+                                ),
+                                const SizedBox(height: 16),
+                                // معلومات إضافية
+                                Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.7),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: Colors.grey[300]!),
+                                  ),
+                                  child: Column(
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: _buildDetailInfo(
+                                              title: 'تكلفة الوحدة',
+                                              value: widget.product.costPrice != null
+                                                  ? '${widget.product.costPrice!.toStringAsFixed(2)} د.ع'
+                                                  : 'غير محدد',
+                                              color: const Color(0xFFF44336),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: _buildDetailInfo(
+                                              title: 'متوسط سعر البيع',
+                                              value: _monthQuantity > 0
+                                                  ? '${(_monthSellingPrice / _monthQuantity).toStringAsFixed(2)} د.ع'
+                                                  : 'غير محدد',
+                                              color: const Color(0xFFFF9800),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: _buildDetailInfo(
+                                              title: 'الربح من الوحدة',
+                                              value: _monthQuantity > 0
+                                                  ? '${(_monthProfit / _monthQuantity).toStringAsFixed(2)} د.ع'
+                                                  : 'غير محدد',
+                                              color: const Color(0xFF4CAF50),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: _buildDetailInfo(
+                                              title: 'نسبة الربح',
+                                              value: widget.product.costPrice != null && 
+                                                     widget.product.costPrice! > 0 && 
+                                                     _monthQuantity > 0
+                                                  ? '${((_monthProfit / _monthQuantity / widget.product.costPrice!) * 100).toStringAsFixed(1)}%'
+                                                  : 'غير محدد',
+                                              color: const Color(0xFF9C27B0),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ],
                             ),
@@ -315,28 +390,83 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                 ],
               ),
               const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: _buildInfoItem(
-                      icon: Icons.trending_up,
-                      title: 'الربح',
-                      value:
-                          '${invoiceData.profit >= 0 ? invoiceData.profit.toStringAsFixed(2) : (-invoiceData.profit).toStringAsFixed(2)} د.ع',
-                      color: const Color(0xFF4CAF50),
+              // معلومات تفصيلية عن المنتج
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.grey[50],
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey[300]!),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildDetailInfo(
+                            title: 'الكمية المباعة',
+                            value: '${invoiceData.quantitySold} ${widget.product.unit}',
+                            color: const Color(0xFF2196F3),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: _buildDetailInfo(
+                            title: 'تكلفة الوحدة',
+                            value: '${widget.product.costPrice?.toStringAsFixed(2) ?? 'غير محدد'} د.ع',
+                            color: const Color(0xFFF44336),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _buildInfoItem(
-                      icon: Icons.shopping_cart,
-                      title: 'الكمية',
-                      value:
-                          '${invoiceData.quantitySold} ${widget.product.unit}',
-                      color: const Color(0xFF2196F3),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildDetailInfo(
+                            title: 'سعر البيع',
+                            value: '${invoiceData.sellingPrice?.toStringAsFixed(2) ?? 'غير محدد'} د.ع',
+                            color: const Color(0xFFFF9800),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: _buildDetailInfo(
+                            title: 'الربح من الفاتورة',
+                            value: '${invoiceData.profit >= 0 ? invoiceData.profit.toStringAsFixed(2) : (-invoiceData.profit).toStringAsFixed(2)} د.ع',
+                            color: const Color(0xFF4CAF50),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildDetailInfo(
+                            title: 'الربح من الوحدة',
+                            value: invoiceData.quantitySold > 0
+                                ? '${(invoiceData.profit / invoiceData.quantitySold).toStringAsFixed(2)} د.ع'
+                                : 'غير محدد',
+                            color: const Color(0xFF4CAF50),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: _buildDetailInfo(
+                            title: 'نسبة الربح',
+                            value: widget.product.costPrice != null && 
+                                   widget.product.costPrice! > 0 && 
+                                   invoiceData.quantitySold > 0
+                                ? '${(((invoiceData.profit / invoiceData.quantitySold) / widget.product.costPrice!) * 100).toStringAsFixed(1)}%'
+                                : 'غير محدد',
+                            color: const Color(0xFF9C27B0),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -345,42 +475,32 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
     );
   }
 
-  Widget _buildInfoItem({
-    required IconData icon,
+  Widget _buildDetailInfo({
     required String title,
     required String value,
     required Color color,
   }) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.3)),
-      ),
-      child: Column(
-        children: [
-          Icon(icon, color: color, size: 20),
-          const SizedBox(height: 4),
-          Text(
-            title,
-            style: TextStyle(
-              fontSize: 12,
-              color: color,
-              fontWeight: FontWeight.w500,
-            ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: TextStyle(
+            fontSize: 11,
+            color: Colors.grey[600],
+            fontWeight: FontWeight.w500,
           ),
-          const SizedBox(height: 2),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.bold,
-              color: color,
-            ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.bold,
+            color: color,
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
