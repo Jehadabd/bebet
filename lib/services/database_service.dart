@@ -1051,12 +1051,25 @@ class DatabaseService {
               creditSalesValue += invoice.totalAmount;
             }
 
-            //  لحساب الربح، نحتاج إلى بنود الفاتورة مع مراعاة الراجع
+            // احسب تكلفة البنود في الفاتورة مع التعامل مع الوحدات
             final items = await getInvoiceItems(invoice.id!);
-            final totalCost = items.fold<double>(
-                0, (sum, item) => sum + (item.costPrice ?? 0));
+            double totalCost = 0.0;
+            for (final item in items) {
+              final double quantityIndividual = item.quantityIndividual ?? 0.0;
+              final double quantityLargeUnit = item.quantityLargeUnit ?? 0.0;
+              final double unitsInLargeUnit = item.unitsInLargeUnit ?? 1.0;
+              final double qty = quantityLargeUnit > 0
+                  ? (quantityLargeUnit * unitsInLargeUnit)
+                  : quantityIndividual;
+              if (item.actualCostPrice != null) {
+                totalCost += item.actualCostPrice! * qty;
+              } else if (item.costPrice != null) {
+                // costPrice هنا تكلفة إجمالية محفوظة للبند
+                totalCost += item.costPrice!;
+              }
+            }
 
-            // معادلة الربح الصحيحة والدقيقة (بعد طرح الراجع)
+            // صافي المبيعات بعد الراجع مطروحاً منه التكلفة الفعلية
             final netSaleAmount =
                 invoice.totalAmount - (invoice.returnAmount ?? 0);
             final profit = netSaleAmount - totalCost;
@@ -1374,7 +1387,7 @@ class DatabaseService {
   Future<Map<String, dynamic>> getProductSalesData(int productId) async {
     final db = await database;
     try {
-      // جلب جميع الفواتير التي تحتوي على هذا المنتج
+      // جلب جميع الفواتير المحفوظة التي تحتوي على هذا المنتج
       final List<Map<String, dynamic>> itemMaps = await db.rawQuery('''
         SELECT 
           ii.quantity_individual,
@@ -1386,24 +1399,26 @@ class DatabaseService {
           ii.item_total,
           p.cost_price as product_cost_price
         FROM invoice_items ii
+        JOIN invoices i ON ii.invoice_id = i.id
         JOIN products p ON ii.product_name = p.name
-        WHERE p.id = ?
+        WHERE p.id = ? AND i.status = 'محفوظة'
       ''', [productId]);
-
+ 
       double totalQuantity = 0.0;
       double totalProfit = 0.0;
       double totalSales = 0.0;
       double averageSellingPrice = 0.0;
-
+ 
       for (final item in itemMaps) {
-        double quantityIndividual =
+        final double quantityIndividual =
             (item['quantity_individual'] ?? 0.0) as double;
-        double quantityLargeUnit =
+        final double quantityLargeUnit =
             (item['quantity_large_unit'] ?? 0.0) as double;
-        double unitsInLargeUnit =
+        final double unitsInLargeUnit =
             (item['units_in_large_unit'] ?? 1.0) as double;
-        double currentItemTotalQuantity =
-            quantityIndividual + (quantityLargeUnit * unitsInLargeUnit);
+        final double currentItemTotalQuantity = quantityLargeUnit > 0
+            ? (quantityLargeUnit * unitsInLargeUnit)
+            : quantityIndividual;
         final sellingPrice = (item['applied_price'] ?? 0.0) as double;
         // استخدام actual_cost_price إذا كان متوفراً، وإلا استخدم cost_price أو product_cost_price
         final costPrice = (item['actual_cost_price'] ?? 
@@ -1414,12 +1429,12 @@ class DatabaseService {
         totalSales += sellingPrice * currentItemTotalQuantity;
         averageSellingPrice += sellingPrice * currentItemTotalQuantity;
       }
-
+ 
       // حساب متوسط سعر البيع
       if (totalQuantity > 0) {
         averageSellingPrice = averageSellingPrice / totalQuantity;
       }
-
+ 
       return {
         'totalQuantity': totalQuantity,
         'totalProfit': totalProfit,
@@ -1437,11 +1452,15 @@ class DatabaseService {
       final List<Map<String, dynamic>> maps = await db.rawQuery('''
         SELECT 
           strftime('%Y', i.invoice_date) as year,
-          SUM(COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0)) as total_quantity
+          SUM(CASE 
+                WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                  THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                ELSE COALESCE(ii.quantity_individual, 0.0)
+              END) as total_quantity
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         JOIN products p ON ii.product_name = p.name
-        WHERE p.id = ?
+        WHERE p.id = ? AND i.status = 'محفوظة'
         GROUP BY strftime('%Y', i.invoice_date)
         ORDER BY year DESC
       ''', [productId]);
@@ -1466,11 +1485,15 @@ class DatabaseService {
       final List<Map<String, dynamic>> maps = await db.rawQuery('''
         SELECT 
           strftime('%m', i.invoice_date) as month,
-          SUM(COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0)) as total_quantity
+          SUM(CASE 
+                WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                  THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                ELSE COALESCE(ii.quantity_individual, 0.0)
+              END) as total_quantity
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         JOIN products p ON ii.product_name = p.name
-        WHERE p.id = ? AND strftime('%Y', i.invoice_date) = ?
+        WHERE p.id = ? AND strftime('%Y', i.invoice_date) = ? AND i.status = 'محفوظة'
         GROUP BY strftime('%m', i.invoice_date)
         ORDER BY month ASC
       ''', [productId, year.toString()]);
@@ -1493,16 +1516,7 @@ class DatabaseService {
     final db = await database;
     try {
       final List<Map<String, dynamic>> maps = await db.rawQuery('''
-        SELECT 
-          i.*,
-          ii.quantity_individual,
-          ii.quantity_large_unit,
-          ii.units_in_large_unit,
-          ii.applied_price,
-          ii.cost_price,
-          ii.actual_cost_price,
-          ii.item_total,
-          p.cost_price as product_cost_price
+        SELECT DISTINCT i.*
         FROM invoices i
         JOIN invoice_items ii ON i.id = ii.invoice_id
         JOIN products p ON ii.product_name = p.name
@@ -1536,21 +1550,23 @@ class DatabaseService {
         double totalCost = 0.0;
 
         for (final item in itemMaps) {
-          final double qInd = (item['quantity_individual'] ?? 0.0) as double;
-          final double qLarge = (item['quantity_large_unit'] ?? 0.0) as double;
-          final double unitsInLarge =
+          final double quantityIndividual =
+              (item['quantity_individual'] ?? 0.0) as double;
+          final double quantityLargeUnit =
+              (item['quantity_large_unit'] ?? 0.0) as double;
+          final double unitsInLargeUnit =
               (item['units_in_large_unit'] ?? 1.0) as double;
-          final double currentQty = qInd + (qLarge * unitsInLarge);
-          final double itemSellingPrice =
-              (item['applied_price'] ?? 0.0) as double;
-          final double itemCost = (item['actual_cost_price'] ??
-                  item['cost_price'] ??
-                  item['product_cost_price'] ??
-                  0.0) as double;
-
-          totalQuantity += currentQty;
-          totalSelling += itemSellingPrice * currentQty;
-          totalCost += itemCost * currentQty;
+          final double currentItemTotalQuantity = quantityLargeUnit > 0
+              ? (quantityLargeUnit * unitsInLargeUnit)
+              : quantityIndividual;
+          final double sellingPrice = (item['applied_price'] ?? 0.0) as double;
+          // استخدام actual_cost_price إذا كان متوفراً، وإلا استخدم cost_price أو product_cost_price
+          final costPrice = (item['actual_cost_price'] ?? 
+                            item['cost_price'] ?? 
+                            item['product_cost_price'] ?? 0.0) as double;
+          totalQuantity += currentItemTotalQuantity;
+          totalSelling += sellingPrice * currentItemTotalQuantity;
+          totalCost += costPrice * currentItemTotalQuantity;
         }
 
         final double avgSellingPrice =
@@ -1578,15 +1594,15 @@ class DatabaseService {
   Future<Map<String, dynamic>> getCustomerProfitData(int customerId) async {
     final db = await database;
     try {
-      // جلب بيانات الفواتير
+      // جلب بيانات الفواتير (المحفوظة فقط)
       final List<Map<String, dynamic>> invoiceMaps = await db.rawQuery('''
         SELECT 
           SUM(total_amount) as total_sales,
           COUNT(*) as total_invoices
         FROM invoices
-        WHERE customer_id = ?
+        WHERE customer_id = ? AND status = 'محفوظة'
       ''', [customerId]);
-
+ 
       // جلب بيانات المعاملات المالية
       final List<Map<String, dynamic>> transactionMaps = await db.rawQuery('''
         SELECT 
@@ -1594,20 +1610,26 @@ class DatabaseService {
         FROM transactions
         WHERE customer_id = ?
       ''', [customerId]);
-
-      // حساب الأرباح من الفواتير
+ 
+      // حساب الأرباح من الفواتير (المحفوظة فقط) وبمعادلة كمية مصححة
       final List<Map<String, dynamic>> profitMaps = await db.rawQuery('''
         SELECT 
           SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
-              (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit,
-          SUM(ii.applied_price * (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_selling_price,
-          SUM(COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0)) as total_quantity
+              (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_profit,
+          SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_selling_price,
+          SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END) as total_quantity
         FROM invoices i
         JOIN invoice_items ii ON i.id = ii.invoice_id
         JOIN products p ON ii.product_name = p.name
-        WHERE i.customer_id = ?
+        WHERE i.customer_id = ? AND i.status = 'محفوظة'
       ''', [customerId]);
-
+ 
       final totalSales = (invoiceMaps.first['total_sales'] ?? 0.0) as double;
       final totalInvoices = (invoiceMaps.first['total_invoices'] ?? 0) as int;
       final totalTransactions =
@@ -1621,7 +1643,7 @@ class DatabaseService {
       if (totalQuantity > 0) {
         averageSellingPrice = totalSellingPrice / totalQuantity;
       }
-
+ 
       return {
         'totalSales': totalSales,
         'totalProfit': totalProfit,
@@ -1643,21 +1665,27 @@ class DatabaseService {
           strftime('%Y', i.invoice_date) as year,
           SUM(i.total_amount) as total_sales,
           SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
-              (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit,
+              (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_profit,
           COUNT(DISTINCT i.id) as total_invoices,
           COUNT(DISTINCT t.id) as total_transactions,
-          SUM(ii.applied_price * (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_selling_price,
-          SUM(COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0)) as total_quantity
+          SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_selling_price,
+          SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END) as total_quantity
         FROM invoices i
         LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
         LEFT JOIN products p ON ii.product_name = p.name
         LEFT JOIN transactions t ON i.customer_id = t.customer_id 
           AND strftime('%Y', i.invoice_date) = strftime('%Y', t.transaction_date)
-        WHERE i.customer_id = ?
+        WHERE i.customer_id = ? AND i.status = 'محفوظة'
         GROUP BY strftime('%Y', i.invoice_date)
         ORDER BY year DESC
       ''', [customerId]);
-
+ 
       final Map<int, PersonYearData> yearlyData = {};
       for (final map in maps) {
         final year = int.parse(map['year'] as String);
@@ -1679,7 +1707,7 @@ class DatabaseService {
           totalQuantity: totalQuantity,
         );
       }
-
+ 
       return yearlyData;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -1695,22 +1723,28 @@ class DatabaseService {
           strftime('%m', i.invoice_date) as month,
           SUM(i.total_amount) as total_sales,
           SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
-              (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit,
+              (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_profit,
           COUNT(DISTINCT i.id) as total_invoices,
           COUNT(DISTINCT t.id) as total_transactions,
-          SUM(ii.applied_price * (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_selling_price,
-          SUM(COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0)) as total_quantity
+          SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_selling_price,
+          SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END) as total_quantity
         FROM invoices i
         LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
         LEFT JOIN products p ON ii.product_name = p.name
         LEFT JOIN transactions t ON i.customer_id = t.customer_id 
           AND strftime('%Y', i.invoice_date) = strftime('%Y', t.transaction_date)
           AND strftime('%m', i.invoice_date) = strftime('%m', t.transaction_date)
-        WHERE i.customer_id = ? AND strftime('%Y', i.invoice_date) = ?
+        WHERE i.customer_id = ? AND strftime('%Y', i.invoice_date) = ? AND i.status = 'محفوظة'
         GROUP BY strftime('%m', i.invoice_date)
         ORDER BY month ASC
       ''', [customerId, year.toString()]);
-
+ 
       final Map<int, PersonMonthData> monthlyData = {};
       for (final map in maps) {
         final month = int.parse(map['month'] as String);
@@ -1732,7 +1766,7 @@ class DatabaseService {
           totalQuantity: totalQuantity,
         );
       }
-
+ 
       return monthlyData;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -1786,9 +1820,15 @@ class DatabaseService {
         SELECT 
           strftime('%Y', i.invoice_date) as year,
           SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
-              (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit,
-          SUM(ii.applied_price * (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_selling_price,
-          SUM(COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0)) as total_quantity
+              (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_profit,
+          SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_selling_price,
+          SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END) as total_quantity
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         JOIN products p ON ii.product_name = p.name
@@ -1818,9 +1858,15 @@ class DatabaseService {
         SELECT 
           strftime('%m', i.invoice_date) as month,
           SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
-              (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_profit,
-          SUM(ii.applied_price * (COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0))) as total_selling_price,
-          SUM(COALESCE(ii.quantity_individual, 0.0) + COALESCE(ii.quantity_large_unit, 0.0) * COALESCE(ii.units_in_large_unit, 1.0)) as total_quantity
+              (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_profit,
+          SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_selling_price,
+          SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END) as total_quantity
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         JOIN products p ON ii.product_name = p.name
@@ -1886,8 +1932,9 @@ class DatabaseService {
               (item['quantity_large_unit'] ?? 0.0) as double;
           final double unitsInLargeUnit =
               (item['units_in_large_unit'] ?? 1.0) as double;
-          final double quantity =
-              quantityIndividual + (quantityLargeUnit * unitsInLargeUnit);
+          final double quantity = quantityLargeUnit > 0
+              ? (quantityLargeUnit * unitsInLargeUnit)
+              : quantityIndividual;
           totalSelling += sellingPrice * quantity;
           totalCost += costPrice * quantity;
           totalProfit += (sellingPrice - costPrice) * quantity;

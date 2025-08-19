@@ -21,6 +21,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
   Map<int, double> _yearlySales = {};
   Map<int, double> _yearlyProfit = {};
   bool _isLoading = true;
+  double _averageSellingPrice = 0.0;
 
   @override
   void initState() {
@@ -38,9 +39,12 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
           await _databaseService.getProductYearlySales(widget.product.id!);
       final yearlyProfit =
           await _databaseService.getProductYearlyProfit(widget.product.id!);
+      final salesData =
+          await _databaseService.getProductSalesData(widget.product.id!);
       setState(() {
         _yearlySales = yearlySales;
         _yearlyProfit = yearlyProfit;
+        _averageSellingPrice = (salesData['averageSellingPrice'] ?? 0.0) as double;
         _isLoading = false;
       });
     } catch (e) {
@@ -191,8 +195,8 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
               Expanded(
                 child: _buildHeaderInfo(
                   icon: Icons.attach_money,
-                  title: 'سعر البيع',
-                  value: '${widget.product.price1.toStringAsFixed(2)} د.ع',
+                  title: 'متوسط سعر البيع',
+                  value: '${_averageSellingPrice.toStringAsFixed(2)} د.ع',
                   color: const Color(0xFFFF9800),
                 ),
               ),
@@ -217,7 +221,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                   icon: Icons.trending_up,
                   title: 'الربح المتوقع',
                   value: widget.product.costPrice != null
-                      ? '${(widget.product.price1 - widget.product.costPrice!).toStringAsFixed(2)} د.ع'
+                      ? '${(_averageSellingPrice - widget.product.costPrice!).toStringAsFixed(2)} د.ع'
                       : 'غير محدد',
                   color: const Color(0xFF4CAF50),
                 ),
@@ -228,7 +232,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                   icon: Icons.percent,
                   title: 'نسبة الربح',
                   value: widget.product.costPrice != null && widget.product.costPrice! > 0
-                      ? '${(((widget.product.price1 - widget.product.costPrice!) / widget.product.costPrice!) * 100).toStringAsFixed(1)}%'
+                      ? '${(((_averageSellingPrice - widget.product.costPrice!) / widget.product.costPrice!) * 100).toStringAsFixed(1)}%'
                       : 'غير محدد',
                   color: const Color(0xFF9C27B0),
                 ),
