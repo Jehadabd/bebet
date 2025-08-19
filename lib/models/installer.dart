@@ -22,7 +22,7 @@ class Installer {
     return Installer(
       id: map['id'] as int?,
       name: map['name'] as String,
-      totalBilledAmount: map['total_billed_amount'] as double,
+      totalBilledAmount: (map['total_billed_amount'] as num?)?.toDouble() ?? 0.0,
     );
   }
 

@@ -60,6 +60,60 @@ class DatabaseService {
     } else {
       print('DEBUG: عمود unit_hierarchy موجود بالفعل، لا حاجة للإضافة.');
     }
+
+    // تحقق من أعمدة جدول invoice_items وإضافتها إذا لزم
+    try {
+      final invoiceItemsInfo =
+          await _database!.rawQuery('PRAGMA table_info(invoice_items);');
+      bool hasActualCostPrice =
+          invoiceItemsInfo.any((c) => c['name'] == 'actual_cost_price');
+      bool hasSaleType = invoiceItemsInfo.any((c) => c['name'] == 'sale_type');
+      bool hasUnitsInLargeUnit =
+          invoiceItemsInfo.any((c) => c['name'] == 'units_in_large_unit');
+      bool hasUniqueId = invoiceItemsInfo.any((c) => c['name'] == 'unique_id');
+
+      if (!hasActualCostPrice) {
+        try {
+          await _database!
+              .execute('ALTER TABLE invoice_items ADD COLUMN actual_cost_price REAL');
+          print('DEBUG DB: actual_cost_price column added successfully to invoice_items table.');
+        } catch (e) {
+          print("DEBUG DB Error: Failed to add column 'actual_cost_price' to invoice_items table or it already exists: $e");
+        }
+      }
+      if (!hasSaleType) {
+        try {
+          await _database!
+              .execute('ALTER TABLE invoice_items ADD COLUMN sale_type TEXT');
+          print('DEBUG DB: sale_type column added successfully to invoice_items table.');
+        } catch (e) {
+          print("DEBUG DB Error: Failed to add column 'sale_type' to invoice_items table or it already exists: $e");
+        }
+      }
+      if (!hasUnitsInLargeUnit) {
+        try {
+          await _database!.execute(
+              'ALTER TABLE invoice_items ADD COLUMN units_in_large_unit REAL');
+          print(
+              'DEBUG DB: units_in_large_unit column added successfully to invoice_items table.');
+        } catch (e) {
+          print(
+              "DEBUG DB Error: Failed to add column 'units_in_large_unit' to invoice_items table or it already exists: $e");
+        }
+      }
+      if (!hasUniqueId) {
+        try {
+          await _database!
+              .execute('ALTER TABLE invoice_items ADD COLUMN unique_id TEXT');
+          print('DEBUG DB: unique_id column added successfully to invoice_items table.');
+        } catch (e) {
+          print(
+              "DEBUG DB Error: Failed to add column 'unique_id' to invoice_items table or it already exists: $e");
+        }
+      }
+    } catch (e) {
+      print('DEBUG DB: Failed to inspect/add invoice_items columns: $e');
+    }
     // --- نهاية التحقق ---
     return _database!;
   }
@@ -1461,25 +1515,56 @@ class DatabaseService {
       final List<InvoiceWithProductData> invoices = [];
       for (final map in maps) {
         final invoice = Invoice.fromMap(map);
-        double quantityIndividual =
-            (map['quantity_individual'] ?? 0.0) as double;
-        double quantityLargeUnit =
-            (map['quantity_large_unit'] ?? 0.0) as double;
-        double unitsInLargeUnit = (map['units_in_large_unit'] ?? 1.0) as double;
-        double quantity =
-            quantityIndividual + (quantityLargeUnit * unitsInLargeUnit);
-        final sellingPrice = (map['applied_price'] ?? 0.0) as double;
-        // استخدام actual_cost_price إذا كان متوفراً، وإلا استخدم cost_price أو product_cost_price
-        final costPrice = (map['actual_cost_price'] ?? 
-                          map['cost_price'] ?? 
-                          map['product_cost_price'] ?? 0.0) as double;
-        final profit = (sellingPrice - costPrice) * quantity;
+        // سنحتاج لتجميع البنود لكل فاتورة لحساب متوسطات صحيحة
+        // اجلب كل البنود الخاصة بهذه الفاتورة وهذا المنتج
+        final List<Map<String, dynamic>> itemMaps = await db.rawQuery('''
+          SELECT 
+            ii.quantity_individual,
+            ii.quantity_large_unit,
+            ii.units_in_large_unit,
+            ii.applied_price,
+            ii.cost_price,
+            ii.actual_cost_price,
+            p.cost_price as product_cost_price
+          FROM invoice_items ii
+          JOIN products p ON ii.product_name = p.name
+          WHERE ii.invoice_id = ? AND p.id = ?
+        ''', [invoice.id, productId]);
+
+        double totalQuantity = 0.0;
+        double totalSelling = 0.0;
+        double totalCost = 0.0;
+
+        for (final item in itemMaps) {
+          final double qInd = (item['quantity_individual'] ?? 0.0) as double;
+          final double qLarge = (item['quantity_large_unit'] ?? 0.0) as double;
+          final double unitsInLarge =
+              (item['units_in_large_unit'] ?? 1.0) as double;
+          final double currentQty = qInd + (qLarge * unitsInLarge);
+          final double itemSellingPrice =
+              (item['applied_price'] ?? 0.0) as double;
+          final double itemCost = (item['actual_cost_price'] ??
+                  item['cost_price'] ??
+                  item['product_cost_price'] ??
+                  0.0) as double;
+
+          totalQuantity += currentQty;
+          totalSelling += itemSellingPrice * currentQty;
+          totalCost += itemCost * currentQty;
+        }
+
+        final double avgSellingPrice =
+            totalQuantity > 0 ? (totalSelling / totalQuantity) : 0.0;
+        final double avgUnitCost =
+            totalQuantity > 0 ? (totalCost / totalQuantity) : 0.0;
+        final double profit = totalSelling - totalCost;
 
         invoices.add(InvoiceWithProductData(
           invoice: invoice,
-          quantitySold: quantity,
+          quantitySold: totalQuantity,
           profit: profit,
-          sellingPrice: sellingPrice,
+          sellingPrice: avgSellingPrice,
+          unitCostAtSale: avgUnitCost,
         ));
       }
 
@@ -1786,30 +1871,39 @@ class DatabaseService {
         final items = entry.value;
         double totalProfit = 0.0;
         double totalQuantity = 0.0;
+        double totalSelling = 0.0;
+        double totalCost = 0.0;
         for (final item in items) {
-          final sellingPrice = (item['applied_price'] ?? 0.0) as double;
-          // استخدام actual_cost_price إذا كان متوفراً، وإلا استخدم cost_price أو product_cost_price
-          final costPrice = (item['actual_cost_price'] ??
+          final double sellingPrice =
+              (item['applied_price'] ?? 0.0) as double;
+          final double costPrice = (item['actual_cost_price'] ??
               item['cost_price'] ??
               item['product_cost_price'] ??
               0.0) as double;
-          double quantityIndividual =
+          final double quantityIndividual =
               (item['quantity_individual'] ?? 0.0) as double;
-          double quantityLargeUnit =
+          final double quantityLargeUnit =
               (item['quantity_large_unit'] ?? 0.0) as double;
-          double unitsInLargeUnit =
+          final double unitsInLargeUnit =
               (item['units_in_large_unit'] ?? 1.0) as double;
-          double quantity =
+          final double quantity =
               quantityIndividual + (quantityLargeUnit * unitsInLargeUnit);
+          totalSelling += sellingPrice * quantity;
+          totalCost += costPrice * quantity;
           totalProfit += (sellingPrice - costPrice) * quantity;
           totalQuantity += quantity;
         }
         final invoice = Invoice.fromMap(items.first);
+        final double avgSellingPrice =
+            totalQuantity > 0 ? totalSelling / totalQuantity : 0.0;
+        final double avgUnitCost =
+            totalQuantity > 0 ? totalCost / totalQuantity : 0.0;
         result.add(InvoiceWithProductData(
           invoice: invoice,
           quantitySold: totalQuantity,
           profit: totalProfit,
-          sellingPrice: totalQuantity > 0 ? totalProfit / totalQuantity : 0.0, // متوسط سعر البيع
+          sellingPrice: avgSellingPrice,
+          unitCostAtSale: avgUnitCost,
         ));
       }
       return result;
@@ -1916,12 +2010,14 @@ class InvoiceWithProductData {
   final double quantitySold;
   final double profit;
   final double sellingPrice;
+  final double unitCostAtSale;
 
   InvoiceWithProductData({
     required this.invoice,
     required this.quantitySold,
     required this.profit,
     required this.sellingPrice,
+    required this.unitCostAtSale,
   });
 }
 
