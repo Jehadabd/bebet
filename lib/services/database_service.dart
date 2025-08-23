@@ -42,6 +42,30 @@ class DatabaseService {
     return errorMessage;
   }
 
+  /// دالة تطبيع النص العربي - حذف التشكيل والتوحيد
+  String normalizeArabic(String input) {
+    if (input.isEmpty) return input;
+    
+    // حذف التشكيل والتطويل
+    final diacritics = RegExp(r'[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]');
+    String s = input.replaceAll(diacritics, '').replaceAll('\u0640', '');
+    
+    // توحيد الألف والهمزات والياء والتاء المربوطة
+    s = s
+        .replaceAll('أ', 'ا')
+        .replaceAll('إ', 'ا')
+        .replaceAll('آ', 'ا')
+        .replaceAll('ؤ', 'و')
+        .replaceAll('ئ', 'ي')
+        .replaceAll('ة', 'ه')
+        .replaceAll('ى', 'ي');
+    
+    // إزالة مسافات زائدة
+    s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
+    
+    return s;
+  }
+
   Future<Database> get database async {
     if (_database != null) return _database!;
     _database = await _initDatabase();
@@ -115,6 +139,39 @@ class DatabaseService {
       print('DEBUG DB: Failed to inspect/add invoice_items columns: $e');
     }
     // --- نهاية التحقق ---
+
+    // التحقق من حالة FTS5 وإعادة بناء الفهرس إذا لزم الأمر
+    await checkFTSStatus();
+    
+    // تهيئة العمود المطبع وFTS5 للمنتجات الموجودة
+    try {
+      await initializeFTSForExistingProducts();
+    } catch (e) {
+      print('Error initializing FTS: $e');
+    }
+    
+    // إذا كان عدد السجلات في FTS أقل من المنتجات، أعد بناء الفهرس
+    try {
+      final productCountRes = await _database!.rawQuery('SELECT COUNT(1) as c FROM products;');
+      final ftsCountRes = await _database!.rawQuery('SELECT COUNT(1) as c FROM products_fts;');
+      
+      final int productCount = (productCountRes.first['c'] as int?) ?? 0;
+      final int ftsCount = (ftsCountRes.first['c'] as int?) ?? 0;
+      
+      if (productCount > 0 && ftsCount < productCount) {
+        print('Rebuilding FTS index due to missing records');
+        await rebuildFTSIndex();
+      }
+
+      // اختبار البحث الذكي
+      if (productCount > 0) {
+        print('Testing smart search functionality...');
+        await testSmartSearch();
+      }
+    } catch (e) {
+      print('Error checking FTS counts: $e');
+    }
+
     return _database!;
   }
 
@@ -175,6 +232,7 @@ class DatabaseService {
       CREATE TABLE IF NOT EXISTS products (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
+        name_norm TEXT, -- عمود مطبع للبحث الذكي
         unit TEXT NOT NULL,
         unit_price REAL NOT NULL,
         cost_price REAL,
@@ -240,6 +298,43 @@ class DatabaseService {
         FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
       )
     ''');
+
+    // -->> بداية الإضافة: إنشاء جدول FTS5 والمحفزات
+
+    // 1. إنشاء جدول FTS5 لفهرسة أسماء المنتجات المطبع
+    await db.execute('''
+      CREATE VIRTUAL TABLE IF NOT EXISTS products_fts USING fts5(
+        name_norm,
+        content='products',
+        content_rowid='id',
+        tokenize = 'unicode61 remove_diacritics 2'
+      );
+    ''');
+
+    // 2. إنشاء محفزات (Triggers) للحفاظ على تزامن جدول FTS5 مع جدول products
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS products_ai AFTER INSERT ON products BEGIN
+        INSERT INTO products_fts(rowid, name_norm) VALUES (new.id, new.name_norm);
+      END;
+    ''');
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS products_ad AFTER DELETE ON products BEGIN
+        INSERT INTO products_fts(products_fts, rowid, name_norm) VALUES ('delete', old.id, old.name_norm);
+      END;
+    ''');
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS products_au AFTER UPDATE ON products BEGIN
+        INSERT INTO products_fts(products_fts, rowid, name_norm) VALUES ('delete', old.id, old.name_norm);
+        INSERT INTO products_fts(rowid, name_norm) VALUES (new.id, new.name_norm);
+      END;
+    ''');
+
+    // 3. (مهم جداً) تعبئة جدول الفهرسة بالبيانات الموجودة حاليًا عند إنشاء قاعدة البيانات لأول مرة
+    await db.execute('''
+      INSERT INTO products_fts(rowid, name_norm) SELECT id, name_norm FROM products;
+    ''');
+
+    // -->> نهاية الإضافة
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -496,8 +591,11 @@ class DatabaseService {
   Future<int> insertProduct(Product product) async {
     final db = await database;
     try {
-      return await db.insert(
-          'products', product.toMap()); // افترض أن toMap جاهزة
+      // تطبيع اسم المنتج وحفظه في العمود المطبع
+      final productMap = product.toMap();
+      productMap['name_norm'] = normalizeArabic(product.name);
+      
+      return await db.insert('products', productMap);
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
@@ -1131,24 +1229,321 @@ class DatabaseService {
     return List.generate(maps.length, (i) => Customer.fromMap(maps[i]));
   }
 
+  /// دالة البحث العادية (للحفاظ على التوافق مع باقي التطبيق)
   Future<List<Product>> searchProducts(String query) async {
+    if (query.trim().isEmpty) {
+      return [];
+    }
+
     final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query(
-      'products',
-      where: 'name LIKE ?',
-      whereArgs: ['%$query%'],
-    );
-    return List.generate(maps.length, (i) => Product.fromMap(maps[i]));
+    try {
+      final List<Map<String, dynamic>> maps = await db.query(
+        'products',
+        where: 'name LIKE ?',
+        whereArgs: ['%$query%'],
+        orderBy: 'name ASC',
+        limit: 50,
+      );
+      return List.generate(maps.length, (i) => Product.fromMap(maps[i]));
+    } catch (e) {
+      print('Error in regular search: $e');
+      return [];
+    }
+  }
+
+  /// دالة البحث الذكية المتعددة الطبقات - مخصصة لشاشة إنشاء الفاتورة
+  Future<List<Product>> searchProductsSmart(String query) async {
+    if (query.trim().isEmpty) {
+      return [];
+    }
+
+    final db = await database;
+    final normalizedQuery = normalizeArabic(query);
+    
+    try {
+      // الطبقة 1: FTS5 للبحث السريع والدقيق
+      final ftsResults = await _searchWithFTS(db, normalizedQuery);
+      
+      // الطبقة 2: LIKE subsequence للبحث عن الكلمات في ترتيب مختلف
+      final likeResults = await _searchWithLike(db, normalizedQuery);
+      
+      // دمج النتائج وإزالة المكررات
+      final allResults = <Product>[];
+      final seenIds = <int>{};
+      
+      // إضافة نتائج FTS5 أولاً (أعلى أولوية)
+      for (final product in ftsResults) {
+        if (seenIds.add(product.id!)) {
+          allResults.add(product);
+        }
+      }
+      
+      // إضافة نتائج LIKE (أقل أولوية)
+      for (final product in likeResults) {
+        if (seenIds.add(product.id!)) {
+          allResults.add(product);
+        }
+      }
+      
+      // ترتيب النتائج حسب الأولوية
+      return allResults.take(50).toList();
+      
+    } catch (e) {
+      print('Error in smart search: $e');
+      // Fallback إلى البحث العادي
+      return await _fallbackSearch(db, query);
+    }
+  }
+
+  /// البحث باستخدام FTS5
+  Future<List<Product>> _searchWithFTS(Database db, String normalizedQuery) async {
+    try {
+      // تقسيم الاستعلام إلى كلمات
+      final terms = normalizedQuery.split(' ').where((t) => t.isNotEmpty).toList();
+      if (terms.isEmpty) return [];
+      
+      // إنشاء استعلام FTS5 - البحث عن أي من الكلمات
+      final ftsQuery = terms.map((term) => '$term*').join(' OR ');
+      
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT p.*, bm25(products_fts) AS rank_score
+        FROM products_fts
+        JOIN products p ON p.id = products_fts.rowid
+        WHERE products_fts MATCH ?
+        ORDER BY rank_score ASC
+        LIMIT 30
+      ''', [ftsQuery]);
+      
+      return List.generate(maps.length, (i) => Product.fromMap(maps[i]));
+    } catch (e) {
+      print('FTS search error: $e');
+      return [];
+    }
+  }
+
+  /// البحث باستخدام LIKE subsequence
+  Future<List<Product>> _searchWithLike(Database db, String normalizedQuery) async {
+    try {
+      final terms = normalizedQuery.split(' ').where((t) => t.isNotEmpty).toList();
+      if (terms.isEmpty) return [];
+      
+      // نمط subsequence: "كوب ... فنار" مع كلمات بينهما
+      final subsequencePattern = '%${terms.join('%')}%';
+      
+      // البحث عن الكلمات في أي ترتيب
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT p.*, 
+          CASE 
+            WHEN p.name_norm LIKE ? THEN 100
+            WHEN p.name_norm LIKE ? THEN 80
+            ELSE 60
+          END AS relevance_score
+        FROM products p
+        WHERE p.name_norm LIKE ? OR p.name_norm LIKE ?
+        ORDER BY relevance_score DESC, p.name_norm ASC
+        LIMIT 30
+      ''', [
+        normalizedQuery,           // تطابق كامل
+        '$normalizedQuery%',       // يبدأ بالكلمة
+        subsequencePattern,        // subsequence
+        '%$normalizedQuery%',      // يحتوي على الكلمة
+      ]);
+      
+      return List.generate(maps.length, (i) => Product.fromMap(maps[i]));
+    } catch (e) {
+      print('LIKE search error: $e');
+      return [];
+    }
+  }
+
+  /// البحث العادي كـ fallback
+  Future<List<Product>> _fallbackSearch(Database db, String query) async {
+    try {
+      final List<Map<String, dynamic>> maps = await db.query(
+        'products',
+        where: 'name LIKE ?',
+        whereArgs: ['%$query%'],
+        orderBy: 'name ASC',
+        limit: 20,
+      );
+      return List.generate(maps.length, (i) => Product.fromMap(maps[i]));
+    } catch (e) {
+      print('Fallback search error: $e');
+      return [];
+    }
   }
 
   Future<int> updateProduct(Product product) async {
     final db = await database;
-    return await db.update(
-      'products',
-      product.toMap(),
-      where: 'id = ?',
-      whereArgs: [product.id!],
-    );
+    try {
+      // تطبيع اسم المنتج وحفظه في العمود المطبع
+      final productMap = product.toMap();
+      productMap['name_norm'] = normalizeArabic(product.name);
+      
+      return await db.update(
+        'products',
+        productMap,
+        where: 'id = ?',
+        whereArgs: [product.id!],
+      );
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  /// دالة لإعادة بناء فهرس FTS5
+  Future<void> rebuildFTSIndex() async {
+    final db = await database;
+    try {
+      await db.execute("INSERT INTO products_fts(products_fts) VALUES('rebuild');");
+      print('FTS5 index rebuilt successfully');
+    } catch (e) {
+      print('Error rebuilding FTS index: $e');
+    }
+  }
+
+  /// دالة للتحقق من حالة FTS5
+  Future<void> checkFTSStatus() async {
+    final db = await database;
+    try {
+      // التحقق من وجود جدول FTS5
+      final ftsTable = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='products_fts'"
+      );
+      
+      if (ftsTable.isEmpty) {
+        print('FTS5 table does not exist');
+        return;
+      }
+      
+      // التحقق من عدد السجلات
+      final productCount = await db.rawQuery('SELECT COUNT(*) FROM products');
+      final ftsCount = await db.rawQuery('SELECT COUNT(*) FROM products_fts');
+      
+      print('Products: ${productCount.first.values.first}');
+      print('FTS entries: ${ftsCount.first.values.first}');
+      
+      // اختبار بحث بسيط
+      final testResult = await db.rawQuery(
+        'SELECT * FROM products_fts WHERE products_fts MATCH ? LIMIT 5',
+        ['بلك*']
+      );
+      
+      print('Test search results: ${testResult.length}');
+      
+    } catch (e) {
+      print('Error checking FTS status: $e');
+    }
+  }
+
+  /// دالة لتهيئة العمود المطبع وFTS5 للمنتجات الموجودة
+  Future<void> initializeFTSForExistingProducts() async {
+    final db = await database;
+    try {
+      // التحقق من وجود عمود name_norm
+      final columns = await db.rawQuery("PRAGMA table_info(products);");
+      final hasNameNorm = columns.any((col) => col['name'] == 'name_norm');
+      
+      if (!hasNameNorm) {
+        print('Adding name_norm column to products table...');
+        await db.execute('ALTER TABLE products ADD COLUMN name_norm TEXT;');
+      }
+
+      // تحديث name_norm لجميع المنتجات الموجودة
+      final products = await db.query('products');
+      if (products.isNotEmpty) {
+        print('Updating name_norm for ${products.length} existing products...');
+        
+        for (final product in products) {
+          final normalizedName = normalizeArabic(product['name'] as String);
+          await db.update(
+            'products',
+            {'name_norm': normalizedName},
+            where: 'id = ?',
+            whereArgs: [product['id']],
+          );
+        }
+        print('All products updated with normalized names');
+      }
+
+      // التحقق من وجود جدول FTS5
+      final ftsTable = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='products_fts'"
+      );
+      
+      if (ftsTable.isEmpty) {
+        print('FTS5 table does not exist, creating it...');
+        await db.execute('''
+          CREATE VIRTUAL TABLE IF NOT EXISTS products_fts USING fts5(
+            name_norm,
+            content='products',
+            content_rowid='id',
+            tokenize = 'unicode61 remove_diacritics 2'
+          )
+        ''');
+      }
+
+      // إدراج جميع المنتجات في FTS5
+      if (products.isNotEmpty) {
+        await db.execute('DELETE FROM products_fts'); // مسح المحتوى القديم
+        
+        for (final product in products) {
+          final normalizedName = product['name_norm'] ?? normalizeArabic(product['name'] as String);
+          await db.execute(
+            'INSERT INTO products_fts(rowid, name_norm) VALUES (?, ?)',
+            [product['id'], normalizedName]
+          );
+        }
+        
+        print('FTS5 initialized with ${products.length} existing products');
+      }
+    } catch (e) {
+      print('Error initializing FTS for existing products: $e');
+    }
+  }
+
+  /// دالة اختبار للبحث الذكي
+  Future<void> testSmartSearch() async {
+    print('=== اختبار البحث الذكي ===');
+    
+    try {
+      // اختبار 1: البحث عن "كوب فنار"
+      print('\n1. البحث عن "كوب فنار":');
+      final results1 = await searchProductsSmart("كوب فنار");
+      print('نتائج البحث: ${results1.length}');
+      for (var product in results1) {
+        print('- ${product.name} (مطبع: ${product.name})');
+      }
+
+      // اختبار 2: البحث عن "كوب"
+      print('\n2. البحث عن "كوب":');
+      final results2 = await searchProductsSmart("كوب");
+      print('نتائج البحث: ${results2.length}');
+      for (var product in results2.take(5)) {
+        print('- ${product.name}');
+      }
+
+      // اختبار 3: البحث عن "فنار"
+      print('\n3. البحث عن "فنار":');
+      final results3 = await searchProductsSmart("فنار");
+      print('نتائج البحث: ${results3.length}');
+      for (var product in results3.take(5)) {
+        print('- ${product.name}');
+      }
+
+      // اختبار 4: البحث عن "كوب واحد"
+      print('\n4. البحث عن "كوب واحد":');
+      final results4 = await searchProductsSmart("كوب واحد");
+      print('نتائج البحث: ${results4.length}');
+      for (var product in results4) {
+        print('- ${product.name}');
+      }
+
+    } catch (e) {
+      print('خطأ في اختبار البحث الذكي: $e');
+    }
+    
+    print('=== نهاية الاختبار ===');
   }
 
   Future<Installer?> getInstallerByName(String name) async {

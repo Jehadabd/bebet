@@ -410,6 +410,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     }
   }
 
+  /// دالة البحث عن المنتجات - تستخدم خوارزمية البحث الذكية المتعددة الطبقات
+  /// تدعم البحث عن "كوب فنار" لإيجاد "كوب واحد سيه فنار"، "كوب اثنين سيات فنار"، إلخ
   Future<void> _searchProducts(String query) async {
     try {
       if (query.isEmpty) {
@@ -418,7 +420,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         });
         return;
       }
-      final results = await _db.searchProducts(query);
+      // استخدام البحث الذكي المخصص لشاشة إنشاء الفاتورة
+      // يدعم البحث عن الكلمات في ترتيب مختلف والكلمات الوسيطة
+      final results = await _db.searchProductsSmart(query);
       setState(() {
         _searchResults = results;
       });
@@ -2141,7 +2145,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     controller: _productSearchController,
                     focusNode: _searchFocusNode, // ربط FocusNode
                     decoration: InputDecoration(
-                      labelText: 'البحث عن صنف',
+                      labelText: 'البحث عن صنف (بحث ذكي يدعم الكلمات المتعددة)',
+                      hintText: 'مثال: اكتب "كوب فنار" لإيجاد "كوب واحد سيه فنار"',
                       suffixIcon: IconButton(
                         icon: const Icon(Icons.clear),
                         onPressed: _isViewOnly
