@@ -14,6 +14,7 @@ import 'package:pdf/pdf.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
+import 'dart:convert';
 
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
@@ -40,6 +41,43 @@ class DatabaseService {
     }
     print('Database operation failed: $e'); // للسجل التقني
     return errorMessage;
+  }
+
+  /// حساب التكلفة من النظام الهرمي للوحدات
+  double _calculateCostFromHierarchy(String? unitHierarchy, String? unitCosts, String saleUnit, double quantity) {
+    try {
+      if (unitHierarchy == null || unitCosts == null) return 0.0;
+      
+      // تحليل JSON
+      final hierarchy = List<Map<String, dynamic>>.from(
+        jsonDecode(unitHierarchy) as List,
+      );
+      final costs = Map<String, double>.from(
+        jsonDecode(unitCosts) as Map,
+      );
+      
+      // البحث عن التكلفة المباشرة
+      if (costs.containsKey(saleUnit)) {
+        return costs[saleUnit]!;
+      }
+      
+      // البحث في التسلسل الهرمي
+      for (var item in hierarchy) {
+        if (item['unit_name'] == saleUnit) {
+          // حساب التكلفة من الوحدة الأساسية
+          final baseCost = costs['قطعة'];
+          if (baseCost != null) {
+            final multiplier = (item['quantity'] as int).toDouble();
+            return baseCost * multiplier;
+          }
+        }
+      }
+      
+      return 0.0;
+    } catch (e) {
+      print('Error calculating cost from hierarchy: $e');
+      return 0.0;
+    }
   }
 
   /// دالة تطبيع النص العربي - حذف التشكيل والتوحيد
@@ -73,6 +111,9 @@ class DatabaseService {
     final columns = await _database!.rawQuery("PRAGMA table_info(products);");
     final hasUnitHierarchy =
         columns.any((col) => col['name'] == 'unit_hierarchy');
+    final hasUnitCosts =
+        columns.any((col) => col['name'] == 'unit_costs');
+    
     if (!hasUnitHierarchy) {
       try {
         await _database!
@@ -83,6 +124,18 @@ class DatabaseService {
       }
     } else {
       print('DEBUG: عمود unit_hierarchy موجود بالفعل، لا حاجة للإضافة.');
+    }
+
+    if (!hasUnitCosts) {
+      try {
+        await _database!
+            .execute('ALTER TABLE products ADD COLUMN unit_costs TEXT;');
+        print('DEBUG: تم إضافة عمود unit_costs بنجاح!');
+      } catch (e) {
+        print('DEBUG: خطأ أثناء إضافة العمود unit_costs: $e');
+      }
+    } else {
+      print('DEBUG: عمود unit_costs موجود بالفعل، لا حاجة للإضافة.');
     }
 
     // تحقق من أعمدة جدول invoice_items وإضافتها إذا لزم
@@ -1778,11 +1831,11 @@ class DatabaseService {
 
   // --- دوال نظام التقارير ---
 
-  // دوال تقارير البضاعة
+    // دوال تقارير البضاعة
   Future<Map<String, dynamic>> getProductSalesData(int productId) async {
     final db = await database;
     try {
-      // جلب جميع الفواتير المحفوظة التي تحتوي على هذا المنتج
+      // جلب جميع الفواتير المحفوظة التي تحتوي على هذا المنتج مع بيانات المنتج الكاملة
       final List<Map<String, dynamic>> itemMaps = await db.rawQuery('''
         SELECT 
           ii.quantity_individual,
@@ -1792,7 +1845,11 @@ class DatabaseService {
           ii.cost_price,
           ii.actual_cost_price,
           ii.item_total,
-          p.cost_price as product_cost_price
+          ii.sale_type,
+          p.cost_price as product_cost_price,
+          p.unit_hierarchy,
+          p.unit_costs,
+          p.unit
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         JOIN products p ON ii.product_name = p.name
@@ -1803,6 +1860,7 @@ class DatabaseService {
       double totalProfit = 0.0;
       double totalSales = 0.0;
       double averageSellingPrice = 0.0;
+      double totalCost = 0.0;
  
       for (final item in itemMaps) {
         final double quantityIndividual =
@@ -1811,18 +1869,56 @@ class DatabaseService {
             (item['quantity_large_unit'] ?? 0.0) as double;
         final double unitsInLargeUnit =
             (item['units_in_large_unit'] ?? 1.0) as double;
-        final double currentItemTotalQuantity = quantityLargeUnit > 0
-            ? (quantityLargeUnit * unitsInLargeUnit)
-            : quantityIndividual;
+        
+        // تحديد نوع البيع والكمية
+        String saleUnit = 'قطعة'; // افتراضي
+        double currentItemTotalQuantity = 0.0;
+        
+        if (quantityLargeUnit > 0) {
+          // البيع بوحدة كبيرة (كرتون، باكيت، إلخ)
+          currentItemTotalQuantity = quantityLargeUnit * unitsInLargeUnit;
+          saleUnit = item['sale_type'] ?? 'قطعة';
+        } else {
+          // البيع بالقطعة
+          currentItemTotalQuantity = quantityIndividual;
+          saleUnit = item['unit'] ?? 'قطعة';
+        }
+        
         final sellingPrice = (item['applied_price'] ?? 0.0) as double;
-        // استخدام actual_cost_price إذا كان متوفراً، وإلا استخدم cost_price أو product_cost_price
-        final costPrice = (item['actual_cost_price'] ?? 
-                          item['cost_price'] ?? 
-                          item['product_cost_price'] ?? 0.0) as double;
+        
+        // حساب التكلفة بناءً على النظام الهرمي
+        double costPrice = 0.0;
+        
+        // محاولة استخدام التكلفة المحسوبة مسبقاً
+        if (item['actual_cost_price'] != null) {
+          costPrice = (item['actual_cost_price'] as double);
+        } else if (item['cost_price'] != null) {
+          costPrice = (item['cost_price'] as double);
+        } else {
+          // حساب التكلفة من النظام الهرمي
+          costPrice = _calculateCostFromHierarchy(
+            item['unit_hierarchy'],
+            item['unit_costs'],
+            saleUnit,
+            currentItemTotalQuantity,
+          );
+        }
+        
         totalQuantity += currentItemTotalQuantity;
-        totalProfit += (sellingPrice - costPrice) * currentItemTotalQuantity;
-        totalSales += sellingPrice * currentItemTotalQuantity;
-        averageSellingPrice += sellingPrice * currentItemTotalQuantity;
+        totalCost += costPrice * currentItemTotalQuantity;
+        
+        // حساب الربح والمبيعات بناءً على الوحدة المباعة نفسها
+        if (quantityLargeUnit > 0) {
+          // البيع بوحدة كبيرة (كرتون، باكيت، إلخ)
+          totalProfit += (sellingPrice - costPrice) * quantityLargeUnit;
+          totalSales += sellingPrice * quantityLargeUnit;
+          averageSellingPrice += sellingPrice * quantityLargeUnit;
+        } else {
+          // البيع بالقطعة
+          totalProfit += (sellingPrice - costPrice) * quantityIndividual;
+          totalSales += sellingPrice * quantityIndividual;
+          averageSellingPrice += sellingPrice * quantityIndividual;
+        }
       }
  
       // حساب متوسط سعر البيع
@@ -1835,6 +1931,8 @@ class DatabaseService {
         'totalProfit': totalProfit,
         'totalSales': totalSales,
         'averageSellingPrice': averageSellingPrice,
+        'totalCost': totalCost,
+        'profitMargin': totalSales > 0 ? (totalProfit / totalSales) * 100 : 0.0,
       };
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -2061,16 +2159,16 @@ class DatabaseService {
           SUM(i.total_amount) as total_sales,
           SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
               (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_profit,
+                    THEN ii.quantity_large_unit
+                    ELSE ii.quantity_individual END)) as total_profit,
           COUNT(DISTINCT i.id) as total_invoices,
           COUNT(DISTINCT t.id) as total_transactions,
           SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_selling_price,
+                    THEN ii.quantity_large_unit
+                    ELSE ii.quantity_individual END)) as total_selling_price,
           SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
                     THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END) as total_quantity
+                    ELSE ii.quantity_individual END) as total_quantity
         FROM invoices i
         LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
         LEFT JOIN products p ON ii.product_name = p.name
@@ -2119,13 +2217,13 @@ class DatabaseService {
           SUM(i.total_amount) as total_sales,
           SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
               (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_profit,
+                    THEN ii.quantity_large_unit
+                    ELSE ii.quantity_individual END)) as total_profit,
           COUNT(DISTINCT i.id) as total_invoices,
           COUNT(DISTINCT t.id) as total_transactions,
           SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_selling_price,
+                    THEN ii.quantity_large_unit
+                    ELSE ii.quantity_individual END)) as total_selling_price,
           SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
                     THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
                     ELSE COALESCE(ii.quantity_individual, 0.0) END) as total_quantity
@@ -2216,14 +2314,14 @@ class DatabaseService {
           strftime('%Y', i.invoice_date) as year,
           SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
               (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_profit,
+                    THEN ii.quantity_large_unit
+                    ELSE ii.quantity_individual END)) as total_profit,
           SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_selling_price,
+                    THEN ii.quantity_large_unit
+                    ELSE ii.quantity_individual END)) as total_selling_price,
           SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
                     THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END) as total_quantity
+                    ELSE ii.quantity_individual END) as total_quantity
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         JOIN products p ON ii.product_name = p.name
@@ -2254,14 +2352,14 @@ class DatabaseService {
           strftime('%m', i.invoice_date) as month,
           SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
               (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_profit,
+                    THEN ii.quantity_large_unit
+                    ELSE ii.quantity_individual END)) as total_profit,
           SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_selling_price,
+                    THEN ii.quantity_large_unit
+                    ELSE ii.quantity_individual END)) as total_selling_price,
           SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
                     THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END) as total_quantity
+                    ELSE ii.quantity_individual END) as total_quantity
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         JOIN products p ON ii.product_name = p.name

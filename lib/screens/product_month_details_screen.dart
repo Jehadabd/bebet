@@ -102,6 +102,26 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
     return '${date.day}/${date.month}/${date.year}';
   }
 
+  // حساب الربح من الوحدة مع مراعاة الوحدات الهيراركية
+  double _calculateProfitPerUnit() {
+    if (_monthQuantity <= 0) {
+      return 0.0;
+    }
+    
+    // حساب الربح من الوحدة بناءً على إجمالي الربح والكمية
+    // مع مراعاة أن الكمية محسوبة بالوحدات الأساسية (قطع)
+    return _monthProfit / _monthQuantity;
+  }
+
+  // حساب الربح من الوحدة للفاتورة محددة
+  double _calculateInvoiceProfitPerUnit(double profit, double quantity) {
+    if (quantity <= 0) {
+      return 0.0;
+    }
+    
+    return profit / quantity;
+  }
+
   @override
   Widget build(BuildContext context) {
     final monthName = _getMonthName(widget.month);
@@ -225,7 +245,7 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                                           ),
                                           const SizedBox(height: 4),
                                           Text(
-                                            'الربح من الوحدة: ${(_monthQuantity > 0 ? (_monthProfit / _monthQuantity).toStringAsFixed(2) : '0.00')} د.ع',
+                                            'الربح من الوحدة: ${(_monthQuantity > 0 ? _calculateProfitPerUnit().toStringAsFixed(2) : '0.00')} د.ع',
                                             style: const TextStyle(
                                               fontSize: 14,
                                               color: Color(0xFF4CAF50),
@@ -286,7 +306,7 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                                             child: _buildDetailInfo(
                                               title: 'الربح من الوحدة',
                                               value: _monthQuantity > 0
-                                                  ? '${(_monthProfit / _monthQuantity).toStringAsFixed(2)} د.ع'
+                                                  ? '${_calculateProfitPerUnit().toStringAsFixed(2)} د.ع'
                                                   : 'غير محدد',
                                               color: const Color(0xFF4CAF50),
                                             ),
@@ -446,7 +466,7 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                           child: _buildDetailInfo(
                             title: 'الربح من الوحدة',
                             value: invoiceData.quantitySold > 0
-                                ? '${(invoiceData.sellingPrice - invoiceData.unitCostAtSale).toStringAsFixed(2)} د.ع'
+                                ? '${_calculateInvoiceProfitPerUnit(invoiceData.profit, invoiceData.quantitySold).toStringAsFixed(2)} د.ع'
                                 : 'غير محدد',
                             color: const Color(0xFF4CAF50),
                           ),

@@ -470,6 +470,47 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     }
   }
 
+  // --- دالة حساب التكلفة الفعلية بناءً على نوع الوحدة المباعة ---
+  double _calculateActualCostPrice(Product product, String saleUnit, double quantity) {
+    // إذا كانت الوحدة المباعة هي القطعة الواحدة، استخدم تكلفة القطعة
+    if (saleUnit == 'قطعة' || saleUnit == 'متر') {
+      return product.costPrice ?? 0.0;
+    }
+    
+    // إذا كانت الوحدة المباعة أكبر، احسب التكلفة من النظام الهيراركي
+    if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
+      try {
+        final hierarchy = jsonDecode(product.unitHierarchy!) as List;
+        final unitCosts = product.getUnitCostsMap();
+        
+        // البحث عن الوحدة المباعة في النظام الهيراركي
+        for (var unit in hierarchy) {
+          if (unit['unit_name'] == saleUnit) {
+            // إذا وجدت التكلفة محسوبة مسبقاً، استخدمها
+            if (unitCosts.containsKey(saleUnit)) {
+              return unitCosts[saleUnit]!;
+            }
+            
+            // إذا لم تكن محسوبة، احسبها الآن
+            double currentCost = product.costPrice ?? 0.0;
+            for (var hUnit in hierarchy) {
+              if (hUnit['unit_name'] == saleUnit) {
+                break; // توقف عند الوحدة المطلوبة
+              }
+              currentCost = currentCost * (hUnit['quantity'] as int);
+            }
+            return currentCost;
+          }
+        }
+      } catch (e) {
+        print('خطأ في حساب التكلفة الهيراركية: $e');
+      }
+    }
+    
+    // إذا لم يتم العثور على تكلفة هيراركية، استخدم تكلفة القطعة
+    return product.costPrice ?? 0.0;
+  }
+
   void _addInvoiceItem() {
     try {
       if (_formKey.currentState!.validate() &&
@@ -548,12 +589,17 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         } else {
           quantityLargeUnit = inputQuantity;
         }
+        
+        // حساب التكلفة الفعلية بناءً على نوع الوحدة المباعة
+        final actualCostPrice = _calculateActualCostPrice(_selectedProduct!, _selectedUnitForItem, inputQuantity);
+        
         final newItem = InvoiceItem(
           invoiceId: 0,
           productName: _selectedProduct!.name,
           unit: _selectedProduct!.unit,
           unitPrice: _selectedProduct!.unitPrice,
           costPrice: finalItemCostPrice,
+          actualCostPrice: actualCostPrice, // التكلفة الفعلية المحسوبة
           quantityIndividual: quantityIndividual,
           quantityLargeUnit: quantityLargeUnit,
           appliedPrice: finalAppliedPrice,
@@ -815,10 +861,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               ),
             );
             
-            // إنشاء عنصر فاتورة مع التكلفة الفعلية
+            // حساب التكلفة الفعلية بناءً على نوع الوحدة المباعة
+            final actualCostPrice = _calculateActualCostPrice(matchedProduct, item.saleType ?? 'قطعة', item.quantityIndividual ?? item.quantityLargeUnit ?? 0);
+            
+            // إنشاء عنصر فاتورة مع التكلفة الفعلية المحسوبة
             final invoiceItem = item.copyWith(
               invoiceId: invoiceId,
-              actualCostPrice: matchedProduct.costPrice, // التكلفة الفعلية للمنتج في وقت البيع
+              actualCostPrice: actualCostPrice, // التكلفة الفعلية المحسوبة
             );
             
             await _db.insertInvoiceItem(invoiceItem);
@@ -854,10 +903,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               ),
             );
             
-            // إنشاء عنصر فاتورة مع التكلفة الفعلية
+            // حساب التكلفة الفعلية بناءً على نوع الوحدة المباعة
+            final actualCostPrice = _calculateActualCostPrice(matchedProduct, item.saleType ?? 'قطعة', item.quantityIndividual ?? item.quantityLargeUnit ?? 0);
+            
+            // إنشاء عنصر فاتورة مع التكلفة الفعلية المحسوبة
             final invoiceItem = item.copyWith(
               invoiceId: invoiceId,
-              actualCostPrice: matchedProduct.costPrice, // التكلفة الفعلية للمنتج في وقت البيع
+              actualCostPrice: actualCostPrice, // التكلفة الفعلية المحسوبة
             );
             
             await _db.insertInvoiceItem(invoiceItem);

@@ -4,6 +4,7 @@ import '../services/database_service.dart';
 import '../models/product.dart';
 import '../models/invoice_item.dart';
 import 'product_details_screen.dart';
+import 'product_hierarchy_details_screen.dart';
 
 class ProductReportsScreen extends StatefulWidget {
   const ProductReportsScreen({super.key});
@@ -15,12 +16,37 @@ class ProductReportsScreen extends StatefulWidget {
 class _ProductReportsScreenState extends State<ProductReportsScreen> {
   final DatabaseService _databaseService = DatabaseService();
   List<ProductReportData> _products = [];
+  List<ProductReportData> _filteredProducts = [];
   bool _isLoading = true;
+  final TextEditingController _searchController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _loadProductReports();
+    _searchController.addListener(_filterProducts);
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _filterProducts() {
+    final query = _searchController.text.trim().toLowerCase();
+    if (query.isEmpty) {
+      setState(() {
+        _filteredProducts = _products;
+      });
+    } else {
+      setState(() {
+        _filteredProducts = _products.where((product) {
+          return product.product.name.toLowerCase().contains(query) ||
+                 product.product.unit.toLowerCase().contains(query);
+        }).toList();
+      });
+    }
   }
 
   Future<void> _loadProductReports() async {
@@ -42,6 +68,8 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
           totalProfit: salesData['totalProfit'] ?? 0.0,
           totalSales: salesData['totalSales'] ?? 0.0,
           averageSellingPrice: salesData['averageSellingPrice'] ?? 0.0,
+          totalCost: salesData['totalCost'] ?? 0.0,
+          profitMargin: salesData['profitMargin'] ?? 0.0,
         ));
       }
 
@@ -51,6 +79,7 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
 
       setState(() {
         _products = productReports;
+        _filteredProducts = productReports; // Initialize filtered products
         _isLoading = false;
       });
     } catch (e) {
@@ -93,38 +122,71 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
                 color: Color(0xFF4CAF50),
               ),
             )
-          : _products.isEmpty
-              ? const Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.inventory_2,
-                        size: 80,
-                        color: Color(0xFFCCCCCC),
-                      ),
-                      SizedBox(height: 16),
-                      Text(
-                        'لا توجد منتجات لعرضها',
-                        style: TextStyle(
-                          fontSize: 18,
-                          color: Color(0xFF666666),
-                        ),
+          : Column(
+              children: [
+                // حقل البحث
+                Container(
+                  margin: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
                       ),
                     ],
                   ),
-                )
-              : RefreshIndicator(
-                  onRefresh: _loadProductReports,
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: _products.length,
-                    itemBuilder: (context, index) {
-                      final productData = _products[index];
-                      return _buildProductCard(productData);
-                    },
+                  child: TextField(
+                    controller: _searchController,
+                    decoration: const InputDecoration(
+                      hintText: 'البحث في المنتجات...',
+                      border: InputBorder.none,
+                      icon: Icon(Icons.search, color: Color(0xFF4CAF50)),
+                      suffixIcon: Icon(Icons.filter_list, color: Color(0xFF4CAF50)),
+                    ),
+                    style: const TextStyle(fontSize: 16),
                   ),
                 ),
+                // قائمة المنتجات
+                Expanded(
+                  child: _filteredProducts.isEmpty
+                      ? const Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.inventory_2,
+                                size: 80,
+                                color: Color(0xFFCCCCCC),
+                              ),
+                              SizedBox(height: 16),
+                              Text(
+                                'لا توجد منتجات',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  color: Color(0xFF666666),
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      : RefreshIndicator(
+                          onRefresh: _loadProductReports,
+                          child: ListView.builder(
+                            padding: const EdgeInsets.all(16),
+                            itemCount: _filteredProducts.length,
+                            itemBuilder: (context, index) {
+                              final productData = _filteredProducts[index];
+                              return _buildProductCard(productData);
+                            },
+                          ),
+                        ),
+                ),
+              ],
+            ),
     );
   }
 
@@ -232,11 +294,31 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
                 children: [
                   Expanded(
                     child: _buildInfoItem(
+                      icon: Icons.percent,
+                      title: 'نسبة الربح',
+                      value: '${product.profitMargin.toStringAsFixed(1)}%',
+                      color: product.profitMargin >= 0 ? const Color(0xFF4CAF50) : const Color(0xFFF44336),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _buildInfoItem(
+                      icon: Icons.info_outline,
+                      title: 'الوحدة',
+                      value: product.product.unit == 'piece' ? 'قطعة' : 'متر',
+                      color: const Color(0xFF9C27B0),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildInfoItem(
                       icon: Icons.price_change,
-                      title: 'التكلفة',
-                      value: product.product.costPrice != null
-                          ? '${product.product.costPrice!.toStringAsFixed(2)} د.ع'
-                          : 'غير محدد',
+                      title: 'التكلفة الإجمالية',
+                      value: '${product.totalCost.toStringAsFixed(2)} د.ع',
                       color: const Color(0xFFF44336),
                     ),
                   ),
@@ -250,6 +332,33 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
                     ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 16),
+              // زر عرض تفاصيل النظام الهرمي
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => ProductHierarchyDetailsScreen(
+                          product: product.product,
+                        ),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.account_tree),
+                  label: const Text('عرض النظام الهرمي'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF4CAF50),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                ),
               ),
             ],
           ),
@@ -304,6 +413,8 @@ class ProductReportData {
   final double totalProfit;
   final double totalSales;
   final double averageSellingPrice;
+  final double totalCost;
+  final double profitMargin;
 
   ProductReportData({
     required this.product,
@@ -311,5 +422,7 @@ class ProductReportData {
     required this.totalProfit,
     required this.totalSales,
     required this.averageSellingPrice,
+    required this.totalCost,
+    required this.profitMargin,
   });
 }

@@ -14,12 +14,38 @@ class PeopleReportsScreen extends StatefulWidget {
 class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
   final DatabaseService _databaseService = DatabaseService();
   List<PersonReportData> _people = [];
+  List<PersonReportData> _filteredPeople = [];
   bool _isLoading = true;
+  final TextEditingController _searchController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _loadPeopleReports();
+    _searchController.addListener(_filterPeople);
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _filterPeople() {
+    final query = _searchController.text.trim().toLowerCase();
+    if (query.isEmpty) {
+      setState(() {
+        _filteredPeople = _people;
+      });
+    } else {
+      setState(() {
+        _filteredPeople = _people.where((person) {
+          return person.customer.name.toLowerCase().contains(query) ||
+                 person.customer.phone?.toLowerCase().contains(query) == true ||
+                 person.customer.address?.toLowerCase().contains(query) == true;
+        }).toList();
+      });
+    }
   }
 
   Future<void> _loadPeopleReports() async {
@@ -49,6 +75,7 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
 
       setState(() {
         _people = peopleReports;
+        _filteredPeople = peopleReports; // Initialize filtered list
         _isLoading = false;
       });
     } catch (e) {
@@ -91,38 +118,71 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
                 color: Color(0xFF2196F3),
               ),
             )
-          : _people.isEmpty
-              ? const Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.people,
-                        size: 80,
-                        color: Color(0xFFCCCCCC),
-                      ),
-                      SizedBox(height: 16),
-                      Text(
-                        'لا توجد عملاء لعرضهم',
-                        style: TextStyle(
-                          fontSize: 18,
-                          color: Color(0xFF666666),
-                        ),
+          : Column(
+              children: [
+                // حقل البحث
+                Container(
+                  margin: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
                       ),
                     ],
                   ),
-                )
-              : RefreshIndicator(
-                  onRefresh: _loadPeopleReports,
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: _people.length,
-                    itemBuilder: (context, index) {
-                      final personData = _people[index];
-                      return _buildPersonCard(personData);
-                    },
+                  child: TextField(
+                    controller: _searchController,
+                    decoration: const InputDecoration(
+                      hintText: 'البحث في الأشخاص...',
+                      border: InputBorder.none,
+                      icon: Icon(Icons.search, color: Color(0xFF2196F3)),
+                      suffixIcon: Icon(Icons.filter_list, color: Color(0xFF2196F3)),
+                    ),
+                    style: const TextStyle(fontSize: 16),
                   ),
                 ),
+                // قائمة الأشخاص
+                Expanded(
+                  child: _filteredPeople.isEmpty
+                      ? const Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.people,
+                                size: 80,
+                                color: Color(0xFFCCCCCC),
+                              ),
+                              SizedBox(height: 16),
+                              Text(
+                                'لا توجد أشخاص',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  color: Color(0xFF666666),
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      : RefreshIndicator(
+                          onRefresh: _loadPeopleReports,
+                          child: ListView.builder(
+                            padding: const EdgeInsets.all(16),
+                            itemCount: _filteredPeople.length,
+                            itemBuilder: (context, index) {
+                              final personData = _filteredPeople[index];
+                              return _buildPersonCard(personData);
+                            },
+                          ),
+                        ),
+                ),
+              ],
+            ),
     );
   }
 

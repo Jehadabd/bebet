@@ -1,5 +1,9 @@
 // screens/product_entry_screen.dart
-// screens/product_entry_screen.dart
+// نظام التكلفة الهيراركي التلقائي:
+// - المستخدم يدخل فقط تكلفة القطعة الواحدة
+// - النظام يحسب تلقائياً تكلفة الباكيت = تكلفة القطعة × عدد القطع في الباكيت
+// - النظام يحسب تلقائياً تكلفة الكرتون = تكلفة الباكيت × عدد الباكيتات في الكرتون
+// - وهكذا لكل مستوى في الهيراركي
 import 'package:flutter/material.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
@@ -29,6 +33,12 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
 
   final DatabaseService _db = DatabaseService();
 
+  @override
+  void initState() {
+    super.initState();
+    _updateUnitCostControllers();
+  }
+
   // --- وحدة هرمية الوحدات ---
   List<Map<String, dynamic>> _unitHierarchyList = [];
   final List<String> _allUnitOptions = [
@@ -41,15 +51,86 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
   ];
   final List<String> _terminalUnits = ['كرتون', 'صندوق', 'ربطة'];
 
+  // --- تكلفة الوحدات ---
+  Map<String, TextEditingController> _unitCostControllers = {};
+
   void _addUnitHierarchyRow() {
     setState(() {
       _unitHierarchyList.add({'unit_name': null, 'quantity': null});
+      _updateUnitCostControllers();
     });
+  }
+
+  void _updateUnitCostControllers() {
+    // إزالة المتحكمات القديمة
+    for (var controller in _unitCostControllers.values) {
+      controller.dispose();
+    }
+    _unitCostControllers.clear();
+
+    // إضافة متحكم للوحدة الأساسية
+    _unitCostControllers['قطعة'] = TextEditingController(
+      text: _costPriceController.text.isEmpty ? '' : _costPriceController.text,
+    );
+
+    // إضافة متحكمات للوحدات الإضافية (سيتم حسابها تلقائياً)
+    for (var item in _unitHierarchyList) {
+      if (item['unit_name'] != null) {
+        _unitCostControllers[item['unit_name']] = TextEditingController();
+      }
+    }
+    
+    // حساب التكلفة تلقائياً
+    _calculateUnitCosts();
+  }
+
+  // دالة حساب التكلفة تلقائياً
+  void _calculateUnitCosts() {
+    if (_costPriceController.text.trim().isEmpty) return;
+    
+    final baseCost = double.tryParse(_costPriceController.text.trim());
+    if (baseCost == null) return;
+
+    double currentCost = baseCost;
+    
+    for (var item in _unitHierarchyList) {
+      if (item['unit_name'] != null && item['quantity'] != null) {
+        final quantity = int.tryParse(item['quantity'].toString());
+        if (quantity != null && quantity > 0) {
+          currentCost = currentCost * quantity;
+          
+          // تحديث المتحكم مع التكلفة المحسوبة
+          final controller = _unitCostControllers[item['unit_name']];
+          if (controller != null) {
+            controller.text = currentCost.toStringAsFixed(2);
+          }
+        }
+      }
+    }
+  }
+
+  String? _buildUnitCostsJson() {
+    final unitCostsMap = <String, double>{};
+    
+    // إضافة تكلفة الوحدة الأساسية
+    if (_costPriceController.text.trim().isNotEmpty) {
+      unitCostsMap['قطعة'] = double.tryParse(_costPriceController.text.trim()) ?? 0.0;
+    }
+
+    // إضافة تكلفة الوحدات الإضافية (المحسوبة تلقائياً)
+    for (var entry in _unitCostControllers.entries) {
+      if (entry.key != 'قطعة' && entry.value.text.trim().isNotEmpty) {
+        unitCostsMap[entry.key] = double.tryParse(entry.value.text.trim()) ?? 0.0;
+      }
+    }
+
+    return unitCostsMap.isEmpty ? null : jsonEncode(unitCostsMap);
   }
 
   void _removeUnitHierarchyRow(int index) {
     setState(() {
       _unitHierarchyList.removeAt(index);
+      _updateUnitCostControllers();
     });
   }
 
@@ -80,6 +161,12 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
     _price3Controller.dispose();
     _price4Controller.dispose();
     _price5Controller.dispose();
+    
+    // إزالة متحكمات التكلفة
+    for (var controller in _unitCostControllers.values) {
+      controller.dispose();
+    }
+    
     super.dispose();
   }
 
@@ -201,6 +288,7 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
         createdAt: DateTime.now(),
         lastModifiedAt: DateTime.now(),
         unitHierarchy: unitHierarchyJson,
+        unitCosts: _buildUnitCostsJson(),
       );
       final allProducts = await _db.getAllProducts();
       final inputNameForCompare = normalizeProductNameForCompare(inputName);
@@ -489,21 +577,24 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                                                         .bodyMedium),
                                               ))
                                           .toList(),
-                                      onChanged: (val) {
-                                        setState(() {
-                                          _unitHierarchyList[idx]['unit_name'] =
-                                              val;
-                                          if (val != null &&
-                                              _terminalUnits.contains(val) &&
-                                              idx <
-                                                  _unitHierarchyList.length -
-                                                      1) {
-                                            _unitHierarchyList.removeRange(
-                                                idx + 1,
-                                                _unitHierarchyList.length);
-                                          }
-                                        });
-                                      },
+                                                                              onChanged: (val) {
+                                          setState(() {
+                                            _unitHierarchyList[idx]['unit_name'] =
+                                                val;
+                                            if (val != null &&
+                                                _terminalUnits.contains(val) &&
+                                                idx <
+                                                    _unitHierarchyList.length -
+                                                        1) {
+                                              _unitHierarchyList.removeRange(
+                                                  idx + 1,
+                                                  _unitHierarchyList.length);
+                                            }
+                                            _updateUnitCostControllers();
+                                            // حساب التكلفة تلقائياً بعد تحديث المتحكمات
+                                            _calculateUnitCosts();
+                                          });
+                                        },
                                       validator: (val) {
                                         if (val == null || val.isEmpty) {
                                           return 'اختر اسم الوحدة';
@@ -528,6 +619,8 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                                       onChanged: (val) {
                                         _unitHierarchyList[idx]['quantity'] =
                                             val;
+                                        // حساب التكلفة تلقائياً عند تغيير الكمية
+                                        _calculateUnitCosts();
                                       },
                                       validator: (val) {
                                         if (val == null || val.isEmpty) {
@@ -555,6 +648,104 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                           ),
                         );
                       }).toList(),
+                      
+                      // عرض التكلفة المحسوبة تلقائياً
+                      if (_unitHierarchyList.isNotEmpty) ...[
+                        const SizedBox(height: 20.0),
+                        Text(
+                          'التكلفة المحسوبة تلقائياً:',
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            color: Theme.of(context).colorScheme.primary,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 12.0),
+                        // تكلفة الوحدة الأساسية
+                        Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(16.0),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  flex: 2,
+                                  child: Text(
+                                    'قطعة',
+                                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  flex: 2,
+                                  child: TextFormField(
+                                    controller: _costPriceController,
+                                    decoration: const InputDecoration(
+                                      labelText: 'التكلفة',
+                                      isDense: true,
+                                      contentPadding: EdgeInsets.symmetric(
+                                        vertical: 12.0, horizontal: 10.0,
+                                      ),
+                                    ),
+                                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                    onChanged: (value) {
+                                      setState(() {
+                                        _calculateUnitCosts();
+                                      });
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        // عرض التكلفة المحسوبة للوحدات الإضافية
+                        ..._unitHierarchyList.asMap().entries.map((entry) {
+                          int idx = entry.key;
+                          var row = entry.value;
+                          if (row['unit_name'] == null) return const SizedBox.shrink();
+                          
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 12.0),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  flex: 2,
+                                  child: Text(
+                                    row['unit_name'],
+                                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  flex: 2,
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 12.0, horizontal: 10.0,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.grey[100],
+                                      borderRadius: BorderRadius.circular(8.0),
+                                      border: Border.all(color: Colors.grey[300]!),
+                                    ),
+                                    child: Text(
+                                      _unitCostControllers[row['unit_name']]?.text.isEmpty == true 
+                                          ? '0.00' 
+                                          : _unitCostControllers[row['unit_name']]?.text ?? '0.00',
+                                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                        color: Theme.of(context).colorScheme.primary,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                      ],
                       if (_canAddMoreUnits)
                         Align(
                           alignment: Alignment.centerLeft,

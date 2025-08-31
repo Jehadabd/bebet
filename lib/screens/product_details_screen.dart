@@ -220,9 +220,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                 child: _buildHeaderInfo(
                   icon: Icons.trending_up,
                   title: 'الربح المتوقع',
-                  value: widget.product.costPrice != null
-                      ? '${(_averageSellingPrice - widget.product.costPrice!).toStringAsFixed(2)} د.ع'
-                      : 'غير محدد',
+                  value: _calculateExpectedProfit(),
                   color: const Color(0xFF4CAF50),
                 ),
               ),
@@ -231,9 +229,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                 child: _buildHeaderInfo(
                   icon: Icons.percent,
                   title: 'نسبة الربح',
-                  value: widget.product.costPrice != null && widget.product.costPrice! > 0
-                      ? '${(((_averageSellingPrice - widget.product.costPrice!) / widget.product.costPrice!) * 100).toStringAsFixed(1)}%'
-                      : 'غير محدد',
+                  value: _calculateProfitPercentage(),
                   color: const Color(0xFF9C27B0),
                 ),
               ),
@@ -242,6 +238,50 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
         ],
       ),
     );
+  }
+
+  // حساب الربح المتوقع بناءً على البيانات الفعلية
+  String _calculateExpectedProfit() {
+    if (_yearlyProfit.isEmpty) return 'غير محدد';
+    
+    // حساب إجمالي الربح من جميع السنوات
+    double totalProfit = 0.0;
+    double totalQuantity = 0.0;
+    
+    for (int year in _yearlySales.keys) {
+      totalProfit += _yearlyProfit[year] ?? 0.0;
+      totalQuantity += _yearlySales[year] ?? 0.0;
+    }
+    
+    if (totalQuantity > 0) {
+      return '${(totalProfit / totalQuantity).toStringAsFixed(2)} د.ع';
+    }
+    
+    return 'غير محدد';
+  }
+
+  // حساب نسبة الربح بناءً على البيانات الفعلية
+  String _calculateProfitPercentage() {
+    if (_yearlyProfit.isEmpty || widget.product.costPrice == null || widget.product.costPrice! <= 0) {
+      return 'غير محدد';
+    }
+    
+    // حساب إجمالي الربح من جميع السنوات
+    double totalProfit = 0.0;
+    double totalQuantity = 0.0;
+    
+    for (int year in _yearlySales.keys) {
+      totalProfit += _yearlyProfit[year] ?? 0.0;
+      totalQuantity += _yearlySales[year] ?? 0.0;
+    }
+    
+    if (totalQuantity > 0) {
+      double profitPerUnit = totalProfit / totalQuantity;
+      double percentage = (profitPerUnit / widget.product.costPrice!) * 100;
+      return '${percentage.toStringAsFixed(1)}%';
+    }
+    
+    return 'غير محدد';
   }
 
   Widget _buildHeaderInfo({

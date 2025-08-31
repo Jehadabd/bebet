@@ -1,4 +1,6 @@
 // models/product.dart
+import 'dart:convert';
+
 class Product {
   final int? id;
   final String name;
@@ -13,6 +15,7 @@ class Product {
   final double? price4;
   final double? price5;
   final String? unitHierarchy; // JSON string representing the unit hierarchy
+  final String? unitCosts; // JSON string representing costs for each unit level
   final DateTime createdAt;
   final DateTime lastModifiedAt;
 
@@ -30,6 +33,7 @@ class Product {
     this.price4,
     this.price5,
     this.unitHierarchy,
+    this.unitCosts,
     required this.createdAt,
     required this.lastModifiedAt,
   });
@@ -49,6 +53,7 @@ class Product {
       'price4': price4,
       'price5': price5,
       'unit_hierarchy': unitHierarchy,
+      'unit_costs': unitCosts,
       'created_at': createdAt.toIso8601String(),
       'last_modified_at': lastModifiedAt.toIso8601String(),
     };
@@ -69,6 +74,7 @@ class Product {
       price4: map['price4'] as double?,
       price5: map['price5'] as double?,
       unitHierarchy: map['unit_hierarchy'] as String?,
+      unitCosts: map['unit_costs'] as String?,
       createdAt: DateTime.parse(map['created_at'] as String),
       lastModifiedAt: DateTime.parse(map['last_modified_at'] as String),
     );
@@ -89,6 +95,7 @@ class Product {
     double? price4,
     double? price5,
     String? unitHierarchy,
+    String? unitCosts,
     DateTime? createdAt,
     DateTime? lastModifiedAt,
   }) {
@@ -106,8 +113,52 @@ class Product {
       price4: price4 ?? this.price4,
       price5: price5 ?? this.price5,
       unitHierarchy: unitHierarchy ?? this.unitHierarchy,
+      unitCosts: unitCosts ?? this.unitCosts,
       createdAt: createdAt ?? this.createdAt,
       lastModifiedAt: lastModifiedAt ?? this.lastModifiedAt,
     );
+  }
+
+  // Helper methods for unit hierarchy and costs
+  List<Map<String, dynamic>> getUnitHierarchyList() {
+    if (unitHierarchy == null || unitHierarchy!.isEmpty) return [];
+    try {
+      return List<Map<String, dynamic>>.from(
+        jsonDecode(unitHierarchy!) as List,
+      );
+    } catch (e) {
+      print('Error parsing unit hierarchy: $e');
+      return [];
+    }
+  }
+
+  Map<String, double> getUnitCostsMap() {
+    if (unitCosts == null || unitCosts!.isEmpty) return {};
+    try {
+      return Map<String, double>.from(
+        jsonDecode(unitCosts!) as Map,
+      );
+    } catch (e) {
+      print('Error parsing unit costs: $e');
+      return {};
+    }
+  }
+
+  // Calculate cost for a specific unit level
+  double? getCostForUnit(String unitName) {
+    final costs = getUnitCostsMap();
+    return costs[unitName];
+  }
+
+  // Get all available unit levels including base unit
+  List<String> getAllUnitLevels() {
+    final levels = [unit]; // Start with base unit
+    final hierarchy = getUnitHierarchyList();
+    for (var item in hierarchy) {
+      if (item['unit_name'] != null) {
+        levels.add(item['unit_name'] as String);
+      }
+    }
+    return levels;
   }
 }
