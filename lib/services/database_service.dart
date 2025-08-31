@@ -1905,7 +1905,13 @@ class DatabaseService {
         }
         
         totalQuantity += currentItemTotalQuantity;
-        totalCost += costPrice * currentItemTotalQuantity;
+        
+        // حساب التكلفة الإجمالية بناءً على الوحدات المباعة
+        if (quantityLargeUnit > 0) {
+          totalCost += costPrice * quantityLargeUnit;
+        } else {
+          totalCost += costPrice * quantityIndividual;
+        }
         
         // حساب الربح والمبيعات بناءً على الوحدة المباعة نفسها
         if (quantityLargeUnit > 0) {
@@ -1947,7 +1953,7 @@ class DatabaseService {
           strftime('%Y', i.invoice_date) as year,
           SUM(CASE 
                 WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                  THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                  THEN ii.quantity_large_unit
                 ELSE COALESCE(ii.quantity_individual, 0.0)
               END) as total_quantity
         FROM invoice_items ii
@@ -1980,7 +1986,7 @@ class DatabaseService {
           strftime('%m', i.invoice_date) as month,
           SUM(CASE 
                 WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                  THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                  THEN ii.quantity_large_unit
                 ELSE COALESCE(ii.quantity_individual, 0.0)
               END) as total_quantity
         FROM invoice_items ii
@@ -2057,9 +2063,18 @@ class DatabaseService {
           final costPrice = (item['actual_cost_price'] ?? 
                             item['cost_price'] ?? 
                             item['product_cost_price'] ?? 0.0) as double;
+          
+          // إضافة الكمية الإجمالية (بالوحدات الأساسية) للمعرض
           totalQuantity += currentItemTotalQuantity;
-          totalSelling += sellingPrice * currentItemTotalQuantity;
-          totalCost += costPrice * currentItemTotalQuantity;
+          
+          // حساب المبيعات والتكلفة بناءً على الوحدات المباعة
+          if (quantityLargeUnit > 0) {
+            totalSelling += sellingPrice * quantityLargeUnit;
+            totalCost += costPrice * quantityLargeUnit;
+          } else {
+            totalSelling += sellingPrice * quantityIndividual;
+            totalCost += costPrice * quantityIndividual;
+          }
         }
 
         final double avgSellingPrice =
@@ -2109,13 +2124,13 @@ class DatabaseService {
         SELECT 
           SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
               (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    THEN ii.quantity_large_unit
                     ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_profit,
           SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    THEN ii.quantity_large_unit
                     ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_selling_price,
           SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    THEN ii.quantity_large_unit
                     ELSE COALESCE(ii.quantity_individual, 0.0) END) as total_quantity
         FROM invoices i
         JOIN invoice_items ii ON i.id = ii.invoice_id
@@ -2167,7 +2182,7 @@ class DatabaseService {
                     THEN ii.quantity_large_unit
                     ELSE ii.quantity_individual END)) as total_selling_price,
           SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    THEN ii.quantity_large_unit
                     ELSE ii.quantity_individual END) as total_quantity
         FROM invoices i
         LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
@@ -2225,7 +2240,7 @@ class DatabaseService {
                     THEN ii.quantity_large_unit
                     ELSE ii.quantity_individual END)) as total_selling_price,
           SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
+                    THEN ii.quantity_large_unit
                     ELSE COALESCE(ii.quantity_individual, 0.0) END) as total_quantity
         FROM invoices i
         LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
@@ -2425,13 +2440,24 @@ class DatabaseService {
               (item['quantity_large_unit'] ?? 0.0) as double;
           final double unitsInLargeUnit =
               (item['units_in_large_unit'] ?? 1.0) as double;
-          final double quantity = quantityLargeUnit > 0
+          
+          // حساب الكمية الإجمالية (بالوحدات الأساسية) للمعرض
+          final double currentItemTotalQuantity = quantityLargeUnit > 0
               ? (quantityLargeUnit * unitsInLargeUnit)
               : quantityIndividual;
-          totalSelling += sellingPrice * quantity;
-          totalCost += costPrice * quantity;
-          totalProfit += (sellingPrice - costPrice) * quantity;
-          totalQuantity += quantity;
+          
+          // حساب المبيعات والتكلفة بناءً على الوحدات المباعة
+          if (quantityLargeUnit > 0) {
+            totalSelling += sellingPrice * quantityLargeUnit;
+            totalCost += costPrice * quantityLargeUnit;
+            totalProfit += (sellingPrice - costPrice) * quantityLargeUnit;
+          } else {
+            totalSelling += sellingPrice * quantityIndividual;
+            totalCost += costPrice * quantityIndividual;
+            totalProfit += (sellingPrice - costPrice) * quantityIndividual;
+          }
+          
+          totalQuantity += currentItemTotalQuantity;
         }
         final invoice = Invoice.fromMap(items.first);
         final double avgSellingPrice =
