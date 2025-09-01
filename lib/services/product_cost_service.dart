@@ -38,7 +38,7 @@ class ProductCostService {
       // البحث عن الوحدة في التسلسل الهرمي
       for (var item in hierarchy) {
         if (item['unit_name'] == saleUnit) {
-          multiplier = (item['quantity'] as int).toDouble();
+          multiplier = (item['quantity'] as num).toDouble();
           break;
         }
       }
@@ -132,7 +132,7 @@ class ProductCostService {
       for (var item in hierarchy) {
         if (item['unit_name'] != null && item['quantity'] != null) {
           final unitName = item['unit_name'] as String;
-          final quantity = item['quantity'] as int;
+          final quantity = (item['quantity'] as num).toInt();
           updatedCosts[unitName] = baseCost * quantity;
         }
       }
@@ -156,7 +156,7 @@ class ProductCostService {
       for (var item in hierarchy) {
         if (item['unit_name'] != null && item['quantity'] != null) {
           final unitName = item['unit_name'] as String;
-          final quantity = item['quantity'] as int;
+          final quantity = (item['quantity'] as num).toInt();
           final expectedCost = costs['قطعة']! * quantity;
           
           // التحقق من أن التكلفة المدخلة صحيحة أو فارغة

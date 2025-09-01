@@ -226,8 +226,11 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
   Future<void> _saveProduct() async {
     if (_formKey.currentState!.validate()) {
       final inputName = _nameController.text.trim();
+      
       // --- تحويل هرمية الوحدات إلى JSON ---
       String? unitHierarchyJson;
+      String? unitCostsJson;
+      
       if (_selectedUnit == 'piece' && _unitHierarchyList.isNotEmpty) {
         final filtered = _unitHierarchyList
             .where((row) =>
@@ -242,9 +245,33 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                     'quantity': int.tryParse(row['quantity'].toString()) ?? 0,
                   })
               .toList());
+          unitCostsJson = _buildUnitCostsJson();
+        }
+      } else if (_selectedUnit == 'meter' && _lengthPerUnitController.text.trim().isNotEmpty) {
+        // بناء التسلسل الهرمي التلقائي للمنتجات المباعة بالمتر
+        final lengthPerUnit = double.tryParse(_lengthPerUnitController.text.trim());
+        if (lengthPerUnit != null && lengthPerUnit > 0) {
+          unitHierarchyJson = json.encode([
+            {
+              'unit_name': 'لفة',
+              'quantity': lengthPerUnit,
+            }
+          ]);
+          
+          // بناء تكلفة الوحدات التلقائية
+          final costPrice = double.tryParse(_costPriceController.text.trim()) ?? 0.0;
+          if (costPrice > 0) {
+            unitCostsJson = json.encode({
+              'متر': costPrice,
+              'لفة': costPrice * lengthPerUnit,
+            });
+          }
         }
       }
+      
       print('DEBUG: unitHierarchyJson = $unitHierarchyJson'); // طباعة تتبع
+      print('DEBUG: unitCostsJson = $unitCostsJson'); // طباعة تتبع
+      
       if (_selectedUnit == 'piece' &&
           (_unitHierarchyList.isNotEmpty &&
               (unitHierarchyJson == null || unitHierarchyJson == '[]'))) {
@@ -259,6 +286,22 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
         );
         return;
       }
+      
+      if (_selectedUnit == 'meter' &&
+          _lengthPerUnitController.text.trim().isNotEmpty &&
+          (unitHierarchyJson == null || unitCostsJson == null)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content:
+                const Text('يرجى إدخال تكلفة المتر وطول اللفة بشكل صحيح!'),
+            backgroundColor: Theme.of(context)
+                .colorScheme
+                .error,
+          ),
+        );
+        return;
+      }
+      
       final newProduct = Product(
         name: inputName,
         unit: _selectedUnit,
@@ -288,7 +331,7 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
         createdAt: DateTime.now(),
         lastModifiedAt: DateTime.now(),
         unitHierarchy: unitHierarchyJson,
-        unitCosts: _buildUnitCostsJson(),
+        unitCosts: unitCostsJson,
       );
       final allProducts = await _db.getAllProducts();
       final inputNameForCompare = normalizeProductNameForCompare(inputName);
@@ -327,6 +370,7 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
         _price5Controller.clear();
         setState(() {
           _selectedUnit = 'piece';
+          _unitHierarchyList.clear();
           // لا يتم مسح _unitHierarchyList هنا للحفاظ على السلوك الأصلي للواجهة.
         });
       } catch (e) {

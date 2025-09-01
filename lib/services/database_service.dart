@@ -65,9 +65,9 @@ class DatabaseService {
       for (var item in hierarchy) {
         if (item['unit_name'] == saleUnit) {
           // حساب التكلفة من الوحدة الأساسية
-          final baseCost = costs['قطعة'];
+          final baseCost = costs['قطعة'] ?? costs['متر'];
           if (baseCost != null) {
-            final multiplier = (item['quantity'] as int).toDouble();
+            final multiplier = (item['quantity'] as num).toDouble();
             return baseCost * multiplier;
           }
         }
@@ -1849,7 +1849,8 @@ class DatabaseService {
           p.cost_price as product_cost_price,
           p.unit_hierarchy,
           p.unit_costs,
-          p.unit
+          p.unit,
+          p.length_per_unit
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         JOIN products p ON ii.product_name = p.name
@@ -1875,11 +1876,11 @@ class DatabaseService {
         double currentItemTotalQuantity = 0.0;
         
         if (quantityLargeUnit > 0) {
-          // البيع بوحدة كبيرة (كرتون، باكيت، إلخ)
+          // البيع بوحدة كبيرة (كرتون، باكيت، لفة، إلخ)
           currentItemTotalQuantity = quantityLargeUnit * unitsInLargeUnit;
           saleUnit = item['sale_type'] ?? 'قطعة';
         } else {
-          // البيع بالقطعة
+          // البيع بالقطعة أو المتر
           currentItemTotalQuantity = quantityIndividual;
           saleUnit = item['unit'] ?? 'قطعة';
         }
@@ -1902,6 +1903,20 @@ class DatabaseService {
             saleUnit,
             currentItemTotalQuantity,
           );
+          
+          // إذا لم يتم العثور على التكلفة من النظام الهرمي، استخدم التكلفة الأساسية
+          if (costPrice == 0.0) {
+            final productUnit = item['unit'] as String;
+            final productCostPrice = (item['product_cost_price'] ?? 0.0) as double;
+            
+            if (productUnit == 'meter' && saleUnit == 'لفة') {
+              // للمنتجات المباعة بالمتر، احسب تكلفة اللفة
+              final lengthPerUnit = (item['length_per_unit'] ?? 1.0) as double;
+              costPrice = productCostPrice * lengthPerUnit;
+            } else {
+              costPrice = productCostPrice;
+            }
+          }
         }
         
         totalQuantity += currentItemTotalQuantity;
@@ -1915,12 +1930,12 @@ class DatabaseService {
         
         // حساب الربح والمبيعات بناءً على الوحدة المباعة نفسها
         if (quantityLargeUnit > 0) {
-          // البيع بوحدة كبيرة (كرتون، باكيت، إلخ)
+          // البيع بوحدة كبيرة (كرتون، باكيت، لفة، إلخ)
           totalProfit += (sellingPrice - costPrice) * quantityLargeUnit;
           totalSales += sellingPrice * quantityLargeUnit;
           averageSellingPrice += sellingPrice * quantityLargeUnit;
         } else {
-          // البيع بالقطعة
+          // البيع بالقطعة أو المتر
           totalProfit += (sellingPrice - costPrice) * quantityIndividual;
           totalSales += sellingPrice * quantityIndividual;
           averageSellingPrice += sellingPrice * quantityIndividual;
@@ -2336,7 +2351,11 @@ class DatabaseService {
                     ELSE ii.quantity_individual END)) as total_selling_price,
           SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
                     THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
-                    ELSE ii.quantity_individual END) as total_quantity
+                    ELSE ii.quantity_individual END) as total_quantity,
+          p.unit,
+          p.length_per_unit,
+          p.unit_hierarchy,
+          p.unit_costs
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         JOIN products p ON ii.product_name = p.name
@@ -2348,7 +2367,64 @@ class DatabaseService {
       final Map<int, double> yearlyProfit = {};
       for (final map in maps) {
         final year = int.parse(map['year'] as String);
-        final profit = (map['total_profit'] ?? 0.0) as double;
+        double profit = (map['total_profit'] ?? 0.0) as double;
+        
+        // تصحيح الربح للمنتجات المباعة بالمتر
+        final productUnit = map['unit'] as String;
+        if (productUnit == 'meter') {
+          // إعادة حساب الربح باستخدام النظام الهرمي
+          final unitHierarchy = map['unit_hierarchy'] as String?;
+          final unitCosts = map['unit_costs'] as String?;
+          
+          if (unitHierarchy != null && unitCosts != null) {
+            // جلب تفاصيل البنود لهذا العام
+            final List<Map<String, dynamic>> itemMaps = await db.rawQuery('''
+              SELECT 
+                ii.quantity_individual,
+                ii.quantity_large_unit,
+                ii.units_in_large_unit,
+                ii.applied_price,
+                ii.sale_type,
+                p.cost_price as product_cost_price
+              FROM invoice_items ii
+              JOIN invoices i ON ii.invoice_id = i.id
+              JOIN products p ON ii.product_name = p.name
+              WHERE p.id = ? AND strftime('%Y', i.invoice_date) = ? AND i.status = 'محفوظة'
+            ''', [productId, year.toString()]);
+            
+            double correctedProfit = 0.0;
+            for (final item in itemMaps) {
+              final double quantityIndividual = (item['quantity_individual'] ?? 0.0) as double;
+              final double quantityLargeUnit = (item['quantity_large_unit'] ?? 0.0) as double;
+              final double unitsInLargeUnit = (item['units_in_large_unit'] ?? 1.0) as double;
+              final double sellingPrice = (item['applied_price'] ?? 0.0) as double;
+              final String saleType = (item['sale_type'] ?? 'متر') as String;
+              
+              double costPrice = 0.0;
+              if (saleType == 'متر') {
+                costPrice = (item['product_cost_price'] ?? 0.0) as double;
+              } else if (saleType == 'لفة') {
+                // حساب تكلفة اللفة من النظام الهرمي
+                costPrice = _calculateCostFromHierarchy(unitHierarchy, unitCosts, 'لفة', 1.0);
+                if (costPrice == 0.0) {
+                  // إذا لم يتم العثور على التكلفة، احسبها يدوياً
+                  final productCostPrice = (item['product_cost_price'] ?? 0.0) as double;
+                  final lengthPerUnit = (map['length_per_unit'] ?? 1.0) as double;
+                  costPrice = productCostPrice * lengthPerUnit;
+                }
+              }
+              
+              if (quantityLargeUnit > 0) {
+                correctedProfit += (sellingPrice - costPrice) * quantityLargeUnit;
+              } else {
+                correctedProfit += (sellingPrice - costPrice) * quantityIndividual;
+              }
+            }
+            
+            profit = correctedProfit;
+          }
+        }
+        
         yearlyProfit[year] = profit;
       }
       return yearlyProfit;
@@ -2374,7 +2450,11 @@ class DatabaseService {
                     ELSE ii.quantity_individual END)) as total_selling_price,
           SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
                     THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
-                    ELSE ii.quantity_individual END) as total_quantity
+                    ELSE ii.quantity_individual END) as total_quantity,
+          p.unit,
+          p.length_per_unit,
+          p.unit_hierarchy,
+          p.unit_costs
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         JOIN products p ON ii.product_name = p.name
@@ -2386,7 +2466,64 @@ class DatabaseService {
       final Map<int, double> monthlyProfit = {};
       for (final map in maps) {
         final month = int.parse(map['month'] as String);
-        final profit = (map['total_profit'] ?? 0.0) as double;
+        double profit = (map['total_profit'] ?? 0.0) as double;
+        
+        // تصحيح الربح للمنتجات المباعة بالمتر
+        final productUnit = map['unit'] as String;
+        if (productUnit == 'meter') {
+          // إعادة حساب الربح باستخدام النظام الهرمي
+          final unitHierarchy = map['unit_hierarchy'] as String?;
+          final unitCosts = map['unit_costs'] as String?;
+          
+          if (unitHierarchy != null && unitCosts != null) {
+            // جلب تفاصيل البنود لهذا الشهر
+            final List<Map<String, dynamic>> itemMaps = await db.rawQuery('''
+              SELECT 
+                ii.quantity_individual,
+                ii.quantity_large_unit,
+                ii.units_in_large_unit,
+                ii.applied_price,
+                ii.sale_type,
+                p.cost_price as product_cost_price
+              FROM invoice_items ii
+              JOIN invoices i ON ii.invoice_id = i.id
+              JOIN products p ON ii.product_name = p.name
+              WHERE p.id = ? AND strftime('%Y', i.invoice_date) = ? AND strftime('%m', i.invoice_date) = ? AND i.status = 'محفوظة'
+            ''', [productId, year.toString(), month.toString().padLeft(2, '0')]);
+            
+            double correctedProfit = 0.0;
+            for (final item in itemMaps) {
+              final double quantityIndividual = (item['quantity_individual'] ?? 0.0) as double;
+              final double quantityLargeUnit = (item['quantity_large_unit'] ?? 0.0) as double;
+              final double unitsInLargeUnit = (item['units_in_large_unit'] ?? 1.0) as double;
+              final double sellingPrice = (item['applied_price'] ?? 0.0) as double;
+              final String saleType = (item['sale_type'] ?? 'متر') as String;
+              
+              double costPrice = 0.0;
+              if (saleType == 'متر') {
+                costPrice = (item['product_cost_price'] ?? 0.0) as double;
+              } else if (saleType == 'لفة') {
+                // حساب تكلفة اللفة من النظام الهرمي
+                costPrice = _calculateCostFromHierarchy(unitHierarchy, unitCosts, 'لفة', 1.0);
+                if (costPrice == 0.0) {
+                  // إذا لم يتم العثور على التكلفة، احسبها يدوياً
+                  final productCostPrice = (item['product_cost_price'] ?? 0.0) as double;
+                  final lengthPerUnit = (map['length_per_unit'] ?? 1.0) as double;
+                  costPrice = productCostPrice * lengthPerUnit;
+                }
+              }
+              
+              if (quantityLargeUnit > 0) {
+                correctedProfit += (sellingPrice - costPrice) * quantityLargeUnit;
+              } else {
+                correctedProfit += (sellingPrice - costPrice) * quantityIndividual;
+              }
+            }
+            
+            profit = correctedProfit;
+          }
+        }
+        
         monthlyProfit[month] = profit;
       }
       return monthlyProfit;

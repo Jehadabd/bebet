@@ -161,9 +161,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 json.decode(product.unitHierarchy!.replaceAll("'", '"'));
             for (var unit in hierarchy) {
               if ((unit['unit_name'] ?? unit['name']) == newType) {
-                conversionFactor = unit['quantity'] is int
-                    ? (unit['quantity'] as int).toDouble()
-                    : double.tryParse(unit['quantity'].toString()) ?? 1.0;
+                conversionFactor = (unit['quantity'] as num).toDouble();
                 break;
               }
             }

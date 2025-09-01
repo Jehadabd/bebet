@@ -13,6 +13,7 @@ class ReceiptVoucherPdfService {
     required double afterPayment,
     required DateTime dateTime,
     required pw.Font font,
+    
     required pw.Font alnaserFont,
     required pw.MemoryImage logoImage,
   }) async {

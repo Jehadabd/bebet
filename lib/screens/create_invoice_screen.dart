@@ -497,7 +497,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               if (hUnit['unit_name'] == saleUnit) {
                 break; // توقف عند الوحدة المطلوبة
               }
-              currentCost = currentCost * (hUnit['quantity'] as int);
+              currentCost = currentCost * (hUnit['quantity'] as num);
             }
             return currentCost;
           }
@@ -3151,9 +3151,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 json.decode(product.unitHierarchy!.replaceAll("'", '"'));
             for (var unit in hierarchy) {
               if ((unit['unit_name'] ?? unit['name']) == newType) {
-                conversionFactor = unit['quantity'] is int
-                    ? (unit['quantity'] as int).toDouble()
-                    : double.tryParse(unit['quantity'].toString()) ?? 1.0;
+                conversionFactor = (unit['quantity'] as num).toDouble();
                 break;
               }
             }

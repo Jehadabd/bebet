@@ -64,15 +64,15 @@ class Product {
       id: map['id'] as int?,
       name: map['name'] as String,
       unit: map['unit'] as String,
-      unitPrice: map['unit_price'] as double,
-      costPrice: map['cost_price'] as double?,
-      piecesPerUnit: map['pieces_per_unit'] as int?,
-      lengthPerUnit: map['length_per_unit'] as double?,
-      price1: map['price1'] as double,
-      price2: map['price2'] as double?,
-      price3: map['price3'] as double?,
-      price4: map['price4'] as double?,
-      price5: map['price5'] as double?,
+      unitPrice: (map['unit_price'] as num).toDouble(), // More robust parsing
+      costPrice: (map['cost_price'] as num?)?.toDouble(),
+      piecesPerUnit: (map['pieces_per_unit'] as num?)?.toInt(), // Fix: Convert num to int safely
+      lengthPerUnit: (map['length_per_unit'] as num?)?.toDouble(),
+      price1: (map['price1'] as num).toDouble(),
+      price2: (map['price2'] as num?)?.toDouble(),
+      price3: (map['price3'] as num?)?.toDouble(),
+      price4: (map['price4'] as num?)?.toDouble(),
+      price5: (map['price5'] as num?)?.toDouble(),
       unitHierarchy: map['unit_hierarchy'] as String?,
       unitCosts: map['unit_costs'] as String?,
       createdAt: DateTime.parse(map['created_at'] as String),
@@ -135,9 +135,9 @@ class Product {
   Map<String, double> getUnitCostsMap() {
     if (unitCosts == null || unitCosts!.isEmpty) return {};
     try {
-      return Map<String, double>.from(
-        jsonDecode(unitCosts!) as Map,
-      );
+      // jsonDecode يرجع Map<String, dynamic>، لذا نحتاج إلى تحويل القيم إلى double
+      final decodedMap = jsonDecode(unitCosts!) as Map<String, dynamic>;
+      return decodedMap.map((key, value) => MapEntry(key, (value as num).toDouble()));
     } catch (e) {
       print('Error parsing unit costs: $e');
       return {};
@@ -160,5 +160,49 @@ class Product {
       }
     }
     return levels;
+  }
+
+  // دالة جديدة لحساب التكلفة للمنتجات المباعة بالمتر
+  double? getMeterProductCost(String saleUnit) {
+    if (unit != 'meter') return null;
+    
+    if (saleUnit == 'متر') {
+      return costPrice;
+    } else if (saleUnit == 'لفة' && lengthPerUnit != null) {
+      // تكلفة اللفة = تكلفة المتر × عدد الأمتار في اللفة
+      return (costPrice ?? 0.0) * lengthPerUnit!;
+    }
+    
+    return null;
+  }
+
+  // دالة جديدة لبناء التسلسل الهرمي التلقائي للمنتجات المباعة بالمتر
+  String? buildMeterUnitHierarchy() {
+    if (unit != 'meter' || lengthPerUnit == null || lengthPerUnit! <= 0) {
+      return null;
+    }
+    
+    final hierarchy = [
+      {
+        'unit_name': 'لفة',
+        'quantity': lengthPerUnit,
+      }
+    ];
+    
+    return jsonEncode(hierarchy);
+  }
+
+  // دالة جديدة لبناء تكلفة الوحدات التلقائية للمنتجات المباعة بالمتر
+  String? buildMeterUnitCosts() {
+    if (unit != 'meter' || costPrice == null || lengthPerUnit == null) {
+      return null;
+    }
+    
+    final costs = {
+      'متر': costPrice,
+      'لفة': costPrice! * lengthPerUnit!,
+    };
+    
+    return jsonEncode(costs);
   }
 }

@@ -109,7 +109,7 @@ class ProductHierarchyDetailsScreen extends StatelessWidget {
                 var item = entry.value;
                 String prevUnit = idx == 0 ? 'قطعة' : unitHierarchy[idx - 1]['unit_name'];
                 String currentUnit = item['unit_name'];
-                int quantity = item['quantity'];
+                int quantity = (item['quantity'] as num).toInt(); // Fix: Convert num to int safely
                 
                 return Card(
                   margin: const EdgeInsets.only(bottom: 12),
