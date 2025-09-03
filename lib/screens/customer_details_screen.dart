@@ -39,10 +39,9 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         () => context.read<AppProvider>().selectCustomer(widget.customer));
   }
 
-  // Helper to format numbers consistently with 2 decimal places for currency
+  // Helper to format numbers with thousand separators (no decimals)
   String formatCurrency(num value) {
-    return NumberFormat('0.00', 'en_US')
-        .format(value); // Always two decimal places
+    return NumberFormat('#,##0', 'en_US').format(value);
   }
 
   @override
@@ -259,6 +258,13 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                           const SizedBox(height: 20.0), // Increased spacing
                           _buildInfoRow('رقم الهاتف',
                               customer.phone ?? 'غير متوفر', context),
+                          const SizedBox(height: 12.0),
+                          _buildInfoRow(
+                              'العنوان',
+                              (customer.address != null && customer.address!.isNotEmpty)
+                                  ? customer.address!
+                                  : 'غير متوفر',
+                              context),
                           const SizedBox(height: 12.0), // Increased spacing
                           _buildInfoRow(
                             'إجمالي الدين',
@@ -526,9 +532,9 @@ class TransactionListTile extends StatelessWidget {
     required this.transaction,
   });
 
-  // Helper to format numbers consistently with 2 decimal places for currency
+  // Helper to format numbers with thousand separators
   String _formatCurrency(num value) {
-    return NumberFormat('0.00', 'en_US').format(value);
+    return NumberFormat('#,##0', 'en_US').format(value);
   }
 
   @override

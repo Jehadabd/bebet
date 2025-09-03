@@ -7,6 +7,7 @@ import '../providers/app_provider.dart';
 import '../models/customer.dart';
 import '../models/transaction.dart';
 import 'package:intl/intl.dart'; // For currency formatting
+import '../widgets/formatters.dart';
 import 'package:flutter_sound/flutter_sound.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
@@ -64,14 +65,14 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     super.dispose();
   }
 
-  // Helper to format currency consistently with 2 decimal places
+  // Helper to format currency with thousand separators (no decimals)
   String formatCurrency(num value) {
-    return NumberFormat('', 'en_US').format(value); // Always two decimal places
+    return NumberFormat('#,##0', 'en_US').format(value);
   }
 
   Future<void> _saveTransaction() async {
     if (_formKey.currentState!.validate()) {
-      final amount = double.parse(_amountController.text);
+      final amount = double.parse(_amountController.text.replaceAll(',', ''));
       final amountChanged = _isDebt ? amount : -amount;
       final newBalance = widget.customer.currentTotalDebt + amountChanged;
       final transaction = DebtTransaction(
@@ -451,19 +452,17 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                       color:
                           Theme.of(context).colorScheme.primary), // Themed icon
                 ),
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
+                keyboardType: TextInputType.number,
                 inputFormatters: [
-                  FilteringTextInputFormatter.allow(
-                      RegExp(r'^[0-9]*\.?[0-9]*')),
-                  LengthLimitingTextInputFormatter(
-                      10), // Preserving original functional constraint
+                  FilteringTextInputFormatter.digitsOnly,
+                  ThousandSeparatorInputFormatter(),
+                  LengthLimitingTextInputFormatter(15),
                 ],
                 validator: (value) {
                   if (value == null || value.isEmpty) {
                     return 'الرجاء إدخال المبلغ';
                   }
-                  final number = double.tryParse(value);
+                  final number = double.tryParse(value.replaceAll(',', ''));
                   if (number == null) {
                     return 'الرجاء إدخال رقم صحيح';
                   }

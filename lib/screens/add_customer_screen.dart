@@ -5,6 +5,7 @@ import '../providers/app_provider.dart';
 import '../models/customer.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart'; // Import for NumberFormat
+import '../widgets/formatters.dart';
 
 class AddCustomerScreen extends StatefulWidget {
   const AddCustomerScreen({super.key});
@@ -37,7 +38,7 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
         name: _nameController.text,
         phone: _phoneController.text.isEmpty ? null : _phoneController.text,
         generalNote: _noteController.text.isEmpty ? null : _noteController.text,
-        currentTotalDebt: double.tryParse(_initialDebtController.text) ?? 0.0,
+        currentTotalDebt: double.tryParse(_initialDebtController.text.replaceAll(',', '')) ?? 0.0,
         address: _addressController.text.isEmpty ? null : _addressController.text, // This now correctly uses the _addressController
       );
 
@@ -64,12 +65,9 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
     }
   }
 
-  // Helper to format numbers consistently with 2 decimal places
-  String formatNumber(num value, {bool forceDecimal = false}) {
-    if (forceDecimal) {
-      return NumberFormat('0.00', 'en_US').format(value);
-    }
-    return value.toInt().toString();
+  // Helper to format numbers with thousand separators
+  String formatNumber(num value) {
+    return NumberFormat('#,##0', 'en_US').format(value);
   }
 
   @override
@@ -231,14 +229,14 @@ class _AddCustomerScreenState extends State<AddCustomerScreen> {
                   suffixText: ' دينار', // Added space for better readability
                   prefixIcon: Icon(Icons.money_off_csred_outlined), // Added an icon
                 ),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType: TextInputType.number,
                 inputFormatters: [
-                  FilteringTextInputFormatter.allow(RegExp(r'^[0-9]*\.?[0-9]*')),
-                  // LengthLimitingTextInputFormatter(10), // Removed as it conflicts with larger numbers/decimals
+                  FilteringTextInputFormatter.digitsOnly,
+                  ThousandSeparatorInputFormatter(),
                 ],
                 validator: (value) {
                   if (value != null && value.isNotEmpty) {
-                    final number = double.tryParse(value);
+                    final number = double.tryParse(value.replaceAll(',', ''));
                     if (number == null) {
                       return 'الرجاء إدخال رقم صحيح';
                     }

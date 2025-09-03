@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:path_provider/path_provider.dart';
+import 'package:intl/intl.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import '../models/customer.dart';
 import '../models/account_statement_item.dart';
@@ -22,6 +23,8 @@ class PdfService {
     final ttf = pw.Font.ttf(fontData);
 
     final pdf = pw.Document();
+
+    String fmt(num v) => NumberFormat('#,##0', 'en_US').format(v);
 
     pdf.addPage(
       pw.MultiPage(
@@ -84,7 +87,7 @@ class PdfService {
             pw.Container(
               alignment: pw.Alignment.center,
               child: pw.Text(
-                'إجمالي الديون: ${customers.fold(0.0, (sum, customer) => sum + customer.currentTotalDebt).toStringAsFixed(2)} دينار',
+                'إجمالي الديون: ${fmt(customers.fold(0.0, (sum, customer) => sum + (customer.currentTotalDebt ?? 0)))} دينار',
                 style: pw.TextStyle(
                   fontSize: 16,
                   fontWeight: pw.FontWeight.bold,
@@ -105,7 +108,7 @@ class PdfService {
                 ],
                 // Data
                 ...customers.map((customer) => [
-                      customer.currentTotalDebt.toStringAsFixed(2),
+                      fmt(customer.currentTotalDebt ?? 0),
                       customer.address ?? '-',
                       customer.name,
                     ]),

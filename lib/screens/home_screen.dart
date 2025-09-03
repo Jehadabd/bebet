@@ -528,7 +528,7 @@ class CustomerListTile extends StatelessWidget {
 
   // Helper to format currency consistently
   String _formatCurrency(num value) {
-    return NumberFormat('0.00', 'en_US').format(value);
+    return NumberFormat('#,##0', 'en_US').format(value);
   }
 
   @override
