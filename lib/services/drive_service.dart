@@ -7,6 +7,7 @@ import 'package:googleapis_auth/auth_io.dart' as auth;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
+import 'package:network_info_plus/network_info_plus.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 class DriveService {
@@ -134,18 +135,32 @@ class DriveService {
     }
   }
 
-  Future<String?> _getFolderId() async {
+  Future<String> _getUniqueFolderName() async {
+    try {
+      final info = NetworkInfo();
+      final wifi = await info.getWifiBSSID();
+      final bluetooth = await info.getWifiIP();
+      final wifiPart = (wifi ?? 'unknownWifi').replaceAll(':', '').trim();
+      final btPart = (bluetooth ?? 'unknownBt').replaceAll(':', '').trim();
+      return '${wifiPart}_${btPart}';
+    } catch (_) {
+      return _folderName;
+    }
+  }
+
+  Future<String?> _getFolderId({String? specificName}) async {
     final client = await _getAuthenticatedClient();
     final driveApi = drive.DriveApi(client);
+    final folderName = specificName ?? _folderName;
     final result = await driveApi.files.list(
-      q: "name = '$_folderName' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+      q: "name = '$folderName' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
       spaces: 'drive',
     );
     if (result.files?.isNotEmpty ?? false) {
       return result.files!.first.id;
     }
     final folder = drive.File()
-      ..name = _folderName
+      ..name = folderName
       ..mimeType = 'application/vnd.google-apps.folder';
     final createdFolder = await driveApi.files.create(folder);
     return createdFolder.id;
@@ -186,7 +201,7 @@ class DriveService {
     try {
       final client = await _getAuthenticatedClient();
       final driveApi = drive.DriveApi(client);
-      final folderId = await _getFolderId();
+      final folderId = await _getFolderId(specificName: await _getUniqueFolderName());
       final existingFiles = await driveApi.files.list(
         q: "name = '$fileName' and '$folderId' in parents and trashed = false",
         spaces: 'drive',
@@ -214,7 +229,7 @@ class DriveService {
       if (e.toString().contains('invalid_token')) {
         final client = await _getAuthenticatedClient(forceRefresh: true);
         final driveApi = drive.DriveApi(client);
-        final folderId = await _getFolderId();
+        final folderId = await _getFolderId(specificName: await _getUniqueFolderName());
         final existingFiles = await driveApi.files.list(
           q: "name = '$fileName' and '$folderId' in parents and trashed = false",
           spaces: 'drive',

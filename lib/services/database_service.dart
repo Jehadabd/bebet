@@ -250,6 +250,18 @@ class DatabaseService {
     );
   }
 
+  // إرجاع مسار ملف قاعدة البيانات الحالي
+  Future<String> getDatabaseFilePath() async {
+    final dir = await getApplicationSupportDirectory();
+    return join(dir.path, 'debt_book.db');
+  }
+
+  // إرجاع كائن الملف لقاعدة البيانات
+  Future<File> getDatabaseFile() async {
+    final path = await getDatabaseFilePath();
+    return File(path);
+  }
+
   Future<void> _createDatabase(Database db, int version) async {
     await db.execute('''
       CREATE TABLE customers(

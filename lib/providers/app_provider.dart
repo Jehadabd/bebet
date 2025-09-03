@@ -185,6 +185,22 @@ class AppProvider with ChangeNotifier {
     }
   }
 
+  // رفع ملف قاعدة البيانات إلى Google Drive داخل مجلد باسم MAC
+  Future<void> uploadDatabaseToDrive({ValueChanged<double>? onProgress}) async {
+    if (!_isDriveSupported) {
+      throw Exception('ميزة Google Drive غير مدعومة على هذا النظام');
+    }
+    _setLoading(true);
+    try {
+      final dbFile = await _db.getDatabaseFile();
+      onProgress?.call(0.2);
+      await _drive.uploadFile(dbFile, 'debt_book.db');
+      onProgress?.call(1.0);
+    } finally {
+      _setLoading(false);
+    }
+  }
+
   // Google Drive authentication
   Future<bool> isDriveSignedIn() async {
     if (!_isDriveSupported) return false;

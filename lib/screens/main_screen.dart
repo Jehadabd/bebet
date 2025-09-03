@@ -2,6 +2,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:provider/provider.dart';
+import '../providers/app_provider.dart';
 import '../services/database_service.dart';
 import '../models/customer.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -25,6 +27,10 @@ class _MainScreenState extends State<MainScreen> {
   void initState() {
     super.initState();
     _updateCurrentMonthYear();
+    // تأكد من تهيئة مزود التطبيق لتفعيل دعم Google Drive
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<AppProvider>().initialize();
+    });
   }
 
   void _updateCurrentMonthYear() {
@@ -381,6 +387,66 @@ class _MainScreenState extends State<MainScreen> {
                 }
               },
               color: const Color(0xFF9C27B0),
+              fontSize: buttonFontSize,
+              iconSize: iconSize,
+              padding: buttonPadding,
+              spacing: buttonSpacing,
+            ),
+            _buildFeatureButton(
+              icon: Icons.cloud_upload,
+              title: 'رفع قاعدة\nالبيانات',
+              onTap: () async {
+                final progressNotifier = ValueNotifier<double>(0.0);
+                bool uploadSucceeded = false;
+
+                // ابدأ الرفع في مهمة منفصلة وتحديث المؤشر ثم إغلاق الحوار
+                Future(() async {
+                  try {
+                    await context.read<AppProvider>().uploadDatabaseToDrive(
+                      onProgress: (p) {
+                        progressNotifier.value = p;
+                      },
+                    );
+                    uploadSucceeded = true;
+                  } catch (_) {
+                    uploadSucceeded = false;
+                  } finally {
+                    if (Navigator.of(context, rootNavigator: true).canPop()) {
+                      Navigator.of(context, rootNavigator: true).pop(uploadSucceeded);
+                    }
+                  }
+                });
+
+                final result = await showDialog<bool>(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('رفع قاعدة البيانات'),
+                    content: ValueListenableBuilder<double>(
+                      valueListenable: progressNotifier,
+                      builder: (context, value, _) => Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          LinearProgressIndicator(value: value <= 0 || value >= 1 ? null : value),
+                          const SizedBox(height: 12),
+                          Text('${(value * 100).clamp(0, 100).toStringAsFixed(0)}%')
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+
+                if (result == true) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('تم رفع قاعدة البيانات بنجاح إلى Google Drive'),
+                  ));
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('فشل الرفع'),
+                  ));
+                }
+              },
+              color: const Color(0xFF0D47A1),
               fontSize: buttonFontSize,
               iconSize: iconSize,
               padding: buttonPadding,
