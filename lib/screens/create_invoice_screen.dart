@@ -17,6 +17,7 @@ import 'package:alnaser/models/printer_device.dart';
 import 'package:alnaser/services/printing_service.dart';
 import 'dart:io';
 import 'package:intl/intl.dart';
+import '../widgets/formatters.dart';
 import 'dart:async';
 import 'package:provider/provider.dart';
 import 'package:alnaser/providers/app_provider.dart';
@@ -68,10 +69,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   int _unitSelection = 0; // 0 لـ "قطعة"، 1 لـ "كرتون/باكيت"
 
   String formatNumber(num value, {bool forceDecimal = false}) {
-    if (forceDecimal) {
-      return value % 1 == 0 ? value.toInt().toString() : value.toString();
-    }
-    return value.toInt().toString();
+    return NumberFormat('#,##0.##', 'en_US').format(value);
   }
 
   List<Product> _searchResults = [];
@@ -443,7 +441,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
         final total = currentTotalAmount - _discount;
         _paidAmountController.text =
-            total.clamp(0, double.infinity).toStringAsFixed(2);
+            formatNumber(total.clamp(0, double.infinity));
       }
     } catch (e) {
       print('Error in updatePaidAmountIfCash: $e');
@@ -459,11 +457,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       final maxDiscount = (currentTotalAmount / 2) - 1;
       if (_discount > maxDiscount) {
         _discount = maxDiscount > 0 ? maxDiscount : 0.0;
-        _discountController.text = _discount.toStringAsFixed(2);
+        _discountController.text = formatNumber(_discount);
       }
       if (_discount < 0) {
         _discount = 0.0;
-        _discountController.text = '0';
+        _discountController.text = formatNumber(0);
       }
     } catch (e) {
       print('Error in guardDiscount: $e');
@@ -517,7 +515,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           _selectedProduct != null &&
           _selectedPriceLevel != null) {
         final double inputQuantity =
-            double.tryParse(_quantityController.text.trim()) ?? 0.0;
+            double.tryParse(_quantityController.text.trim().replaceAll(',', '')) ?? 0.0;
         if (inputQuantity <= 0) return;
         double finalAppliedPrice = _selectedPriceLevel!;
         double baseUnitsPerSelectedUnit = 1.0;
@@ -767,7 +765,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
       double currentTotalAmount =
           _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-      double paid = double.tryParse(_paidAmountController.text) ?? 0.0;
+      double paid = double.tryParse(_paidAmountController.text.replaceAll(',', '')) ?? 0.0;
       double debt = (currentTotalAmount - _discount) - paid;
       double totalAmount = currentTotalAmount - _discount;
 
@@ -1001,7 +999,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       double currentTotalAmount =
           _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
       double totalAmount = currentTotalAmount - _discount;
-      double paid = double.tryParse(_paidAmountController.text.trim()) ?? 0.0;
+      double paid = double.tryParse(_paidAmountController.text.trim().replaceAll(',', '')) ?? 0.0;
       final invoice = Invoice(
         id: _invoiceToManage?.id,
         customerName: _customerNameController.text.trim(),
@@ -1914,9 +1912,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   void _recalculateTotals() {
     double total = _invoiceItems.fold(0, (sum, item) => sum + item.itemTotal);
-    _totalAmountController.text = total.toStringAsFixed(2);
+    _totalAmountController.text = formatNumber(total);
     if (_paymentType == 'نقد') {
-      _paidAmountController.text = (total - _discount).toStringAsFixed(2);
+      _paidAmountController.text = formatNumber(total - _discount);
     }
     setState(() {});
   }
@@ -2347,12 +2345,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             ),
                             keyboardType: const TextInputType.numberWithOptions(
                                 decimal: true),
+                            inputFormatters: [
+                              ThousandSeparatorDecimalInputFormatter(),
+                            ],
                             validator: (value) {
                               if (value == null || value.isEmpty) {
                                 return 'الرجاء إدخال الكمية';
                               }
-                              if (double.tryParse(value) == null ||
-                                  double.parse(value) <= 0) {
+                              final v = double.tryParse(value.replaceAll(',', ''));
+                              if (v == null || v <= 0) {
                                 return 'الرجاء إدخال رقم موجب صحيح';
                               }
                               return null;
@@ -2839,7 +2840,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             : (value) {
                                 setState(() {
                                   _paymentType = value!;
-                                  _paidAmountController.text = '0';
+                                  _paidAmountController.text = formatNumber(0);
                                   _autoSave();
                                 });
                                 if (_invoiceToManage != null &&
@@ -2858,16 +2859,19 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       controller: _paidAmountController,
                       decoration: const InputDecoration(
                           labelText: 'المبلغ المسدد (اختياري)'),
-                      keyboardType: TextInputType.number,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      inputFormatters: [
+                        ThousandSeparatorDecimalInputFormatter(),
+                      ],
                       enabled: !_isViewOnly && _paymentType == 'دين',
                       onChanged: (value) {
                         setState(() {
-                          double enteredPaid = double.tryParse(value) ?? 0.0;
+                          double enteredPaid = double.tryParse(value.replaceAll(',', '')) ?? 0.0;
                           final total = _invoiceItems.fold(
                                   0.0, (sum, item) => sum + item.itemTotal) -
                               _discount;
                           if (enteredPaid >= total) {
-                            _paidAmountController.text = '0';
+                            _paidAmountController.text = formatNumber(0);
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(
                                   content: Text(
@@ -2890,12 +2894,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       labelText: 'الخصم (مبلغ وليس نسبة)'),
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
+                  inputFormatters: [
+                    ThousandSeparatorDecimalInputFormatter(),
+                  ],
                   onChanged: _isViewOnly
                       ? null
                       : (val) {
                           setState(() {
                             double enteredDiscount =
-                                double.tryParse(val) ?? 0.0;
+                                double.tryParse(val.replaceAll(',', '')) ?? 0.0;
                             _discount = enteredDiscount;
                             _guardDiscount();
                             _updatePaidAmountIfCash();
@@ -2906,7 +2913,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             autoSaveSuspendedInvoice();
                           }
                         },
-                  initialValue: _discount > 0 ? _discount.toString() : '',
+                  initialValue: _discount > 0 ? formatNumber(_discount) : '',
                   enabled: !_isViewOnly,
                 ),
                 const SizedBox(height: 24.0),
@@ -2937,7 +2944,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     controller: _returnAmountController,
                     decoration:
                         InputDecoration(labelText: 'الراجع (مبلغ الإرجاع)'),
-                    keyboardType: TextInputType.number,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    inputFormatters: [
+                      ThousandSeparatorDecimalInputFormatter(),
+                    ],
                     enabled: true, // نشط دائماً في هذه الحالة
                   ),
                   SizedBox(height: 12),
@@ -2946,7 +2956,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     label: Text('حفظ الراجع'),
                     onPressed: () async {
                       final value =
-                          double.tryParse(_returnAmountController.text) ?? 0.0;
+                          double.tryParse(_returnAmountController.text.replaceAll(',', '')) ?? 0.0;
                       await _saveReturnAmount(value);
                     }, // نشط دائماً في هذه الحالة
                   ),
@@ -2957,7 +2967,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         (_invoiceToManage!.returnAmount != 0.0 &&
                             _invoiceToManage!.returnAmount != null))) ...[
                   SizedBox(height: 24),
-                  Text('الراجع: ${_invoiceToManage!.returnAmount} دينار',
+                  Text('الراجع: ${formatNumber(_invoiceToManage!.returnAmount)} دينار',
                       style: TextStyle(
                           fontWeight: FontWeight.bold, color: Colors.red)),
                   SizedBox(height: 8),
@@ -2975,6 +2985,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     ),
                     keyboardType:
                         const TextInputType.numberWithOptions(decimal: true),
+                    inputFormatters: [
+                      ThousandSeparatorDecimalInputFormatter(),
+                    ],
                   ),
                 ],
               ],
@@ -3028,6 +3041,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   late FocusNode _saleTypeFocusNode;
   bool _openSaleTypeDropdown = false;
   bool _openPriceDropdown = false;
+
+  String _formatNumber(num value) {
+    return NumberFormat('#,##0.##', 'en_US').format(value);
+  }
 
   @override
   void initState() {
@@ -3123,7 +3140,8 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 : null,
         itemTotal: newQuantity * _currentItem.appliedPrice,
       );
-      _priceController.text = _currentItem.appliedPrice.toStringAsFixed(2);
+      // لا تفرض ".00" عند الكتابة؛ استخدم تنسيق أرقام بدون كسور ثابتة
+      _priceController.text = _formatNumber(_currentItem.appliedPrice);
     });
     widget.onItemUpdated(_currentItem);
   }
@@ -3192,8 +3210,9 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
             (newType != 'قطعة' && newType != 'متر') ? quantity : null,
       );
       _quantityController.text = quantity.toString();
+      // لا تفرض ".00" أثناء التحرير؛ اظهر فواصل فقط
       _priceController.text =
-          (newAppliedPrice > 0) ? newAppliedPrice.toString() : '';
+          (newAppliedPrice > 0) ? _formatNumber(newAppliedPrice) : '';
       widget.onItemUpdated(_currentItem);
       // بعد اختيار نوع البيع، انتقل تلقائياً إلى السعر وافتح قائمة الأسعار
       FocusScope.of(context).requestFocus(_priceFocusNode);
@@ -3204,7 +3223,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   }
 
   void _updatePrice(String value) {
-    double? newPrice = double.tryParse(value);
+    double? newPrice = double.tryParse(value.replaceAll(',', ''));
     if (newPrice == null || newPrice < 0) return;
     setState(() {
       double quantity = _currentItem.quantityIndividual ??
@@ -3233,12 +3252,14 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         appliedPrice: newPrice,
         itemTotal: quantity * newPrice,
       );
+      // اترك المُدخل كما يكتبه المستخدم؛ المُنسق سيضيف الفواصل تلقائياً
     });
     widget.onItemUpdated(_currentItem);
   }
 
   String formatCurrency(num value) {
-    return value.toStringAsFixed(2);
+    final formatter = NumberFormat('#,##0.00', 'en_US');
+    return formatter.format(value);
   }
 
   @override
@@ -3262,7 +3283,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 flex: 2,
                 child: widget.isViewOnly
                     ? Text(
-                        widget.item.itemTotal.toStringAsFixed(2),
+                        formatCurrency(widget.item.itemTotal),
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             fontWeight: FontWeight.bold,
@@ -3472,7 +3493,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
                 child: widget.isViewOnly
                     ? Text(
-                        widget.item.appliedPrice.toStringAsFixed(2),
+                        formatCurrency(widget.item.appliedPrice),
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodyMedium,
                       )
@@ -3482,6 +3503,9 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                         keyboardType: const TextInputType.numberWithOptions(
                             decimal: true),
                         enabled: !widget.isViewOnly,
+                        inputFormatters: [
+                          ThousandSeparatorDecimalInputFormatter(),
+                        ],
                         onChanged: _updatePrice, // الآن أصبح آمناً
                         focusNode: _priceFocusNode,
                         onFieldSubmitted: (val) {

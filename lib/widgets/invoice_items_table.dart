@@ -2,6 +2,8 @@
 import 'package:flutter/material.dart';
 import '../models/product.dart';
 import 'dart:convert';
+import 'package:intl/intl.dart';
+import 'formatters.dart';
 
 class InvoiceItem {
   String? productName;
@@ -87,6 +89,8 @@ class _InvoiceItemsTableState extends State<InvoiceItemsTable> {
 
   double get totalSum =>
       _getCompletedItems().fold(0, (sum, item) => sum + item.total);
+
+  String _fmt(num v) => NumberFormat('#,##0.##', 'en_US').format(v);
 
   bool _canEditRow(int index) {
     if (index == 0) return true;
@@ -216,7 +220,7 @@ class _InvoiceItemsTableState extends State<InvoiceItemsTable> {
                             textAlign: TextAlign.center)),
                         DataCell(Text(item.unitType ?? '',
                             style: const TextStyle(fontSize: 15))),
-                        DataCell(Text(item.price?.toString() ?? '',
+                        DataCell(Text(item.price == null ? '' : _fmt(item.price!),
                             style: const TextStyle(fontSize: 15),
                             textAlign: TextAlign.center)),
                         DataCell(Center(
@@ -224,9 +228,7 @@ class _InvoiceItemsTableState extends State<InvoiceItemsTable> {
                                 style: const TextStyle(fontSize: 15)))),
                         DataCell(Center(
                             child: Text(
-                                item.isComplete
-                                    ? item.total.toStringAsFixed(2)
-                                    : '',
+                                item.isComplete ? _fmt(item.total) : '',
                                 style: const TextStyle(
                                     fontSize: 15,
                                     fontWeight: FontWeight.bold)))),
@@ -291,18 +293,21 @@ class _InvoiceItemsTableState extends State<InvoiceItemsTable> {
                       ),
                       DataCell(TextField(
                         controller: quantityControllers.last,
-                        keyboardType: TextInputType.number,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
                         decoration:
                             const InputDecoration(border: InputBorder.none),
                         style: const TextStyle(fontSize: 15),
                         textAlign: TextAlign.center,
                         onChanged: (val) {
-                          items.last.quantity = int.tryParse(val);
+                          items.last.quantity = int.tryParse(val.replaceAll(',', ''));
                           _onRowChanged(items.length - 1);
                         },
                         onSubmitted: (_) {
                           FocusScope.of(context).nextFocus();
                         },
+                        inputFormatters: [
+                          ThousandSeparatorDecimalInputFormatter(),
+                        ],
                       )),
                       DataCell(DropdownButton<String>(
                         value: selectedUnitTypes.last ?? items.last.unitType,
@@ -332,12 +337,15 @@ class _InvoiceItemsTableState extends State<InvoiceItemsTable> {
                         style: const TextStyle(fontSize: 15),
                         textAlign: TextAlign.center,
                         onChanged: (val) {
-                          items.last.price = double.tryParse(val);
+                          items.last.price = double.tryParse(val.replaceAll(',', ''));
                           _onRowChanged(items.length - 1);
                         },
                         onSubmitted: (_) {
                           FocusScope.of(context).nextFocus();
                         },
+                        inputFormatters: [
+                          ThousandSeparatorDecimalInputFormatter(),
+                        ],
                       )),
                       DataCell(Center(
                           child: Text(
@@ -362,7 +370,7 @@ class _InvoiceItemsTableState extends State<InvoiceItemsTable> {
                 children: [
                   Text('الإجمالي: ',
                       style: const TextStyle(fontWeight: FontWeight.bold)),
-                  Text(totalSum.toStringAsFixed(2),
+                  Text(_fmt(totalSum),
                       style: const TextStyle(fontWeight: FontWeight.bold)),
                 ],
               ),

@@ -1,5 +1,6 @@
 // widgets/invoice_summary_card.dart
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 class InvoiceSummaryCard extends StatelessWidget {
   final double totalBeforeDiscount;
@@ -21,12 +22,7 @@ class InvoiceSummaryCard extends StatelessWidget {
     this.debtAmount,
   }) : super(key: key);
 
-  String formatNumber(num value, {bool forceDecimal = false}) {
-    if (forceDecimal) {
-      return value % 1 == 0 ? value.toInt().toString() : value.toString();
-    }
-    return value.toInt().toString();
-  }
+  String formatNumber(num value) => NumberFormat('#,##0.##', 'en_US').format(value);
 
   @override
   Widget build(BuildContext context) {
@@ -39,25 +35,25 @@ class InvoiceSummaryCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-                'المبلغ الإجمالي قبل الخصم:  ${formatNumber(totalBeforeDiscount, forceDecimal: true)} دينار',
+                'المبلغ الإجمالي قبل الخصم:  ${formatNumber(totalBeforeDiscount)} دينار',
                 style: const TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             Text(
-                'المبلغ الإجمالي:  ${formatNumber(total, forceDecimal: true)} دينار',
+                'المبلغ الإجمالي:  ${formatNumber(total)} دينار',
                 style: const TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             Text(
-                'المبلغ المسدد:    ${formatNumber(paidAmount, forceDecimal: true)} دينار',
+                'المبلغ المسدد:    ${formatNumber(paidAmount)} دينار',
                 style: const TextStyle(color: Colors.green)),
             const SizedBox(height: 4),
             Text(
-                'المتبقي:         ${formatNumber(remainingAmount, forceDecimal: true)} دينار',
+                'المتبقي:         ${formatNumber(remainingAmount)} دينار',
                 style: const TextStyle(color: Colors.red)),
             if (isDebt && debtAmount != null)
               Padding(
                 padding: const EdgeInsets.only(top: 8.0),
                 child: Text(
-                    'أصبح الدين: ${formatNumber(debtAmount!, forceDecimal: true)} دينار',
+                    'أصبح الدين: ${formatNumber(debtAmount!)} دينار',
                     style: const TextStyle(color: Colors.black87)),
               ),
           ],

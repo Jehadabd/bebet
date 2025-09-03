@@ -2,8 +2,10 @@
 // widgets/editable_invoice_item_row.dart
 import 'package:flutter/material.dart';
 import '../models/invoice_item.dart';
+import 'formatters.dart';
 import '../models/product.dart';
 import 'dart:convert';
+import 'package:intl/intl.dart';
 
 class EditableInvoiceItemRow extends StatefulWidget {
   final InvoiceItem item;
@@ -50,8 +52,18 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   void initState() {
     super.initState();
     _currentItem = widget.item;
-    _quantityController = widget.item.quantityIndividualController;
-    _priceController = widget.item.appliedPriceController;
+    
+    // إنشاء متحكمات جديدة مع القيم المنسقة
+    final quantity = widget.item.quantityIndividual ?? widget.item.quantityLargeUnit ?? 0;
+    final price = widget.item.appliedPrice;
+    
+    _quantityController = TextEditingController(
+      text: quantity > 0 ? NumberFormat('#,##0.##', 'en_US').format(quantity) : ''
+    );
+    _priceController = TextEditingController(
+      text: price > 0 ? NumberFormat('#,##0.##', 'en_US').format(price) : ''
+    );
+    
     _detailsFocusNode = widget.detailsFocusNode ?? FocusNode();
     _quantityFocusNode = widget.quantityFocusNode ?? FocusNode();
     _priceFocusNode = widget.priceFocusNode ?? FocusNode();
@@ -60,6 +72,8 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
 
   @override
   void dispose() {
+    _quantityController.dispose();
+    _priceController.dispose();
     if (widget.detailsFocusNode == null) {
       _detailsFocusNode.dispose();
     }
@@ -117,7 +131,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   }
 
   void _updateQuantity(String value) {
-    double? newQuantity = double.tryParse(value);
+    double? newQuantity = double.tryParse(value.replaceAll(',', ''));
     if (newQuantity == null || newQuantity <= 0) return;
     setState(() {
       if (_currentItem.saleType == 'قطعة' || _currentItem.saleType == 'متر') {
@@ -133,7 +147,8 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
           itemTotal: newQuantity * _currentItem.appliedPrice,
         );
       }
-      _priceController.text = _currentItem.appliedPrice.toStringAsFixed(2);
+      _quantityController.text = NumberFormat('#,##0.##', 'en_US').format(newQuantity);
+      _priceController.text = NumberFormat('#,##0.##', 'en_US').format(_currentItem.appliedPrice);
       widget.onItemUpdated(_currentItem);
     });
   }
@@ -199,9 +214,9 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         quantityLargeUnit:
             (newType != 'قطعة' && newType != 'متر') ? quantity : null,
       );
-      _quantityController.text = quantity.toString();
+      _quantityController.text = NumberFormat('#,##0.##', 'en_US').format(quantity);
       _priceController.text =
-          (newAppliedPrice > 0) ? newAppliedPrice.toString() : '';
+          (newAppliedPrice > 0) ? NumberFormat('#,##0.##', 'en_US').format(newAppliedPrice) : '';
       widget.onItemUpdated(_currentItem);
       FocusScope.of(context).requestFocus(_priceFocusNode);
       setState(() {
@@ -211,7 +226,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   }
 
   void _updatePrice(String value) {
-    double? newPrice = double.tryParse(value);
+    double? newPrice = double.tryParse(value.replaceAll(',', ''));
     if (newPrice == null || newPrice <= 0) return;
     setState(() {
       double quantity = _currentItem.quantityIndividual ??
@@ -221,12 +236,13 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         appliedPrice: newPrice,
         itemTotal: quantity * newPrice,
       );
+      _priceController.text = NumberFormat('#,##0.##', 'en_US').format(newPrice);
       widget.onItemUpdated(_currentItem);
     });
   }
 
   String formatCurrency(num value) {
-    return value.toStringAsFixed(2);
+    return NumberFormat('#,##0.##', 'en_US').format(value);
   }
 
   @override
@@ -248,7 +264,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 flex: 2,
                 child: widget.isViewOnly
                     ? Text(
-                        widget.item.itemTotal.toStringAsFixed(2),
+                        NumberFormat('#,##0.##', 'en_US').format(widget.item.itemTotal),
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             fontWeight: FontWeight.bold,
@@ -331,10 +347,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
                 child: widget.isViewOnly
                     ? Text(
-                        ((widget.item.quantityIndividual ??
+                        NumberFormat('#,##0.##', 'en_US').format(
+                            (widget.item.quantityIndividual ??
                                     widget.item.quantityLargeUnit) ??
-                                '')
-                            .toString(),
+                                0),
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodyMedium,
                       )
@@ -343,6 +359,9 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                         textAlign: TextAlign.center,
                         keyboardType: const TextInputType.numberWithOptions(
                             decimal: true),
+                        inputFormatters: [
+                          ThousandSeparatorDecimalInputFormatter(),
+                        ],
                         enabled: !widget.isViewOnly,
                         onChanged: _updateQuantity,
                         focusNode: _quantityFocusNode,
@@ -400,7 +419,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
                 child: widget.isViewOnly
                     ? Text(
-                        widget.item.appliedPrice.toStringAsFixed(2),
+                        NumberFormat('#,##0.##', 'en_US').format(widget.item.appliedPrice),
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodyMedium,
                       )
@@ -409,6 +428,9 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                         textAlign: TextAlign.center,
                         keyboardType: const TextInputType.numberWithOptions(
                             decimal: true),
+                        inputFormatters: [
+                          ThousandSeparatorDecimalInputFormatter(),
+                        ],
                         enabled: !widget.isViewOnly,
                         onChanged: _updatePrice,
                         focusNode: _priceFocusNode,

@@ -1,5 +1,7 @@
 // widgets/payment_section.dart
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'formatters.dart';
 
 class PaymentSection extends StatelessWidget {
   final String paymentType;
@@ -54,9 +56,12 @@ class PaymentSection extends StatelessWidget {
               controller: paidAmountController,
               decoration:
                   const InputDecoration(labelText: 'المبلغ المسدد (اختياري)'),
-              keyboardType: TextInputType.number,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              inputFormatters: const [
+                ThousandSeparatorDecimalInputFormatter(),
+              ],
               enabled: !isViewOnly && paymentType == 'دين',
-              onChanged: onPaidAmountChanged,
+              onChanged: (v) => onPaidAmountChanged?.call(v.replaceAll(',', '')),
             ),
           ),
         const SizedBox(height: 24.0),
@@ -64,7 +69,12 @@ class PaymentSection extends StatelessWidget {
           decoration:
               const InputDecoration(labelText: 'الخصم (مبلغ وليس نسبة)'),
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          onChanged: isViewOnly ? null : onDiscountChanged,
+          inputFormatters: const [
+            ThousandSeparatorDecimalInputFormatter(),
+          ],
+          onChanged: isViewOnly
+              ? null
+              : (v) => onDiscountChanged(v.replaceAll(',', '')),
           controller: discountController,
           enabled: !isViewOnly,
         ),
