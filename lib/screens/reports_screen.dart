@@ -38,37 +38,43 @@ class ReportsScreen extends StatelessWidget {
             ),
             const SizedBox(height: 40),
             Expanded(
-              child: Row(
+              child: Column(
                 children: [
-                  Expanded(
-                    child: _buildReportCard(
-                      title: 'تقارير البضاعة',
-                      subtitle: 'عرض تقارير متعلقة بالمنتجات والمبيعات',
-                      icon: Icons.inventory,
-                      color: const Color(0xFF4CAF50),
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const ProductReportsScreen(),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildReportCard(
+                          title: 'تقارير البضاعة',
+                          subtitle: 'عرض تقارير متعلقة بالمنتجات والمبيعات',
+                          icon: Icons.inventory,
+                          color: const Color(0xFF4CAF50),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const ProductReportsScreen(),
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-                  const SizedBox(width: 20),
-                  Expanded(
-                    child: _buildReportCard(
-                      title: 'تقارير الأشخاص',
-                      subtitle: 'عرض تقارير متعلقة بالعملاء والأرباح',
-                      icon: Icons.people,
-                      color: const Color(0xFF2196F3),
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const PeopleReportsScreen(),
+                      const SizedBox(width: 20),
+                      Expanded(
+                        child: _buildReportCard(
+                          title: 'تقارير الأشخاص',
+                          subtitle: 'عرض تقارير متعلقة بالعملاء والأرباح',
+                          icon: Icons.people,
+                          color: const Color(0xFF2196F3),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const PeopleReportsScreen(),
+                            ),
+                          ),
                         ),
                       ),
-                    ),
+                    ],
                   ),
+                  const SizedBox(height: 20),
+                  
                 ],
               ),
             ),

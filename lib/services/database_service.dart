@@ -1921,21 +1921,18 @@ class DatabaseService {
         
         totalQuantity += currentItemTotalQuantity;
         
-        // حساب التكلفة الإجمالية بناءً على الوحدات المباعة
+        // حساب التكلفة الإجمالية والربح مع مراعاة الوحدات الكبيرة (لفة/كرتون ...)
         if (quantityLargeUnit > 0) {
-          totalCost += costPrice * quantityLargeUnit;
-        } else {
-          totalCost += costPrice * quantityIndividual;
-        }
-        
-        // حساب الربح والمبيعات بناءً على الوحدة المباعة نفسها
-        if (quantityLargeUnit > 0) {
-          // البيع بوحدة كبيرة (كرتون، باكيت، لفة، إلخ)
-          totalProfit += (sellingPrice - costPrice) * quantityLargeUnit;
+          // إذا كانت التكلفة محفوظة للوحدة الأساسية، حوّلها إلى تكلفة للوحدة الكبيرة
+          final double costPerLargeUnit = costPrice * unitsInLargeUnit;
+          totalCost += costPerLargeUnit * quantityLargeUnit;
+          totalProfit += (sellingPrice - costPerLargeUnit) * quantityLargeUnit;
           totalSales += sellingPrice * quantityLargeUnit;
+          // متوسط سعر البيع للوحدة الأساسية: سيحسب لاحقاً بقسمة على totalQuantity
           averageSellingPrice += sellingPrice * quantityLargeUnit;
         } else {
-          // البيع بالقطعة أو المتر
+          // البيع بالقطعة أو المتر (الوحدة الأساسية)
+          totalCost += costPrice * quantityIndividual;
           totalProfit += (sellingPrice - costPrice) * quantityIndividual;
           totalSales += sellingPrice * quantityIndividual;
           averageSellingPrice += sellingPrice * quantityIndividual;
@@ -2082,10 +2079,11 @@ class DatabaseService {
           // إضافة الكمية الإجمالية (بالوحدات الأساسية) للمعرض
           totalQuantity += currentItemTotalQuantity;
           
-          // حساب المبيعات والتكلفة بناءً على الوحدات المباعة
+          // حساب المبيعات والتكلفة مع مراعاة الوحدات الكبيرة (لفة/كرتون ...)
           if (quantityLargeUnit > 0) {
+            final double costPerLargeUnit = costPrice * unitsInLargeUnit;
             totalSelling += sellingPrice * quantityLargeUnit;
-            totalCost += costPrice * quantityLargeUnit;
+            totalCost += costPerLargeUnit * quantityLargeUnit;
           } else {
             totalSelling += sellingPrice * quantityIndividual;
             totalCost += costPrice * quantityIndividual;

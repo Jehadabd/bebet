@@ -8,6 +8,7 @@ import '../models/customer.dart';
 import 'customer_details_screen.dart';
 import 'add_customer_screen.dart';
 import 'saved_invoices_screen.dart';
+
 import 'package:intl/intl.dart'; // For currency formatting
 
 class HomeScreen extends StatefulWidget {
@@ -369,6 +370,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       },
                       tooltip: 'الفواتير المحفوظة',
                     ),
+                    
                   ],
                 );
               },
@@ -508,6 +510,7 @@ class _HomeScreenState extends State<HomeScreen> {
               tooltip: 'تعديل البضاعة',
               child: const Icon(Icons.edit_note), // Modern icon
             ),
+            
           ],
         ),
       ),

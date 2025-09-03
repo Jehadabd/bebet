@@ -18,6 +18,7 @@ import 'screens/reports_screen.dart';
 import 'services/password_service.dart';
 import 'screens/password_setup_screen.dart';
 import 'screens/printer_settings_screen.dart';
+
 import 'services/printing_service_windows.dart';
 import 'services/printing_service.dart';
 
@@ -105,6 +106,7 @@ class MyApp extends StatelessWidget {
           '/': (context) => const MainScreen(),
           '/password_setup': (context) => const PasswordSetupScreen(),
           '/printer_settings': (context) => const PrinterSettingsScreen(),
+         
           '/debt_register': (context) => const HomeScreen(),
           '/product_entry': (context) => const ProductEntryScreen(),
           '/create_invoice': (context) => const CreateInvoiceScreen(),
