@@ -7,6 +7,9 @@ import '../models/invoice_item.dart';
 import '../services/database_service.dart';
 import '../services/drive_service.dart';
 import '../services/pdf_service.dart';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
+import 'package:archive/archive_io.dart';
 
 class AppProvider with ChangeNotifier {
   final DatabaseService _db = DatabaseService();
@@ -192,9 +195,52 @@ class AppProvider with ChangeNotifier {
     }
     _setLoading(true);
     try {
+      // 1) تحضير المحتوى المطلوب: قاعدة البيانات + جميع ملفات الصوت
+      onProgress?.call(0.05);
       final dbFile = await _db.getDatabaseFile();
-      onProgress?.call(0.2);
-      await _drive.uploadFile(dbFile, 'debt_book.db');
+      final audioPaths = await _db.getAllAudioNotePaths();
+
+      // 2) إنشاء مجلد مؤقت ونسخ قاعدة البيانات وجمع الصوتيات
+      onProgress?.call(0.15);
+      final tempDir = await getTemporaryDirectory();
+      final backupRoot = Directory('${tempDir.path}/backup_${DateTime.now().millisecondsSinceEpoch}');
+      if (!await backupRoot.exists()) {
+        await backupRoot.create(recursive: true);
+      }
+      final dbCopy = File('${backupRoot.path}/debt_book.db');
+      await dbCopy.writeAsBytes(await dbFile.readAsBytes(), flush: true);
+
+      final audioDir = Directory('${backupRoot.path}/audio');
+      await audioDir.create(recursive: true);
+      for (final p in audioPaths) {
+        try {
+          final f = File(p);
+          if (await f.exists()) {
+            final base = p.split(Platform.pathSeparator).last;
+            await f.copy('${audioDir.path}/$base');
+          }
+        } catch (_) {}
+      }
+
+      // 3) إنشاء ملف zip باسم التاريخ yyyy-MM-dd.zip
+      onProgress?.call(0.45);
+      final now = DateTime.now();
+      final zipName = '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}.zip';
+      final zipFile = File('${tempDir.path}/$zipName');
+      final encoder = ZipFileEncoder();
+      encoder.create(zipFile.path);
+      encoder.addFile(dbCopy);
+      if (await audioDir.exists()) {
+        encoder.addDirectory(audioDir);
+      }
+      encoder.close();
+
+      // 4) الرفع وسياسة الاحتفاظ
+      onProgress?.call(0.75);
+      await _drive.uploadBackupZipAndRetain(zipFile: zipFile, progress: (p) {
+        onProgress?.call(0.75 + 0.2 * p.clamp(0.0, 1.0));
+      });
+
       onProgress?.call(1.0);
     } finally {
       _setLoading(false);

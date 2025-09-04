@@ -425,7 +425,7 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                         Expanded(
                           child: _buildDetailInfo(
                             title: 'الكمية المباعة',
-                            value: '${invoiceData.quantitySold} ${widget.product.unit}',
+                            value: '${invoiceData.quantitySold.toStringAsFixed(2)} ${widget.product.unit}',
                             color: const Color(0xFF2196F3),
                           ),
                         ),

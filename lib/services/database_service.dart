@@ -262,6 +262,33 @@ class DatabaseService {
     return File(path);
   }
 
+  // إرجاع جميع مسارات الملفات الصوتية المحفوظة في قاعدة البيانات (المعاملات والعملاء)
+  Future<List<String>> getAllAudioNotePaths() async {
+    final db = await database;
+    final List<String> paths = [];
+    try {
+      final trs = await db.rawQuery(
+          "SELECT audio_note_path FROM transactions WHERE audio_note_path IS NOT NULL AND TRIM(audio_note_path) <> ''");
+      for (final row in trs) {
+        final p = row['audio_note_path'] as String?;
+        if (p != null && p.trim().isNotEmpty) paths.add(p);
+      }
+    } catch (e) {
+      print('DEBUG DB: read transaction audio paths failed: $e');
+    }
+    try {
+      final cus = await db.rawQuery(
+          "SELECT audio_note_path FROM customers WHERE audio_note_path IS NOT NULL AND TRIM(audio_note_path) <> ''");
+      for (final row in cus) {
+        final p = row['audio_note_path'] as String?;
+        if (p != null && p.trim().isNotEmpty) paths.add(p);
+      }
+    } catch (e) {
+      print('DEBUG DB: read customer audio paths failed: $e');
+    }
+    return paths.toSet().toList();
+  }
+
   Future<void> _createDatabase(Database db, int version) async {
     await db.execute('''
       CREATE TABLE customers(
@@ -1444,6 +1471,45 @@ class DatabaseService {
       // تطبيع اسم المنتج وحفظه في العمود المطبع
       final productMap = product.toMap();
       productMap['name_norm'] = normalizeArabic(product.name);
+      // إعادة احتساب تكاليف الوحدات تلقائياً عند تغيير تكلفة الوحدة الأساسية
+      try {
+        if (product.costPrice != null && product.costPrice! > 0) {
+          final Map<String, dynamic> newUnitCosts = {};
+          // المنتجات المباعة بالقطعة: ابنِ التكاليف عبر التسلسل الهرمي
+          if (product.unit == 'piece') {
+            double currentCost = product.costPrice!; // تكلفة القطعة
+            newUnitCosts['قطعة'] = currentCost;
+            if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
+              try {
+                final List<dynamic> hierarchy = jsonDecode(product.unitHierarchy!.replaceAll("'", '"')) as List<dynamic>;
+                for (final level in hierarchy) {
+                  final String unitName = (level['unit_name'] ?? level['name'] ?? '').toString();
+                  final double qty = (level['quantity'] is num)
+                      ? (level['quantity'] as num).toDouble()
+                      : double.tryParse(level['quantity'].toString()) ?? 1.0;
+                  currentCost = currentCost * qty; // تراكمي
+                  if (unitName.isNotEmpty) {
+                    newUnitCosts[unitName] = currentCost;
+                  }
+                }
+              } catch (_) {}
+            }
+          } else if (product.unit == 'meter') {
+            // المنتجات المباعة بالمتر: متر و/أو لفة
+            newUnitCosts['متر'] = product.costPrice!;
+            if (product.lengthPerUnit != null && product.lengthPerUnit! > 0) {
+              newUnitCosts['لفة'] = product.costPrice! * product.lengthPerUnit!;
+            }
+          } else {
+            // أي وحدات أخرى: احتفظ بتكلفة الوحدة كما هي كبداية
+            newUnitCosts[product.unit] = product.costPrice!;
+          }
+          productMap['unit_costs'] = jsonEncode(newUnitCosts);
+        }
+      } catch (e) {
+        // لا تعطل التحديث إذا فشل بناء التكاليف لأي سبب
+        print('WARN: Failed to recalculate unit_costs: $e');
+      }
       
       return await db.update(
         'products',
@@ -1882,73 +1948,43 @@ class DatabaseService {
             (item['quantity_large_unit'] ?? 0.0) as double;
         final double unitsInLargeUnit =
             (item['units_in_large_unit'] ?? 1.0) as double;
-        
-        // تحديد نوع البيع والكمية
-        String saleUnit = 'قطعة'; // افتراضي
+
+        // 1) احسب إجمالي الكمية بوحدة الأساس (قطعة/متر)
         double currentItemTotalQuantity = 0.0;
-        
         if (quantityLargeUnit > 0) {
-          // البيع بوحدة كبيرة (كرتون، باكيت، لفة، إلخ)
           currentItemTotalQuantity = quantityLargeUnit * unitsInLargeUnit;
-          saleUnit = item['sale_type'] ?? 'قطعة';
         } else {
-          // البيع بالقطعة أو المتر
           currentItemTotalQuantity = quantityIndividual;
-          saleUnit = item['unit'] ?? 'قطعة';
         }
-        
-        final sellingPrice = (item['applied_price'] ?? 0.0) as double;
-        
-        // حساب التكلفة بناءً على النظام الهرمي
-        double costPrice = 0.0;
-        
-        // محاولة استخدام التكلفة المحسوبة مسبقاً
-        if (item['actual_cost_price'] != null) {
-          costPrice = (item['actual_cost_price'] as double);
-        } else if (item['cost_price'] != null) {
-          costPrice = (item['cost_price'] as double);
+
+        totalQuantity += currentItemTotalQuantity;
+
+        // 2) استخدم المجاميع المحفوظة في عناصر الفاتورة لتجنب أخطاء تحويل الوحدات:
+        //    - item_total يمثل إجمالي المبيعات لهذا العنصر
+        //    - cost_price يمثل إجمالي التكلفة لهذا العنصر (وليس تكلفة للوحدة)
+        final double itemSales = (item['item_total'] ?? 0.0) as double;
+
+        double itemCostTotal;
+        if (item['cost_price'] != null) {
+          // cost_price محفوظ كإجمالي تكلفة للعنصر
+          itemCostTotal = (item['cost_price'] as double);
         } else {
-          // حساب التكلفة من النظام الهرمي
-          costPrice = _calculateCostFromHierarchy(
-            item['unit_hierarchy'],
-            item['unit_costs'],
-            saleUnit,
-            currentItemTotalQuantity,
-          );
-          
-          // إذا لم يتم العثور على التكلفة من النظام الهرمي، استخدم التكلفة الأساسية
-          if (costPrice == 0.0) {
-            final productUnit = item['unit'] as String;
-            final productCostPrice = (item['product_cost_price'] ?? 0.0) as double;
-            
-            if (productUnit == 'meter' && saleUnit == 'لفة') {
-              // للمنتجات المباعة بالمتر، احسب تكلفة اللفة
-              final lengthPerUnit = (item['length_per_unit'] ?? 1.0) as double;
-              costPrice = productCostPrice * lengthPerUnit;
-            } else {
-              costPrice = productCostPrice;
-            }
+          // fallback: احسب من actual_cost_price كوحدة بيع مضروبة بعدد وحدات البيع
+          final double actualCostPerSaleUnit =
+              (item['actual_cost_price'] ?? 0.0) as double;
+          if (quantityLargeUnit > 0) {
+            itemCostTotal = actualCostPerSaleUnit * quantityLargeUnit;
+          } else {
+            itemCostTotal = actualCostPerSaleUnit * quantityIndividual;
           }
         }
-        
-        totalQuantity += currentItemTotalQuantity;
-        
-        // حساب التكلفة الإجمالية والربح مع مراعاة الوحدات الكبيرة (لفة/كرتون ...)
-        if (quantityLargeUnit > 0) {
-          // إذا كانت التكلفة محفوظة للوحدة الأساسية، حوّلها إلى تكلفة للوحدة الكبيرة
-          final double costPerLargeUnit = costPrice * unitsInLargeUnit;
-          totalCost += costPerLargeUnit * quantityLargeUnit;
-          totalProfit += (sellingPrice - costPerLargeUnit) * quantityLargeUnit;
-          totalSales += sellingPrice * quantityLargeUnit;
-          // متوسط سعر البيع للوحدة الأساسية: سيحسب لاحقاً بقسمة على totalQuantity
-          averageSellingPrice += sellingPrice * quantityLargeUnit;
-        } else {
-          // البيع بالقطعة أو المتر (الوحدة الأساسية)
-          totalCost += costPrice * quantityIndividual;
-          totalProfit += (sellingPrice - costPrice) * quantityIndividual;
-          totalSales += sellingPrice * quantityIndividual;
-          averageSellingPrice += sellingPrice * quantityIndividual;
-        }
+
+        totalSales += itemSales;
+        totalCost += itemCostTotal;
+        totalProfit += (itemSales - itemCostTotal);
+
+        // 3) للمعدل لكل وحدة أساس: مجموع المبيعات ÷ مجموع الكمية الأساسية
+        averageSellingPrice += itemSales; // سيقسم لاحقاً على totalQuantity
       }
  
       // حساب متوسط سعر البيع
@@ -2010,7 +2046,7 @@ class DatabaseService {
           strftime('%m', i.invoice_date) as month,
           SUM(CASE 
                 WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                  THEN ii.quantity_large_unit
+                  THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
                 ELSE COALESCE(ii.quantity_individual, 0.0)
               END) as total_quantity
         FROM invoice_items ii
@@ -2068,7 +2104,8 @@ class DatabaseService {
           WHERE ii.invoice_id = ? AND p.id = ?
         ''', [invoice.id, productId]);
 
-        double totalQuantity = 0.0;
+        double totalQuantity = 0.0; // بوحدة الأساس
+        double saleUnitsCount = 0.0; // بعدد وحدات البيع (قطعة أو باكيت/لفة)
         double totalSelling = 0.0;
         double totalCost = 0.0;
 
@@ -2083,22 +2120,31 @@ class DatabaseService {
               ? (quantityLargeUnit * unitsInLargeUnit)
               : quantityIndividual;
           final double sellingPrice = (item['applied_price'] ?? 0.0) as double;
-          // استخدام actual_cost_price إذا كان متوفراً، وإلا استخدم cost_price أو product_cost_price
-          final costPrice = (item['actual_cost_price'] ?? 
-                            item['cost_price'] ?? 
-                            item['product_cost_price'] ?? 0.0) as double;
+          final double? actualCostPrice = item['actual_cost_price'] as double?; // قد تكون تكلفة للوحدة المباعة
+          final double baseCostPrice = (item['cost_price'] ?? 
+                                        item['product_cost_price'] ?? 0.0) as double; // تكلفة للوحدة الأساسية في الغالب
           
           // إضافة الكمية الإجمالية (بالوحدات الأساسية) للمعرض
           totalQuantity += currentItemTotalQuantity;
+          saleUnitsCount += quantityLargeUnit > 0
+              ? quantityLargeUnit
+              : quantityIndividual;
           
           // حساب المبيعات والتكلفة مع مراعاة الوحدات الكبيرة (لفة/كرتون ...)
           if (quantityLargeUnit > 0) {
-            final double costPerLargeUnit = costPrice * unitsInLargeUnit;
+            // البيع بوحدة كبيرة: actual_cost_price إن وُجد فهو تكلفة للوحدة الكبيرة بالفعل
+            final double costPerLargeUnit = actualCostPrice != null
+                ? actualCostPrice
+                : baseCostPrice * unitsInLargeUnit;
             totalSelling += sellingPrice * quantityLargeUnit;
             totalCost += costPerLargeUnit * quantityLargeUnit;
           } else {
+            // البيع بالوحدة الأساسية
+            final double costPerUnit = actualCostPrice != null
+                ? actualCostPrice
+                : baseCostPrice;
             totalSelling += sellingPrice * quantityIndividual;
-            totalCost += costPrice * quantityIndividual;
+            totalCost += costPerUnit * quantityIndividual;
           }
         }
 
@@ -2111,6 +2157,7 @@ class DatabaseService {
         invoices.add(InvoiceWithProductData(
           invoice: invoice,
           quantitySold: totalQuantity,
+          saleUnitsCount: saleUnitsCount,
           profit: profit,
           sellingPrice: avgSellingPrice,
           unitCostAtSale: avgUnitCost,
@@ -2571,7 +2618,8 @@ class DatabaseService {
         final invoiceId = entry.key;
         final items = entry.value;
         double totalProfit = 0.0;
-        double totalQuantity = 0.0;
+        double totalQuantity = 0.0; // بوحدة الأساس
+        double saleUnitsCount = 0.0; // بعدد وحدات البيع
         double totalSelling = 0.0;
         double totalCost = 0.0;
         for (final item in items) {
@@ -2588,7 +2636,7 @@ class DatabaseService {
           final double unitsInLargeUnit =
               (item['units_in_large_unit'] ?? 1.0) as double;
           
-          // حساب الكمية الإجمالية (بالوحدات الأساسية) للمعرض
+          // حساب الكمية الإجمالية (بالوحدات الأساسية) للعرض
           final double currentItemTotalQuantity = quantityLargeUnit > 0
               ? (quantityLargeUnit * unitsInLargeUnit)
               : quantityIndividual;
@@ -2605,6 +2653,9 @@ class DatabaseService {
           }
           
           totalQuantity += currentItemTotalQuantity;
+          saleUnitsCount += quantityLargeUnit > 0
+              ? quantityLargeUnit
+              : quantityIndividual;
         }
         final invoice = Invoice.fromMap(items.first);
         final double avgSellingPrice =
@@ -2614,6 +2665,7 @@ class DatabaseService {
         result.add(InvoiceWithProductData(
           invoice: invoice,
           quantitySold: totalQuantity,
+          saleUnitsCount: saleUnitsCount,
           profit: totalProfit,
           sellingPrice: avgSellingPrice,
           unitCostAtSale: avgUnitCost,
@@ -2721,6 +2773,7 @@ class DatabaseService {
 class InvoiceWithProductData {
   final Invoice invoice;
   final double quantitySold;
+  final double saleUnitsCount;
   final double profit;
   final double sellingPrice;
   final double unitCostAtSale;
@@ -2728,6 +2781,7 @@ class InvoiceWithProductData {
   InvoiceWithProductData({
     required this.invoice,
     required this.quantitySold,
+    required this.saleUnitsCount,
     required this.profit,
     required this.sellingPrice,
     required this.unitCostAtSale,

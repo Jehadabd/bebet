@@ -89,8 +89,8 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
 
   // Helper to format currency consistently
   String formatCurrency(num value) {
-    return NumberFormat('0.00', 'en_US')
-        .format(value); // Always two decimal places
+    return NumberFormat('#,##0.00', 'en_US')
+        .format(value); // Thousand separators + two decimals
   }
 
   @override

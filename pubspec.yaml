@@ -47,6 +47,7 @@ dependencies:
   audioplayers: ^6.5.0
   record: ^6.0.0
   network_info_plus: ^5.0.3
+  archive: ^3.6.1
 
 dev_dependencies:
   flutter_test:
