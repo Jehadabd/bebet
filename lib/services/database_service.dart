@@ -1935,10 +1935,10 @@ class DatabaseService {
         WHERE p.id = ? AND i.status = 'محفوظة'
       ''', [productId]);
  
-      double totalQuantity = 0.0;
+      double totalQuantity = 0.0; // بوحدة الأساس (قطعة/متر)
       double totalProfit = 0.0;
       double totalSales = 0.0;
-      double averageSellingPrice = 0.0;
+      double averageSellingPrice = 0.0; // سيتم قسمة مجموع المبيعات على مجموع الكمية الأساسية
       double totalCost = 0.0;
  
       for (final item in itemMaps) {
@@ -1959,31 +1959,33 @@ class DatabaseService {
 
         totalQuantity += currentItemTotalQuantity;
 
-        // 2) استخدم المجاميع المحفوظة في عناصر الفاتورة لتجنب أخطاء تحويل الوحدات:
-        //    - item_total يمثل إجمالي المبيعات لهذا العنصر
-        //    - cost_price يمثل إجمالي التكلفة لهذا العنصر (وليس تكلفة للوحدة)
+        // 2) استخدم إجمالي المبيعات المحفوظ للبند
         final double itemSales = (item['item_total'] ?? 0.0) as double;
 
-        double itemCostTotal;
-        if (item['cost_price'] != null) {
-          // cost_price محفوظ كإجمالي تكلفة للعنصر
-          itemCostTotal = (item['cost_price'] as double);
+        // 3) احسب التكلفة بإتباع نفس منطق السنة/الشهر
+        final double? actualCostPrice = item['actual_cost_price'] as double?; // قد تكون تكلفة للوحدة المباعة
+        final double baseCostPrice = (item['cost_price'] ?? item['product_cost_price'] ?? 0.0) as double; // تكلفة للوحدة الأساسية غالبًا
+
+        double itemCostTotal = 0.0;
+        if (quantityLargeUnit > 0) {
+          // بيع بوحدة كبيرة
+          final double costPerLargeUnit = actualCostPrice != null
+              ? actualCostPrice
+              : baseCostPrice * unitsInLargeUnit;
+          itemCostTotal = costPerLargeUnit * quantityLargeUnit;
         } else {
-          // fallback: احسب من actual_cost_price كوحدة بيع مضروبة بعدد وحدات البيع
-          final double actualCostPerSaleUnit =
-              (item['actual_cost_price'] ?? 0.0) as double;
-          if (quantityLargeUnit > 0) {
-            itemCostTotal = actualCostPerSaleUnit * quantityLargeUnit;
-          } else {
-            itemCostTotal = actualCostPerSaleUnit * quantityIndividual;
-          }
+          // بيع بالوحدة الأساسية
+          final double costPerUnit = actualCostPrice != null
+              ? actualCostPrice
+              : baseCostPrice;
+          itemCostTotal = costPerUnit * quantityIndividual;
         }
 
         totalSales += itemSales;
         totalCost += itemCostTotal;
         totalProfit += (itemSales - itemCostTotal);
 
-        // 3) للمعدل لكل وحدة أساس: مجموع المبيعات ÷ مجموع الكمية الأساسية
+        // 4) للمعدل لكل وحدة أساس: مجموع المبيعات ÷ مجموع الكمية الأساسية
         averageSellingPrice += itemSales; // سيقسم لاحقاً على totalQuantity
       }
  
