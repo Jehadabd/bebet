@@ -157,9 +157,14 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
 
   Future<void> _startRecording() async {
     if (await _recorder.hasPermission()) {
-      final dir = await getApplicationDocumentsDirectory();
+      // استخدام نفس مجلد قاعدة البيانات بدلاً من مجلد المستندات
+      final dir = await getApplicationSupportDirectory();
+      final audioDir = Directory('${dir.path}/audio_notes');
+      if (!await audioDir.exists()) {
+        await audioDir.create(recursive: true);
+      }
       final filePath =
-          '${dir.path}/audio_note_${DateTime.now().millisecondsSinceEpoch}.m4a';
+          '${audioDir.path}/audio_note_${DateTime.now().millisecondsSinceEpoch}.m4a';
       await _recorder.start(
         RecordConfig(
           encoder: AudioEncoder.aacLc,

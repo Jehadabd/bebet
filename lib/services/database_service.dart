@@ -242,6 +242,10 @@ class DatabaseService {
       await oldFile.copy(newPath);
       await oldFile.delete();
     }
+    
+    // إنشاء مجلد الملفات الصوتية
+    await ensureAudioNotesDirectory();
+    
     return await openDatabase(
       newPath,
       version: _databaseVersion, // رفع رقم النسخة لتفعيل الترقية وإضافة عمود unique_id
@@ -262,6 +266,52 @@ class DatabaseService {
     return File(path);
   }
 
+  // إنشاء مجلد الملفات الصوتية في نفس مجلد قاعدة البيانات
+  Future<void> ensureAudioNotesDirectory() async {
+    try {
+      final supportDir = await getApplicationSupportDirectory();
+      final audioDir = Directory('${supportDir.path}/audio_notes');
+      if (!await audioDir.exists()) {
+        await audioDir.create(recursive: true);
+        print('DEBUG DB: Created audio notes directory: ${audioDir.path}');
+        
+        // نسخ الملفات الصوتية من مجلد المستندات القديم إذا وجدت
+        await _migrateAudioFilesFromDocuments();
+      }
+    } catch (e) {
+      print('DEBUG DB: Error creating audio notes directory: $e');
+    }
+  }
+
+  // نسخ الملفات الصوتية من مجلد المستندات إلى مجلد قاعدة البيانات
+  Future<void> _migrateAudioFilesFromDocuments() async {
+    try {
+      final documentsDir = await getApplicationDocumentsDirectory();
+      final oldAudioDir = Directory('${documentsDir.path}/audio_notes');
+      
+      if (await oldAudioDir.exists()) {
+        final supportDir = await getApplicationSupportDirectory();
+        final newAudioDir = Directory('${supportDir.path}/audio_notes');
+        
+        print('DEBUG DB: Migrating audio files from documents to database directory');
+        
+        await for (final entity in oldAudioDir.list()) {
+          if (entity is File) {
+            final fileName = entity.path.split(Platform.pathSeparator).last;
+            final targetFile = File('${newAudioDir.path}/$fileName');
+            
+            if (!await targetFile.exists()) {
+              await entity.copy(targetFile.path);
+              print('DEBUG DB: Migrated audio file: $fileName');
+            }
+          }
+        }
+      }
+    } catch (e) {
+      print('DEBUG DB: Error migrating audio files: $e');
+    }
+  }
+
   // إرجاع جميع مسارات الملفات الصوتية المحفوظة في قاعدة البيانات (المعاملات والعملاء)
   Future<List<String>> getAllAudioNotePaths() async {
     final db = await database;
@@ -269,9 +319,13 @@ class DatabaseService {
     try {
       final trs = await db.rawQuery(
           "SELECT audio_note_path FROM transactions WHERE audio_note_path IS NOT NULL AND TRIM(audio_note_path) <> ''");
+      print('DEBUG DB: Found ${trs.length} transaction audio paths');
       for (final row in trs) {
         final p = row['audio_note_path'] as String?;
-        if (p != null && p.trim().isNotEmpty) paths.add(p);
+        if (p != null && p.trim().isNotEmpty) {
+          paths.add(p);
+          print('DEBUG DB: Transaction audio path: $p');
+        }
       }
     } catch (e) {
       print('DEBUG DB: read transaction audio paths failed: $e');
@@ -279,14 +333,20 @@ class DatabaseService {
     try {
       final cus = await db.rawQuery(
           "SELECT audio_note_path FROM customers WHERE audio_note_path IS NOT NULL AND TRIM(audio_note_path) <> ''");
+      print('DEBUG DB: Found ${cus.length} customer audio paths');
       for (final row in cus) {
         final p = row['audio_note_path'] as String?;
-        if (p != null && p.trim().isNotEmpty) paths.add(p);
+        if (p != null && p.trim().isNotEmpty) {
+          paths.add(p);
+          print('DEBUG DB: Customer audio path: $p');
+        }
       }
     } catch (e) {
       print('DEBUG DB: read customer audio paths failed: $e');
     }
-    return paths.toSet().toList();
+    final uniquePaths = paths.toSet().toList();
+    print('DEBUG DB: Total unique audio paths: ${uniquePaths.length}');
+    return uniquePaths;
   }
 
   Future<void> _createDatabase(Database db, int version) async {

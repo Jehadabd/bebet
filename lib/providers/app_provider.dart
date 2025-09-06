@@ -68,6 +68,7 @@ class AppProvider with ChangeNotifier {
         _isDriveSignedInSync = await _drive.isSignedIn();
       }
       await _loadCustomers();
+      await ensureAudioNotesDirectory();
     } finally {
       _setLoading(false);
     }
@@ -199,6 +200,11 @@ class AppProvider with ChangeNotifier {
       onProgress?.call(0.05);
       final dbFile = await _db.getDatabaseFile();
       final audioPaths = await _db.getAllAudioNotePaths();
+      
+      print('DEBUG: Found ${audioPaths.length} audio paths:');
+      for (final path in audioPaths) {
+        print('DEBUG: Audio path: $path');
+      }
 
       // 2) إنشاء مجلد مؤقت ونسخ قاعدة البيانات وجمع الصوتيات
       onProgress?.call(0.15);
@@ -212,14 +218,138 @@ class AppProvider with ChangeNotifier {
 
       final audioDir = Directory('${backupRoot.path}/audio');
       await audioDir.create(recursive: true);
+      
+      int copiedAudioFiles = 0;
       for (final p in audioPaths) {
         try {
           final f = File(p);
-          if (await f.exists()) {
-            final base = p.split(Platform.pathSeparator).last;
-            await f.copy('${audioDir.path}/$base');
+          print('DEBUG: Checking audio file: $p, exists: ${await f.exists()}');
+          
+          File? sourceFile = f;
+          if (!await f.exists()) {
+            // البحث عن الملف في مجلدات أخرى محتملة
+            final fileName = p.split(Platform.pathSeparator).last;
+            print('DEBUG: File not found at original path, searching for: $fileName');
+            
+            // البحث في مجلد قاعدة البيانات الحالي أولاً
+            final supportDir = await getApplicationSupportDirectory();
+            final dbAudioDir = Directory('${supportDir.path}/audio_notes');
+            final currentUserFile = File('${dbAudioDir.path}/$fileName');
+            if (await currentUserFile.exists()) {
+              sourceFile = currentUserFile;
+              print('DEBUG: Found file in database directory: ${currentUserFile.path}');
+            } else {
+              // البحث في مجلد المستندات العام
+              final publicDocs = Directory('${Platform.environment['PUBLIC'] ?? ''}\\Documents');
+              if (await publicDocs.exists()) {
+                final publicFile = File('${publicDocs.path}\\$fileName');
+                if (await publicFile.exists()) {
+                  sourceFile = publicFile;
+                  print('DEBUG: Found file in public documents: ${publicFile.path}');
+                }
+              }
+              
+              // البحث في مجلد المستندات للمستخدمين الآخرين
+              final usersDir = Directory('C:\\Users');
+              if (await usersDir.exists()) {
+                await for (final userDir in usersDir.list()) {
+                  if (userDir is Directory) {
+                    final userDocs = Directory('${userDir.path}\\Documents');
+                    if (await userDocs.exists()) {
+                      final userFile = File('${userDocs.path}\\$fileName');
+                      if (await userFile.exists()) {
+                        sourceFile = userFile;
+                        print('DEBUG: Found file in user documents: ${userFile.path}');
+                        break;
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
-        } catch (_) {}
+          
+          if (sourceFile != null && await sourceFile.exists()) {
+            final fileName = sourceFile.path.split(Platform.pathSeparator).last;
+            final targetPath = '${audioDir.path}/$fileName';
+            
+            // التأكد من أن الملف المصدر قابل للقراءة
+            final sourceSize = await sourceFile.length();
+            print('DEBUG: Source file size: $sourceSize bytes');
+            
+            if (sourceSize > 0) {
+              await sourceFile.copy(targetPath);
+              final copiedFile = File(targetPath);
+              final copiedSize = await copiedFile.length();
+              print('DEBUG: Copied file size: $copiedSize bytes');
+              
+              if (copiedSize == sourceSize) {
+                copiedAudioFiles++;
+                print('DEBUG: Successfully copied audio file to: $targetPath');
+              } else {
+                print('DEBUG: File size mismatch! Source: $sourceSize, Copied: $copiedSize');
+              }
+            } else {
+              print('DEBUG: Source file is empty, skipping: $p');
+            }
+          } else {
+            print('DEBUG: Audio file not found anywhere: $p');
+          }
+        } catch (e) {
+          print('DEBUG: Error copying audio file $p: $e');
+        }
+      }
+      print('DEBUG: Total audio files copied: $copiedAudioFiles');
+      
+      // نسخ إضافي للملفات الصوتية من مجلد قاعدة البيانات الحالي
+      if (copiedAudioFiles == 0) {
+        try {
+          final supportDir = await getApplicationSupportDirectory();
+          final currentAudioDir = Directory('${supportDir.path}/audio_notes');
+          if (await currentAudioDir.exists()) {
+            final currentAudioFiles = await currentAudioDir.list().toList();
+            print('DEBUG: Found ${currentAudioFiles.length} audio files in current database directory');
+            
+            for (final file in currentAudioFiles) {
+              if (file is File) {
+                final fileName = file.path.split(Platform.pathSeparator).last;
+                final targetPath = '${audioDir.path}/$fileName';
+                if (!await File(targetPath).exists()) {
+                  await file.copy(targetPath);
+                  copiedAudioFiles++;
+                  print('DEBUG: Copied audio file from current database directory: $fileName');
+                }
+              }
+            }
+          }
+        } catch (e) {
+          print('DEBUG: Error copying from current database directory: $e');
+        }
+      }
+      
+      // نسخ إضافي للملفات الصوتية في مجلد قاعدة البيانات للنسخ الاحتياطية
+      if (copiedAudioFiles > 0) {
+        try {
+          final supportDir = await getApplicationSupportDirectory();
+          final backupAudioDir = Directory('${supportDir.path}/audio_backup');
+          await backupAudioDir.create(recursive: true);
+          
+          for (final p in audioPaths) {
+            try {
+              final f = File(p);
+              if (await f.exists()) {
+                final base = p.split(Platform.pathSeparator).last;
+                final backupPath = '${backupAudioDir.path}/$base';
+                await f.copy(backupPath);
+                print('DEBUG: Created backup audio file: $backupPath');
+              }
+            } catch (e) {
+              print('DEBUG: Error creating backup audio file: $e');
+            }
+          }
+        } catch (e) {
+          print('DEBUG: Error creating audio backup directory: $e');
+        }
       }
 
       // 3) إنشاء ملف zip باسم التاريخ yyyy-MM-dd.zip
@@ -230,10 +360,25 @@ class AppProvider with ChangeNotifier {
       final encoder = ZipFileEncoder();
       encoder.create(zipFile.path);
       encoder.addFile(dbCopy);
+      print('DEBUG: Added database file to ZIP: ${dbCopy.path}');
+      
       if (await audioDir.exists()) {
-        encoder.addDirectory(audioDir);
+        final audioFiles = await audioDir.list().toList();
+        print('DEBUG: Audio directory exists with ${audioFiles.length} files');
+        for (final file in audioFiles) {
+          print('DEBUG: Audio file in directory: ${file.path}');
+        }
+        if (audioFiles.isNotEmpty) {
+          encoder.addDirectory(audioDir);
+          print('DEBUG: Added audio directory to ZIP with ${audioFiles.length} files');
+        } else {
+          print('DEBUG: Audio directory is empty, not adding to ZIP');
+        }
+      } else {
+        print('DEBUG: Audio directory does not exist');
       }
       encoder.close();
+      print('DEBUG: ZIP file created: ${zipFile.path}');
 
       // 4) الرفع وسياسة الاحتفاظ
       onProgress?.call(0.75);
@@ -373,4 +518,19 @@ class AppProvider with ChangeNotifier {
     _hasTempInvoiceData = true;
     notifyListeners();
   }
+
+  // إنشاء مجلد الملفات الصوتية في نفس مجلد قاعدة البيانات
+  Future<void> ensureAudioNotesDirectory() async {
+    try {
+      final supportDir = await getApplicationSupportDirectory();
+      final audioDir = Directory('${supportDir.path}/audio_notes');
+      if (!await audioDir.exists()) {
+        await audioDir.create(recursive: true);
+        print('DEBUG: Created audio notes directory: ${audioDir.path}');
+      }
+    } catch (e) {
+      print('DEBUG: Error creating audio notes directory: $e');
+    }
+  }
+
 }

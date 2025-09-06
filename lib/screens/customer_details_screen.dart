@@ -31,6 +31,10 @@ class CustomerDetailsScreen extends StatefulWidget {
 }
 
 class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
+  AudioPlayer? _audioPlayer;
+  String? _currentlyPlayingPath;
+  bool _isPlaying = false;
+
   @override
   void initState() {
     super.initState();
@@ -39,9 +43,66 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         () => context.read<AppProvider>().selectCustomer(widget.customer));
   }
 
+  @override
+  void dispose() {
+    _audioPlayer?.dispose();
+    super.dispose();
+  }
+
   // Helper to format numbers with thousand separators (no decimals)
   String formatCurrency(num value) {
     return NumberFormat('#,##0', 'en_US').format(value);
+  }
+
+  // تشغيل الملاحظة الصوتية
+  Future<void> _playAudioNote(String audioPath) async {
+    try {
+      // إيقاف التشغيل الحالي إذا كان هناك تشغيل
+      if (_isPlaying) {
+        await _stopAudio();
+      }
+
+      if (File(audioPath).existsSync()) {
+        _audioPlayer = AudioPlayer();
+        _currentlyPlayingPath = audioPath;
+        
+        await _audioPlayer!.play(DeviceFileSource(audioPath));
+        
+        setState(() {
+          _isPlaying = true;
+        });
+
+        // الاستماع لانتهاء التشغيل
+        _audioPlayer!.onPlayerComplete.listen((_) {
+          setState(() {
+            _isPlaying = false;
+            _currentlyPlayingPath = null;
+          });
+        });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('ملف الصوت غير موجود')),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('خطأ في تشغيل الصوت: $e')),
+      );
+    }
+  }
+
+  // إيقاف تشغيل الملاحظة الصوتية
+  Future<void> _stopAudio() async {
+    if (_audioPlayer != null) {
+      await _audioPlayer!.stop();
+      await _audioPlayer!.dispose();
+      _audioPlayer = null;
+    }
+    
+    setState(() {
+      _isPlaying = false;
+      _currentlyPlayingPath = null;
+    });
   }
 
   @override
@@ -164,6 +225,16 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
               tooltip: 'كشف الحساب',
               onPressed: () => _generateAccountStatement(),
             ),
+            // زر إيقاف الصوت
+            if (_isPlaying)
+              IconButton(
+                icon: const Icon(Icons.stop,
+                    color: Colors.red),
+                tooltip: 'إيقاف تشغيل الصوت',
+                onPressed: () async {
+                  await _stopAudio();
+                },
+              ),
             IconButton(
               icon: const Icon(Icons.delete,
                   color: Colors.white), // Color changed
@@ -346,7 +417,18 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                           itemBuilder: (context, index) {
                             final transaction = transactions[index];
                             return TransactionListTile(
-                                transaction: transaction);
+                              transaction: transaction,
+                              isPlaying: _isPlaying,
+                              currentlyPlayingPath: _currentlyPlayingPath,
+                              audioPath: transaction.audioNotePath ?? '',
+                              onPlayStop: () async {
+                                if (_isPlaying && _currentlyPlayingPath == transaction.audioNotePath) {
+                                  await _stopAudio();
+                                } else {
+                                  await _playAudioNote(transaction.audioNotePath!);
+                                }
+                              },
+                            );
                           },
                         ),
                 ),
@@ -526,10 +608,18 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
 
 class TransactionListTile extends StatelessWidget {
   final DebtTransaction transaction;
+  final bool isPlaying;
+  final String? currentlyPlayingPath;
+  final VoidCallback onPlayStop;
+  final String audioPath;
 
   const TransactionListTile({
     super.key,
     required this.transaction,
+    required this.isPlaying,
+    required this.currentlyPlayingPath,
+    required this.onPlayStop,
+    required this.audioPath,
   });
 
   // Helper to format numbers with thousand separators
@@ -592,23 +682,32 @@ class TransactionListTile extends StatelessWidget {
                 transaction.audioNotePath!.isNotEmpty)
               Row(
                 children: [
+                  // زر التشغيل/الإيقاف
                   IconButton(
-                    icon: Icon(Icons.play_circle_fill,
-                        color: Theme.of(context).colorScheme.primary),
-                    tooltip: 'تشغيل الملاحظة الصوتية',
-                    onPressed: () async {
-                      final player = AudioPlayer();
-                      if (File(transaction.audioNotePath!).existsSync()) {
-                        await player
-                            .play(DeviceFileSource(transaction.audioNotePath!));
-                      } else {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('ملف الصوت غير موجود')),
-                        );
-                      }
-                    },
+                    icon: Icon(
+                      isPlaying && currentlyPlayingPath == audioPath
+                          ? Icons.stop_circle
+                          : Icons.play_circle_fill,
+                      color: isPlaying && currentlyPlayingPath == audioPath
+                          ? Colors.red
+                          : Theme.of(context).colorScheme.primary,
+                    ),
+                    tooltip: isPlaying && currentlyPlayingPath == audioPath
+                        ? 'إيقاف تشغيل الملاحظة الصوتية'
+                        : 'تشغيل الملاحظة الصوتية',
+                    onPressed: onPlayStop,
                   ),
-                  const Text('تشغيل الملاحظة الصوتية'),
+                  // نص الحالة
+                  Text(
+                    isPlaying && currentlyPlayingPath == audioPath
+                        ? 'إيقاف تشغيل الملاحظة الصوتية'
+                        : 'تشغيل الملاحظة الصوتية',
+                    style: TextStyle(
+                      color: isPlaying && currentlyPlayingPath == audioPath
+                          ? Colors.red
+                          : Theme.of(context).colorScheme.primary,
+                    ),
+                  ),
                 ],
               ),
           ],

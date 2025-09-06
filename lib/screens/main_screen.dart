@@ -438,11 +438,13 @@ class _MainScreenState extends State<MainScreen> {
 
                 if (result == true) {
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                    content: Text('تم رفع قاعدة البيانات بنجاح إلى Google Drive'),
+                    content: Text('تم رفع قاعدة البيانات والملفات الصوتية بنجاح إلى Google Drive'),
+                    duration: Duration(seconds: 3),
                   ));
                 } else {
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                    content: Text('فشل الرفع'),
+                    content: Text('فشل الرفع - تحقق من رسائل التصحيح في وحدة التحكم'),
+                    backgroundColor: Colors.red,
                   ));
                 }
               },
