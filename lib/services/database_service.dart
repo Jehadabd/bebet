@@ -283,6 +283,70 @@ class DatabaseService {
     }
   }
 
+  /// يبني المسار المطلق لملف صوتي اعتمادًا على مسار قاعدة البيانات (Support dir)
+  Future<String> getAudioNotePath(String fileName) async {
+    final supportDir = await getApplicationSupportDirectory();
+    return '${supportDir.path}/audio_notes/$fileName';
+  }
+
+  /// يحوّل القيمة المخزنة (قد تكون مسارًا كاملاً أو اسم ملف) إلى مسار مطلق ضمن مجلد التطبيق
+  Future<String> resolveStoredAudioPath(String storedValue) async {
+    // دعم كلا الفاصلين / و \
+    final lastSlash = storedValue.lastIndexOf('/');
+    final lastBackslash = storedValue.lastIndexOf('\\');
+    final cutIndex = lastSlash > lastBackslash ? lastSlash : lastBackslash;
+    final fileName = cutIndex >= 0 ? storedValue.substring(cutIndex + 1) : storedValue;
+    return getAudioNotePath(fileName);
+  }
+
+  /// ترحيل قيَم المسارات الصوتية القديمة (مسار كامل) إلى مجرد أسماء ملفات
+  Future<void> migrateAudioPathsToFilenames() async {
+    final db = await database;
+    // ترحيل transactions
+    try {
+      final rows = await db.query('transactions',
+          columns: ['id', 'audio_note_path'],
+          where: 'audio_note_path IS NOT NULL AND TRIM(audio_note_path) <> ""');
+      for (final row in rows) {
+        final id = row['id'] as int;
+        final oldPath = row['audio_note_path'] as String?;
+        if (oldPath != null && oldPath.isNotEmpty) {
+          final lastSlash = oldPath.lastIndexOf('/');
+          final lastBackslash = oldPath.lastIndexOf('\\');
+          final cutIndex = lastSlash > lastBackslash ? lastSlash : lastBackslash;
+          final fileName = cutIndex >= 0 ? oldPath.substring(cutIndex + 1) : oldPath;
+          if (fileName != oldPath) {
+            await db.update('transactions', {'audio_note_path': fileName}, where: 'id = ?', whereArgs: [id]);
+          }
+        }
+      }
+    } catch (e) {
+      print('DEBUG DB: migrate transactions audio paths failed: $e');
+    }
+
+    // ترحيل customers
+    try {
+      final rows = await db.query('customers',
+          columns: ['id', 'audio_note_path'],
+          where: 'audio_note_path IS NOT NULL AND TRIM(audio_note_path) <> ""');
+      for (final row in rows) {
+        final id = row['id'] as int;
+        final oldPath = row['audio_note_path'] as String?;
+        if (oldPath != null && oldPath.isNotEmpty) {
+          final lastSlash = oldPath.lastIndexOf('/');
+          final lastBackslash = oldPath.lastIndexOf('\\');
+          final cutIndex = lastSlash > lastBackslash ? lastSlash : lastBackslash;
+          final fileName = cutIndex >= 0 ? oldPath.substring(cutIndex + 1) : oldPath;
+          if (fileName != oldPath) {
+            await db.update('customers', {'audio_note_path': fileName}, where: 'id = ?', whereArgs: [id]);
+          }
+        }
+      }
+    } catch (e) {
+      print('DEBUG DB: migrate customers audio paths failed: $e');
+    }
+  }
+
   // نسخ الملفات الصوتية من مجلد المستندات إلى مجلد قاعدة البيانات
   Future<void> _migrateAudioFilesFromDocuments() async {
     try {

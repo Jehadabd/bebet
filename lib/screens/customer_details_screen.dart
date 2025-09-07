@@ -54,7 +54,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
     return NumberFormat('#,##0', 'en_US').format(value);
   }
 
-  // تشغيل الملاحظة الصوتية
+  // تشغيل الملاحظة الصوتية (audioPath قد يكون اسم ملف فقط)
   Future<void> _playAudioNote(String audioPath) async {
     try {
       // إيقاف التشغيل الحالي إذا كان هناك تشغيل
@@ -62,11 +62,13 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         await _stopAudio();
       }
 
-      if (File(audioPath).existsSync()) {
+      // حل المسار إلى المسار المطلق ضمن مجلد التطبيق
+      final resolvedPath = await DatabaseService().resolveStoredAudioPath(audioPath);
+      if (File(resolvedPath).existsSync()) {
         _audioPlayer = AudioPlayer();
-        _currentlyPlayingPath = audioPath;
+        _currentlyPlayingPath = resolvedPath;
         
-        await _audioPlayer!.play(DeviceFileSource(audioPath));
+        await _audioPlayer!.play(DeviceFileSource(resolvedPath));
         
         setState(() {
           _isPlaying = true;

@@ -15,6 +15,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:record/record.dart';
 import '../services/receipt_voucher_pdf_service.dart';
 import '../services/printing_service.dart';
+import '../services/database_service.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:flutter/services.dart' show rootBundle;
 
@@ -39,7 +40,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   FlutterSoundPlayer? _audioPlayer;
   AudioPlayer? _audioPlayer2;
   bool _isRecording = false;
-  String? _audioNotePath;
+  String? _audioNotePath; // stores fileName only
 
   @override
   void initState() {
@@ -163,8 +164,8 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       if (!await audioDir.exists()) {
         await audioDir.create(recursive: true);
       }
-      final filePath =
-          '${audioDir.path}/audio_note_${DateTime.now().millisecondsSinceEpoch}.m4a';
+      final fileName = 'audio_note_${DateTime.now().millisecondsSinceEpoch}.m4a';
+      final filePath = '${audioDir.path}/$fileName';
       await _recorder.start(
         RecordConfig(
           encoder: AudioEncoder.aacLc,
@@ -175,7 +176,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       );
       setState(() {
         _isRecording = true;
-        _audioNotePath = filePath;
+        _audioNotePath = fileName; // store file name only
       });
     }
   }
@@ -184,13 +185,23 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     final path = await _recorder.stop();
     setState(() {
       _isRecording = false;
-      if (path != null) _audioNotePath = path;
+      if (path != null) {
+        // on stop() path is absolute; convert to file name
+        final lastSlash = path.lastIndexOf('/');
+        final lastBackslash = path.lastIndexOf('\\');
+        final cutIndex = lastSlash > lastBackslash ? lastSlash : lastBackslash;
+        _audioNotePath = cutIndex >= 0 ? path.substring(cutIndex + 1) : path;
+      }
     });
   }
 
-  void _deleteRecording() {
+  Future<void> _deleteRecording() async {
     if (_audioNotePath != null) {
-      File(_audioNotePath!).deleteSync();
+      final absolutePath = await DatabaseService().getAudioNotePath(_audioNotePath!);
+      final f = File(absolutePath);
+      if (await f.exists()) {
+        await f.delete();
+      }
       setState(() {
         _audioNotePath = null;
       });
@@ -198,11 +209,14 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   }
 
   Future<void> _playAudioNote() async {
-    if (_audioNotePath != null && File(_audioNotePath!).existsSync()) {
-      if (Platform.isWindows) {
-        await Process.run('start', [_audioNotePath!], runInShell: true);
-      } else {
-        await _audioPlayer2!.play(DeviceFileSource(_audioNotePath!));
+    if (_audioNotePath != null) {
+      final absolutePath = await DatabaseService().getAudioNotePath(_audioNotePath!);
+      if (File(absolutePath).existsSync()) {
+        if (Platform.isWindows) {
+          await Process.run('start', [absolutePath], runInShell: true);
+        } else {
+          await _audioPlayer2!.play(DeviceFileSource(absolutePath));
+        }
       }
     }
   }
