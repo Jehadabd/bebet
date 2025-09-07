@@ -108,7 +108,13 @@ class AppProvider with ChangeNotifier {
   }
 
   Future<void> deleteCustomer(int id) async {
+    // اجلب أسماء الملفات الصوتية المرتبطة بهذا العميل قبل الحذف
+    final audioNames = await _db.getAudioFilenamesForCustomer(id);
+
+    // احذف العميل من قاعدة البيانات
     await _db.deleteCustomer(id);
+
+    // حدّث الحالة المحلية
     _customers.removeWhere((c) => c.id == id);
     if (_selectedCustomer?.id == id) {
       _selectedCustomer = null;
@@ -116,6 +122,22 @@ class AppProvider with ChangeNotifier {
     }
     _applySearchFilter();
     notifyListeners();
+
+    // بعد الحذف: امسح أي ملف صوتي لم يعد مُشاراً إليه
+    try {
+      for (final name in audioNames) {
+        final stillReferenced = await _db.isAudioFilenameReferenced(name);
+        if (!stillReferenced) {
+          // احذف من كل مكان محتمل (المجلد الأساسي وأي مواقع شائعة)
+          await _db.deleteAudioFileEverywhere(name);
+        }
+      }
+    } catch (e) {
+      // تجنّب تعطيل الواجهة في حال حدوث خطأ أثناء حذف الملفات
+      if (kDebugMode) {
+        print('DEBUG: Failed to cleanup audio files for deleted customer $id: $e');
+      }
+    }
   }
 
   // Transaction operations

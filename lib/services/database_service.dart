@@ -249,6 +249,10 @@ class DatabaseService {
     return await openDatabase(
       newPath,
       version: _databaseVersion, // رفع رقم النسخة لتفعيل الترقية وإضافة عمود unique_id
+      onConfigure: (db) async {
+        // تفعيل القيود المرجعية (ضروري لتفعيل ON DELETE CASCADE)
+        await db.execute('PRAGMA foreign_keys = ON');
+      },
       onCreate: _createDatabase,
       onUpgrade: _onUpgrade,
     );
@@ -344,6 +348,145 @@ class DatabaseService {
       }
     } catch (e) {
       print('DEBUG DB: migrate customers audio paths failed: $e');
+    }
+  }
+
+  /// إرجاع جميع أسماء ملفات الصوت المرتبطة بعميل (من جدول العميل ومعاملاته)
+  Future<List<String>> getAudioFilenamesForCustomer(int customerId) async {
+    final db = await database;
+    final Set<String> names = {};
+    try {
+      final tRows = await db.query(
+        'transactions',
+        columns: ['audio_note_path'],
+        where: 'customer_id = ? AND audio_note_path IS NOT NULL AND TRIM(audio_note_path) <> ""',
+        whereArgs: [customerId],
+      );
+      for (final row in tRows) {
+        final v = row['audio_note_path'] as String?;
+        if (v != null && v.isNotEmpty) {
+          final lastSlash = v.lastIndexOf('/');
+          final lastBackslash = v.lastIndexOf('\\');
+          final cut = lastSlash > lastBackslash ? lastSlash : lastBackslash;
+          names.add(cut >= 0 ? v.substring(cut + 1) : v);
+        }
+      }
+    } catch (e) {
+      print('DEBUG DB: getAudioFilenamesForCustomer (transactions) failed: $e');
+    }
+    try {
+      final cRows = await db.query(
+        'customers',
+        columns: ['audio_note_path'],
+        where: 'id = ? AND audio_note_path IS NOT NULL AND TRIM(audio_note_path) <> ""',
+        whereArgs: [customerId],
+        limit: 1,
+      );
+      for (final row in cRows) {
+        final v = row['audio_note_path'] as String?;
+        if (v != null && v.isNotEmpty) {
+          final lastSlash = v.lastIndexOf('/');
+          final lastBackslash = v.lastIndexOf('\\');
+          final cut = lastSlash > lastBackslash ? lastSlash : lastBackslash;
+          names.add(cut >= 0 ? v.substring(cut + 1) : v);
+        }
+      }
+    } catch (e) {
+      print('DEBUG DB: getAudioFilenamesForCustomer (customers) failed: $e');
+    }
+    return names.toList();
+  }
+
+  /// التحقق إن كان اسم ملف الصوت ما يزال مُشاراً إليه من أي سجل (عميل/معاملة)
+  Future<bool> isAudioFilenameReferenced(String fileName) async {
+    final db = await database;
+    try {
+      // بما أننا نخزن اسم الملف فقط الآن، نطابق تطابقًا تامًا. نضيف endsWith للدعم القديم.
+      final t = await db.rawQuery(
+          "SELECT COUNT(1) as c FROM transactions WHERE audio_note_path = ? OR audio_note_path LIKE ?",
+          [fileName, '%'+fileName]);
+      final tCount = (t.first['c'] as int?) ?? 0;
+      if (tCount > 0) return true;
+      final c = await db.rawQuery(
+          "SELECT COUNT(1) as c FROM customers WHERE audio_note_path = ? OR audio_note_path LIKE ?",
+          [fileName, '%'+fileName]);
+      final cCount = (c.first['c'] as int?) ?? 0;
+      return cCount > 0;
+    } catch (e) {
+      print('DEBUG DB: isAudioFilenameReferenced failed: $e');
+      // في حالة الخطأ، اعتبر أنه مُشار إليه لتجنب حذف خاطئ
+      return true;
+    }
+  }
+
+  /// البحث عن ملف صوتي باسم محدد في مواقع شائعة على ويندوز
+  Future<List<String>> locateAudioFileCandidates(String fileName) async {
+    final List<String> found = [];
+    try {
+      // 1) مجلد التطبيق (الموقع الأساسي)
+      final primary = await getAudioNotePath(fileName);
+      if (await File(primary).exists()) {
+        found.add(primary);
+      }
+
+      // 2) مجلد Documents/audio_notes للمستخدم الحالي
+      try {
+        final docs = await getApplicationDocumentsDirectory();
+        final candidate = File('${docs.path}/audio_notes/$fileName');
+        if (await candidate.exists()) {
+          found.add(candidate.path);
+        }
+      } catch (_) {}
+
+      // 3) مجلد Public Documents
+      try {
+        final publicDocs = Directory('${Platform.environment['PUBLIC'] ?? ''}\\Documents');
+        if (await publicDocs.exists()) {
+          final candidate = File('${publicDocs.path}\\$fileName');
+          if (await candidate.exists()) {
+            found.add(candidate.path);
+          }
+        }
+      } catch (_) {}
+
+      // 4) جميع مستخدمي ويندوز: Documents و Downloads
+      try {
+        final usersDir = Directory('C:\\Users');
+        if (await usersDir.exists()) {
+          await for (final user in usersDir.list()) {
+            if (user is! Directory) continue;
+            final docPath = '${user.path}\\Documents\\$fileName';
+            final downPath = '${user.path}\\Downloads\\$fileName';
+            try {
+              if (await File(docPath).exists()) found.add(docPath);
+            } catch (_) {}
+            try {
+              if (await File(downPath).exists()) found.add(downPath);
+            } catch (_) {}
+            // أيضاً مجلد فرعي audio_notes تحت Documents
+            final docAudio = '${user.path}\\Documents\\audio_notes\\$fileName';
+            try {
+              if (await File(docAudio).exists()) found.add(docAudio);
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+    } catch (_) {}
+
+    // إزالة التكرارات
+    return found.toSet().toList();
+  }
+
+  /// حذف ملف الصوت من جميع المواقع التي قد يُعثر عليه فيها
+  Future<void> deleteAudioFileEverywhere(String fileName) async {
+    final candidates = await locateAudioFileCandidates(fileName);
+    for (final p in candidates) {
+      try {
+        final f = File(p);
+        if (await f.exists()) {
+          await f.delete();
+        }
+      } catch (_) {}
     }
   }
 
@@ -776,8 +919,9 @@ class DatabaseService {
   Future<int> deleteCustomer(int id) async {
     final db = await database;
     try {
-      //  قبل حذف العميل، قد ترغب في التعامل مع الفواتير والمعاملات المرتبطة به
-      //  مثلاً، هل يتم حذفها أم تبقى؟ حاليًا ON DELETE CASCADE ستحذف المعاملات.
+      // حذف يدوي للمعاملات المرتبطة كاستراتيجية احتياط في حال عدم تفعيل foreign_keys
+      await db.delete('transactions', where: 'customer_id = ?', whereArgs: [id]);
+      // لاحقًا سيعمل ON DELETE CASCADE أيضًا إذا كان مُفعّلاً
       return await db.delete(
         'customers',
         where: 'id = ?',
