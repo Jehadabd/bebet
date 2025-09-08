@@ -2,6 +2,7 @@
 // screens/inventory_screen.dart
 import 'package:flutter/material.dart';
 import '../services/database_service.dart'; // Assumed DatabaseService exists
+import 'package:get_storage/get_storage.dart';
 import 'package:intl/intl.dart'; // For formatting dates and currency
 
 class InventoryScreen extends StatefulWidget {
@@ -15,17 +16,30 @@ class _InventoryScreenState extends State<InventoryScreen> {
   final DatabaseService _db = DatabaseService();
   Map<String, MonthlySalesSummary> _monthlySummaries = {};
   bool _isLoading = true;
+  DateTime? _fromDate;
+  final _storage = GetStorage();
 
   @override
   void initState() {
     super.initState();
+    // حمّل baseline من التخزين إن وُجد، وإلا اجعلها الآن واحفظها
+    try {
+      final raw = _storage.read('inventory_from_date');
+      if (raw is String && raw.isNotEmpty) {
+        _fromDate = DateTime.tryParse(raw);
+      }
+    } catch (_) {}
+    _fromDate ??= DateTime.now();
+    try {
+      _storage.write('inventory_from_date', _fromDate!.toIso8601String());
+    } catch (_) {}
     _loadMonthlySummaries();
   }
 
   Future<void> _loadMonthlySummaries() async {
     setState(() => _isLoading = true);
     try {
-      final summaries = await _db.getMonthlySalesSummary();
+      final summaries = await _db.getMonthlySalesSummary(fromDate: _fromDate);
       setState(() {
         _monthlySummaries = summaries;
         _isLoading = false;
@@ -169,6 +183,13 @@ class _InventoryScreenState extends State<InventoryScreen> {
       child: Scaffold(
         appBar: AppBar(
           title: const Text('الجرد'),
+          actions: [
+            IconButton(
+              tooltip: 'إعادة التحميل',
+              icon: const Icon(Icons.refresh),
+              onPressed: _loadMonthlySummaries,
+            ),
+          ],
         ),
         body: _isLoading
             ? const Center(
@@ -197,7 +218,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
                       final date = DateTime.parse(
                           '${monthYear.split('-')[0]}-${monthYear.split('-')[1].padLeft(2, '0')}-01');
-                      final monthName = DateFormat.yMMMM('ar').format(date);
+                      final monthName = '${date.year}/${date.month.toString().padLeft(2, '0')}';
                       final isCurrentMonth =
                           date.year == now.year && date.month == now.month;
 
@@ -234,6 +255,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
+                              // إخفاء سطر "منذ: الوقت" كما طُلب
                               Row(
                                 children: [
                                   Container(

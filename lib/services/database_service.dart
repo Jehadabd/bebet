@@ -1124,7 +1124,13 @@ class DatabaseService {
     final db = await database;
     try {
       // No serial number generation needed
-      return await db.insert('invoices', invoice.toMap());
+      final int insertedId = await db.insert('invoices', invoice.toMap());
+      // Update installer's total billed amount on first insert for saved invoices only
+      if ((invoice.installerName != null && invoice.installerName!.trim().isNotEmpty) &&
+          (invoice.status == 'محفوظة')) {
+        await _updateInstallerTotal(db, invoice.installerName!.trim(), invoice.totalAmount);
+      }
+      return insertedId;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
@@ -1462,11 +1468,18 @@ class DatabaseService {
   }
 
   // --- تقرير المبيعات الشهري ---
-  Future<Map<String, MonthlySalesSummary>> getMonthlySalesSummary() async {
+  Future<Map<String, MonthlySalesSummary>> getMonthlySalesSummary({DateTime? fromDate}) async {
     final db = await database;
     try {
-      final List<Map<String, dynamic>> invoiceMaps =
-          await db.query('invoices', orderBy: 'invoice_date DESC');
+      // استخدم التاريخ المحدد إن وُجد، وإلا بداية اليوم الحالي
+      final now = DateTime.now();
+      final DateTime startTs = fromDate ?? DateTime(now.year, now.month, now.day);
+      final List<Map<String, dynamic>> invoiceMaps = await db.query(
+        'invoices',
+        where: 'invoice_date >= ?',
+        whereArgs: [startTs.toIso8601String()],
+        orderBy: 'invoice_date DESC',
+      );
       //  تحويل جميع الخرائط إلى كائنات Invoice أولاً للتعامل مع التواريخ بشكل صحيح
       final List<Invoice> allInvoices =
           invoiceMaps.map((map) => Invoice.fromMap(map)).toList();
@@ -1509,27 +1522,61 @@ class DatabaseService {
               creditSalesValue += invoice.totalAmount;
             }
 
-            // احسب تكلفة البنود في الفاتورة مع التعامل مع الوحدات
-            final items = await getInvoiceItems(invoice.id!);
+            // احسب تكلفة البنود في الفاتورة بمنطق مطابق لتقارير البضاعة عبر JOIN لضمان توافر بيانات المنتج
             double totalCost = 0.0;
-            for (final item in items) {
-              final double quantityIndividual = item.quantityIndividual ?? 0.0;
-              final double quantityLargeUnit = item.quantityLargeUnit ?? 0.0;
-              final double unitsInLargeUnit = item.unitsInLargeUnit ?? 1.0;
-              final double qty = quantityLargeUnit > 0
-                  ? (quantityLargeUnit * unitsInLargeUnit)
-                  : quantityIndividual;
-              if (item.actualCostPrice != null) {
-                totalCost += item.actualCostPrice! * qty;
-              } else if (item.costPrice != null) {
-                // costPrice هنا تكلفة إجمالية محفوظة للبند
-                totalCost += item.costPrice!;
+            final List<Map<String, dynamic>> itemRows = await db.rawQuery('''
+              SELECT 
+                ii.quantity_individual AS qi,
+                ii.quantity_large_unit AS ql,
+                ii.units_in_large_unit AS uilu,
+                ii.cost_price AS item_cost_total,
+                ii.actual_cost_price AS actual_cost_per_unit,
+                ii.sale_type AS sale_type,
+                p.unit AS product_unit,
+                p.cost_price AS product_cost_price,
+                p.length_per_unit AS length_per_unit
+              FROM invoice_items ii
+              JOIN products p ON p.name = ii.product_name
+              WHERE ii.invoice_id = ?
+            ''', [invoice.id!]);
+
+            for (final row in itemRows) {
+              final double? itemCostTotal = (row['item_cost_total'] as num?)?.toDouble();
+              if (itemCostTotal != null) {
+                totalCost += itemCostTotal;
+                continue;
               }
+              final double qi = (row['qi'] as num?)?.toDouble() ?? 0.0;
+              final double ql = (row['ql'] as num?)?.toDouble() ?? 0.0;
+              final double uilu = (row['uilu'] as num?)?.toDouble() ?? 1.0;
+              final String saleType = (row['sale_type'] as String?) ?? '';
+              final String productUnit = (row['product_unit'] as String?) ?? '';
+              final double productCost = (row['product_cost_price'] as num?)?.toDouble() ?? 0.0;
+              final double? lengthPerUnit = (row['length_per_unit'] as num?)?.toDouble();
+              final double? actualCostPerUnit = (row['actual_cost_per_unit'] as num?)?.toDouble();
+
+              final bool soldAsLargeUnit = ql > 0;
+              final double soldUnitsCount = soldAsLargeUnit ? ql : qi;
+
+              if (actualCostPerUnit != null) {
+                totalCost += actualCostPerUnit * soldUnitsCount;
+                continue;
+              }
+
+              double costPerSoldUnit;
+              if (soldAsLargeUnit) {
+                final bool isMeterRoll = productUnit == 'meter' && lengthPerUnit != null && (saleType == 'لفة');
+                costPerSoldUnit = isMeterRoll
+                    ? productCost * (lengthPerUnit ?? 1.0)
+                    : productCost * uilu;
+              } else {
+                costPerSoldUnit = productCost;
+              }
+              totalCost += costPerSoldUnit * soldUnitsCount;
             }
 
             // صافي المبيعات بعد الراجع مطروحاً منه التكلفة الفعلية
-            final netSaleAmount =
-                invoice.totalAmount - (invoice.returnAmount ?? 0);
+            final netSaleAmount = invoice.totalAmount - (invoice.returnAmount ?? 0);
             final profit = netSaleAmount - totalCost;
             netProfit += profit;
           }
