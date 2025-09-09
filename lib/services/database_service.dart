@@ -776,8 +776,46 @@ class DatabaseService {
   Future<int> deleteCustomer(int id) async {
     final db = await database;
     try {
-      //  قبل حذف العميل، قد ترغب في التعامل مع الفواتير والمعاملات المرتبطة به
-      //  مثلاً، هل يتم حذفها أم تبقى؟ حاليًا ON DELETE CASCADE ستحذف المعاملات.
+      // حذف ملفات الصوت المرتبطة بالعميل والمعاملات أولاً
+      try {
+        // صوت العميل نفسه
+        final customerRows = await db.query('customers', columns: ['audio_note_path'], where: 'id = ?', whereArgs: [id], limit: 1);
+        if (customerRows.isNotEmpty) {
+          final audio = customerRows.first['audio_note_path'] as String?;
+          if (audio != null && audio.trim().isNotEmpty) {
+            final path = await resolveStoredAudioPath(audio);
+            final file = File(path);
+            if (await file.exists()) {
+              await file.delete();
+            }
+          }
+        }
+
+        // أصوات المعاملات الخاصة بالعميل
+        final txRows = await db.query(
+          'transactions',
+          columns: ['audio_note_path'],
+          where: 'customer_id = ? AND audio_note_path IS NOT NULL AND TRIM(audio_note_path) <> ""',
+          whereArgs: [id],
+        );
+        for (final row in txRows) {
+          final audio = row['audio_note_path'] as String?;
+          if (audio != null && audio.trim().isNotEmpty) {
+            final path = await resolveStoredAudioPath(audio);
+            final file = File(path);
+            if (await file.exists()) {
+              try {
+                await file.delete();
+              } catch (_) {}
+            }
+          }
+        }
+      } catch (e) {
+        // لا تمنع حذف العميل إذا فشل حذف الملفات
+        print('WARN: Failed to delete audio files for customer $id: $e');
+      }
+
+      //  ON DELETE CASCADE ستحذف المعاملات المرتبطة
       return await db.delete(
         'customers',
         where: 'id = ?',
