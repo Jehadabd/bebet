@@ -249,10 +249,6 @@ class DatabaseService {
     return await openDatabase(
       newPath,
       version: _databaseVersion, // رفع رقم النسخة لتفعيل الترقية وإضافة عمود unique_id
-      onConfigure: (db) async {
-        // تفعيل القيود المرجعية (ضروري لتفعيل ON DELETE CASCADE)
-        await db.execute('PRAGMA foreign_keys = ON');
-      },
       onCreate: _createDatabase,
       onUpgrade: _onUpgrade,
     );
@@ -348,145 +344,6 @@ class DatabaseService {
       }
     } catch (e) {
       print('DEBUG DB: migrate customers audio paths failed: $e');
-    }
-  }
-
-  /// إرجاع جميع أسماء ملفات الصوت المرتبطة بعميل (من جدول العميل ومعاملاته)
-  Future<List<String>> getAudioFilenamesForCustomer(int customerId) async {
-    final db = await database;
-    final Set<String> names = {};
-    try {
-      final tRows = await db.query(
-        'transactions',
-        columns: ['audio_note_path'],
-        where: 'customer_id = ? AND audio_note_path IS NOT NULL AND TRIM(audio_note_path) <> ""',
-        whereArgs: [customerId],
-      );
-      for (final row in tRows) {
-        final v = row['audio_note_path'] as String?;
-        if (v != null && v.isNotEmpty) {
-          final lastSlash = v.lastIndexOf('/');
-          final lastBackslash = v.lastIndexOf('\\');
-          final cut = lastSlash > lastBackslash ? lastSlash : lastBackslash;
-          names.add(cut >= 0 ? v.substring(cut + 1) : v);
-        }
-      }
-    } catch (e) {
-      print('DEBUG DB: getAudioFilenamesForCustomer (transactions) failed: $e');
-    }
-    try {
-      final cRows = await db.query(
-        'customers',
-        columns: ['audio_note_path'],
-        where: 'id = ? AND audio_note_path IS NOT NULL AND TRIM(audio_note_path) <> ""',
-        whereArgs: [customerId],
-        limit: 1,
-      );
-      for (final row in cRows) {
-        final v = row['audio_note_path'] as String?;
-        if (v != null && v.isNotEmpty) {
-          final lastSlash = v.lastIndexOf('/');
-          final lastBackslash = v.lastIndexOf('\\');
-          final cut = lastSlash > lastBackslash ? lastSlash : lastBackslash;
-          names.add(cut >= 0 ? v.substring(cut + 1) : v);
-        }
-      }
-    } catch (e) {
-      print('DEBUG DB: getAudioFilenamesForCustomer (customers) failed: $e');
-    }
-    return names.toList();
-  }
-
-  /// التحقق إن كان اسم ملف الصوت ما يزال مُشاراً إليه من أي سجل (عميل/معاملة)
-  Future<bool> isAudioFilenameReferenced(String fileName) async {
-    final db = await database;
-    try {
-      // بما أننا نخزن اسم الملف فقط الآن، نطابق تطابقًا تامًا. نضيف endsWith للدعم القديم.
-      final t = await db.rawQuery(
-          "SELECT COUNT(1) as c FROM transactions WHERE audio_note_path = ? OR audio_note_path LIKE ?",
-          [fileName, '%'+fileName]);
-      final tCount = (t.first['c'] as int?) ?? 0;
-      if (tCount > 0) return true;
-      final c = await db.rawQuery(
-          "SELECT COUNT(1) as c FROM customers WHERE audio_note_path = ? OR audio_note_path LIKE ?",
-          [fileName, '%'+fileName]);
-      final cCount = (c.first['c'] as int?) ?? 0;
-      return cCount > 0;
-    } catch (e) {
-      print('DEBUG DB: isAudioFilenameReferenced failed: $e');
-      // في حالة الخطأ، اعتبر أنه مُشار إليه لتجنب حذف خاطئ
-      return true;
-    }
-  }
-
-  /// البحث عن ملف صوتي باسم محدد في مواقع شائعة على ويندوز
-  Future<List<String>> locateAudioFileCandidates(String fileName) async {
-    final List<String> found = [];
-    try {
-      // 1) مجلد التطبيق (الموقع الأساسي)
-      final primary = await getAudioNotePath(fileName);
-      if (await File(primary).exists()) {
-        found.add(primary);
-      }
-
-      // 2) مجلد Documents/audio_notes للمستخدم الحالي
-      try {
-        final docs = await getApplicationDocumentsDirectory();
-        final candidate = File('${docs.path}/audio_notes/$fileName');
-        if (await candidate.exists()) {
-          found.add(candidate.path);
-        }
-      } catch (_) {}
-
-      // 3) مجلد Public Documents
-      try {
-        final publicDocs = Directory('${Platform.environment['PUBLIC'] ?? ''}\\Documents');
-        if (await publicDocs.exists()) {
-          final candidate = File('${publicDocs.path}\\$fileName');
-          if (await candidate.exists()) {
-            found.add(candidate.path);
-          }
-        }
-      } catch (_) {}
-
-      // 4) جميع مستخدمي ويندوز: Documents و Downloads
-      try {
-        final usersDir = Directory('C:\\Users');
-        if (await usersDir.exists()) {
-          await for (final user in usersDir.list()) {
-            if (user is! Directory) continue;
-            final docPath = '${user.path}\\Documents\\$fileName';
-            final downPath = '${user.path}\\Downloads\\$fileName';
-            try {
-              if (await File(docPath).exists()) found.add(docPath);
-            } catch (_) {}
-            try {
-              if (await File(downPath).exists()) found.add(downPath);
-            } catch (_) {}
-            // أيضاً مجلد فرعي audio_notes تحت Documents
-            final docAudio = '${user.path}\\Documents\\audio_notes\\$fileName';
-            try {
-              if (await File(docAudio).exists()) found.add(docAudio);
-            } catch (_) {}
-          }
-        }
-      } catch (_) {}
-    } catch (_) {}
-
-    // إزالة التكرارات
-    return found.toSet().toList();
-  }
-
-  /// حذف ملف الصوت من جميع المواقع التي قد يُعثر عليه فيها
-  Future<void> deleteAudioFileEverywhere(String fileName) async {
-    final candidates = await locateAudioFileCandidates(fileName);
-    for (final p in candidates) {
-      try {
-        final f = File(p);
-        if (await f.exists()) {
-          await f.delete();
-        }
-      } catch (_) {}
     }
   }
 
@@ -919,9 +776,8 @@ class DatabaseService {
   Future<int> deleteCustomer(int id) async {
     final db = await database;
     try {
-      // حذف يدوي للمعاملات المرتبطة كاستراتيجية احتياط في حال عدم تفعيل foreign_keys
-      await db.delete('transactions', where: 'customer_id = ?', whereArgs: [id]);
-      // لاحقًا سيعمل ON DELETE CASCADE أيضًا إذا كان مُفعّلاً
+      //  قبل حذف العميل، قد ترغب في التعامل مع الفواتير والمعاملات المرتبطة به
+      //  مثلاً، هل يتم حذفها أم تبقى؟ حاليًا ON DELETE CASCADE ستحذف المعاملات.
       return await db.delete(
         'customers',
         where: 'id = ?',
@@ -1018,6 +874,98 @@ class DatabaseService {
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
+  }
+
+  Future<DebtTransaction?> getTransactionById(int id) async {
+    final db = await database;
+    try {
+      final maps = await db.query('transactions', where: 'id = ?', whereArgs: [id], limit: 1);
+      if (maps.isNotEmpty) {
+        return DebtTransaction.fromMap(maps.first);
+      }
+      return null;
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  /// تحديث معاملة يدوية وتعديل إجمالي دين العميل وفق الفرق
+  /// يعيد العميل بعد التحديث لعكس الرصيد الجديد في الواجهة
+  Future<Customer> updateManualTransaction(DebtTransaction updated) async {
+    final db = await database;
+    if (updated.id == null) {
+      throw Exception('لا يمكن تعديل معاملة بدون معرّف');
+    }
+
+    // قراءة المعاملة القديمة للتعرّف على الفرق
+    final oldTx = await getTransactionById(updated.id!);
+    if (oldTx == null) {
+      throw Exception('لم يتم العثور على المعاملة المراد تعديلها');
+    }
+    if (oldTx.invoiceId != null) {
+      // للحفاظ على سلامة الفواتير، لا نسمح بتعديل معاملات مرتبطة بفاتورة من هنا
+      throw Exception('لا يمكن تعديل معاملة مرتبطة بفاتورة من هنا');
+    }
+
+    // جلب العميل
+    final customer = await getCustomerById(oldTx.customerId);
+    if (customer == null) {
+      throw Exception('العميل غير موجود');
+    }
+
+    final double delta = updated.amountChanged - oldTx.amountChanged;
+
+    // تحديث صف المعاملة
+    try {
+      await db.update(
+        'transactions',
+        {
+          'amount_changed': updated.amountChanged,
+          'transaction_note': updated.transactionNote,
+          'transaction_date': updated.transactionDate.toIso8601String(),
+          // تكييف الرصيد بعد المعاملة بناءً على القديم + الفرق إن توفر، وإلا استخدم رصيد العميل الحالي بعد التعديل
+          'new_balance_after_transaction': (oldTx.newBalanceAfterTransaction ?? customer.currentTotalDebt) + delta,
+        },
+        where: 'id = ?',
+        whereArgs: [updated.id],
+      );
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+
+    // تعديل رصيد العميل الإجمالي
+    final updatedCustomer = customer.copyWith(
+      currentTotalDebt: customer.currentTotalDebt + delta,
+      lastModifiedAt: DateTime.now(),
+    );
+    await updateCustomer(updatedCustomer);
+
+    return updatedCustomer;
+  }
+
+  /// توافق واجهة: تحديث معاملة (حاليًا للمعاملات اليدوية فقط)
+  Future<Customer> updateTransaction(DebtTransaction updated) async {
+    return updateManualTransaction(updated);
+  }
+
+  /// إعادة احتساب مجموع دين العميل من جميع المعاملات وتطبيقه على سجل العميل
+  Future<double> recalculateAndApplyCustomerDebt(int customerId) async {
+    final db = await database;
+    // احسب مجموع amount_changed للعميل
+    final res = await db.rawQuery(
+        'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ?;',
+        [customerId]);
+    final double total = ((res.first['total'] as num?) ?? 0).toDouble();
+
+    final customer = await getCustomerById(customerId);
+    if (customer != null) {
+      final updated = customer.copyWith(
+        currentTotalDebt: total,
+        lastModifiedAt: DateTime.now(),
+      );
+      await updateCustomer(updated);
+    }
+    return total;
   }
 
   Future<List<DebtTransaction>> getCustomerTransactions(int customerId,
@@ -1124,13 +1072,7 @@ class DatabaseService {
     final db = await database;
     try {
       // No serial number generation needed
-      final int insertedId = await db.insert('invoices', invoice.toMap());
-      // Update installer's total billed amount on first insert for saved invoices only
-      if ((invoice.installerName != null && invoice.installerName!.trim().isNotEmpty) &&
-          (invoice.status == 'محفوظة')) {
-        await _updateInstallerTotal(db, invoice.installerName!.trim(), invoice.totalAmount);
-      }
-      return insertedId;
+      return await db.insert('invoices', invoice.toMap());
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
@@ -1541,14 +1483,9 @@ class DatabaseService {
             ''', [invoice.id!]);
 
             for (final row in itemRows) {
-              final double? itemCostTotal = (row['item_cost_total'] as num?)?.toDouble();
-              if (itemCostTotal != null) {
-                totalCost += itemCostTotal;
-                continue;
-              }
               final double qi = (row['qi'] as num?)?.toDouble() ?? 0.0;
               final double ql = (row['ql'] as num?)?.toDouble() ?? 0.0;
-              final double uilu = (row['uilu'] as num?)?.toDouble() ?? 1.0;
+              final double uilu = (row['uilu'] as num?)?.toDouble() ?? 0.0;
               final String saleType = (row['sale_type'] as String?) ?? '';
               final String productUnit = (row['product_unit'] as String?) ?? '';
               final double productCost = (row['product_cost_price'] as num?)?.toDouble() ?? 0.0;
@@ -1582,7 +1519,7 @@ class DatabaseService {
           }
         }
 
-        // جمع معاملات تسديد الديون لهذا الشهر
+        // نطاق هذا الشهر
         final year = int.parse(monthYear.split('-')[0]);
         final month = int.parse(monthYear.split('-')[1]);
         final String start =
@@ -1590,14 +1527,29 @@ class DatabaseService {
         final String end = month == 12
             ? '${year + 1}-01-01T00:00:00.000'
             : '$year-${(month + 1).toString().padLeft(2, '0')}-01T00:00:00.000';
+
+        // أضف الدين المبدئي والمعاملات اليدوية (إضافة دين) إلى البيع بالدين لهذا الشهر
+        final List<Map<String, dynamic>> manualDebtTx = await db.query(
+          'transactions',
+          columns: ['amount_changed'],
+          where:
+              "(transaction_type = 'manual_debt' OR transaction_type = 'opening_balance') AND transaction_date >= ? AND transaction_date < ?",
+          whereArgs: [start, end],
+        );
+        for (final tx in manualDebtTx) {
+          creditSalesValue += (tx['amount_changed'] as num).toDouble();
+        }
+
+        // جمع معاملات تسديد الديون لهذا الشهر (manual_payment)
         final List<Map<String, dynamic>> debtTxMaps = await db.query(
           'transactions',
+          columns: ['amount_changed'],
           where:
-              "transaction_type = 'Debt_Paid' AND (invoice_id IS NULL OR invoice_id = 0) AND transaction_date >= ? AND transaction_date < ?",
+              "transaction_type = 'manual_payment' AND transaction_date >= ? AND transaction_date < ?",
           whereArgs: [start, end],
         );
         for (final tx in debtTxMaps) {
-          totalDebtPayments += (tx['amount_changed'] as double).abs();
+          totalDebtPayments += (tx['amount_changed'] as num).toDouble().abs();
         }
 
         monthlySummaries[monthYear] = MonthlySalesSummary(

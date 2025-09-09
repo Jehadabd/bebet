@@ -140,7 +140,7 @@ class _MainScreenState extends State<MainScreen> {
     return Scaffold(
       backgroundColor: _backgroundColor,
       appBar: AppBar(
-        title: const Text(' برنامج الناصر', style: TextStyle(fontSize: 24)),
+        title: const Text('دفتر ديوني', style: TextStyle(fontSize: 24)),
         centerTitle: true,
         backgroundColor: _primaryColor,
         elevation: 0,
@@ -501,9 +501,6 @@ class _MainScreenState extends State<MainScreen> {
               onTap: () async {
                 final bool canAccess = await _showPasswordDialog();
                 if (canAccess) {
-                  // اختياري: اضبط baseline على الآن قبل الدخول إن رغبت بهذا التدفق
-                  // final box = GetStorage();
-                  // await box.write('inventory_from_date', DateTime.now().toIso8601String());
                   Navigator.pushNamed(context, '/inventory');
                 } else {
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(

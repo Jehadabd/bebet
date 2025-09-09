@@ -108,13 +108,7 @@ class AppProvider with ChangeNotifier {
   }
 
   Future<void> deleteCustomer(int id) async {
-    // اجلب أسماء الملفات الصوتية المرتبطة بهذا العميل قبل الحذف
-    final audioNames = await _db.getAudioFilenamesForCustomer(id);
-
-    // احذف العميل من قاعدة البيانات
     await _db.deleteCustomer(id);
-
-    // حدّث الحالة المحلية
     _customers.removeWhere((c) => c.id == id);
     if (_selectedCustomer?.id == id) {
       _selectedCustomer = null;
@@ -122,22 +116,6 @@ class AppProvider with ChangeNotifier {
     }
     _applySearchFilter();
     notifyListeners();
-
-    // بعد الحذف: امسح أي ملف صوتي لم يعد مُشاراً إليه
-    try {
-      for (final name in audioNames) {
-        final stillReferenced = await _db.isAudioFilenameReferenced(name);
-        if (!stillReferenced) {
-          // احذف من كل مكان محتمل (المجلد الأساسي وأي مواقع شائعة)
-          await _db.deleteAudioFileEverywhere(name);
-        }
-      }
-    } catch (e) {
-      // تجنّب تعطيل الواجهة في حال حدوث خطأ أثناء حذف الملفات
-      if (kDebugMode) {
-        print('DEBUG: Failed to cleanup audio files for deleted customer $id: $e');
-      }
-    }
   }
 
   // Transaction operations
@@ -160,6 +138,25 @@ class AppProvider with ChangeNotifier {
     );
     await updateCustomer(updatedCustomer);
 
+    notifyListeners();
+  }
+
+  Future<void> updateTransaction(DebtTransaction transaction) async {
+    // Only manual transactions (not linked to invoice) are supported here
+    final updatedCustomer = await _db.updateManualTransaction(transaction);
+
+    // Update local customer list/state
+    final customerIndex = _customers.indexWhere((c) => c.id == updatedCustomer.id);
+    if (customerIndex != -1) {
+      _customers[customerIndex] = updatedCustomer;
+    }
+    if (_selectedCustomer?.id == updatedCustomer.id) {
+      _selectedCustomer = updatedCustomer;
+    }
+
+    // Refresh transactions list for this customer
+    await loadCustomerTransactions(updatedCustomer.id!);
+    _applySearchFilter();
     notifyListeners();
   }
 

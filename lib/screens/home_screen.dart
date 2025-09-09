@@ -19,7 +19,6 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final TextEditingController _searchController = TextEditingController();
   @override
   void initState() {
     super.initState();
@@ -28,12 +27,6 @@ class _HomeScreenState extends State<HomeScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppProvider>().initialize();
     });
-  }
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
   }
 
   // Helper to format currency consistently
@@ -406,23 +399,8 @@ class _HomeScreenState extends State<HomeScreen> {
                               .colorScheme
                               .primary), // Themed icon
                       // Inherits other styles from inputDecorationTheme
-                      suffixIcon: (_searchController.text.isNotEmpty)
-                          ? IconButton(
-                              icon: const Icon(Icons.clear),
-                              tooltip: 'مسح البحث',
-                              onPressed: () {
-                                _searchController.clear();
-                                context.read<AppProvider>().setSearchQuery('');
-                                setState(() {});
-                              },
-                            )
-                          : null,
                     ),
-                    controller: _searchController,
-                    onChanged: (value) {
-                      provider.setSearchQuery(value);
-                      setState(() {});
-                    },
+                    onChanged: provider.setSearchQuery,
                     style: Theme.of(context)
                         .textTheme
                         .bodyLarge, // Themed text style

@@ -2172,51 +2172,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     const SizedBox(width: 8.0),
                     Expanded(
                       flex: 2,
-                      child: _isViewOnly
-                          ? TextFormField(
-                              controller: _installerNameController,
-                              decoration: const InputDecoration(
-                                  labelText: 'اسم المؤسس/الفني (اختياري)'),
-                              enabled: false,
-                            )
-                          : Autocomplete<String>(
-                              optionsBuilder: (TextEditingValue textEditingValue) async {
-                                if (textEditingValue.text.trim().isEmpty) {
-                                  return const Iterable<String>.empty();
-                                }
-                                final installers = await _db.searchInstallers(textEditingValue.text.trim());
-                                return installers.map((i) => i.name).toSet();
-                              },
-                              fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
-                                WidgetsBinding.instance.addPostFrameCallback((_) {
-                                  if (controller.text != _installerNameController.text) {
-                                    controller.text = _installerNameController.text;
-                                    controller.selection = TextSelection.fromPosition(
-                                      TextPosition(offset: controller.text.length),
-                                    );
-                                  }
-                                });
-                                return TextFormField(
-                                  controller: controller,
-                                  focusNode: focusNode,
-                                  decoration: const InputDecoration(
-                                      labelText: 'اسم المؤسس/الفني (اختياري)'),
-                                  onChanged: (val) {
-                                    _installerNameController.text = val;
-                                    _onFieldChanged();
-                                    if (_invoiceToManage != null &&
-                                        _invoiceToManage!.status == 'معلقة' &&
-                                        (_invoiceToManage?.isLocked ?? false)) {
-                                      autoSaveSuspendedInvoice();
-                                    }
-                                  },
-                                );
-                              },
-                              onSelected: (String selection) {
-                                _installerNameController.text = selection;
-                                _onFieldChanged();
-                              },
-                            ),
+                      child: TextFormField(
+                        controller: _installerNameController,
+                        decoration: const InputDecoration(
+                            labelText: 'اسم المؤسس/الفني (اختياري)'),
+                        enabled: !_isViewOnly,
+                      ),
                     ),
                   ],
                 ),

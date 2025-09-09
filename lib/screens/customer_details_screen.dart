@@ -208,17 +208,60 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
           title: Text(widget.customer.name),
           actions: [
             IconButton(
-              icon: const Icon(Icons.edit,
-                  color: Colors.white), // Color changed for visibility
-              tooltip: 'تعديل معلومات العميل', // Added tooltip
-              onPressed: () {
-                // TODO: Implement edit customer functionality
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('وظيفة تعديل العميل قيد التطوير'),
-                    backgroundColor: Theme.of(context).colorScheme.secondary,
-                  ),
+              icon: const Icon(Icons.edit, color: Colors.white),
+              tooltip: 'تعديل معلومات العميل',
+              onPressed: () async {
+                final nameController = TextEditingController(text: widget.customer.name);
+                final phoneController = TextEditingController(text: widget.customer.phone ?? '');
+                final addressController = TextEditingController(text: widget.customer.address ?? '');
+                final result = await showDialog<bool>(
+                  context: context,
+                  builder: (context) {
+                    return AlertDialog(
+                      title: const Text('تعديل معلومات العميل'),
+                      content: SingleChildScrollView(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            TextField(
+                              controller: nameController,
+                              decoration: const InputDecoration(labelText: 'الاسم'),
+                            ),
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: phoneController,
+                              decoration: const InputDecoration(labelText: 'الهاتف'),
+                              keyboardType: TextInputType.phone,
+                            ),
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: addressController,
+                              decoration: const InputDecoration(labelText: 'العنوان'),
+                            ),
+                          ],
+                        ),
+                      ),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
+                        TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('حفظ')),
+                      ],
+                    );
+                  },
                 );
+                if (result == true && mounted) {
+                  final updated = widget.customer.copyWith(
+                    name: nameController.text.trim(),
+                    phone: phoneController.text.trim().isEmpty ? null : phoneController.text.trim(),
+                    address: addressController.text.trim(),
+                    lastModifiedAt: DateTime.now(),
+                  );
+                  await context.read<AppProvider>().updateCustomer(updated);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('تم تحديث بيانات العميل')),
+                    );
+                  }
+                }
               },
             ),
             IconButton(
@@ -430,6 +473,19 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                                   await _playAudioNote(transaction.audioNotePath!);
                                 }
                               },
+                              onEdit: (updated) async {
+                                final db = DatabaseService();
+                                await db.updateTransaction(updated);
+                                final newTotal = await db.recalculateAndApplyCustomerDebt(transaction.customerId);
+                                // حدث المزود والواجهة
+                                await context.read<AppProvider>().selectCustomer((await db.getCustomerById(transaction.customerId))!);
+                                await context.read<AppProvider>().loadCustomerTransactions(transaction.customerId);
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text('تم تحديث المعاملة. الدين الحالي: ${formatCurrency(newTotal)}')),
+                                  );
+                                }
+                              },
                             );
                           },
                         ),
@@ -614,6 +670,9 @@ class TransactionListTile extends StatelessWidget {
   final String? currentlyPlayingPath;
   final VoidCallback onPlayStop;
   final String audioPath;
+  
+  // Callbacks for edit and refresh after change
+  final Future<void> Function(DebtTransaction updated)? onEdit;
 
   const TransactionListTile({
     super.key,
@@ -622,6 +681,7 @@ class TransactionListTile extends StatelessWidget {
     required this.currentlyPlayingPath,
     required this.onPlayStop,
     required this.audioPath,
+    this.onEdit,
   });
 
   // Helper to format numbers with thousand separators
@@ -714,14 +774,89 @@ class TransactionListTile extends StatelessWidget {
               ),
           ],
         ),
-        trailing: Text(
-          _formatDate(transaction
-              .transactionDate!), // Use null-safe operator after check
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                // Themed text style
-                color: Colors.grey[700],
-                fontSize: 12,
+        trailing: SizedBox(
+          height: 48, // التزام بارتفاع ListTile القياسي لمنع overflow
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.edit, size: 18),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                tooltip: 'تعديل المعاملة',
+                onPressed: () async {
+                if (onEdit == null) return;
+                final amountController = TextEditingController(text: transaction.amountChanged.toStringAsFixed(2));
+                final noteController = TextEditingController(text: transaction.transactionNote ?? '');
+                DateTime selectedDate = transaction.transactionDate ?? DateTime.now();
+                final ok = await showDialog<bool>(
+                  context: context,
+                  builder: (context) {
+                    return AlertDialog(
+                      title: const Text('تعديل المعاملة'),
+                      content: SingleChildScrollView(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            TextField(
+                              controller: amountController,
+                              decoration: const InputDecoration(labelText: 'المبلغ (موجب لإضافة دين، سالب لتسديد)'),
+                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            ),
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: noteController,
+                              decoration: const InputDecoration(labelText: 'ملاحظة'),
+                            ),
+                            const SizedBox(height: 8),
+                            TextButton.icon(
+                              onPressed: () async {
+                                final picked = await showDatePicker(
+                                  context: context,
+                                  initialDate: selectedDate,
+                                  firstDate: DateTime(2000),
+                                  lastDate: DateTime(2100),
+                                );
+                                if (picked != null) {
+                                  selectedDate = picked;
+                                }
+                              },
+                              icon: const Icon(Icons.calendar_today),
+                              label: Text('التاريخ: ${_formatDate(selectedDate)}'),
+                            ),
+                          ],
+                        ),
+                      ),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
+                        TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('حفظ')),
+                      ],
+                    );
+                  },
+                );
+                if (ok == true) {
+                  final newAmount = double.tryParse(amountController.text.trim()) ?? transaction.amountChanged;
+                  final updated = transaction.copyWith(
+                    amountChanged: newAmount,
+                    transactionNote: noteController.text.trim().isEmpty ? null : noteController.text.trim(),
+                    transactionDate: selectedDate,
+                  );
+                  await onEdit!(updated);
+                }
+              },
               ),
+              const SizedBox(width: 8),
+              Text(
+                _formatDate(transaction.transactionDate!),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Colors.grey[700],
+                      fontSize: 12,
+                    ),
+              ),
+            ],
+          ),
         ),
       ),
     );
