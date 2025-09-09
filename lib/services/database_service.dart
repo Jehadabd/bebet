@@ -1770,6 +1770,32 @@ class DatabaseService {
     }
   }
 
+  Future<Product?> getProductById(int productId) async {
+    final db = await database;
+    try {
+      final maps = await db.query('products', where: 'id = ?', whereArgs: [productId], limit: 1);
+      if (maps.isEmpty) return null;
+      return Product.fromMap(maps.first);
+    } catch (e) {
+      print('Error getting product by ID $productId: $e');
+      return null;
+    }
+  }
+
+  Future<List<Product>> searchProductsByIdPrefix(String prefix, {int limit = 8}) async {
+    final db = await database;
+    try {
+      final maps = await db.rawQuery(
+        'SELECT * FROM products WHERE CAST(id AS TEXT) LIKE ? ORDER BY id LIMIT ?;',
+        ['${prefix.replaceAll('%', '')}%', limit],
+      );
+      return maps.map((m) => Product.fromMap(m)).toList();
+    } catch (e) {
+      print('Error searching products by ID prefix $prefix: $e');
+      return [];
+    }
+  }
+
   Future<int> updateProduct(Product product) async {
     final db = await database;
     try {

@@ -28,6 +28,12 @@ import 'dart:convert';
 import 'package:flutter/scheduler.dart';
 import '../services/pdf_header.dart';
 
+// Helper: format product ID - show raw value without zero-padding
+String formatProductId5(int? id) {
+  if (id == null) return '';
+  return id.toString();
+}
+
 // تعريف EditableInvoiceItemRow موجود هنا (أو تأكد من وجوده قبل استخدامه في ListView)
 // إذا كان التعريف موجود بالفعل، لا داعي لأي تعديل إضافي هنا.
 // إذا لم يكن موجودًا، أضف الكود الذي تم إنشاؤه في الخطوة السابقة هنا.
@@ -72,11 +78,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     return NumberFormat('#,##0.##', 'en_US').format(value);
   }
 
+  // kept unused helper removed; global formatProductId5 is used instead
+
   List<Product> _searchResults = [];
   Product? _selectedProduct;
   List<InvoiceItem> _invoiceItems = [];
 
   final DatabaseService _db = DatabaseService();
+  final TextEditingController _productIdController = TextEditingController();
+  Product? _productIdSuggestion;
   PrinterDevice? _selectedPrinter;
   late final PrintingService _printingService;
   Invoice? _invoiceToManage;
@@ -112,6 +122,81 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   late TextEditingController _loadingFeeController;
 
   List<LineItemFocusNodes> focusNodesList = [];
+
+  void _handleChangeProductId(String value) {
+    final v = value.trim();
+    if (v.isEmpty) {
+      setState(() {
+        _productIdSuggestion = null;
+      });
+      return;
+    }
+    final id = int.tryParse(v);
+    if (id == null) {
+      setState(() {
+        _productIdSuggestion = null;
+      });
+      return;
+    }
+    // بحث مباشر سريع
+    _db.getProductById(id).then((p) {
+      if (!mounted) return;
+      setState(() {
+        _productIdSuggestion = p;
+      });
+    });
+  }
+
+  Future<void> _handleSubmitProductId(String value) async {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) return;
+    final id = int.tryParse(trimmed);
+    if (id == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('يرجى إدخال ID صحيح')));
+      return;
+    }
+    final product = await _db.getProductById(id);
+    if (product == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لم يتم العثور على صنف بهذا المعرّف')));
+      return;
+    }
+    if (!mounted) return;
+    FocusScope.of(context).unfocus();
+    _productIdController.clear();
+
+    double? newPriceLevel;
+    switch (_selectedListType) {
+      case 'مفرد':
+        newPriceLevel = product.price1;
+        break;
+      case 'جملة':
+        newPriceLevel = product.price2;
+        break;
+      case 'جملة بيوت':
+        newPriceLevel = product.price3;
+        break;
+      case 'بيوت':
+        newPriceLevel = product.price4;
+        break;
+      case 'أخرى':
+        newPriceLevel = product.price5;
+        break;
+      default:
+        newPriceLevel = product.price1;
+    }
+    newPriceLevel ??= product.unitPrice;
+
+    // لا نضيف مباشرة. نختار المنتج ونظهر خيارات الوحدة والكمية
+    setState(() {
+      _selectedProduct = product;
+      _selectedPriceLevel = newPriceLevel;
+      _quantityController.clear();
+      _productIdSuggestion = null;
+      _quantityAutofocus = true;
+    });
+  }
 
   @override
   void initState() {
@@ -371,6 +456,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       _quantityFocusNode.dispose(); // تنظيف FocusNode
       _searchFocusNode.dispose();
       _loadingFeeController.dispose();
+      _productIdController.dispose();
       // --- تخلص من جميع FocusNodes الخاصة بالصفوف ---
       for (final node in focusNodesList) {
         node.dispose();
@@ -1236,7 +1322,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         2: const pw.FixedColumnWidth(65), // عدد الوحدات (جديد)
                         3: const pw.FixedColumnWidth(90), // العدد
                         4: const pw.FlexColumnWidth(0.8), // التفاصيل
-                        5: const pw.FixedColumnWidth(20), // ت
+                        5: const pw.FixedColumnWidth(45), // ID (خمسة محارف)
+                        6: const pw.FixedColumnWidth(20), // ت
                       },
                       defaultVerticalAlignment:
                           pw.TableCellVerticalAlignment.middle,
@@ -1249,6 +1336,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             _headerCell('عدد الوحدات', font),
                             _headerCell('العدد', font),
                             _headerCell('التفاصيل ', font),
+                            _headerCell('ID', font),
                             _headerCell('ت', font),
                           ],
                         ),
@@ -1265,6 +1353,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           } catch (e) {
                             product = null;
                           }
+                          final idText = formatProductId5(product?.id);
                           return pw.TableRow(
                             children: [
                               _dataCell(
@@ -1286,6 +1375,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                               ),
                               _dataCell(item.productName, font,
                                   align: pw.TextAlign.right),
+                              _dataCell(idText, font),
                               _dataCell('${index + 1}', font),
                             ],
                           );
@@ -2191,30 +2281,84 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   // --- START: THE SECTION YOU WANTED TO REMOVE ---
                   // The Dropdown and SizedBox have been removed from here.
                   // --- END: THE SECTION YOU WANTED TO REMOVE ---
-                  TextFormField(
-                    controller: _productSearchController,
-                    focusNode: _searchFocusNode, // ربط FocusNode
-                    decoration: InputDecoration(
-                      labelText: 'البحث عن صنف (بحث ذكي يدعم الكلمات المتعددة)',
-                      hintText: 'مثال: اكتب "كوب فنار" لإيجاد "كوب واحد سيه فنار"',
-                      suffixIcon: IconButton(
-                        icon: const Icon(Icons.clear),
-                        onPressed: _isViewOnly
-                            ? null
-                            : () {
-                                _productSearchController.clear();
-                                setState(() {
-                                  _searchResults = [];
-                                  _selectedProduct = null;
-                                  _quantityController.clear();
-                                  _selectedPriceLevel = null;
-                                  _useLargeUnit = false;
-                                  _unitSelection = 0;
-                                });
-                              },
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            TextFormField(
+                              controller: _productIdController,
+                              keyboardType: const TextInputType.numberWithOptions(signed: false, decimal: false),
+                              decoration: const InputDecoration(
+                                labelText: 'ID الصنف (إضافة مباشرة بالمعرّف)',
+                                hintText: 'اكتب ID المنتج ثم Enter',
+                              ),
+                              enabled: !_isViewOnly,
+                              onFieldSubmitted: _isViewOnly ? null : _handleSubmitProductId,
+                              onChanged: _isViewOnly ? null : _handleChangeProductId,
+                            ),
+                            if (_productIdSuggestion != null)
+                              Container(
+                                margin: const EdgeInsets.only(top: 6),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  border: Border.all(color: Colors.grey.shade300),
+                                  borderRadius: BorderRadius.circular(6),
+                                  boxShadow: const [
+                                    BoxShadow(
+                                      color: Color(0x22000000),
+                                      blurRadius: 6,
+                                      offset: Offset(0, 2),
+                                    ),
+                                  ],
+                                ),
+                                constraints: const BoxConstraints(maxHeight: 160),
+                                child: ListView(
+                                  padding: EdgeInsets.zero,
+                                  shrinkWrap: true,
+                                  children: [
+                                    ListTile(
+                                      dense: true,
+                                      title: Text(_productIdSuggestion!.name),
+                                      subtitle: Text('ID: ${_productIdSuggestion!.id}'),
+                                      onTap: () => _handleSubmitProductId(_productIdSuggestion!.id!.toString()),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                          ],
+                        ),
                       ),
-                    ),
-                    onChanged: _isViewOnly ? null : _searchProducts,
+                      const SizedBox(width: 8.0),
+                      Expanded(
+                        child: TextFormField(
+                          controller: _productSearchController,
+                          focusNode: _searchFocusNode, // ربط FocusNode
+                          decoration: InputDecoration(
+                            labelText: 'البحث عن صنف (بحث ذكي يدعم الكلمات المتعددة)',
+                            hintText: 'مثال: اكتب "كوب فنار" لإيجاد "كوب واحد سيه فنار"',
+                            suffixIcon: IconButton(
+                              icon: const Icon(Icons.clear),
+                              onPressed: _isViewOnly
+                                  ? null
+                                  : () {
+                                      _productSearchController.clear();
+                                      setState(() {
+                                        _searchResults = [];
+                                        _selectedProduct = null;
+                                        _quantityController.clear();
+                                        _selectedPriceLevel = null;
+                                        _useLargeUnit = false;
+                                        _unitSelection = 0;
+                                      });
+                                    },
+                            ),
+                          ),
+                          onChanged: _isViewOnly ? null : _searchProducts,
+                        ),
+                      ),
+                    ],
                   ),
                   if (_searchResults.isNotEmpty)
                     Container(
@@ -2645,6 +2789,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                     style: TextStyle(
                                         fontWeight: FontWeight.bold)))),
                         Expanded(
+                            flex: 2,
+                            child: Center(
+                                child: Text('ID',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.bold)))),
+                        Expanded(
                             flex: 3,
                             child: Center(
                                 child: Text('التفاصيل',
@@ -3041,6 +3191,11 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   late FocusNode _saleTypeFocusNode;
   bool _openSaleTypeDropdown = false;
   bool _openPriceDropdown = false;
+  late TextEditingController _idController;
+  Product? _rowIdSuggestion;
+  Timer? _rowIdDebounce;
+  List<Product> _rowIdOptions = [];
+  TextEditingController? _detailsController; // reference to details field controller
 
   String _formatNumber(num value) {
     return NumberFormat('#,##0.##', 'en_US').format(value);
@@ -3062,6 +3217,20 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     _quantityFocusNode = widget.quantityFocusNode ?? FocusNode();
     _priceFocusNode = widget.priceFocusNode ?? FocusNode();
     _saleTypeFocusNode = FocusNode();
+    // Initialize ID controller from current product if resolvable
+    final prod = widget.allProducts.firstWhere(
+      (p) => p.name == _currentItem.productName,
+      orElse: () => Product(
+        id: null,
+        name: '',
+        unit: 'piece',
+        unitPrice: 0,
+        price1: 0,
+        createdAt: DateTime.now(),
+        lastModifiedAt: DateTime.now(),
+      ),
+    );
+    _idController = TextEditingController(text: prod.id?.toString() ?? '');
   }
 
   @override
@@ -3076,6 +3245,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
       _priceFocusNode.dispose();
     }
     _saleTypeFocusNode.dispose();
+    _rowIdDebounce?.cancel();
     super.dispose();
   }
 
@@ -3257,6 +3427,30 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     widget.onItemUpdated(_currentItem);
   }
 
+  void _applyProductSelection(Product prod) {
+    setState(() {
+      _idController.text = prod.id?.toString() ?? '';
+      _rowIdSuggestion = null;
+      _currentItem = _currentItem.copyWith(
+        productName: prod.name,
+        unit: prod.unit,
+        unitPrice: prod.unitPrice,
+      );
+      // مزامنة خانة التفاصيل فوراً
+      _detailsController?.text = prod.name;
+      if (prod.unit == 'piece') {
+        _currentItem = _currentItem.copyWith(saleType: 'قطعة');
+      } else if (prod.unit == 'meter') {
+        _currentItem = _currentItem.copyWith(saleType: 'متر');
+      } else {
+        _currentItem = _currentItem.copyWith(saleType: prod.unit);
+      }
+    });
+    widget.onItemUpdated(_currentItem);
+    // نقل المؤشر مباشرة إلى حقل العدد
+    FocusScope.of(context).requestFocus(_quantityFocusNode);
+  }
+
   String formatCurrency(num value) {
     final formatter = NumberFormat('#,##0.00', 'en_US');
     return formatter.format(value);
@@ -3294,6 +3488,89 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             fontWeight: FontWeight.bold,
                             color: Theme.of(context).colorScheme.primary))),
+            // ID المادة
+            Expanded(
+              flex: 2,
+              child: Builder(builder: (context) {
+                if (widget.isViewOnly) {
+                  final product = widget.allProducts.firstWhere(
+                    (p) => p.name == _currentItem.productName,
+                    orElse: () => Product(
+                      id: null,
+                      name: '',
+                      unit: 'piece',
+                      unitPrice: 0,
+                      price1: 0,
+                      createdAt: DateTime.now(),
+                      lastModifiedAt: DateTime.now(),
+                    ),
+                  );
+                  return Text(
+                    formatProductId5(product.id),
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  );
+                }
+                return Autocomplete<String>(
+                  optionsBuilder: (TextEditingValue textEditingValue) async {
+                    final v = textEditingValue.text.trim();
+                    if (v.isEmpty) {
+                      _rowIdOptions = [];
+                      return const Iterable<String>.empty();
+                    }
+                    final db = widget.databaseService;
+                    if (db == null) return const Iterable<String>.empty();
+                    final suggestions = await db.searchProductsByIdPrefix(v, limit: 8);
+                    _rowIdOptions = suggestions;
+                    return suggestions.map((p) => p.name);
+                  },
+                  fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                    _idController = controller;
+                    // تعبئة أولية لقيمة ID بناءً على اسم المنتج المخزن في الصف عند العودة للشاشة
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      try {
+                        if (!mounted) return;
+                        if ((controller.text).trim().isEmpty && _currentItem.productName.isNotEmpty) {
+                          final p = widget.allProducts.firstWhere((pr) => pr.name == _currentItem.productName);
+                          if ((controller.text).trim() != (p.id?.toString() ?? '')) {
+                            controller.text = p.id?.toString() ?? '';
+                          }
+                        }
+                      } catch (e) {}
+                    });
+                    return TextFormField(
+                      controller: controller,
+                      focusNode: focusNode,
+                      textAlign: TextAlign.center,
+                      keyboardType: const TextInputType.numberWithOptions(signed: false, decimal: false),
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                        isDense: true,
+                        contentPadding: EdgeInsets.symmetric(horizontal: 0, vertical: 8),
+                      ),
+                      onFieldSubmitted: (val) async {
+                        final id = int.tryParse(val.trim());
+                        if (id == null) return onFieldSubmitted();
+                        final db = widget.databaseService;
+                        if (db == null) return onFieldSubmitted();
+                        final prod = await db.getProductById(id);
+                        if (prod != null) {
+                          _applyProductSelection(prod);
+                        }
+                        onFieldSubmitted();
+                      },
+                    );
+                  },
+                  onSelected: (String selection) {
+                    try {
+                      final prod = _rowIdOptions.firstWhere((p) => p.name == selection);
+                      _applyProductSelection(prod);
+                      _idController.text = prod.id?.toString() ?? '';
+                    } catch (e) {}
+                  },
+                );
+              }),
+            ),
             // التفاصيل (اسم المنتج)
             Expanded(
               flex: 3,
@@ -3329,6 +3606,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                               },
                               fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
                                 detailsController = controller;
+                                _detailsController = controller; // keep reference to update on ID selection
                                 return TextField(
                                   controller: controller,
                                   focusNode: focusNode,
@@ -3359,6 +3637,11 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                                   widget.onItemUpdated(_currentItem);
                                 });
                                 detailsController.text = selection;
+                                try {
+                                  final p = widget.allProducts.firstWhere(
+                                      (pr) => pr.name == selection);
+                                  _idController.text = p.id?.toString() ?? '';
+                                } catch (e) {}
                                 FocusScope.of(context)
                                     .requestFocus(_quantityFocusNode);
                               },
@@ -3380,6 +3663,11 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                                 _currentItem =
                                     _currentItem.copyWith(productName: selection);
                                 widget.onItemUpdated(_currentItem);
+                                try {
+                                  final p = widget.allProducts
+                                      .firstWhere((pr) => pr.name == selection);
+                                  _idController.text = p.id?.toString() ?? '';
+                                } catch (e) {}
                                 FocusScope.of(context)
                                     .requestFocus(_quantityFocusNode);
                               },
@@ -3403,6 +3691,11 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                                   onSubmitted: (val) {
                                     onFieldSubmitted();
                                     widget.onItemUpdated(_currentItem);
+                                    try {
+                                      final p = widget.allProducts
+                                          .firstWhere((pr) => pr.name == val);
+                                      _idController.text = p.id?.toString() ?? '';
+                                    } catch (e) {}
                                     FocusScope.of(context)
                                         .requestFocus(_quantityFocusNode);
                                   },

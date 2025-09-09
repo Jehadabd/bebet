@@ -123,12 +123,13 @@ class InvoicePdfService {
                   pw.Table(
                     border: pw.TableBorder.all(width: 0.2),
                     columnWidths: {
-                      0: const pw.FixedColumnWidth(90),
-                      1: const pw.FixedColumnWidth(70),
-                      2: const pw.FixedColumnWidth(65),
-                      3: const pw.FixedColumnWidth(90),
-                      4: const pw.FlexColumnWidth(0.8),
-                      5: const pw.FixedColumnWidth(20),
+                      0: const pw.FixedColumnWidth(20), // تسلسل
+                      1: const pw.FixedColumnWidth(90), // المبلغ
+                      2: const pw.FixedColumnWidth(35), // ID
+                      3: const pw.FixedColumnWidth(70), // السعر
+                      4: const pw.FixedColumnWidth(65), // عدد الوحدات
+                      5: const pw.FixedColumnWidth(80), // العدد
+                      6: const pw.FlexColumnWidth(0.8), // التفاصيل
                     },
                     defaultVerticalAlignment:
                         pw.TableCellVerticalAlignment.middle,
@@ -136,12 +137,13 @@ class InvoicePdfService {
                       pw.TableRow(
                         decoration: const pw.BoxDecoration(),
                         children: [
+                          headerCell('ت', font),
                           headerCell('المبلغ', font),
+                          headerCell('ID', font),
                           headerCell('السعر', font),
                           headerCell('عدد الوحدات', font),
                           headerCell('العدد', font),
                           headerCell('التفاصيل ', font),
-                          headerCell('ت', font),
                         ],
                       ),
                       ...pageItems.asMap().entries.map((entry) {
@@ -156,12 +158,13 @@ class InvoicePdfService {
                         }
                         return pw.TableRow(
                           children: [
+                            dataCell('${index + 1}', font),
                             dataCell(formatNumber(item.itemTotal, forceDecimal: true), font),
+                            dataCell(formatProductId(product?.id), font),
                             dataCell(formatNumber(item.appliedPrice, forceDecimal: true), font),
                             dataCell(buildUnitConversionStringForPdf(item, product), font),
                             dataCell('${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}', font),
                             dataCell(item.productName, font, align: pw.TextAlign.right),
-                            dataCell('${index + 1}', font),
                           ],
                         );
                       }).toList(),
@@ -240,6 +243,13 @@ class InvoicePdfService {
               font: font, fontSize: 13, fontWeight: pw.FontWeight.bold),
           textAlign: align),
     );
+  }
+
+  static String formatProductId(int? id) {
+    if (id == null) return '-----';
+    final s = id.toString();
+    if (s.length >= 5) return s.substring(0, 5);
+    return s.padLeft(5, '0');
   }
 
   static pw.Widget summaryRow(String label, num value, pw.Font font) {
