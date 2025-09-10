@@ -602,11 +602,10 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                       const TextInputType.numberWithOptions(decimal: true),
                 ),
               const SizedBox(height: 16),
-              TextField(
-                controller: _unitPriceController,
-                decoration: const InputDecoration(labelText: 'سعر الوحدة الأصلي'),
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
+              TextFormField(
+                initialValue: widget.product.id?.toString() ?? '-',
+                decoration: const InputDecoration(labelText: 'ID المنتج'),
+                enabled: false,
               ),
               const SizedBox(height: 16),
               GestureDetector(

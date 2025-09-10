@@ -27,7 +27,7 @@ pw.Widget buildPdfHeader(
                   ),
                 ),
                 pw.Center(
-                  child: pw.Text('لتجارة المواد الصحية والعدد اليدوية والانشائية ',
+                  child: pw.Text('لتجارة المواد الكهربائية والكيبلات ',
                       style: pw.TextStyle(font: font, fontSize: 17)),
                 ),
                 pw.Center(
@@ -37,7 +37,7 @@ pw.Widget buildPdfHeader(
                   ),
                 ),
                 pw.Center(
-                  child: pw.Text('0771 406 3064  |  0770 305 1353',
+                  child: pw.Text('0773 284 5260  |  0770 304 0821',
                       style: pw.TextStyle(
                           font: font, fontSize: 13, color: PdfColors.black)),
                 ),

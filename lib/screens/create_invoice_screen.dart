@@ -2582,7 +2582,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                   : null;
                               return DropdownButtonFormField<double?>(
                                 decoration: const InputDecoration(
-                                    labelText: 'مستوى السعر'),
+                                  labelText: 'مستوى السعر',
+                                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                ),
                                 value: dropdownValue,
                                 items: priceItems,
                                 onChanged: _isViewOnly
@@ -2676,8 +2678,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                   }
                                   return null;
                                 },
-                                isDense: _isViewOnly,
-                                menuMaxHeight: _isViewOnly ? 0 : 200,
+                                isDense: true,
+                                menuMaxHeight: 240,
                               );
                             },
                           ),
@@ -3458,23 +3460,38 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 0.0),
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8.0)),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 8.0),
+    final Color gridBorderColor = Colors.grey.shade300;
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border.all(color: gridBorderColor, width: 1),
+      ),
+      child: SizedBox(
+        height: 44,
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             // رقم الصف
             Expanded(
-                flex: 1,
+              flex: 1,
+              child: Container(
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  border: Border(right: BorderSide(color: gridBorderColor, width: 1)),
+                ),
                 child: Text((widget.index + 1).toString(),
                     textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodyMedium)),
+                    style: Theme.of(context).textTheme.bodyMedium),
+              ),
+            ),
             // المبلغ
             Expanded(
-                flex: 2,
+              flex: 2,
+              child: Container(
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  border: Border(right: BorderSide(color: gridBorderColor, width: 1)),
+                ),
                 child: widget.isViewOnly
                     ? Text(
                         formatCurrency(widget.item.itemTotal),
@@ -3483,15 +3500,23 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                             fontWeight: FontWeight.bold,
                             color: Theme.of(context).colorScheme.primary),
                       )
-                    : Text(formatCurrency(_currentItem.itemTotal),
+                    : Text(
+                        formatCurrency(_currentItem.itemTotal),
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             fontWeight: FontWeight.bold,
-                            color: Theme.of(context).colorScheme.primary))),
+                            color: Theme.of(context).colorScheme.primary),
+                      ),
+              ),
+            ),
             // ID المادة
             Expanded(
               flex: 2,
-              child: Builder(builder: (context) {
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border(right: BorderSide(color: gridBorderColor, width: 1)),
+                ),
+                child: Builder(builder: (context) {
                 if (widget.isViewOnly) {
                   final product = widget.allProducts.firstWhere(
                     (p) => p.name == _currentItem.productName,
@@ -3546,7 +3571,9 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                       decoration: const InputDecoration(
                         border: InputBorder.none,
                         isDense: true,
-                        contentPadding: EdgeInsets.symmetric(horizontal: 0, vertical: 8),
+                        filled: true,
+                        fillColor: Color(0xFFF3F3F3),
+                        contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
                       ),
                       onFieldSubmitted: (val) async {
                         final id = int.tryParse(val.trim());
@@ -3570,11 +3597,15 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                   },
                 );
               }),
+              ),
             ),
             // التفاصيل (اسم المنتج)
             Expanded(
               flex: 3,
-              child: Padding(
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border(right: BorderSide(color: gridBorderColor, width: 1)),
+                ),
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
                 child: widget.isViewOnly
                     ? Text(widget.item.productName,
@@ -3613,9 +3644,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                                   enabled: !widget.isViewOnly,
                                   decoration: const InputDecoration(
                                     border: InputBorder.none,
-                                    contentPadding: EdgeInsets.symmetric(
-                                        horizontal: 0, vertical: 8),
+                                    contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
                                     isDense: true,
+                                    filled: true,
+                                    fillColor: Color(0xFFF3F3F3),
                                   ),
                                   style: Theme.of(context).textTheme.bodyMedium,
                                   onChanged: (val) {
@@ -3679,9 +3711,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                                   enabled: !widget.isViewOnly,
                                   decoration: const InputDecoration(
                                     border: InputBorder.none,
-                                    contentPadding: EdgeInsets.symmetric(
-                                        horizontal: 0, vertical: 8),
+                                    contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
                                     isDense: true,
+                                    filled: true,
+                                    fillColor: Color(0xFFF3F3F3),
                                   ),
                                   style: Theme.of(context).textTheme.bodyMedium,
                                   onChanged: (val) {
@@ -3710,8 +3743,12 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
             // العدد
             Expanded(
               flex: 2,
-              child: Padding(
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border(right: BorderSide(color: gridBorderColor, width: 1)),
+                ),
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                alignment: Alignment.center,
                 child: widget.isViewOnly
                     ? Text(
                         ((widget.item.quantityIndividual ??
@@ -3739,9 +3776,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                         style: Theme.of(context).textTheme.bodyMedium,
                         decoration: const InputDecoration(
                           border: InputBorder.none,
-                          contentPadding:
-                              EdgeInsets.symmetric(horizontal: 0, vertical: 8),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
                           isDense: true,
+                          filled: true,
+                          fillColor: Color(0xFFF3F3F3),
                         ),
                       ),
               ),
@@ -3749,7 +3787,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
             // نوع البيع
             Expanded(
               flex: 2,
-              child: Padding(
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border(right: BorderSide(color: gridBorderColor, width: 1)),
+                ),
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
                 child: widget.isViewOnly
                     ? Text(
@@ -3782,7 +3823,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
             // السعر
             Expanded(
               flex: 2,
-              child: Padding(
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border(right: BorderSide(color: gridBorderColor, width: 1)),
+                ),
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
                 child: widget.isViewOnly
                     ? Text(
@@ -3807,9 +3851,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                         style: Theme.of(context).textTheme.bodyMedium,
                         decoration: const InputDecoration(
                           border: InputBorder.none,
-                          contentPadding:
-                              EdgeInsets.symmetric(horizontal: 0, vertical: 8),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
                           isDense: true,
+                          filled: true,
+                          fillColor: Color(0xFFF3F3F3),
                         ),
                       ),
               ),
@@ -3817,7 +3862,9 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
             // عدد الوحدات
             Expanded(
               flex: 2,
-              child: widget.isViewOnly
+              child: Container(
+                alignment: Alignment.center,
+                child: widget.isViewOnly
                   ? ((widget.item.saleType == 'قطعة' ||
                           widget.item.saleType == 'متر')
                       ? const SizedBox.shrink()
@@ -3834,6 +3881,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                               '',
                           textAlign: TextAlign.center,
                           style: Theme.of(context).textTheme.bodyMedium),
+              ),
             ),
             if (!widget.isViewOnly && !widget.isPlaceholder)
               SizedBox(
