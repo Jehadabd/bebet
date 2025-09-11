@@ -59,6 +59,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/fonts/Amiri-Regular.ttf
+    - assets/fonts/PTBLDHAD.TTF
     - .env
     - assets/fonts/andlso.ttf
     - assets/fonts/Old Antic Outline Shaded.ttf

@@ -344,19 +344,31 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                   ),
                                 ],
                               ),
-                              if (summary.totalReturns > 0 ||
+                              // إزالة قسم "إجمالي الراجع" واستبداله بتسويات الشهر
+                              if (summary.settlementAdditions > 0 ||
+                                  summary.settlementReturns > 0 ||
                                   summary.totalDebtPayments > 0) ...[
                                 const SizedBox(height: 12),
                                 Row(
                                   children: [
-                                    if (summary.totalReturns > 0) ...[
+                                    if (summary.settlementAdditions > 0) ...[
                                       Expanded(
                                         child: _buildInfoItem(
-                                          icon: Icons.assignment_return,
-                                          title: 'إجمالي الراجع',
+                                          icon: Icons.add_circle,
+                                          title: 'تسوية الإضافة',
                                           value:
-                                              '${formatCurrency(summary.totalReturns)} د.ع',
-                                          color: const Color(0xFFF44336),
+                                              '${formatCurrency(summary.settlementAdditions)} د.ع',
+                                          color: const Color(0xFF2E7D32),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: _buildInfoItem(
+                                          icon: Icons.remove_circle,
+                                          title: 'تسوية الإرجاع',
+                                          value:
+                                              '${formatCurrency(summary.settlementReturns)} د.ع',
+                                          color: const Color(0xFFC62828),
                                         ),
                                       ),
                                       if (summary.totalDebtPayments > 0) ...[
@@ -371,17 +383,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                           ),
                                         ),
                                       ],
-                                    ] else if (summary.totalDebtPayments >
-                                        0) ...[
-                                      Expanded(
-                                        child: _buildInfoItem(
-                                          icon: Icons.account_balance_wallet,
-                                          title: 'تسديد الديون',
-                                          value:
-                                              '${formatCurrency(summary.totalDebtPayments)} د.ع',
-                                          color: const Color(0xFF4CAF50),
-                                        ),
-                                      ),
                                     ],
                                   ],
                                 ),

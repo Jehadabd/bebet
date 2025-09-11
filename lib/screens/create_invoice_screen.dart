@@ -27,6 +27,7 @@ import 'package:get_storage/get_storage.dart';
 import 'dart:convert';
 import 'package:flutter/scheduler.dart';
 import '../services/pdf_header.dart';
+import '../models/invoice_adjustment.dart';
 
 // Helper: format product ID - show raw value without zero-padding
 String formatProductId5(int? id) {
@@ -42,12 +43,15 @@ class CreateInvoiceScreen extends StatefulWidget {
   final Invoice? existingInvoice;
   final bool isViewOnly;
   final DebtTransaction? relatedDebtTransaction;
+  // إذا كانت غير null فهذا يعني فتح الشاشة بوضع تسوية لفاتورة محفوظة
+  final Invoice? settlementForInvoice;
 
   const CreateInvoiceScreen({
     super.key,
     this.existingInvoice,
     this.isViewOnly = false,
     this.relatedDebtTransaction,
+    this.settlementForInvoice,
   });
 
   @override
@@ -96,10 +100,47 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   bool _savedOrSuspended = false;
   Timer? _debounceTimer;
 
-  // أضف متغير تحكم لحقل الراجع
-  final TextEditingController _returnAmountController = TextEditingController();
+  
 
   bool _isViewOnly = false;
+
+  // تسوية الفاتورة - حالة الواجهة
+  bool _settlementPanelVisible = false; // عند اختيار "بند"
+  bool _settlementIsDebit = true; // true = إضافة (debit), false = حذف (credit)
+  final List<InvoiceItem> _settlementItems = [];
+  String _settlementPaymentType = 'نقد';
+  final TextEditingController _settleNameCtrl = TextEditingController();
+  final TextEditingController _settleIdCtrl = TextEditingController();
+  final TextEditingController _settleQtyCtrl = TextEditingController();
+  final TextEditingController _settlePriceCtrl = TextEditingController();
+  final TextEditingController _settleUnitCtrl = TextEditingController();
+  Product? _settleSelectedProduct;
+  String _settleSelectedSaleType = 'قطعة'; // نوع البيع المحدد في التسوية
+  
+  // Controllers للـ Autocomplete في لوحة التسوية
+  TextEditingController? _settleIdController;
+  TextEditingController? _settleNameController;
+  
+  // معلومات التسويات
+  List<InvoiceAdjustment> _invoiceAdjustments = [];
+  double _totalSettlementAmount = 0.0;
+  
+  // جلب معلومات التسويات
+  Future<void> _loadSettlementInfo() async {
+    if (_invoiceToManage?.id != null) {
+      try {
+        final adjustments = await _db.getInvoiceAdjustments(_invoiceToManage!.id!);
+        setState(() {
+          _invoiceAdjustments = adjustments;
+          _totalSettlementAmount = adjustments.fold(0.0, (sum, adj) {
+            return sum + (adj.type == 'debit' ? adj.amountDelta : -adj.amountDelta);
+          });
+        });
+      } catch (e) {
+        print('Error loading settlement info: $e');
+      }
+    }
+  }
 
   final FocusNode _searchFocusNode = FocusNode(); // FocusNode جديد لحقل البحث
   bool _suppressSearch = false; // لمنع البحث التلقائي عند اختيار منتج
@@ -205,8 +246,28 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       _printingService = getPlatformPrintingService();
       _invoiceToManage = widget.existingInvoice;
       _isViewOnly = widget.isViewOnly;
+      // تفعيل وضع التسوية: افتح واجهة إدخال أصناف جديدة، لكن اربطها بالفاتورة الأساسية
+      if (widget.settlementForInvoice != null) {
+        // في وضع التسوية: اجعل الشاشة قابلة للإدخال، ولا تعدّل الأصناف الأصلية
+        _isViewOnly = false;
+        _invoiceToManage = widget.settlementForInvoice; // للربط ولأخذ العميل/التاريخ إن لزم
+        // نظف أي بيانات إدخال قديمة وابدأ بقائمة فارغة لتسوية جديدة
+        _invoiceItems.clear();
+        _totalAmountController.text = '0';
+        // أضف صف فارغ كبداية
+        _invoiceItems.add(InvoiceItem(
+          invoiceId: 0,
+          productName: '',
+          unit: '',
+          unitPrice: 0.0,
+          appliedPrice: 0.0,
+          itemTotal: 0.0,
+          uniqueId: 'placeholder_${DateTime.now().microsecondsSinceEpoch}',
+        ));
+      }
       _loadingFeeController = TextEditingController();
       _loadAutoSavedData();
+      _loadSettlementInfo(); // جلب معلومات التسويات
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         try {
           _allProductsForUnits = await _db.getAllProducts();
@@ -246,8 +307,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             _invoiceToManage!.amountPaidOnInvoice.toString();
         _discount = _invoiceToManage!.discount;
         _discountController.text = _discount.toStringAsFixed(2);
-        _returnAmountController.text =
-            _invoiceToManage!.returnAmount.toString();
+        
 
         _loadInvoiceItems();
       } else {
@@ -452,7 +512,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       _totalAmountController.dispose();
       _paidAmountController.dispose();
       _discountController.dispose();
-      _returnAmountController.dispose();
+      
       _quantityFocusNode.dispose(); // تنظيف FocusNode
       _searchFocusNode.dispose();
       _loadingFeeController.dispose();
@@ -878,7 +938,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         if (_invoiceToManage!.status == 'معلقة') {
           newStatus = 'محفوظة';
           newIsLocked =
-              false; // فواتير معلقة محولة تبقى قابلة للتعديل حتى إدخال الراجع
+              false;
         }
       } else {
         // فواتير جديدة
@@ -902,9 +962,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         lastModifiedAt: DateTime.now(),
         customerId: customer?.id,
         status: newStatus,
-        returnAmount: _returnAmountController.text.isNotEmpty
-            ? double.parse(_returnAmountController.text)
-            : 0.0,
         isLocked: false, // دائماً غير مقفلة بعد الحفظ العادي
       );
 
@@ -1069,84 +1126,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     }
   }
 
-  Future<void> _suspendInvoice() async {
-    if (!_formKey.currentState!.validate()) return;
-    try {
-      // احذف جميع الأصناف غير المكتملة قبل التعليق
-      _invoiceItems.removeWhere((item) => !_isInvoiceItemComplete(item));
-      Customer? customer;
-      int? customerId;
-      if (_customerNameController.text.trim().isNotEmpty) {
-        final customers =
-            await _db.searchCustomers(_customerNameController.text.trim());
-        customer = customers.isNotEmpty ? customers.first : null;
-        customerId = customer?.id;
-      }
-      double currentTotalAmount =
-          _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-      double totalAmount = currentTotalAmount - _discount;
-      double paid = double.tryParse(_paidAmountController.text.trim().replaceAll(',', '')) ?? 0.0;
-      final invoice = Invoice(
-        id: _invoiceToManage?.id,
-        customerName: _customerNameController.text.trim(),
-        customerPhone: _customerPhoneController.text.trim(),
-        customerAddress: _customerAddressController.text.trim(),
-        installerName: _installerNameController.text.trim(),
-        invoiceDate: _selectedDate,
-        paymentType: _paymentType,
-        totalAmount: totalAmount,
-        discount: _discount,
-        amountPaidOnInvoice: paid,
-        createdAt: _invoiceToManage?.createdAt ?? DateTime.now(),
-        lastModifiedAt: DateTime.now(),
-        customerId: customerId,
-        status: 'معلقة',
-        isLocked: false,
-        returnAmount: _returnAmountController.text.isNotEmpty
-            ? double.tryParse(_returnAmountController.text) ?? 0.0
-            : 0.0,
-      );
-      int invoiceId;
-      if (_invoiceToManage != null) {
-        invoiceId = _invoiceToManage!.id!;
-        // حذف جميع أصناف الفاتورة القديمة وإضافة الجديدة
-        final oldItems = await _db.getInvoiceItems(invoiceId);
-        for (var oldItem in oldItems) {
-          await _db.deleteInvoiceItem(oldItem.id!);
-        }
-        for (final item in _invoiceItems) {
-          await _db.insertInvoiceItem(item.copyWith(invoiceId: invoiceId));
-        }
-        await context.read<AppProvider>().updateInvoice(invoice);
-        print(
-            'Suspended invoice. Invoice ID: $invoiceId, Status: ${invoice.status}');
-      } else {
-        invoiceId = await _db.insertInvoice(invoice);
-        print(
-            'Suspended invoice. Invoice ID: $invoiceId, Status: ${invoice.status}');
-        for (final item in _invoiceItems) {
-          await _db.insertInvoiceItem(item.copyWith(invoiceId: invoiceId));
-        }
-      }
-
-      // حذف البيانات المؤقتة بعد التعليق الناجح
-      _storage.remove('temp_invoice_data');
-      _savedOrSuspended = true;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text(
-                'تم تعليق الفاتورة بنجاح ويمكن تعديلها لاحقاً من القوائم المعلقة.')),
-      );
-      Navigator.of(context).pop();
-    } catch (e) {
-      String errorMessage = 'حدث خطأ عند تعليق الفاتورة: \\${e.toString()}';
-      print('Error suspending invoice: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(errorMessage)),
-      );
-    }
-  }
+  
 
   Future<pw.Document> _generateInvoicePdf() async {
     try {
@@ -1158,7 +1138,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       final font =
           pw.Font.ttf(await rootBundle.load('assets/fonts/Amiri-Regular.ttf'));
       final alnaserFont = pw.Font.ttf(
-          await rootBundle.load('assets/fonts/Old Antic Outline Shaded.ttf'));
+          await rootBundle.load('assets/fonts/PTBLDHAD.TTF'));
 
       // دالة مساعدة لبناء سلسلة التحويل من InvoiceItem
       String buildUnitConversionStringForPdf(
@@ -1205,11 +1185,63 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       // تصفية العناصر لإزالة الصفوف الفارغة قبل الطباعة
       final filteredItems = _invoiceItems.where((item) => _isInvoiceItemComplete(item)).toList();
 
-      final currentTotalAmount =
+      final itemsTotal =
           filteredItems.fold(0.0, (sum, item) => sum + item.itemTotal);
       final discount = _discount;
-      final afterDiscount =
-          (currentTotalAmount - discount).clamp(0, double.infinity);
+      // جلب تسويات الفاتورة (إن وجدت) وحساب إجماليها
+      List<InvoiceAdjustment> adjs = [];
+      double settlementsTotal = 0.0;
+      if (_invoiceToManage != null && _invoiceToManage!.id != null) {
+        try {
+          adjs = await _db.getInvoiceAdjustments(_invoiceToManage!.id!);
+          settlementsTotal = adjs.fold(0.0, (sum, a) => sum + a.amountDelta);
+        } catch (_) {}
+      }
+      final bool hasAdjustments = adjs.isNotEmpty;
+      // تحديد تسويات البنود المضافة في نفس يوم الفاتورة لعرضها ضمن القائمة
+      final DateTime invoiceDateOnly = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
+      final List<InvoiceAdjustment> sameDayAddedItemAdjs = adjs.where((a) {
+        if (a.productId == null) return false;
+        if (a.type != 'debit') return false;
+        final d = DateTime(a.createdAt.year, a.createdAt.month, a.createdAt.day);
+        return d == invoiceDateOnly;
+      }).toList();
+      final List<InvoiceAdjustment> itemAdditionsForSection = adjs.where((a) => a.productId != null && a.type == 'debit' && !sameDayAddedItemAdjs.contains(a)).toList();
+      final List<InvoiceAdjustment> itemCreditsForSection = adjs.where((a) => a.productId != null && a.type == 'credit').toList();
+      final List<InvoiceAdjustment> amountOnlyAdjs = adjs.where((a) => a.productId == null).toList();
+      final bool showSettlementSections = itemAdditionsForSection.isNotEmpty || itemCreditsForSection.isNotEmpty || amountOnlyAdjs.isNotEmpty;
+      final bool includeSameDayOnlyCase = sameDayAddedItemAdjs.isNotEmpty && !showSettlementSections;
+
+      // حساب الإجماليات المعروضة بحسب الحالة الخاصة
+      final double sameDayAddsTotal = sameDayAddedItemAdjs.fold(0.0, (sum, a) => sum + (a.amountDelta));
+      final double itemsTotalForDisplay = includeSameDayOnlyCase ? (itemsTotal + sameDayAddsTotal) : itemsTotal;
+      final double settlementsTotalForDisplay = includeSameDayOnlyCase ? 0.0 : settlementsTotal;
+      final double preDiscountTotal = (itemsTotalForDisplay + settlementsTotalForDisplay);
+      final double afterDiscount = ((preDiscountTotal - discount).clamp(0.0, double.infinity)).toDouble();
+
+      // المبلغ المدفوع من الحقل
+      final double paid = double.tryParse(_paidAmountController.text.replaceAll(',', '')) ?? 0.0;
+
+      // تحديد مبالغ التسويات النقدية/الدين لحساب المبلغ المدفوع المعروض
+      final double cashSettlements = showSettlementSections
+          ? adjs.where((a) => (a.settlementPaymentType ?? 'نقد') == 'نقد').fold(0.0, (sum, a) => sum + a.amountDelta)
+          : 0.0;
+      final double debtSettlements = showSettlementSections
+          ? adjs.where((a) => a.settlementPaymentType == 'دين').fold(0.0, (sum, a) => sum + a.amountDelta)
+          : 0.0;
+      double displayedPaidForSettlementsCase;
+      if (!showSettlementSections) {
+        displayedPaidForSettlementsCase = paid;
+      } else if (debtSettlements == 0 && cashSettlements != 0) {
+        // كل التسويات نقد => المبلغ المدفوع = إجمالي القائمة
+        displayedPaidForSettlementsCase = afterDiscount;
+      } else if (cashSettlements == 0 && debtSettlements != 0) {
+        // كل التسويات دين => لا تضاف إلى المدفوع
+        displayedPaidForSettlementsCase = paid;
+      } else {
+        // حالة مختلطة: أضف الجزء النقدي إلى المدفوع دون تجاوز الإجمالي
+        displayedPaidForSettlementsCase = ((paid + cashSettlements).clamp(0.0, afterDiscount)).toDouble();
+      }
 
       // حساب الديون
       double previousDebt = 0.0;
@@ -1252,7 +1284,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           previousDebt = matchedCustomer.currentTotalDebt;
         }
       }
-      final paid = double.tryParse(_paidAmountController.text) ?? 0.0;
       final isCash = _paymentType == 'نقد';
       final remaining = isCash ? 0 : (afterDiscount - paid);
       if (isCash) {
@@ -1268,15 +1299,30 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         invoiceId = (await _db.getLastInvoiceId()) + 1;
       }
       
+      // دمج بنود التسوية المضافة بنفس اليوم داخل جدول العناصر الرئيسي عند كونها الحالة الوحيدة
+      final List<Map<String, dynamic>> combinedRows = [
+        // صفوف الفاتورة الأصلية
+        ...filteredItems.map((it) => {
+              'type': 'item',
+              'item': it,
+            }),
+        // صفوف التسوية المضافة بنفس اليوم (إن كانت الحالة الوحيدة)
+        if (includeSameDayOnlyCase)
+          ...sameDayAddedItemAdjs.map((a) => {
+                'type': 'adj',
+                'adj': a,
+              }),
+      ];
+
       const itemsPerPage = 20;
-      final totalPages = (filteredItems.length / itemsPerPage).ceil();
+      final totalPages = (combinedRows.length / itemsPerPage).ceil().clamp(1, double.infinity).toInt();
 
       for (var pageIndex = 0; pageIndex < totalPages; pageIndex++) {
         final start = pageIndex * itemsPerPage;
-        final end = (start + itemsPerPage) > filteredItems.length
-            ? filteredItems.length
+        final end = (start + itemsPerPage) > combinedRows.length
+            ? combinedRows.length
             : start + itemsPerPage;
-        final pageItems = filteredItems.sublist(start, end);
+        final pageRows = combinedRows.sublist(start, end);
 
         pdf.addPage(
           pw.Page(
@@ -1340,69 +1386,310 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             _headerCell('ت', font),
                           ],
                         ),
-                        ...pageItems.asMap().entries.map((entry) {
+                        ...pageRows.asMap().entries.map((entry) {
                           final index = entry.key + (pageIndex * itemsPerPage);
-                          final item = entry.value;
-                          final quantity = (item.quantityIndividual ??
-                              item.quantityLargeUnit ??
-                              0.0);
-                          Product? product;
-                          try {
-                            product = allProducts
-                                .firstWhere((p) => p.name == item.productName);
-                          } catch (e) {
-                            product = null;
+                          final row = entry.value;
+                          if (row['type'] == 'item') {
+                            final item = row['item'] as InvoiceItem;
+                            final quantity = (item.quantityIndividual ?? item.quantityLargeUnit ?? 0.0);
+                            Product? product;
+                            try {
+                              product = allProducts.firstWhere((p) => p.name == item.productName);
+                            } catch (e) {
+                              product = null;
+                            }
+                            final idText = formatProductId5(product?.id);
+                            return pw.TableRow(
+                              children: [
+                                _dataCell(formatNumber(item.itemTotal, forceDecimal: true), font),
+                                _dataCell(formatNumber(item.appliedPrice, forceDecimal: true), font),
+                                _dataCell(
+                                  buildUnitConversionStringForPdf(item, product),
+                                  font,
+                                ),
+                                _dataCell('${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}', font),
+                                _dataCell(item.productName, font, align: pw.TextAlign.right),
+                                _dataCell(idText, font),
+                                _dataCell('${index + 1}', font),
+                              ],
+                            );
+                          } else {
+                            final a = row['adj'] as InvoiceAdjustment;
+                            final double price = a.price ?? 0.0;
+                            final double qty = a.quantity ?? 0.0;
+                            final double total = a.amountDelta != 0.0 ? a.amountDelta : (price * qty);
+                            Product? product;
+                            try {
+                              product = allProducts.firstWhere((p) => p.id == a.productId);
+                            } catch (e) {
+                              product = null;
+                            }
+                            final idText = formatProductId5(product?.id);
+                            final unitConv = () {
+                              // بناء سلسلة التحويل للوحدة للتسوية
+                              try {
+                                if (product == null || product.unitHierarchy == null || product.unitHierarchy!.isEmpty) {
+                                  return (a.unitsInLargeUnit?.toString() ?? '');
+                                }
+                                final List<dynamic> hierarchy = json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+                                List<String> factors = [];
+                                for (int i = 0; i < hierarchy.length; i++) {
+                                  final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
+                                  final quantity = hierarchy[i]['quantity'];
+                                  factors.add(quantity.toString());
+                                  if (unitName == a.saleType) {
+                                    break;
+                                  }
+                                }
+                                if (factors.isEmpty) {
+                                  return a.unitsInLargeUnit?.toString() ?? '';
+                                }
+                                return factors.join(' × ');
+                              } catch (_) {
+                                return a.unitsInLargeUnit?.toString() ?? '';
+                              }
+                            }();
+                            return pw.TableRow(
+                              children: [
+                                _dataCell(formatNumber(total, forceDecimal: true), font),
+                                _dataCell(formatNumber(price, forceDecimal: true), font),
+                                _dataCell(unitConv, font),
+                                _dataCell('${formatNumber(qty, forceDecimal: true)} ${a.saleType ?? ''}', font),
+                                _dataCell(a.productName ?? '-', font, align: pw.TextAlign.right),
+                                _dataCell(idText, font),
+                                _dataCell('${index + 1}', font),
+                              ],
+                            );
                           }
-                          final idText = formatProductId5(product?.id);
-                          return pw.TableRow(
-                            children: [
-                              _dataCell(
-                                  formatNumber(item.itemTotal,
-                                      forceDecimal: true),
-                                  font),
-                              _dataCell(
-                                  formatNumber(item.appliedPrice,
-                                      forceDecimal: true),
-                                  font),
-                              // عدد الوحدات (منطق جديد)
-                              _dataCell(
-                                buildUnitConversionStringForPdf(item, product),
-                                font,
-                              ),
-                              _dataCell(
-                                '${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}',
-                                font,
-                              ),
-                              _dataCell(item.productName, font,
-                                  align: pw.TextAlign.right),
-                              _dataCell(idText, font),
-                              _dataCell('${index + 1}', font),
-                            ],
-                          );
                         }).toList(),
                       ],
                     ),
                     pw.Divider(height: 4, thickness: 0.4),
 
-                    // --- المجاميع في الصفحة الأخيرة فقط ---
+                    // --- بنود تسوية مضافة في نفس اليوم (تظهر ضمن القائمة) ---
+                    if (sameDayAddedItemAdjs.isNotEmpty && !includeSameDayOnlyCase) ...[
+                      pw.SizedBox(height: 4),
+                      pw.Text('بنود أضيفت بالتسوية (ضمن القائمة)', style: pw.TextStyle(font: font, fontSize: 12, fontWeight: pw.FontWeight.bold)),
+                      pw.SizedBox(height: 2),
+                      pw.Table(
+                        border: pw.TableBorder.all(width: 0.2),
+                        columnWidths: {
+                          0: const pw.FixedColumnWidth(90), // المبلغ
+                          1: const pw.FixedColumnWidth(70), // السعر
+                          2: const pw.FixedColumnWidth(65), // عدد الوحدات
+                          3: const pw.FixedColumnWidth(90), // العدد
+                          4: const pw.FlexColumnWidth(0.8), // التفاصيل
+                          5: const pw.FixedColumnWidth(45), // ID
+                          6: const pw.FixedColumnWidth(20), // ت
+                        },
+                        defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
+                        children: [
+                          pw.TableRow(children: [
+                            _headerCell('المبلغ', font),
+                            _headerCell('السعر', font),
+                            _headerCell('عدد الوحدات', font),
+                            _headerCell('العدد', font),
+                            _headerCell('التفاصيل', font),
+                            _headerCell('ID', font),
+                            _headerCell('ت', font),
+                          ]),
+                          ...sameDayAddedItemAdjs.asMap().entries.map((entry) {
+                            final idx = entry.key;
+                            final a = entry.value;
+                            final qty = a.quantity ?? 0;
+                            final price = a.price ?? 0;
+                            final amount = price * qty;
+                            final idText = formatProductId5(a.productId);
+                            return pw.TableRow(children: [
+                              _dataCell(formatNumber(amount, forceDecimal: true), font),
+                              _dataCell(formatNumber(price, forceDecimal: true), font),
+                              _dataCell((a.unitsInLargeUnit != null && a.unitsInLargeUnit! > 0) ? a.unitsInLargeUnit!.toStringAsFixed(2) : '-', font),
+                              _dataCell(qty.toStringAsFixed(2), font),
+                              _dataCell(a.productName ?? '', font, align: pw.TextAlign.right),
+                              _dataCell(idText, font),
+                              _dataCell('${idx + 1}', font),
+                            ]);
+                          })
+                        ],
+                      ),
+                      pw.SizedBox(height: 6),
+                    ],
+
+                    // --- المجاميع والتسويات في الصفحة الأخيرة فقط ---
                     if (pageIndex == totalPages - 1) ...[
+                      // --- طباعة التسويات ---
+                      if (_invoiceToManage != null && _invoiceToManage!.id != null && (itemAdditionsForSection.isNotEmpty || itemCreditsForSection.isNotEmpty || amountOnlyAdjs.isNotEmpty)) ...[
+                        pw.SizedBox(height: 6),
+                        pw.Text('التسويات', style: pw.TextStyle(font: font, fontSize: 13, fontWeight: pw.FontWeight.bold)),
+                        pw.SizedBox(height: 4),
+                        // تسويات البنود (إضافة)
+                        if (itemAdditionsForSection.isNotEmpty) ...[
+                          pw.Text('تسوية البنود - إضافة', style: pw.TextStyle(font: font, fontSize: 12)),
+                          pw.SizedBox(height: 2),
+                          pw.Table(
+                            border: pw.TableBorder.all(width: 0.2),
+                            columnWidths: {
+                              0: const pw.FixedColumnWidth(90), // المبلغ
+                              1: const pw.FixedColumnWidth(70), // السعر
+                              2: const pw.FixedColumnWidth(65), // عدد الوحدات
+                              3: const pw.FixedColumnWidth(90), // العدد
+                              4: const pw.FlexColumnWidth(0.8), // التفاصيل
+                              5: const pw.FixedColumnWidth(45), // ID
+                              6: const pw.FixedColumnWidth(20), // ت
+                            },
+                            defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
+                            children: [
+                              pw.TableRow(children: [
+                                _headerCell('المبلغ', font),
+                                _headerCell('السعر', font),
+                                _headerCell('عدد الوحدات', font),
+                                _headerCell('العدد', font),
+                                _headerCell('التفاصيل', font),
+                                _headerCell('ID', font),
+                                _headerCell('ت', font),
+                              ]),
+                              ...itemAdditionsForSection.toList().asMap().entries.map((entry) {
+                                final idx = entry.key;
+                                final a = entry.value;
+                                final qty = a.quantity ?? 0;
+                                final price = a.price ?? 0;
+                                final amount = price * qty;
+                                final idText = formatProductId5(a.productId);
+                                return pw.TableRow(children: [
+                                  _dataCell(formatNumber(amount, forceDecimal: true), font),
+                                  _dataCell(formatNumber(price, forceDecimal: true), font),
+                                  _dataCell((a.unitsInLargeUnit != null && a.unitsInLargeUnit! > 0) ? a.unitsInLargeUnit!.toStringAsFixed(2) : '-', font),
+                                  _dataCell(qty.toStringAsFixed(2), font),
+                                  _dataCell(a.productName ?? '', font, align: pw.TextAlign.right),
+                                  _dataCell(idText, font),
+                                  _dataCell('${idx + 1}', font),
+                                ]);
+                              })
+                            ],
+                          ),
+                          pw.SizedBox(height: 6),
+                        ],
+                        // تسويات البنود (إرجاع)
+                        if (itemCreditsForSection.isNotEmpty) ...[
+                          pw.Text('تسوية البنود - إرجاع', style: pw.TextStyle(font: font, fontSize: 12)),
+                          pw.SizedBox(height: 2),
+                          pw.Table(
+                            border: pw.TableBorder.all(width: 0.2),
+                            columnWidths: {
+                              0: const pw.FixedColumnWidth(90),
+                              1: const pw.FixedColumnWidth(70),
+                              2: const pw.FixedColumnWidth(65),
+                              3: const pw.FixedColumnWidth(90),
+                              4: const pw.FlexColumnWidth(0.8),
+                              5: const pw.FixedColumnWidth(45),
+                              6: const pw.FixedColumnWidth(20),
+                            },
+                            defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
+                            children: [
+                              pw.TableRow(children: [
+                                _headerCell('المبلغ', font),
+                                _headerCell('السعر', font),
+                                _headerCell('عدد الوحدات', font),
+                                _headerCell('العدد', font),
+                                _headerCell('التفاصيل', font),
+                                _headerCell('ID', font),
+                                _headerCell('ت', font),
+                              ]),
+                              ...itemCreditsForSection.toList().asMap().entries.map((entry) {
+                                final idx = entry.key;
+                                final a = entry.value;
+                                final qty = a.quantity ?? 0;
+                                final price = a.price ?? 0;
+                                final amount = price * qty;
+                                final idText = formatProductId5(a.productId);
+                                return pw.TableRow(children: [
+                                  _dataCell(formatNumber(-amount, forceDecimal: true), font),
+                                  _dataCell(formatNumber(price, forceDecimal: true), font),
+                                  _dataCell((a.unitsInLargeUnit != null && a.unitsInLargeUnit! > 0) ? a.unitsInLargeUnit!.toStringAsFixed(2) : '-', font),
+                                  _dataCell(qty.toStringAsFixed(2), font),
+                                  _dataCell(a.productName ?? '', font, align: pw.TextAlign.right),
+                                  _dataCell(idText, font),
+                                  _dataCell('${idx + 1}', font),
+                                ]);
+                              })
+                            ],
+                          ),
+                          pw.SizedBox(height: 6),
+                        ],
+                        // تسويات مبلغ فقط (معكوسة الأعمدة لتناسب اتجاه العربية)
+                        if (amountOnlyAdjs.isNotEmpty) ...[
+                          pw.Text('تسوية مبالغ', style: pw.TextStyle(font: font, fontSize: 12)),
+                          pw.SizedBox(height: 2),
+                          pw.Table(
+                            border: pw.TableBorder.all(width: 0.2),
+                            columnWidths: {
+                              0: const pw.FlexColumnWidth(), // ملاحظة
+                              1: const pw.FixedColumnWidth(120), // النوع
+                              2: const pw.FixedColumnWidth(90), // المبلغ
+                            },
+                            defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
+                            children: [
+                              pw.TableRow(children: [
+                                _headerCell('ملاحظة', font),
+                                _headerCell('النوع', font),
+                                _headerCell('المبلغ', font),
+                              ]),
+                              ...amountOnlyAdjs.map((a) {
+                                final kind = a.type == 'debit' ? 'تسوية إضافة' : 'تسوية إرجاع';
+                                return pw.TableRow(children: [
+                                  _dataCell(a.note ?? '-', font, align: pw.TextAlign.right),
+                                  _dataCell(kind, font),
+                                  _dataCell(formatNumber(a.amountDelta, forceDecimal: true), font),
+                                ]);
+                              })
+                            ],
+                          ),
+                          pw.SizedBox(height: 10),
+                        ],
+                      ],
+                      // --- ملخص المجاميع ---
                       pw.Column(
                         crossAxisAlignment: pw.CrossAxisAlignment.end,
                         children: [
-                          pw.Row(
+                          if (hasAdjustments && !includeSameDayOnlyCase) ...[
+                            pw.Row(
+                              mainAxisAlignment: pw.MainAxisAlignment.end,
+                              children: [
+                                _summaryRow('الإجمالي قبل التعديل:', itemsTotalForDisplay, font),
+                                pw.SizedBox(width: 10),
+                                _summaryRow('إجمالي التسويات:', settlementsTotalForDisplay, font),
+                                pw.SizedBox(width: 10),
+                                _summaryRow('الإجمالي قبل الخصم:', preDiscountTotal, font),
+                                pw.SizedBox(width: 10),
+                                _summaryRow('الخصم:', discount, font),
+                              ],
+                            ),
+                            pw.SizedBox(height: 4),
+                            pw.Row(
+                              mainAxisAlignment: pw.MainAxisAlignment.end,
+                              children: [
+                                _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font),
+                                pw.SizedBox(width: 10),
+                                _summaryRow('إجمالي القائمة:', afterDiscount, font),
+                                pw.SizedBox(width: 10),
+                                _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font),
+                              ],
+                            ),
+                          ],
+                          if (!hasAdjustments || includeSameDayOnlyCase) pw.Row(
                             mainAxisAlignment: pw.MainAxisAlignment.end,
                             children: [
-                              _summaryRow('الاجمالي قبل الخصم:',
-                                  currentTotalAmount, font),
+                              _summaryRow('الإجمالي قبل الخصم:', itemsTotalForDisplay, font),
                               pw.SizedBox(width: 10),
                               _summaryRow('الخصم:', discount, font),
                               pw.SizedBox(width: 10),
-                              _summaryRow(
-                                  'الاجمالي بعد الخصم:', afterDiscount, font),
+                              _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font),
                               pw.SizedBox(width: 10),
                               _summaryRow('المبلغ المدفوع:', paid, font),
                             ],
                           ),
+                          pw.SizedBox(height: 4),
+                          // عند وجود تسويات عرضنا "إجمالي القائمة" في السطر الثاني أعلاه
                           pw.SizedBox(height: 6),
                           // إضافة المبلغ المتبقي والدين السابق والدين الحالي وأجور التحميل
                           if (!((_invoiceToManage?.status == 'محفوظة') &&
@@ -1616,6 +1903,615 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     }
   }
 
+  // حوار خطوات التسوية: اختيار (إضافة/حذف) ثم (بند/مبلغ)
+  Future<void> _openSettlementChoice() async {
+    if (_invoiceToManage == null) return;
+    // Dialog 1: إضافة / حذف
+    String? op = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('تسوية الفاتورة'),
+        content: const Text('اختر نوع العملية'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, 'credit'), child: const Text('حذف (راجع)')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, 'debit'), child: const Text('إضافة')),
+        ],
+      ),
+    );
+    if (op == null) return;
+    _settlementIsDebit = (op == 'debit');
+
+    // Dialog 2: بند / مبلغ + ملاحظة
+    String? mode = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('طريقة التسوية'),
+        content: const Text('اختر تسوية ببند أم مبلغ مباشر؟'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, 'amount'), child: const Text('مبلغ + ملاحظة')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, 'item'), child: const Text('بند (أصناف)')),
+        ],
+      ),
+    );
+    if (mode == null) return;
+    if (mode == 'amount') {
+      await _openSettlementAmountDialog();
+      return;
+    }
+    // mode == item ⇒ افتح لوحة الأصناف أسفل الجدول
+    setState(() {
+      _settlementPanelVisible = true;
+      _settlementItems.clear();
+      _settleSelectedProduct = null;
+      _settleSelectedSaleType = 'قطعة';
+      _settleNameCtrl.clear();
+      _settleIdCtrl.clear();
+      _settleQtyCtrl.clear();
+      _settlePriceCtrl.clear();
+      _settleUnitCtrl.clear();
+      _settlementPaymentType = (_invoiceToManage?.paymentType == 'دين') ? 'دين' : 'نقد';
+    });
+  }
+
+  Future<void> _openSettlementAmountDialog() async {
+    final TextEditingController amountCtrl = TextEditingController();
+    final TextEditingController noteCtrl = TextEditingController();
+    String paymentKind = (_invoiceToManage?.paymentType == 'دين') ? 'دين' : 'نقد';
+    final bool? ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(_settlementIsDebit ? 'إضافة مبلغ' : 'حذف (راجع) مبلغ'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: amountCtrl,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(labelText: 'المبلغ'),
+            ),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              value: paymentKind,
+              onChanged: (v) { if (v != null) paymentKind = v; },
+              items: const [
+                DropdownMenuItem(value: 'دين', child: Text('دين')),
+                DropdownMenuItem(value: 'نقد', child: Text('نقد')),
+              ],
+              decoration: const InputDecoration(labelText: 'طريقة دفع التسوية'),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: noteCtrl,
+              decoration: const InputDecoration(labelText: 'ملاحظة (اختياري)'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('إلغاء')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('حفظ')),
+        ],
+      ),
+    );
+    if (ok != true || _invoiceToManage == null) return;
+    final v = double.tryParse(amountCtrl.text.trim());
+    if (v == null || v <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أدخل مبلغاً صحيحاً')));
+      return;
+    }
+    final delta = _settlementIsDebit ? v.abs() : -v.abs();
+    await _db.insertInvoiceAdjustment(InvoiceAdjustment(
+      invoiceId: _invoiceToManage!.id!,
+      type: _settlementIsDebit ? 'debit' : 'credit',
+      amountDelta: delta,
+      note: noteCtrl.text.trim().isEmpty ? null : noteCtrl.text.trim(),
+      settlementPaymentType: paymentKind,
+    ));
+    await _loadSettlementInfo();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم حفظ تسوية المبلغ')));
+    }
+  }
+
+  Widget _buildSettlementPanel() {
+    final Color gridBorderColor = Colors.grey.shade300;
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16.0),
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(_settlementIsDebit ? 'تسوية: إضافة بنود' : 'تسوية: حذف (راجع) بنود', style: const TextStyle(fontWeight: FontWeight.bold)),
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: () => setState(() => _settlementPanelVisible = false),
+                  icon: const Icon(Icons.close),
+                  label: const Text('إخفاء'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    value: _settlementPaymentType,
+                    onChanged: (v) {
+                      if (v != null) setState(() => _settlementPaymentType = v);
+                    },
+                    items: const [
+                      DropdownMenuItem(value: 'نقد', child: Text('نقد')),
+                      DropdownMenuItem(value: 'دين', child: Text('دين')),
+                    ],
+                    decoration: const InputDecoration(labelText: 'طريقة دفع التسوية'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            // جدول تسوية بنفس تصميم جدول الفاتورة
+            Container(
+              decoration: BoxDecoration(
+                border: Border.all(color: gridBorderColor),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Column(
+                children: [
+                  // رأس الجدول
+                  Container(
+                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade100,
+                      border: Border(bottom: BorderSide(color: gridBorderColor)),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(flex: 1, child: Text('ت', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))),
+                        Expanded(flex: 1, child: Text('المبلغ', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))),
+                        Expanded(flex: 1, child: Text('ID', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))),
+                        Expanded(flex: 2, child: Text('التفاصيل', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))),
+                        Expanded(flex: 1, child: Text('العدد', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))),
+                        Expanded(flex: 1, child: Text('نوع البيع', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))),
+                        Expanded(flex: 1, child: Text('السعر', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))),
+                        Expanded(flex: 1, child: Text('عدد الوحدات', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))),
+                        Expanded(flex: 1, child: Text('حذف', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))),
+                      ],
+                    ),
+                  ),
+                  // صف إدخال جديد
+                  Container(
+                    padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+                    decoration: BoxDecoration(
+                      border: Border(bottom: BorderSide(color: gridBorderColor)),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(flex: 1, child: Text('${_settlementItems.length + 1}', textAlign: TextAlign.center)),
+                        Expanded(flex: 1, child: Text('', textAlign: TextAlign.center)), // المبلغ سيحسب تلقائياً
+                        Expanded(
+                          flex: 1,
+                          child: Autocomplete<String>(
+                            optionsBuilder: (TextEditingValue textEditingValue) async {
+                              if (textEditingValue.text.isEmpty) {
+                                return const Iterable<String>.empty();
+                              }
+                              final v = textEditingValue.text.trim();
+                              final id = int.tryParse(v);
+                              if (id == null) return const Iterable<String>.empty();
+                              final db = DatabaseService();
+                              final suggestions = await db.searchProductsByIdPrefix(v, limit: 8);
+                              return suggestions.map((p) => p.name);
+                            },
+                            fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                              // ربط controller مع _settleIdController
+                              _settleIdController = controller;
+                              return TextField(
+                                controller: controller,
+                                focusNode: focusNode,
+                                keyboardType: const TextInputType.numberWithOptions(signed: false, decimal: false),
+                                textAlign: TextAlign.center,
+                                decoration: const InputDecoration(
+                                  hintText: 'ID',
+                                  border: OutlineInputBorder(),
+                                  contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                                  isDense: true,
+                                ),
+                                onSubmitted: (val) async {
+                                  final id = int.tryParse(val.trim());
+                                  if (id == null) return;
+                                  final p = await _db.getProductById(id);
+                                  if (p != null) {
+                                    _applySettlementProductSelection(p);
+                                  }
+                                },
+                              );
+                            },
+                            onSelected: (String selection) {
+                              try {
+                                // البحث عن المنتج المحدد وتطبيق التعبئة التلقائية
+                                _db.searchProductsSmart(selection).then((products) {
+                                  if (products.isNotEmpty) {
+                                    _applySettlementProductSelection(products.first);
+                                  }
+                                });
+                              } catch (e) {}
+                            },
+                          ),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: Autocomplete<String>(
+                            optionsBuilder: (TextEditingValue textEditingValue) async {
+                              if (textEditingValue.text.isEmpty) {
+                                return const Iterable<String>.empty();
+                              }
+                              final db = DatabaseService();
+                              final results = await db.searchProductsSmart(textEditingValue.text);
+                              return results.map((p) => p.name);
+                            },
+                            fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                              // ربط controller مع _settleNameController
+                              _settleNameController = controller;
+                              return TextField(
+                                controller: controller,
+                                focusNode: focusNode,
+                                textAlign: TextAlign.center,
+                                decoration: const InputDecoration(
+                                  hintText: 'التفاصيل',
+                                  border: OutlineInputBorder(),
+                                  contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                                  isDense: true,
+                                ),
+                                // عند الكتابة لا نقوم باختيار أول نتيجة تلقائياً؛ نعرض الاقتراحات فقط،
+                                // ويتم تطبيق الاختيار عند تحديد عنصر من القائمة أو تأكيد الإدخال.
+                              );
+                            },
+                            onSelected: (String selection) {
+                              try {
+                                // البحث عن المنتج المحدد وتطبيق التعبئة التلقائية
+                                _db.searchProductsSmart(selection).then((products) {
+                                  if (products.isNotEmpty) {
+                                    _applySettlementProductSelection(products.first);
+                                  }
+                                });
+                              } catch (e) {}
+                            },
+                          ),
+                        ),
+                        Expanded(
+                          flex: 1,
+                          child: TextField(
+                            controller: _settleQtyCtrl,
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            textAlign: TextAlign.center,
+                            decoration: const InputDecoration(
+                              hintText: 'العدد',
+                              border: OutlineInputBorder(),
+                              contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                              isDense: true,
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 1,
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              value: _settleSelectedSaleType,
+                              items: _getSettlementUnitOptions(),
+                              onChanged: (value) {
+                                setState(() {
+                                  _settleSelectedSaleType = value!;
+                                });
+                              },
+                              isExpanded: true,
+                              alignment: AlignmentDirectional.center,
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 1,
+                          child: TextField(
+                            controller: _settlePriceCtrl,
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            textAlign: TextAlign.center,
+                            decoration: const InputDecoration(
+                              hintText: 'السعر',
+                              border: OutlineInputBorder(),
+                              contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                              isDense: true,
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 1,
+                          child: Container(
+                            alignment: Alignment.center,
+                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                            decoration: BoxDecoration(
+                              border: Border.all(color: Colors.grey),
+                              borderRadius: BorderRadius.circular(4),
+                              color: Colors.grey[100],
+                            ),
+                            child: Text(
+                              _settleSelectedProduct?.piecesPerUnit?.toStringAsFixed(0) ?? '1',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 1,
+                          child: ElevatedButton(
+                            onPressed: _addSettlementRow,
+                            style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                              minimumSize: Size.zero,
+                            ),
+                            child: const Text('إضافة', style: TextStyle(fontSize: 12)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // الأصناف المضافة
+                  for (int i = 0; i < _settlementItems.length; i++)
+                    Container(
+                      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+                      decoration: BoxDecoration(
+                        border: Border(bottom: BorderSide(color: gridBorderColor)),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(flex: 1, child: Text('${i + 1}', textAlign: TextAlign.center)),
+                          Expanded(flex: 1, child: Text(_settlementItems[i].itemTotal.toStringAsFixed(2), textAlign: TextAlign.center)),
+                          Expanded(flex: 1, child: Text(_settlementItems[i].productId?.toString() ?? '', textAlign: TextAlign.center)),
+                          Expanded(flex: 2, child: Text(_settlementItems[i].productName, textAlign: TextAlign.center)),
+                          Expanded(flex: 1, child: Text((_settlementItems[i].quantityIndividual ?? _settlementItems[i].quantityLargeUnit ?? 0).toString(), textAlign: TextAlign.center)),
+                          Expanded(flex: 1, child: Text(_settlementItems[i].unit, textAlign: TextAlign.center)),
+                          Expanded(flex: 1, child: Text(_settlementItems[i].appliedPrice.toStringAsFixed(2), textAlign: TextAlign.center)),
+                          Expanded(flex: 1, child: Text('', textAlign: TextAlign.center)), // عدد الوحدات
+                          Expanded(
+                            flex: 1,
+                            child: IconButton(
+                              icon: const Icon(Icons.delete_outline, color: Colors.red, size: 16),
+                              onPressed: () => setState(() => _settlementItems.removeAt(i)),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _saveSettlementItems,
+                  icon: const Icon(Icons.save),
+                  label: const Text('حفظ بنود التسوية'),
+                ),
+              ],
+            )
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _addSettlementRow() {
+    final name = _settleNameCtrl.text.trim();
+    final qty = double.tryParse(_settleQtyCtrl.text.trim());
+    final price = double.tryParse(_settlePriceCtrl.text.trim());
+    // احسب عدد الوحدات الأساسية داخل وحدة البيع المختارة باستخدام الهرمية
+    double unitsCount = 1.0;
+    if (_settleSelectedProduct != null) {
+      final prod = _settleSelectedProduct!;
+      if (_settleSelectedSaleType == 'قطعة' || _settleSelectedSaleType == 'متر') {
+        unitsCount = 1.0;
+      } else if (prod.unit == 'meter' && _settleSelectedSaleType == 'لفة') {
+        unitsCount = prod.lengthPerUnit?.toDouble() ?? 1.0;
+      } else {
+        // للمنتجات بالقطعة: احسب الضرب التراكمي حتى تصل للوحدة المطلوبة
+        try {
+          final List<Map<String, dynamic>> hierarchy = prod.getUnitHierarchyList();
+          double cumulative = 1.0;
+          for (final level in hierarchy) {
+            final String levelName = (level['unit_name'] ?? level['name'] ?? '').toString();
+            final double q = (level['quantity'] is num)
+                ? (level['quantity'] as num).toDouble()
+                : double.tryParse(level['quantity']?.toString() ?? '') ?? 1.0;
+            cumulative = cumulative * (q > 0 ? q : 1.0);
+            if (levelName == _settleSelectedSaleType) {
+              unitsCount = cumulative;
+              break;
+            }
+          }
+        } catch (_) {
+          unitsCount = 1.0;
+        }
+      }
+    }
+    
+    if (name.isEmpty || qty == null || qty <= 0 || price == null || price <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أدخل التفاصيل والعدد والسعر بشكل صحيح')));
+      return;
+    }
+    
+    final item = InvoiceItem(
+      invoiceId: 0,
+      productId: _settleSelectedProduct?.id,
+      productName: name,
+      unit: _settleSelectedProduct?.unit ?? 'piece',
+      unitPrice: _settleSelectedProduct?.unitPrice ?? price,
+      appliedPrice: price,
+      itemTotal: price * qty,
+      quantityIndividual: (_settleSelectedSaleType == 'قطعة' || _settleSelectedSaleType == 'متر') ? qty : null,
+      quantityLargeUnit: (_settleSelectedSaleType != 'قطعة' && _settleSelectedSaleType != 'متر') ? qty : null,
+      saleType: _settleSelectedSaleType,
+      unitsInLargeUnit: unitsCount,
+      uniqueId: 'settle_${DateTime.now().microsecondsSinceEpoch}',
+    );
+    
+    setState(() {
+      _settlementItems.add(item);
+      _settleQtyCtrl.clear();
+      _settlePriceCtrl.clear();
+    });
+  }
+
+  void _applySettlementProductSelection(Product prod) {
+    setState(() {
+      _settleSelectedProduct = prod;
+      // ملء حقل ID بالمعرف
+      _settleIdCtrl.text = prod.id?.toString() ?? '';
+      // ملء حقل التفاصيل بالاسم
+      _settleNameCtrl.text = prod.name;
+      // ملء حقل السعر
+      _settlePriceCtrl.text = (prod.price1 ?? prod.unitPrice).toString();
+      
+      // تحديد نوع البيع المناسب بناءً على الخيارات المتاحة
+      List<String> availableOptions = _getAvailableUnitOptions(prod);
+      if (availableOptions.isNotEmpty) {
+        _settleSelectedSaleType = availableOptions.first;
+      } else {
+        _settleSelectedSaleType = 'قطعة';
+      }
+    });
+    
+    // تحديث controller في Autocomplete مباشرة
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        // تحديث حقل ID
+        _settleIdController?.text = prod.id?.toString() ?? '';
+        // تحديث حقل التفاصيل
+        _settleNameController?.text = prod.name;
+      }
+    });
+  }
+
+  List<String> _getAvailableUnitOptions(Product prod) {
+    List<String> options = ['قطعة'];
+    if (prod.unit == 'piece' && 
+        prod.unitHierarchy != null && 
+        prod.unitHierarchy!.isNotEmpty) {
+      try {
+        List<dynamic> hierarchy = json.decode(prod.unitHierarchy!.replaceAll("'", '"'));
+        options.addAll(hierarchy.map((e) => (e['unit_name'] ?? e['name']).toString()));
+      } catch (e) {}
+    } else if (prod.unit == 'meter' && prod.lengthPerUnit != null) {
+      options = ['متر'];
+      options.add('لفة');
+    } else if (prod.unit != 'piece' && prod.unit != 'meter') {
+      options = [prod.unit];
+    }
+    
+    // إزالة التكرار والقيم الفارغة
+    return options.where((e) => e.isNotEmpty).toSet().toList();
+  }
+
+  List<DropdownMenuItem<String>> _getSettlementUnitOptions() {
+    if (_settleSelectedProduct == null) {
+      return [const DropdownMenuItem(value: 'قطعة', child: Text('قطعة', textAlign: TextAlign.center))];
+    }
+    
+    List<String> options = _getAvailableUnitOptions(_settleSelectedProduct!);
+    
+    // التأكد من أن القيمة المحددة موجودة في القائمة
+    if (!options.contains(_settleSelectedSaleType)) {
+      _settleSelectedSaleType = options.first;
+    }
+    
+    return options.map((unit) => DropdownMenuItem(
+      value: unit,
+      child: Text(unit, textAlign: TextAlign.center),
+    )).toList();
+  }
+
+  Future<void> _saveSettlementItems() async {
+    if (_invoiceToManage == null || _settlementItems.isEmpty) return;
+    for (final it in _settlementItems) {
+      final delta = (_settlementIsDebit ? 1 : -1) * (it.itemTotal);
+      await _db.insertInvoiceAdjustment(InvoiceAdjustment(
+        invoiceId: _invoiceToManage!.id!,
+        type: _settlementIsDebit ? 'debit' : 'credit',
+        amountDelta: delta,
+        productId: it.productId,
+        productName: it.productName,
+        quantity: (it.quantityIndividual ?? it.quantityLargeUnit ?? 0).toDouble(),
+        price: it.appliedPrice,
+        unit: it.unit,
+        saleType: it.saleType,
+        unitsInLargeUnit: it.unitsInLargeUnit,
+        settlementPaymentType: _settlementPaymentType,
+        note: 'تسوية بند',
+      ));
+    }
+    if (mounted) {
+      setState(() {
+        _settlementPanelVisible = false;
+        _settlementItems.clear();
+        _settleSelectedProduct = null;
+        _settleSelectedSaleType = 'قطعة';
+        _settleNameCtrl.clear();
+        _settleIdCtrl.clear();
+        _settleQtyCtrl.clear();
+        _settlePriceCtrl.clear();
+        _settleUnitCtrl.clear();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم حفظ بنود التسوية')));
+    }
+  }
+
+  // حفظ التسوية كأصناف جديدة مرتبطة بالفاتورة الأساسية عبر invoice_adjustments
+  Future<void> _saveSettlement() async {
+    try {
+      if (widget.settlementForInvoice == null) return;
+      final baseInvoice = widget.settlementForInvoice!;
+      // صفّ البيانات الفارغة وأحسب الإجمالي
+      final settlementItems = _invoiceItems.where((it) => _isInvoiceItemComplete(it)).toList();
+      if (settlementItems.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أضف بنوداً للتسوية أولاً')));
+        return;
+      }
+      for (final item in settlementItems) {
+        // المبلغ للبند
+        final double qty = (item.quantityIndividual ?? item.quantityLargeUnit ?? 0).toDouble();
+        final double price = item.appliedPrice;
+        final double delta = qty * price;
+        // البحث عن المنتج لتعويض productId
+        Product? prod;
+        try {
+          final all = await _db.getAllProducts();
+          prod = all.firstWhere((p) => p.name == item.productName);
+        } catch (_) {}
+        await _db.insertInvoiceAdjustment(
+          InvoiceAdjustment(
+            invoiceId: baseInvoice.id!,
+            type: 'debit',
+            amountDelta: delta,
+            productId: prod?.id,
+            productName: item.productName,
+            quantity: qty,
+            price: price,
+            note: 'تسوية بند',
+          ),
+        );
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم حفظ التسوية وربطها بالفاتورة')));
+        Navigator.of(context).pop();
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل حفظ التسوية: $e')));
+    }
+  }
+
   void _resetInvoice() {
     try {
       showDialog(
@@ -1708,10 +2604,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       if (_invoiceToManage == null || _invoiceToManage!.isLocked) return;
       // تحديث الفاتورة في قاعدة البيانات
       final updatedInvoice =
-          _invoiceToManage!.copyWith(returnAmount: value, isLocked: true);
+          _invoiceToManage!.copyWith(isLocked: true);
       await _db.updateInvoice(updatedInvoice);
 
-      // خصم الراجع من رصيد المؤسس
+      // إزالة منطق خصم الراجع من رصيد المؤسس
       if (updatedInvoice.installerName != null &&
           updatedInvoice.installerName!.isNotEmpty) {
         final installer =
@@ -1725,36 +2621,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         }
       }
 
-      // إذا كانت الفاتورة دين، خصم الراجع من دين العميل وتسجيل معاملة تسديد راجع
-      if (updatedInvoice.paymentType == 'دين' &&
-          updatedInvoice.customerId != null &&
-          value > 0) {
-        final customer = await _db.getCustomerById(updatedInvoice.customerId!);
-        if (customer != null) {
-          final newDebt =
-              (customer.currentTotalDebt - value).clamp(0.0, double.infinity);
-          final updatedCustomer = customer.copyWith(
-            currentTotalDebt: newDebt,
-            lastModifiedAt: DateTime.now(),
-          );
-          await _db.updateCustomer(updatedCustomer);
-          // سجل معاملة تسديد راجع
-          await _db.insertTransaction(
-            DebtTransaction(
-              id: null,
-              customerId: customer.id!,
-              invoiceId: updatedInvoice.id!,
-              amountChanged: -value, // سالبة لأنها تسديد
-              transactionDate: DateTime.now(),
-              newBalanceAfterTransaction: newDebt,
-              transactionNote:
-                  'تسديد راجع على الفاتورة رقم ${updatedInvoice.id}',
-              transactionType: 'return_payment',
-              createdAt: DateTime.now(),
-            ),
-          );
-        }
-      }
+      // إزالة منطق دين العميل المرتبط بالراجع
 
       // جلب أحدث نسخة من الفاتورة بعد الحفظ
       final updatedInvoiceFromDb =
@@ -1766,10 +2633,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('تم حفظ الراجع وقفل الفاتورة!'),
-            duration: Duration(seconds: 2),
-          ),
+          SnackBar(content: Text('تم قفل الفاتورة!')), 
         );
         Navigator.of(context)
             .popUntil((route) => route.isFirst); // العودة للصفحة الرئيسية
@@ -1809,7 +2673,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       }
       double currentTotalAmount =
           _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-      double paid = double.tryParse(_paidAmountController.text) ?? 0.0;
+      double paid = double.tryParse(_paidAmountController.text.replaceAll(',', '')) ?? 0.0;
       double totalAmount = currentTotalAmount - _discount;
       Invoice invoice = _invoiceToManage!.copyWith(
         customerName: _customerNameController.text,
@@ -1826,9 +2690,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         lastModifiedAt: DateTime.now(),
         customerId: customer?.id,
         // status: 'معلقة',
-        returnAmount: _returnAmountController.text.isNotEmpty
-            ? double.parse(_returnAmountController.text)
-            : 0.0,
         isLocked: false,
       );
       int invoiceId = _invoiceToManage!.id!;
@@ -2144,6 +3005,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               tooltip: 'طباعة الفاتورة',
               onPressed: _invoiceItems.isEmpty ? null : _printInvoice,
             ),
+            if (_invoiceToManage != null && _isViewOnly)
+              IconButton(
+                icon: const Icon(Icons.playlist_add),
+                tooltip: 'تسوية الفاتورة',
+                onPressed: _openSettlementChoice,
+              ),
           ],
         ),
         body: Padding(
@@ -2769,6 +3636,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   ],
                 ],
                 const SizedBox(height: 24.0),
+                if (_settlementPanelVisible) _buildSettlementPanel(),
                 const Text(
                   'أصناف الفاتورة',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -2891,7 +3759,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         0.0, (sum, item) => sum + item.itemTotal);
                     final total = totalBeforeDiscount - _discount;
                     double enteredPaidAmount =
-                        double.tryParse(_paidAmountController.text) ?? 0;
+                        double.tryParse(_paidAmountController.text.replaceAll(',', '')) ?? 0;
                     double displayedPaidAmount = enteredPaidAmount;
                     double displayedRemainingAmount = total - enteredPaidAmount;
 
@@ -2933,6 +3801,75 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                     style:
                                         const TextStyle(color: Colors.black87)),
                               ),
+                            // عرض معلومات التسويات
+                            if (_invoiceAdjustments.isNotEmpty) ...[
+                              const SizedBox(height: 16),
+                              Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: Colors.blue[50],
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: Colors.blue[200]!),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Icon(Icons.edit, color: Colors.blue[700], size: 20),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          'معلومات التسويات (${_invoiceAdjustments.length} تعديل)',
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.blue[700],
+                                            fontSize: 16,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'إجمالي التسويات: ${_totalSettlementAmount > 0 ? '+' : ''}${formatNumber(_totalSettlementAmount, forceDecimal: true)} دينار',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: _totalSettlementAmount > 0 ? Colors.green[700] : Colors.red[700],
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    ...(_invoiceAdjustments.map((adj) => Padding(
+                                      padding: const EdgeInsets.only(bottom: 4),
+                                      child: Row(
+                                        children: [
+                                          Icon(
+                                            adj.type == 'debit' ? Icons.add : Icons.remove,
+                                            size: 16,
+                                            color: adj.type == 'debit' ? Colors.green[700] : Colors.red[700],
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text(
+                                              '${adj.type == 'debit' ? 'إضافة' : 'خصم'}: ${adj.productName ?? 'مبلغ مباشر'}${adj.quantity != null && adj.price != null ? ' (${formatNumber(adj.quantity!, forceDecimal: true)} × ${formatNumber(adj.price!, forceDecimal: true)} = ${formatNumber(adj.amountDelta, forceDecimal: true)})' : adj.quantity != null ? ' (${formatNumber(adj.quantity!, forceDecimal: true)} وحدة)' : ''} - ${formatNumber(adj.amountDelta, forceDecimal: true)} دينار',
+                                              style: const TextStyle(fontSize: 12),
+                                            ),
+                                          ),
+                                          if (adj.note?.isNotEmpty == true)
+                                            Text(
+                                              '(${adj.note})',
+                                              style: TextStyle(
+                                                fontSize: 10,
+                                                color: Colors.grey[600],
+                                                fontStyle: FontStyle.italic,
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    ))),
+                                  ],
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),
@@ -3069,63 +4006,25 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   enabled: !_isViewOnly,
                 ),
                 const SizedBox(height: 24.0),
+                // في وضع التسوية أيضاً نحتاج زر حفظ لكن يختلف المنطق
                 if (!_isViewOnly)
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceAround,
                     children: [
-                      ElevatedButton.icon(
-                        onPressed: _saveInvoice,
-                        icon: const Icon(Icons.save),
-                        label: const Text('حفظ الفاتورة'),
-                      ),
-                      if (!(_invoiceToManage != null &&
-                          _invoiceToManage!.status == 'معلقة'))
+                      if (widget.settlementForInvoice == null)
                         ElevatedButton.icon(
-                          onPressed: _suspendInvoice,
-                          icon: const Icon(Icons.pause),
-                          label: const Text('تعليق الفاتورة'),
+                          onPressed: _saveInvoice,
+                          icon: const Icon(Icons.save),
+                          label: const Text('حفظ الفاتورة'),
+                        )
+                      else
+                        ElevatedButton.icon(
+                          onPressed: _saveSettlement,
+                          icon: const Icon(Icons.save_as),
+                          label: const Text('حفظ التسوية'),
                         ),
                     ],
                   ),
-                // إظهار قسم الراجع بعد الحفظ مباشرة
-                if (_invoiceToManage != null &&
-                    _invoiceToManage!.status == 'محفوظة' &&
-                    !_invoiceToManage!.isLocked) ...[
-                  SizedBox(height: 24),
-                  TextFormField(
-                    controller: _returnAmountController,
-                    decoration:
-                        InputDecoration(labelText: 'الراجع (مبلغ الإرجاع)'),
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    inputFormatters: [
-                      ThousandSeparatorDecimalInputFormatter(),
-                    ],
-                    enabled: true, // نشط دائماً في هذه الحالة
-                  ),
-                  SizedBox(height: 12),
-                  ElevatedButton.icon(
-                    icon: Icon(Icons.assignment_turned_in),
-                    label: Text('حفظ الراجع'),
-                    onPressed: () async {
-                      final value =
-                          double.tryParse(_returnAmountController.text.replaceAll(',', '')) ?? 0.0;
-                      await _saveReturnAmount(value);
-                    }, // نشط دائماً في هذه الحالة
-                  ),
-                ],
-                // عرض حالة الراجع للفواتير المقفلة أو إذا تم إدخال الراجع بالفعل
-                if (_invoiceToManage != null &&
-                    (_invoiceToManage!.isLocked ||
-                        (_invoiceToManage!.returnAmount != 0.0 &&
-                            _invoiceToManage!.returnAmount != null))) ...[
-                  SizedBox(height: 24),
-                  Text('الراجع: ${formatNumber(_invoiceToManage!.returnAmount)} دينار',
-                      style: TextStyle(
-                          fontWeight: FontWeight.bold, color: Colors.red)),
-                  SizedBox(height: 8),
-                  Text('الفاتورة مقفلة ولا يمكن تعديلها',
-                      style: TextStyle(color: Colors.grey)),
-                ],
                 // إضافة حقل أجور التحميل فقط إذا لم يكن العرض فقط أو الفاتورة مقفلة
                 if (!_isViewOnly && !(_invoiceToManage?.isLocked ?? false)) ...[
                   const SizedBox(height: 16.0),
@@ -3148,6 +4047,211 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         ),
       ),
     );
+  }
+
+  Future<bool> _showAddAdjustmentDialog() async {
+    if (_invoiceToManage == null) return false;
+    String type = 'debit';
+    bool byItem = true;
+    final TextEditingController productCtrl = TextEditingController();
+    final TextEditingController qtyCtrl = TextEditingController();
+    final TextEditingController priceCtrl = TextEditingController();
+    final TextEditingController amountCtrl = TextEditingController();
+    final TextEditingController noteCtrl = TextEditingController();
+    Product? selectedProduct;
+    List<Product> productSuggestions = [];
+
+    Future<void> fetchSuggestions(String q) async {
+      productSuggestions = q.trim().isEmpty
+          ? []
+          : (await _db.searchProductsSmart(q.trim())).take(10).toList();
+      if (mounted) setState(() {});
+    }
+
+    final bool? result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final double _maxH = MediaQuery.of(ctx).size.height * 0.7;
+        return AlertDialog(
+          title: const Text('إضافة تسوية على الفاتورة'),
+          content: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: _maxH, minWidth: 320),
+            child: SingleChildScrollView(
+              child: StatefulBuilder(builder: (context, setLocal) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    DropdownButtonFormField<String>(
+                      value: type,
+                      items: const [
+                        DropdownMenuItem(value: 'debit', child: Text('إشعار مدين (زيادة)')),
+                        DropdownMenuItem(value: 'credit', child: Text('إشعار دائن (نقص)')),
+                      ],
+                      onChanged: (v) => setLocal(() => type = v ?? 'debit'),
+                      decoration: const InputDecoration(labelText: 'نوع التسوية'),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ChoiceChip(
+                            label: const Text('بند'),
+                            selected: byItem,
+                            onSelected: (s) => setLocal(() => byItem = true),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ChoiceChip(
+                            label: const Text('مبلغ مباشر'),
+                            selected: !byItem,
+                            onSelected: (s) => setLocal(() => byItem = false),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    if (byItem) ...[
+                      TextField(
+                        controller: productCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'المنتج',
+                          hintText: 'اكتب اسم المنتج للبحث',
+                        ),
+                        onChanged: (v) async {
+                          selectedProduct = null;
+                          await fetchSuggestions(v);
+                          setLocal(() {});
+                        },
+                      ),
+                      if (productSuggestions.isNotEmpty)
+                        Container(
+                          constraints: const BoxConstraints(maxHeight: 180),
+                          margin: const EdgeInsets.only(top: 6),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            border: Border.all(color: Colors.grey.shade300),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: ListView.builder(
+                            shrinkWrap: true,
+                            physics: const ClampingScrollPhysics(),
+                            itemCount: productSuggestions.length,
+                            itemBuilder: (c, i) {
+                              final p = productSuggestions[i];
+                              return ListTile(
+                                dense: true,
+                                title: Text(p.name),
+                                subtitle: Text('ID: ${p.id ?? ''}')
+                                    ,
+                                onTap: () {
+                                  selectedProduct = p;
+                                  productCtrl.text = p.name;
+                                  productSuggestions = [];
+                                  setLocal(() {});
+                                },
+                              );
+                            },
+                          ),
+                        ),
+                      const SizedBox(height: 8),
+                      Row(children: [
+                        Expanded(
+                          child: TextField(
+                            controller: qtyCtrl,
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            decoration: const InputDecoration(labelText: 'الكمية'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: TextField(
+                            controller: priceCtrl,
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            decoration: const InputDecoration(labelText: 'السعر'),
+                          ),
+                        ),
+                      ]),
+                    ] else ...[
+                      TextField(
+                        controller: amountCtrl,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: const InputDecoration(labelText: 'مبلغ التسوية'),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: noteCtrl,
+                      decoration: const InputDecoration(labelText: 'ملاحظة (اختياري)'),
+                    ),
+                  ],
+                );
+              }),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('إلغاء'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                try {
+                  double delta = 0;
+                  int? productId;
+                  String? productName;
+                  double? qty;
+                  double? price;
+                  if (byItem) {
+                    if (selectedProduct == null) {
+                      throw 'اختر منتجاً';
+                    }
+                    qty = double.tryParse(qtyCtrl.text.trim());
+                    price = double.tryParse(priceCtrl.text.trim());
+                    if (qty == null || price == null) {
+                      throw 'أدخل الكمية والسعر بشكل صحيح';
+                    }
+                    delta = (qty * price).toDouble();
+                    productId = selectedProduct!.id;
+                    productName = selectedProduct!.name;
+                  } else {
+                    final v = double.tryParse(amountCtrl.text.trim());
+                    if (v == null) throw 'أدخل مبلغاً صحيحاً';
+                    delta = v;
+                  }
+                  if (type == 'credit') delta = -delta.abs(); else delta = delta.abs();
+
+                  await _db.insertInvoiceAdjustment(
+                    InvoiceAdjustment(
+                      invoiceId: _invoiceToManage!.id!,
+                      type: type,
+                      amountDelta: delta,
+                      productId: productId,
+                      productName: productName,
+                      quantity: qty,
+                      price: price,
+                      note: noteCtrl.text.trim().isEmpty ? null : noteCtrl.text.trim(),
+                    ),
+                  );
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('تمت إضافة التسوية')),
+                    );
+                  }
+                  Navigator.pop(ctx, true);
+                } catch (e) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(e.toString())),
+                  );
+                }
+              },
+              child: const Text('حفظ'),
+            ),
+          ],
+        );
+      },
+    );
+    return result ?? false;
   }
 }
 

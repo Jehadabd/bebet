@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 class InvoiceItem {
   int? id;
   int invoiceId; // Foreign key to Invoice
+  int? productId; // Foreign key to Product
   String productName;
   String unit;
   double unitPrice; // This is the *selling* unit price from the product
@@ -32,6 +33,7 @@ class InvoiceItem {
   InvoiceItem({
     this.id,
     required this.invoiceId,
+    this.productId,
     required this.productName,
     required this.unit,
     required this.unitPrice,
@@ -81,6 +83,7 @@ class InvoiceItem {
     return {
       'id': id,
       'invoice_id': invoiceId,
+      'product_id': productId,
       'product_name': productName,
       'unit': unit,
       'unit_price': unitPrice, // Selling unit price
@@ -101,6 +104,7 @@ class InvoiceItem {
     return InvoiceItem(
       id: map['id'] as int?,
       invoiceId: map['invoice_id'] ?? 0,
+      productId: map['product_id'] as int?,
       productName: map['product_name'] ?? '',
       unit: map['unit'] ?? '',
       unitPrice: map['unit_price'] as double,
@@ -119,6 +123,7 @@ class InvoiceItem {
   InvoiceItem copyWith({
     int? id,
     int? invoiceId,
+    int? productId,
     String? productName,
     String? unit,
     double? unitPrice,
@@ -135,6 +140,7 @@ class InvoiceItem {
     return InvoiceItem(
       id: id ?? this.id,
       invoiceId: invoiceId ?? this.invoiceId,
+      productId: productId ?? this.productId,
       productName: productName ?? this.productName,
       unit: unit ?? this.unit,
       unitPrice: unitPrice ?? this.unitPrice,

@@ -9,6 +9,7 @@ import '../models/product.dart'; // تأكد من أن المسار صحيح
 import '../models/invoice.dart'; // تأكد من أن المسار صحيح وأن النموذج محدث بحقل amountPaidOnInvoice
 import '../models/invoice_item.dart'; // تأكد من أن المسار صحيح
 import '../models/installer.dart'; // تأكد من أن المسار صحيح
+import '../models/invoice_adjustment.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:pdf/pdf.dart';
 import 'package:path_provider/path_provider.dart';
@@ -19,7 +20,7 @@ import 'dart:convert';
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
   static Database? _database;
-  static const int _databaseVersion = 2;
+  static const int _databaseVersion = 4;
 
   factory DatabaseService() => _instance;
 
@@ -107,6 +108,22 @@ class DatabaseService {
   Future<Database> get database async {
     if (_database != null) return _database!;
     _database = await _initDatabase();
+    // Ensure critical tables exist for older DBs
+    try {
+      await _database!.execute('''
+        CREATE TABLE IF NOT EXISTS invoice_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          invoice_id INTEGER NOT NULL,
+          action TEXT NOT NULL,
+          details TEXT,
+          created_at TEXT NOT NULL,
+          created_by TEXT,
+          FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
+        )
+      ''');
+    } catch (e) {
+      print('DEBUG DB: ensure invoice_logs failed in getter: $e');
+    }
     // --- تحقق من وجود العمود قبل محاولة إضافته ---
     final columns = await _database!.rawQuery("PRAGMA table_info(products);");
     final hasUnitHierarchy =
@@ -190,6 +207,29 @@ class DatabaseService {
       }
     } catch (e) {
       print('DEBUG DB: Failed to inspect/add invoice_items columns: $e');
+    }
+    // تحقق من أعمدة جدول invoice_adjustments وإضافتها إذا لزم (لتوافق القواعد الجديدة)
+    try {
+      final adjInfo = await _database!.rawQuery('PRAGMA table_info(invoice_adjustments);');
+      Future<void> _ensureAdjCol(String name, String ddl) async {
+        if (!adjInfo.any((c) => c['name'] == name)) {
+          try {
+            await _database!.execute('ALTER TABLE invoice_adjustments ADD COLUMN ' + ddl + ';');
+            print('DEBUG DB: Added missing column on invoice_adjustments: ' + name);
+          } catch (e) {
+            print("DEBUG DB: Failed to add column '" + name + "' to invoice_adjustments: $e");
+          }
+        }
+      }
+      await _ensureAdjCol('product_id', 'product_id INTEGER');
+      await _ensureAdjCol('product_name', 'product_name TEXT');
+      await _ensureAdjCol('quantity', 'quantity REAL');
+      await _ensureAdjCol('price', 'price REAL');
+      await _ensureAdjCol('unit', 'unit TEXT');
+      await _ensureAdjCol('sale_type', 'sale_type TEXT');
+      await _ensureAdjCol('units_in_large_unit', 'units_in_large_unit REAL');
+    } catch (e) {
+      print('DEBUG DB: Failed to inspect/add invoice_adjustments columns: $e');
     }
     // --- نهاية التحقق ---
 
@@ -495,6 +535,18 @@ class DatabaseService {
       )
     ''');
 
+    // Ensure final_total column exists then backfill to total_amount for existing rows
+    try {
+      final info = await db.rawQuery('PRAGMA table_info(invoices);');
+      final hasFinalTotal = info.any((c) => c['name'] == 'final_total');
+      if (!hasFinalTotal) {
+        await db.execute('ALTER TABLE invoices ADD COLUMN final_total REAL;');
+        await db.rawUpdate('UPDATE invoices SET final_total = total_amount WHERE final_total IS NULL;');
+      }
+    } catch (e) {
+      print("DEBUG DB Error: adding/backfilling 'final_total' failed: $e");
+    }
+
     await db.execute('''
       CREATE TABLE IF NOT EXISTS invoice_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -511,6 +563,40 @@ class DatabaseService {
         sale_type TEXT,
         units_in_large_unit REAL,
         unique_id TEXT NOT NULL,
+        FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
+      )
+    ''');
+
+    // Create adjustments table with optional item-level details
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS invoice_adjustments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_id INTEGER NOT NULL,
+        type TEXT NOT NULL CHECK(type IN ('debit','credit')),
+        amount_delta REAL NOT NULL,
+        product_id INTEGER,
+        product_name TEXT,
+        quantity REAL,
+        price REAL,
+        unit TEXT,
+        sale_type TEXT,
+        units_in_large_unit REAL,
+        settlement_payment_type TEXT,
+        note TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
+      )
+    ''');
+
+    // Invoice audit log (optional, lightweight)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS invoice_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        details TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT,
         FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
       )
     ''');
@@ -560,11 +646,61 @@ class DatabaseService {
     if (oldVersion < 2) {
       //  ... (أكواد الترقية السابقة إذا كانت موجودة)
     }
+    if (oldVersion < 3) {
+      // إضافة جدول invoice_adjustments مع الأعمدة المطلوبة
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS invoice_adjustments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          invoice_id INTEGER NOT NULL,
+          type TEXT NOT NULL CHECK(type IN ('debit','credit')),
+          amount_delta REAL NOT NULL,
+          product_id INTEGER,
+          product_name TEXT,
+          quantity REAL,
+          price REAL,
+          unit TEXT,
+          sale_type TEXT,
+          units_in_large_unit REAL,
+          settlement_payment_type TEXT,
+          note TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
+        )
+      ''');
+      
+      // إضافة عمود final_total للفواتير
+      try {
+        await db.execute('ALTER TABLE invoices ADD COLUMN final_total REAL;');
+        // تحديث الفواتير الموجودة
+        await db.execute('UPDATE invoices SET final_total = total_amount WHERE final_total IS NULL;');
+      } catch (e) {
+        print('DEBUG DB: final_total column already exists or error: $e');
+      }
+    }
+    if (oldVersion < 4) {
+      // إضافة جدول invoice_logs إذا لم يكن موجوداً
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS invoice_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            details TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
+          )
+        ''');
+      } catch (e) {
+        print('DEBUG DB: invoice_logs table already exists or error: $e');
+      }
+    }
     //  ...
     if (oldVersion < 8) {
-      await db
-          .execute('ALTER TABLE transactions ADD COLUMN invoice_id INTEGER;');
-      //  قد تحتاج لإضافة FOREIGN KEY constraint هنا إذا لم يكن موجودًا من onCreate
+      try {
+        await db.execute('ALTER TABLE transactions ADD COLUMN invoice_id INTEGER;');
+      } catch (e) {
+        print('DEBUG DB: invoice_id column already exists or error: $e');
+      }
     }
     if (oldVersion < 9) {
       try {
@@ -714,6 +850,71 @@ class DatabaseService {
       } catch (e) {
         print("DEBUG DB Error: Failed to add column 'unique_id' to invoice_items table or it already exists: $e");
       }
+    }
+    // Add final_total to invoices if missing and backfill
+    try {
+      final info = await db.rawQuery('PRAGMA table_info(invoices);');
+      final hasFinalTotal = info.any((c) => c['name'] == 'final_total');
+      if (!hasFinalTotal) {
+        await db.execute('ALTER TABLE invoices ADD COLUMN final_total REAL;');
+        await db.rawUpdate('UPDATE invoices SET final_total = total_amount WHERE final_total IS NULL;');
+        print('DEBUG DB: final_total column added and backfilled.');
+      }
+    } catch (e) {
+      print("DEBUG DB Error: adding/backfilling 'final_total': $e");
+    }
+
+    // Ensure invoice_adjustments table exists and has item fields
+    try {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS invoice_adjustments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          invoice_id INTEGER NOT NULL,
+          type TEXT NOT NULL CHECK(type IN ('debit','credit')),
+          amount_delta REAL NOT NULL,
+          product_id INTEGER,
+          product_name TEXT,
+          quantity REAL,
+          price REAL,
+          note TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
+        )
+      ''');
+      // Try to add missing columns if table existed without them
+      final adjInfo = await db.rawQuery('PRAGMA table_info(invoice_adjustments);');
+      Future<void> _ensureCol(String name, String ddl) async {
+        if (!adjInfo.any((c) => c['name'] == name)) {
+          try { await db.execute('ALTER TABLE invoice_adjustments ADD COLUMN ' + ddl + ';'); } catch (_) {}
+        }
+      }
+      await _ensureCol('product_id', 'product_id INTEGER');
+      await _ensureCol('product_name', 'product_name TEXT');
+      await _ensureCol('quantity', 'quantity REAL');
+      await _ensureCol('price', 'price REAL');
+      await _ensureCol('unit', 'unit TEXT');
+      await _ensureCol('sale_type', 'sale_type TEXT');
+      await _ensureCol('units_in_large_unit', 'units_in_large_unit REAL');
+      await _ensureCol('settlement_payment_type', 'settlement_payment_type TEXT');
+    } catch (e) {
+      print('DEBUG DB: ensuring invoice_adjustments schema failed: $e');
+    }
+
+    // Ensure invoice_logs exists
+    try {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS invoice_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          invoice_id INTEGER NOT NULL,
+          action TEXT NOT NULL,
+          details TEXT,
+          created_at TEXT NOT NULL,
+          created_by TEXT,
+          FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
+        )
+      ''');
+    } catch (e) {
+      print('DEBUG DB: ensuring invoice_logs failed: $e');
     }
     if (oldVersion < 2) {
       // إضافة عمود actual_cost_price إلى جدول invoice_items
@@ -1110,10 +1311,155 @@ class DatabaseService {
     final db = await database;
     try {
       // No serial number generation needed
-      return await db.insert('invoices', invoice.toMap());
+      final id = await db.insert('invoices', invoice.toMap());
+      // Initialize final_total to equal total_amount at creation
+      try {
+        await db.rawUpdate('UPDATE invoices SET final_total = total_amount WHERE id = ? AND (final_total IS NULL OR final_total = 0)', [id]);
+      } catch (_) {}
+      return id;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
+  }
+
+  // --- Adjustments (Settlements) ---
+  Future<int> insertInvoiceAdjustment(InvoiceAdjustment adjustment) async {
+    final db = await database;
+    try {
+      final id = await db.insert('invoice_adjustments', adjustment.toMap());
+      // Apply financial effects
+      await applyInvoiceAdjustment(adjustment.invoiceId);
+      // تأثير التسوية على سجل الديون حسب نوع التسوية وطريقة الدفع المختارة
+      try {
+        final invoice = await getInvoiceById(adjustment.invoiceId);
+        if (invoice != null && invoice.customerId != null) {
+          final String paymentKind = (adjustment.settlementPaymentType ?? 'دين');
+          // تحديد تأثير الدين: إذا كانت 'دين' نطبق، إذا 'نقد' لا نؤثر على الدين
+          if (paymentKind == 'دين') {
+            // delta للدين: تسوية إضافة (debit) ترفع الدين، تسوية حذف (credit) تخفض الدين
+            final double debtDelta = adjustment.amountDelta;
+            if (debtDelta != 0) {
+              await db.transaction((txn) async {
+                final customer = await getCustomerByIdUsingTransaction(txn, invoice.customerId!);
+                if (customer != null) {
+                  final newDebt = customer.currentTotalDebt + debtDelta;
+                  await txn.update('customers', {
+                    'current_total_debt': newDebt,
+                    'last_modified_at': DateTime.now().toIso8601String(),
+                  }, where: 'id = ?', whereArgs: [customer.id]);
+                  await txn.insert('transactions', {
+                    'customer_id': customer.id,
+                    'transaction_date': DateTime.now().toIso8601String(),
+                    'amount_changed': debtDelta,
+                    'new_balance_after_transaction': newDebt,
+                    'transaction_note': (adjustment.type == 'debit' ? 'تسوية إضافة' : 'تسوية حذف') + ' مرتبطة بالفاتورة رقم ${invoice.id}',
+                    'transaction_type': 'SETTLEMENT',
+                    'description': 'Invoice settlement adjustment',
+                    'created_at': DateTime.now().toIso8601String(),
+                    'invoice_id': invoice.id,
+                  });
+                }
+              });
+            }
+          }
+        }
+      } catch (e) {
+        print('WARN: failed to apply settlement debt effect: $e');
+      }
+      return id;
+    } catch (e) {
+      // معالجة غياب عمود settlement_payment_type القديمة ثم إعادة المحاولة
+      final es = e.toString();
+      if (es.contains('no column named settlement_payment_type') || es.contains('has no column named settlement_payment_type')) {
+        try {
+          await db.execute('ALTER TABLE invoice_adjustments ADD COLUMN settlement_payment_type TEXT;');
+          final id = await db.insert('invoice_adjustments', adjustment.toMap());
+          // Apply financial effects
+          await applyInvoiceAdjustment(adjustment.invoiceId);
+          try {
+            final invoice = await getInvoiceById(adjustment.invoiceId);
+            if (invoice != null && invoice.customerId != null) {
+              final String paymentKind = (adjustment.settlementPaymentType ?? 'دين');
+              if (paymentKind == 'دين') {
+                final double debtDelta = adjustment.amountDelta;
+                if (debtDelta != 0) {
+                  await db.transaction((txn) async {
+                    final customer = await getCustomerByIdUsingTransaction(txn, invoice.customerId!);
+                    if (customer != null) {
+                      final newDebt = customer.currentTotalDebt + debtDelta;
+                      await txn.update('customers', {
+                        'current_total_debt': newDebt,
+                        'last_modified_at': DateTime.now().toIso8601String(),
+                      }, where: 'id = ?', whereArgs: [customer.id]);
+                      await txn.insert('transactions', {
+                        'customer_id': customer.id,
+                        'transaction_date': DateTime.now().toIso8601String(),
+                        'amount_changed': debtDelta,
+                        'new_balance_after_transaction': newDebt,
+                        'transaction_note': (adjustment.type == 'debit' ? 'تسوية إضافة' : 'تسوية حذف') + ' مرتبطة بالفاتورة رقم ${invoice.id}',
+                        'transaction_type': 'SETTLEMENT',
+                        'description': 'Invoice settlement adjustment',
+                        'created_at': DateTime.now().toIso8601String(),
+                        'invoice_id': invoice.id,
+                      });
+                    }
+                  });
+                }
+              }
+            }
+          } catch (e2) {
+            print('WARN: failed to apply settlement debt effect after adding column: $e2');
+          }
+          return id;
+        } catch (_) {}
+      }
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  Future<List<InvoiceAdjustment>> getInvoiceAdjustments(int invoiceId) async {
+    final db = await database;
+    final maps = await db.query('invoice_adjustments', where: 'invoice_id = ?', whereArgs: [invoiceId], orderBy: 'created_at ASC, id ASC');
+    return maps.map((m) => InvoiceAdjustment.fromMap(m)).toList();
+  }
+
+  Future<void> applyInvoiceAdjustment(int invoiceId) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      // Recalculate sum of adjustments
+      final sumRows = await txn.rawQuery('SELECT COALESCE(SUM(amount_delta),0) AS s FROM invoice_adjustments WHERE invoice_id = ?', [invoiceId]);
+      final double sumAdj = ((sumRows.first['s'] as num?) ?? 0).toDouble();
+
+      // Get invoice
+      final invoice = await getInvoiceByIdUsingTransaction(txn, invoiceId);
+      if (invoice == null) return;
+
+      // Update final_total = total_amount + sum(adjustments)
+      final double newFinal = invoice.totalAmount + sumAdj;
+      await txn.update('invoices', {'final_total': newFinal, 'last_modified_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [invoiceId]);
+      // NOTE: لا نقوم بتعديل دين العميل أو إنشاء حركة هنا.
+      // يتم ذلك حصراً داخل insertInvoiceAdjustment وفق طريقة دفع التسوية.
+
+      // Update installer billed amount by delta as well
+      if (invoice.installerName != null && invoice.installerName!.isNotEmpty) {
+        final lastAdjRows = await txn.rawQuery('SELECT amount_delta FROM invoice_adjustments WHERE invoice_id = ? ORDER BY created_at DESC, id DESC LIMIT 1', [invoiceId]);
+        final double lastDelta = lastAdjRows.isNotEmpty ? ((lastAdjRows.first['amount_delta'] as num).toDouble()) : 0.0;
+        if (lastDelta != 0) {
+          await _updateInstallerTotal(txn, invoice.installerName, lastDelta);
+        }
+      }
+
+      // Audit log
+      try {
+        await txn.insert('invoice_logs', {
+          'invoice_id': invoiceId,
+          'action': 'adjusted',
+          'details': '{"delta": $sumAdj}',
+          'created_at': DateTime.now().toIso8601String(),
+          'created_by': null,
+        });
+      } catch (_) {}
+    });
   }
 
   Future<int> updateInvoice(Invoice invoice) async {
@@ -1201,12 +1547,22 @@ class DatabaseService {
     }
 
     try {
-      return await db.update(
+      final count = await db.update(
         'invoices',
         invoice.toMap(),
         where: 'id = ?',
         whereArgs: [invoice.id!],
       );
+      try {
+        await db.insert('invoice_logs', {
+          'invoice_id': invoice.id,
+          'action': 'updated',
+          'details': null,
+          'created_at': DateTime.now().toIso8601String(),
+          'created_by': null,
+        });
+      } catch (_) {}
+      return count;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
@@ -1270,6 +1626,17 @@ class DatabaseService {
     }
 
     try {
+      // Log before deletion
+      try {
+        await db.insert('invoice_logs', {
+          'invoice_id': id,
+          'action': 'deleted',
+          'details': null,
+          'created_at': DateTime.now().toIso8601String(),
+          'created_by': null,
+        });
+      } catch (_) {}
+
       // Delete all transactions associated with this invoice
       await db.delete(
         'transactions',
@@ -1293,6 +1660,42 @@ class DatabaseService {
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
+  }
+
+  // Lock/unlock helpers with audit logs
+  Future<void> lockInvoice(int invoiceId, {String? createdBy}) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.update('invoices', {
+        'is_locked': 1,
+        'status': 'محفوظة',
+        'last_modified_at': DateTime.now().toIso8601String(),
+      }, where: 'id = ?', whereArgs: [invoiceId]);
+      await txn.insert('invoice_logs', {
+        'invoice_id': invoiceId,
+        'action': 'locked',
+        'details': null,
+        'created_at': DateTime.now().toIso8601String(),
+        'created_by': createdBy,
+      });
+    });
+  }
+
+  Future<void> unlockInvoice(int invoiceId, {String? createdBy}) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.update('invoices', {
+        'is_locked': 0,
+        'last_modified_at': DateTime.now().toIso8601String(),
+      }, where: 'id = ?', whereArgs: [invoiceId]);
+      await txn.insert('invoice_logs', {
+        'invoice_id': invoiceId,
+        'action': 'unlocked',
+        'details': null,
+        'created_at': DateTime.now().toIso8601String(),
+        'created_by': createdBy,
+      });
+    });
   }
 
   // New methods for Invoice Items
@@ -1490,6 +1893,8 @@ class DatabaseService {
         double creditSalesValue = 0.0;
         double totalReturns = 0.0; // إجمالي الراجع
         double totalDebtPayments = 0.0; // إجمالي تسديد الديون
+        double settlementAdditions = 0.0; // تسوية الإضافة (مبلغ + ملاحظة)
+        double settlementReturns = 0.0; // تسوية الإرجاع (مبلغ + ملاحظة)
 
         for (var invoice in invoicesInMonth) {
           if (invoice.status == 'محفوظة') {
@@ -1590,6 +1995,87 @@ class DatabaseService {
           totalDebtPayments += (tx['amount_changed'] as num).toDouble().abs();
         }
 
+        // جمع تسويات الشهر من جدول التسويات المرتبطة بالفواتير (مبلغ + ملاحظة فقط)
+        try {
+          final List<Map<String, Object?>> debitRows = await db.rawQuery(
+            '''
+              SELECT COALESCE(SUM(amount_delta), 0) AS s
+              FROM invoice_adjustments
+              WHERE type = 'debit'
+                AND created_at >= ? AND created_at < ?
+                AND (product_id IS NULL)
+                AND (product_name IS NULL OR product_name = '')
+                AND (quantity IS NULL)
+                AND (price IS NULL)
+            ''',
+            [start, end],
+          );
+          final List<Map<String, Object?>> creditRows = await db.rawQuery(
+            '''
+              SELECT COALESCE(SUM(ABS(amount_delta)), 0) AS s
+              FROM invoice_adjustments
+              WHERE type = 'credit'
+                AND created_at >= ? AND created_at < ?
+                AND (product_id IS NULL)
+                AND (product_name IS NULL OR product_name = '')
+                AND (quantity IS NULL)
+                AND (price IS NULL)
+            ''' ,
+            [start, end],
+          );
+          settlementAdditions = ((debitRows.first['s'] as num?) ?? 0).toDouble();
+          settlementReturns = ((creditRows.first['s'] as num?) ?? 0).toDouble();
+        } catch (_) {}
+
+        // دمج تسويات البنود (ذات product_id) في إجمالي المبيعات وصافي الأرباح لهذا الشهر وفق الهرمية
+        try {
+          final List<Map<String, Object?>> adjRows = await db.rawQuery(
+            '''
+              SELECT ia.type, ia.quantity, ia.price, ia.sale_type, ia.units_in_large_unit,
+                     p.unit AS product_unit, p.cost_price AS product_cost, p.length_per_unit AS length_per_unit
+              FROM invoice_adjustments ia
+              JOIN products p ON p.id = ia.product_id
+              WHERE ia.product_id IS NOT NULL
+                AND ia.created_at >= ? AND ia.created_at < ?
+            ''',
+            [start, end],
+          );
+
+          double addSalesFromAdj = 0.0;
+          double addProfitFromAdj = 0.0;
+          for (final r in adjRows) {
+            final String type = (r['type'] as String?) ?? 'debit';
+            final double qtySaleUnits = ((r['quantity'] as num?) ?? 0).toDouble();
+            final double pricePerSaleUnit = ((r['price'] as num?) ?? 0).toDouble();
+            final String saleType = (r['sale_type'] as String?) ?? ((r['product_unit'] as String?) == 'meter' ? 'متر' : 'قطعة');
+            final double unitsInLargeUnit = ((r['units_in_large_unit'] as num?)?.toDouble()) ?? 1.0;
+            final String productUnit = (r['product_unit'] as String?) ?? 'piece';
+            final double baseCost = ((r['product_cost'] as num?)?.toDouble()) ?? 0.0;
+            final double? lengthPerUnit = (r['length_per_unit'] as num?)?.toDouble();
+            if (qtySaleUnits == 0) continue;
+
+            final double salesContribution = (type == 'debit' ? 1 : -1) * qtySaleUnits * pricePerSaleUnit;
+
+            double baseQty;
+            if (productUnit == 'meter' && saleType == 'لفة') {
+              final double factor = (unitsInLargeUnit > 0) ? unitsInLargeUnit : (lengthPerUnit ?? 1.0);
+              baseQty = qtySaleUnits * factor;
+            } else if (saleType == 'قطعة' || saleType == 'متر') {
+              baseQty = qtySaleUnits;
+            } else {
+              baseQty = qtySaleUnits * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+            }
+            final double signedBaseQty = (type == 'debit' ? 1 : -1) * baseQty;
+            final double costContribution = baseCost * (signedBaseQty);
+
+            addSalesFromAdj += salesContribution;
+            addProfitFromAdj += (salesContribution - costContribution);
+          }
+
+          totalSales += addSalesFromAdj;
+          netProfit += addProfitFromAdj;
+        } catch (_) {}
+
         monthlySummaries[monthYear] = MonthlySalesSummary(
           monthYear: monthYear,
           totalSales: totalSales,
@@ -1598,6 +2084,8 @@ class DatabaseService {
           creditSales: creditSalesValue,
           totalReturns: totalReturns, // إضافة إجمالي الراجع
           totalDebtPayments: totalDebtPayments, // إضافة إجمالي تسديد الديون
+          settlementAdditions: settlementAdditions,
+          settlementReturns: settlementReturns,
         );
       }
       //  فرز الملخصات حسب الشهر تنازليًا
@@ -2325,6 +2813,64 @@ class DatabaseService {
         averageSellingPrice = averageSellingPrice / totalQuantity;
       }
  
+      // دمج تسويات البنود (debit/credit) لهذا المنتج عبر جدول invoice_adjustments مع احترام الهرمية
+      try {
+        final prodRows = await db.rawQuery('SELECT unit, cost_price, length_per_unit FROM products WHERE id = ?', [productId]);
+        String productUnit = 'piece';
+        double baseCost = 0.0;
+        double? lengthPerUnit;
+        if (prodRows.isNotEmpty) {
+          productUnit = (prodRows.first['unit'] as String?) ?? 'piece';
+          baseCost = ((prodRows.first['cost_price'] as num?)?.toDouble() ?? 0.0);
+          lengthPerUnit = (prodRows.first['length_per_unit'] as num?)?.toDouble();
+        }
+
+        final rows = await db.rawQuery('''
+          SELECT type, quantity, price, sale_type, units_in_large_unit
+          FROM invoice_adjustments
+          WHERE product_id = ?
+        ''', [productId]);
+
+        for (final r in rows) {
+          final String type = (r['type'] as String?) ?? 'debit';
+          final double qtySaleUnits = ((r['quantity'] as num?) ?? 0).toDouble();
+          final double pricePerSaleUnit = ((r['price'] as num?) ?? 0).toDouble();
+          final String saleType = (r['sale_type'] as String?) ?? (productUnit == 'meter' ? 'متر' : 'قطعة');
+          final double unitsInLargeUnit = ((r['units_in_large_unit'] as num?)?.toDouble()) ?? 1.0;
+
+          if (qtySaleUnits == 0) continue;
+
+          // المبيعات لهذا السطر (إشارة حسب النوع)
+          final double salesContribution = (type == 'debit' ? 1 : -1) * qtySaleUnits * pricePerSaleUnit;
+
+          // تحويل الكمية إلى وحدة الأساس
+          double baseQty;
+          if (productUnit == 'meter' && saleType == 'لفة') {
+            final double factor = (unitsInLargeUnit > 0)
+                ? unitsInLargeUnit
+                : (lengthPerUnit ?? 1.0);
+            baseQty = qtySaleUnits * factor;
+          } else if (saleType == 'قطعة' || saleType == 'متر') {
+            baseQty = qtySaleUnits;
+          } else {
+            baseQty = qtySaleUnits * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+          }
+          final double signedBaseQty = (type == 'debit' ? 1 : -1) * baseQty;
+
+          // التكلفة = تكلفة وحدة الأساس × الكمية بوحدة الأساس
+          final double costContribution = baseCost * (signedBaseQty);
+
+          totalSales += salesContribution;
+          totalQuantity += signedBaseQty;
+          totalCost += costContribution.abs();
+          totalProfit += (salesContribution - costContribution);
+        }
+
+        if (totalQuantity > 0) {
+          averageSellingPrice = totalSales / totalQuantity;
+        }
+      } catch (_) {}
+
       return {
         'totalQuantity': totalQuantity,
         'totalProfit': totalProfit,
@@ -2364,6 +2910,22 @@ class DatabaseService {
         yearlySales[year] = quantity;
       }
 
+      // دمج تسويات البنود سنوياً
+      try {
+        final rows = await db.rawQuery('''
+          SELECT strftime('%Y', created_at) as year,
+                 COALESCE(SUM(CASE WHEN type='debit' THEN quantity ELSE -quantity END),0) AS qty
+          FROM invoice_adjustments
+          WHERE product_id = ?
+          GROUP BY strftime('%Y', created_at)
+        ''', [productId]);
+        for (final r in rows) {
+          final int year = int.parse((r['year'] as String));
+          final double qty = ((r['qty'] as num?) ?? 0).toDouble();
+          yearlySales[year] = (yearlySales[year] ?? 0) + qty;
+        }
+      } catch (_) {}
+
       return yearlySales;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -2396,6 +2958,22 @@ class DatabaseService {
         final quantity = (map['total_quantity'] ?? 0.0) as double;
         monthlySales[month] = quantity;
       }
+
+      // دمج تسويات البنود شهرياً
+      try {
+        final rows = await db.rawQuery('''
+          SELECT strftime('%m', created_at) as month,
+                 COALESCE(SUM(CASE WHEN type='debit' THEN quantity ELSE -quantity END),0) AS qty
+          FROM invoice_adjustments
+          WHERE product_id = ? AND strftime('%Y', created_at) = ?
+          GROUP BY strftime('%m', created_at)
+        ''', [productId, year.toString()]);
+        for (final r in rows) {
+          final int month = int.parse((r['month'] as String));
+          final double qty = ((r['qty'] as num?) ?? 0).toDouble();
+          monthlySales[month] = (monthlySales[month] ?? 0) + qty;
+        }
+      } catch (_) {}
 
       return monthlySales;
     } catch (e) {
@@ -2556,14 +3134,72 @@ class DatabaseService {
       if (totalQuantity > 0) {
         averageSellingPrice = totalSellingPrice / totalQuantity;
       }
+
+      // استخدم متغيرات قابلة للتعديل عند دمج التسويات
+      double adjTotalSales = totalSales;
+      double adjTotalProfit = totalProfit;
+      double adjTotalQuantity = totalQuantity;
+      double adjAverageSellingPrice = averageSellingPrice;
  
+      // دمج تسويات البنود الخاصة بهذا العميل في إجمالياته (اعتماداً على الفواتير المرتبطة به)
+      try {
+        final List<Map<String, dynamic>> invIds = await db.rawQuery('SELECT id FROM invoices WHERE customer_id = ? AND status = "محفوظة"', [customerId]);
+        if (invIds.isNotEmpty) {
+          final ids = invIds.map((e) => (e['id'] as int)).toList();
+          final placeholders = List.filled(ids.length, '?').join(',');
+          final List<Map<String, Object?>> rows = await db.rawQuery('''
+            SELECT ia.type, ia.quantity, ia.price, ia.sale_type, ia.units_in_large_unit,
+                   p.unit AS product_unit, p.cost_price AS product_cost, p.length_per_unit AS length_per_unit
+            FROM invoice_adjustments ia
+            JOIN invoices i ON i.id = ia.invoice_id
+            LEFT JOIN products p ON p.id = ia.product_id
+            WHERE ia.product_id IS NOT NULL AND ia.invoice_id IN ($placeholders)
+          ''', ids);
+          double addSales = 0.0;
+          double addProfit = 0.0;
+          double addBaseQty = 0.0;
+          for (final r in rows) {
+            final String type = (r['type'] as String?) ?? 'debit';
+            final double qtySaleUnits = ((r['quantity'] as num?) ?? 0).toDouble();
+            final double pricePerSaleUnit = ((r['price'] as num?) ?? 0).toDouble();
+            final String saleType = (r['sale_type'] as String?) ?? ((r['product_unit'] as String?) == 'meter' ? 'متر' : 'قطعة');
+            final double unitsInLargeUnit = ((r['units_in_large_unit'] as num?)?.toDouble()) ?? 1.0;
+            final String productUnit = (r['product_unit'] as String?) ?? 'piece';
+            final double baseCost = ((r['product_cost'] as num?)?.toDouble()) ?? 0.0;
+            final double? lengthPerUnit = (r['length_per_unit'] as num?)?.toDouble();
+            if (qtySaleUnits == 0) continue;
+            final double salesContribution = (type == 'debit' ? 1 : -1) * qtySaleUnits * pricePerSaleUnit;
+            double baseQty;
+            if (productUnit == 'meter' && saleType == 'لفة') {
+              final double factor = (unitsInLargeUnit > 0) ? unitsInLargeUnit : (lengthPerUnit ?? 1.0);
+              baseQty = qtySaleUnits * factor;
+            } else if (saleType == 'قطعة' || saleType == 'متر') {
+              baseQty = qtySaleUnits;
+            } else {
+              baseQty = qtySaleUnits * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+            }
+            final double signedBaseQty = (type == 'debit' ? 1 : -1) * baseQty;
+            final double costContribution = baseCost * (signedBaseQty);
+            addSales += salesContribution;
+            addProfit += (salesContribution - costContribution);
+            addBaseQty += signedBaseQty;
+          }
+          adjTotalSales += addSales;
+          adjTotalProfit += addProfit;
+          adjTotalQuantity += addBaseQty;
+          if (adjTotalQuantity > 0) {
+            adjAverageSellingPrice = adjTotalSales / adjTotalQuantity;
+          }
+        }
+      } catch (_) {}
+
       return {
-        'totalSales': totalSales,
-        'totalProfit': totalProfit,
+        'totalSales': adjTotalSales,
+        'totalProfit': adjTotalProfit,
         'totalInvoices': totalInvoices,
         'totalTransactions': totalTransactions,
-        'averageSellingPrice': averageSellingPrice,
-        'totalQuantity': totalQuantity,
+        'averageSellingPrice': adjAverageSellingPrice,
+        'totalQuantity': adjTotalQuantity,
       };
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -2621,6 +3257,85 @@ class DatabaseService {
         );
       }
  
+      // دمج تسويات البنود سنوياً لهذا العميل
+      try {
+        final invIds = await db.rawQuery('''
+          SELECT id, strftime('%Y', invoice_date) as y 
+          FROM invoices 
+          WHERE customer_id = ? AND status = 'محفوظة'
+        ''', [customerId]);
+        if (invIds.isNotEmpty) {
+          final ids = invIds.map((e) => (e['id'] as int)).toList();
+          final placeholders = List.filled(ids.length, '?').join(',');
+          final rows = await db.rawQuery('''
+            SELECT strftime('%Y', ia.created_at) as year, ia.type, ia.quantity, ia.price, ia.sale_type, ia.units_in_large_unit,
+                   p.unit AS product_unit, p.cost_price AS product_cost, p.length_per_unit AS length_per_unit
+            FROM invoice_adjustments ia
+            JOIN invoices i ON i.id = ia.invoice_id
+            LEFT JOIN products p ON p.id = ia.product_id
+            WHERE ia.product_id IS NOT NULL AND ia.invoice_id IN ($placeholders)
+          ''', ids);
+          for (final r in rows) {
+            final int year = int.parse((r['year'] as String));
+            final String type = (r['type'] as String?) ?? 'debit';
+            final double qtySaleUnits = ((r['quantity'] as num?) ?? 0).toDouble();
+            final double pricePerSaleUnit = ((r['price'] as num?) ?? 0).toDouble();
+            final String saleType = (r['sale_type'] as String?) ?? ((r['product_unit'] as String?) == 'meter' ? 'متر' : 'قطعة');
+            final double unitsInLargeUnit = ((r['units_in_large_unit'] as num?)?.toDouble()) ?? 1.0;
+            final String productUnit = (r['product_unit'] as String?) ?? 'piece';
+            final double baseCost = ((r['product_cost'] as num?)?.toDouble()) ?? 0.0;
+            final double? lengthPerUnit = (r['length_per_unit'] as num?)?.toDouble();
+            if (qtySaleUnits == 0) continue;
+            final double salesContribution = (type == 'debit' ? 1 : -1) * qtySaleUnits * pricePerSaleUnit;
+            double baseQty;
+            if (productUnit == 'meter' && saleType == 'لفة') {
+              final double factor = (unitsInLargeUnit > 0) ? unitsInLargeUnit : (lengthPerUnit ?? 1.0);
+              baseQty = qtySaleUnits * factor;
+            } else if (saleType == 'قطعة' || saleType == 'متر') {
+              baseQty = qtySaleUnits;
+            } else {
+              baseQty = qtySaleUnits * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+            }
+            final double signedBaseQty = (type == 'debit' ? 1 : -1) * baseQty;
+            final double costContribution = baseCost * (signedBaseQty);
+            final existing = yearlyData[year];
+            if (existing != null) {
+              final updated = PersonYearData(
+                totalProfit: existing.totalProfit + (salesContribution - costContribution),
+                totalSales: existing.totalSales + salesContribution,
+                totalInvoices: existing.totalInvoices,
+                totalTransactions: existing.totalTransactions,
+                averageSellingPrice: 0.0, // سيعاد حسابه أدناه
+                totalQuantity: existing.totalQuantity + signedBaseQty,
+              );
+              yearlyData[year] = updated;
+            } else {
+              yearlyData[year] = PersonYearData(
+                totalProfit: (salesContribution - costContribution),
+                totalSales: salesContribution,
+                totalInvoices: 0,
+                totalTransactions: 0,
+                averageSellingPrice: 0.0,
+                totalQuantity: signedBaseQty,
+              );
+            }
+          }
+          // إعادة حساب متوسط سعر البيع للسنة
+          for (final entry in yearlyData.entries) {
+            final q = entry.value.totalQuantity;
+            final s = entry.value.totalSales;
+            yearlyData[entry.key] = PersonYearData(
+              totalProfit: entry.value.totalProfit,
+              totalSales: s,
+              totalInvoices: entry.value.totalInvoices,
+              totalTransactions: entry.value.totalTransactions,
+              averageSellingPrice: q > 0 ? (s / q) : 0.0,
+              totalQuantity: q,
+            );
+          }
+        }
+      } catch (_) {}
+
       return yearlyData;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -2680,6 +3395,84 @@ class DatabaseService {
         );
       }
  
+      // دمج تسويات البنود شهرياً لهذا العميل
+      try {
+        final invIds = await db.rawQuery('''
+          SELECT id 
+          FROM invoices 
+          WHERE customer_id = ? AND status = 'محفوظة' AND strftime('%Y', invoice_date) = ?
+        ''', [customerId, year.toString()]);
+        if (invIds.isNotEmpty) {
+          final ids = invIds.map((e) => (e['id'] as int)).toList();
+          final placeholders = List.filled(ids.length, '?').join(',');
+          final rows = await db.rawQuery('''
+            SELECT strftime('%m', ia.created_at) as month, ia.type, ia.quantity, ia.price, ia.sale_type, ia.units_in_large_unit,
+                   p.unit AS product_unit, p.cost_price AS product_cost, p.length_per_unit AS length_per_unit
+            FROM invoice_adjustments ia
+            JOIN invoices i ON i.id = ia.invoice_id
+            LEFT JOIN products p ON p.id = ia.product_id
+            WHERE ia.product_id IS NOT NULL AND ia.invoice_id IN ($placeholders)
+          ''', ids);
+          for (final r in rows) {
+            final int month = int.parse((r['month'] as String));
+            final String type = (r['type'] as String?) ?? 'debit';
+            final double qtySaleUnits = ((r['quantity'] as num?) ?? 0).toDouble();
+            final double pricePerSaleUnit = ((r['price'] as num?) ?? 0).toDouble();
+            final String saleType = (r['sale_type'] as String?) ?? ((r['product_unit'] as String?) == 'meter' ? 'متر' : 'قطعة');
+            final double unitsInLargeUnit = ((r['units_in_large_unit'] as num?)?.toDouble()) ?? 1.0;
+            final String productUnit = (r['product_unit'] as String?) ?? 'piece';
+            final double baseCost = ((r['product_cost'] as num?)?.toDouble()) ?? 0.0;
+            final double? lengthPerUnit = (r['length_per_unit'] as num?)?.toDouble();
+            if (qtySaleUnits == 0) continue;
+            final double salesContribution = (type == 'debit' ? 1 : -1) * qtySaleUnits * pricePerSaleUnit;
+            double baseQty;
+            if (productUnit == 'meter' && saleType == 'لفة') {
+              final double factor = (unitsInLargeUnit > 0) ? unitsInLargeUnit : (lengthPerUnit ?? 1.0);
+              baseQty = qtySaleUnits * factor;
+            } else if (saleType == 'قطعة' || saleType == 'متر') {
+              baseQty = qtySaleUnits;
+            } else {
+              baseQty = qtySaleUnits * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+            }
+            final double signedBaseQty = (type == 'debit' ? 1 : -1) * baseQty;
+            final double costContribution = baseCost * (signedBaseQty);
+            final existing = monthlyData[month];
+            if (existing != null) {
+              monthlyData[month] = PersonMonthData(
+                totalProfit: existing.totalProfit + (salesContribution - costContribution),
+                totalSales: existing.totalSales + salesContribution,
+                totalInvoices: existing.totalInvoices,
+                totalTransactions: existing.totalTransactions,
+                averageSellingPrice: 0.0,
+                totalQuantity: existing.totalQuantity + signedBaseQty,
+              );
+            } else {
+              monthlyData[month] = PersonMonthData(
+                totalProfit: (salesContribution - costContribution),
+                totalSales: salesContribution,
+                totalInvoices: 0,
+                totalTransactions: 0,
+                averageSellingPrice: 0.0,
+                totalQuantity: signedBaseQty,
+              );
+            }
+          }
+          // إعادة حساب متوسط سعر البيع لكل شهر
+          for (final entry in monthlyData.entries) {
+            final q = entry.value.totalQuantity;
+            final s = entry.value.totalSales;
+            monthlyData[entry.key] = PersonMonthData(
+              totalProfit: entry.value.totalProfit,
+              totalSales: s,
+              totalInvoices: entry.value.totalInvoices,
+              totalTransactions: entry.value.totalTransactions,
+              averageSellingPrice: q > 0 ? (s / q) : 0.0,
+              totalQuantity: q,
+            );
+          }
+        }
+      } catch (_) {}
+
       return monthlyData;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -2817,6 +3610,46 @@ class DatabaseService {
         
         yearlyProfit[year] = profit;
       }
+      // دمج أرباح تسويات البنود سنوياً مع احترام الهرمية
+      try {
+        final prodRows = await db.rawQuery('SELECT unit, cost_price, length_per_unit FROM products WHERE id = ?', [productId]);
+        String productUnit = (prodRows.isNotEmpty ? (prodRows.first['unit'] as String?) : null) ?? 'piece';
+        final double baseCost = prodRows.isNotEmpty ? ((prodRows.first['cost_price'] as num?)?.toDouble() ?? 0.0) : 0.0;
+        final double? lengthPerUnit = prodRows.isNotEmpty ? (prodRows.first['length_per_unit'] as num?)?.toDouble() : null;
+
+        final rows = await db.rawQuery('''
+          SELECT strftime('%Y', created_at) as year, type, quantity, price, sale_type, units_in_large_unit
+          FROM invoice_adjustments
+          WHERE product_id = ?
+        ''', [productId]);
+
+        for (final r in rows) {
+          final int year = int.parse((r['year'] as String));
+          final String type = (r['type'] as String?) ?? 'debit';
+          final double qtySaleUnits = ((r['quantity'] as num?) ?? 0).toDouble();
+          final double pricePerSaleUnit = ((r['price'] as num?) ?? 0).toDouble();
+          final String saleType = (r['sale_type'] as String?) ?? (productUnit == 'meter' ? 'متر' : 'قطعة');
+          final double unitsInLargeUnit = ((r['units_in_large_unit'] as num?)?.toDouble()) ?? 1.0;
+          if (qtySaleUnits == 0) continue;
+
+          final double salesContribution = (type == 'debit' ? 1 : -1) * qtySaleUnits * pricePerSaleUnit;
+
+          double baseQty;
+          if (productUnit == 'meter' && saleType == 'لفة') {
+            final double factor = (unitsInLargeUnit > 0) ? unitsInLargeUnit : (lengthPerUnit ?? 1.0);
+            baseQty = qtySaleUnits * factor;
+          } else if (saleType == 'قطعة' || saleType == 'متر') {
+            baseQty = qtySaleUnits;
+          } else {
+            baseQty = qtySaleUnits * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+          }
+          final double signedBaseQty = (type == 'debit' ? 1 : -1) * baseQty;
+          final double costContribution = baseCost * (signedBaseQty);
+
+          yearlyProfit[year] = (yearlyProfit[year] ?? 0) + (salesContribution - costContribution);
+        }
+      } catch (_) {}
+
       return yearlyProfit;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -2916,6 +3749,46 @@ class DatabaseService {
         
         monthlyProfit[month] = profit;
       }
+      // دمج أرباح تسويات البنود شهرياً مع احترام الهرمية
+      try {
+        final prodRows = await db.rawQuery('SELECT unit, cost_price, length_per_unit FROM products WHERE id = ?', [productId]);
+        String productUnit = (prodRows.isNotEmpty ? (prodRows.first['unit'] as String?) : null) ?? 'piece';
+        final double baseCost = prodRows.isNotEmpty ? ((prodRows.first['cost_price'] as num?)?.toDouble() ?? 0.0) : 0.0;
+        final double? lengthPerUnit = prodRows.isNotEmpty ? (prodRows.first['length_per_unit'] as num?)?.toDouble() : null;
+
+        final rows = await db.rawQuery('''
+          SELECT strftime('%m', created_at) as month, type, quantity, price, sale_type, units_in_large_unit
+          FROM invoice_adjustments
+          WHERE product_id = ? AND strftime('%Y', created_at) = ?
+        ''', [productId, year.toString()]);
+
+        for (final r in rows) {
+          final int month = int.parse((r['month'] as String));
+          final String type = (r['type'] as String?) ?? 'debit';
+          final double qtySaleUnits = ((r['quantity'] as num?) ?? 0).toDouble();
+          final double pricePerSaleUnit = ((r['price'] as num?) ?? 0).toDouble();
+          final String saleType = (r['sale_type'] as String?) ?? (productUnit == 'meter' ? 'متر' : 'قطعة');
+          final double unitsInLargeUnit = ((r['units_in_large_unit'] as num?)?.toDouble()) ?? 1.0;
+          if (qtySaleUnits == 0) continue;
+
+          final double salesContribution = (type == 'debit' ? 1 : -1) * qtySaleUnits * pricePerSaleUnit;
+
+          double baseQty;
+          if (productUnit == 'meter' && saleType == 'لفة') {
+            final double factor = (unitsInLargeUnit > 0) ? unitsInLargeUnit : (lengthPerUnit ?? 1.0);
+            baseQty = qtySaleUnits * factor;
+          } else if (saleType == 'قطعة' || saleType == 'متر') {
+            baseQty = qtySaleUnits;
+          } else {
+            baseQty = qtySaleUnits * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+          }
+          final double signedBaseQty = (type == 'debit' ? 1 : -1) * baseQty;
+          final double costContribution = baseCost * (signedBaseQty);
+
+          monthlyProfit[month] = (monthlyProfit[month] ?? 0) + (salesContribution - costContribution);
+        }
+      } catch (_) {}
+
       return monthlyProfit;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -3166,6 +4039,8 @@ class MonthlySalesSummary {
   final double creditSales;
   final double totalReturns; // إجمالي الراجع
   final double totalDebtPayments; // إجمالي تسديد الديون
+  final double settlementAdditions; // تسوية الإضافة (مبلغ + ملاحظة فقط)
+  final double settlementReturns; // تسوية الإرجاع (مبلغ + ملاحظة فقط)
 
   MonthlySalesSummary({
     required this.monthYear,
@@ -3175,10 +4050,12 @@ class MonthlySalesSummary {
     required this.creditSales,
     required this.totalReturns, // إضافة إجمالي الراجع
     required this.totalDebtPayments, // إضافة إجمالي تسديد الديون
+    required this.settlementAdditions,
+    required this.settlementReturns,
   });
 
   @override
   String toString() {
-    return 'MonthlySummary($monthYear: Sales=$totalSales, Profit=$netProfit, Cash=$cashSales, Credit=$creditSales, Returns=$totalReturns, DebtPayments=$totalDebtPayments)';
+    return 'MonthlySummary($monthYear: Sales=$totalSales, Profit=$netProfit, Cash=$cashSales, Credit=$creditSales, Returns=$totalReturns, DebtPayments=$totalDebtPayments, SettlementAdd=$settlementAdditions, SettlementReturn=$settlementReturns)';
   }
 }

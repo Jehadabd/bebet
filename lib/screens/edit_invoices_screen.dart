@@ -7,6 +7,8 @@ import '../models/invoice.dart';
 import 'create_invoice_screen.dart';
 import 'package:intl/intl.dart'; // Import for NumberFormat
 import '../services/database_service.dart'; // Added for DatabaseService
+import '../models/product.dart'; // Added for Product model
+import '../models/invoice_adjustment.dart'; // Added for InvoiceAdjustment model
 
 class EditInvoicesScreen extends StatefulWidget {
   const EditInvoicesScreen({super.key});
@@ -23,6 +25,8 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
   List<Invoice> _filteredInvoices = [];
   List<Invoice> _allInvoices = [];
   bool _loading = true;
+  Map<int, List<InvoiceAdjustment>> _invoiceAdjustments = {};
+  Map<int, double> _settlementTotals = {}; // إجمالي التسويات لكل فاتورة
 
   @override
   void initState() {
@@ -37,8 +41,28 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
     // Ensure `listen: false` when calling provider methods in initState or async methods
     final provider = Provider.of<AppProvider>(context, listen: false);
     final invoices = await provider.getAllInvoices();
+    
+    // جلب معلومات التسويات لكل فاتورة
+    final db = DatabaseService();
+    Map<int, List<InvoiceAdjustment>> adjustments = {};
+    Map<int, double> totals = {};
+    
+    for (final invoice in invoices) {
+      final invoiceAdjustments = await db.getInvoiceAdjustments(invoice.id!);
+      adjustments[invoice.id!] = invoiceAdjustments;
+      
+      // حساب إجمالي التسويات (amountDelta يحمل الإشارة: موجب للزيادة وسالب للإرجاع)
+      double total = 0.0;
+      for (final adj in invoiceAdjustments) {
+        total += adj.amountDelta;
+      }
+      totals[invoice.id!] = total;
+    }
+    
     setState(() {
       _allInvoices = invoices;
+      _invoiceAdjustments = adjustments;
+      _settlementTotals = totals;
       _applyFilters();
       _loading = false;
     });
@@ -324,50 +348,121 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                                                 .onSurface,
                                           ),
                                     ),
-                                    subtitle: Text(
-                                      'التاريخ: ${DateFormat('yyyy/MM/dd').format(invoice.invoiceDate)}', // Consistent date format
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodyMedium
-                                          ?.copyWith(
-                                              color: Colors.grey[
-                                                  700]), // Themed text style
-                                    ),
-                                    trailing: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.end,
+                                    subtitle: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
                                         Text(
-                                          '${formatCurrency(invoice.totalAmount)} دينار', // Formatted currency
+                                          'التاريخ: ${DateFormat('yyyy/MM/dd').format(invoice.invoiceDate)}', // Consistent date format
                                           style: Theme.of(context)
                                               .textTheme
-                                              .bodyLarge
+                                              .bodyMedium
                                               ?.copyWith(
-                                                fontWeight: FontWeight.bold,
-                                                color: Theme.of(context)
-                                                    .colorScheme
-                                                    .primary, // Primary color for amount
-                                              ),
+                                                  color: Colors.grey[
+                                                      700]), // Themed text style
                                         ),
-                                        Text(
-                                          invoice.status == 'معلقة'
-                                              ? 'معلقة'
-                                              : 'محفوظة',
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall
-                                              ?.copyWith(
-                                                color: invoice.status == 'معلقة'
-                                                    ? Theme.of(context)
-                                                        .colorScheme
-                                                        .error
-                                                    : Theme.of(context)
-                                                        .colorScheme
-                                                        .tertiary, // Themed status color
-                                                fontWeight: FontWeight.bold,
-                                              ),
+                                        // عرض معلومات التسويات
+                                        if (_invoiceAdjustments[invoice.id]?.isNotEmpty == true) ...[
+                                          const SizedBox(height: 4),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                            decoration: BoxDecoration(
+                                              color: Colors.blue[50],
+                                              borderRadius: BorderRadius.circular(12),
+                                              border: Border.all(color: Colors.blue[200]!),
+                                            ),
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    Icon(Icons.edit, size: 16, color: Colors.blue[700]),
+                                                    const SizedBox(width: 4),
+                                                    Text(
+                                                      'تم تسويتها (${_invoiceAdjustments[invoice.id]!.length} تعديل)',
+                                                      style: TextStyle(
+                                                        fontSize: 12,
+                                                        color: Colors.blue[700],
+                                                        fontWeight: FontWeight.w500,
+                                                      ),
+                                                    ),
+                                                    const SizedBox(width: 4),
+                                                    Text(
+                                                      '${_settlementTotals[invoice.id]! > 0 ? '+' : ''}${formatCurrency(_settlementTotals[invoice.id]!)}',
+                                                      style: TextStyle(
+                                                        fontSize: 12,
+                                                        color: _settlementTotals[invoice.id]! > 0 ? Colors.green[700] : Colors.red[700],
+                                                        fontWeight: FontWeight.bold,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                                const SizedBox(height: 4),
+                                                Builder(
+                                                  builder: (context) {
+                                                    final double totalAfterDiscount = (invoice.totalAmount - invoice.discount);
+                                                    final double totalAfterAdjustments = totalAfterDiscount + (_settlementTotals[invoice.id] ?? 0.0);
+                                                    return Text(
+                                                      'إجمالي القائمة بعد التعديلات: ${formatCurrency(totalAfterAdjustments)} دينار',
+                                                      style: TextStyle(
+                                                        fontSize: 12,
+                                                        color: Colors.blueGrey[800],
+                                                        fontWeight: FontWeight.w600,
+                                                      ),
+                                                    );
+                                                  },
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                    trailing: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          crossAxisAlignment: CrossAxisAlignment.end,
+                                          children: [
+                                            Text(
+                                              '${formatCurrency(invoice.totalAmount)} دينار',
+                                              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                                    fontWeight: FontWeight.bold,
+                                                    color: Theme.of(context).colorScheme.primary,
+                                                  ),
+                                            ),
+                                            Text(
+                                              invoice.status == 'معلقة' ? 'معلقة' : 'محفوظة',
+                                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                                    color: invoice.status == 'معلقة'
+                                                        ? Theme.of(context).colorScheme.error
+                                                        : Theme.of(context).colorScheme.tertiary,
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
+                                            ),
+                                          ],
                                         ),
+                                        const SizedBox(width: 8),
+                                        if (invoice.status == 'محفوظة')
+                                          IconButton(
+                                            tooltip: 'تسوية الفاتورة',
+                                            icon: const Icon(Icons.playlist_add),
+                                            onPressed: () async {
+                                              // افتح شاشة التسوية بوضع الفاتورة
+                                              await Navigator.push(
+                                                context,
+                                                MaterialPageRoute(
+                                                  builder: (context) => CreateInvoiceScreen(
+                                                    existingInvoice: invoice,
+                                                    isViewOnly: true,
+                                                    settlementForInvoice: invoice,
+                                                  ),
+                                                ),
+                                              );
+                                              _fetchInvoices();
+                                            },
+                                          ),
                                       ],
                                     ),
                                     onTap: () async {
@@ -429,6 +524,140 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                   ],
                 ),
               ),
+      ),
+    );
+  }
+
+  Future<void> _openSettlementDialog(BuildContext context, int invoiceId) async {
+    String type = 'debit';
+    bool byItem = true;
+    final db = DatabaseService();
+    final TextEditingController productCtrl = TextEditingController();
+    final TextEditingController qtyCtrl = TextEditingController();
+    final TextEditingController priceCtrl = TextEditingController();
+    final TextEditingController amountCtrl = TextEditingController();
+    final TextEditingController noteCtrl = TextEditingController();
+    Product? selectedProduct;
+    List<Product> productSuggestions = [];
+
+    Future<void> fetchSuggestions(String q) async {
+      if (q.trim().isEmpty) {
+        productSuggestions = [];
+      } else {
+        productSuggestions = (await db.searchProductsSmart(q.trim())).take(10).toList();
+      }
+    }
+
+    final bool? ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('تسوية الفاتورة'),
+        content: StatefulBuilder(builder: (context, setLocal) {
+          final double _maxH = MediaQuery.of(context).size.height * 0.7;
+          return ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: _maxH, minWidth: 320),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  DropdownButtonFormField<String>(
+                    value: type,
+                    items: const [
+                      DropdownMenuItem(value: 'debit', child: Text('إشعار مدين (زيادة)')),
+                      DropdownMenuItem(value: 'credit', child: Text('إشعار دائن (نقص)')),
+                    ],
+                    onChanged: (v) => setLocal(() => type = v ?? 'debit'),
+                    decoration: const InputDecoration(labelText: 'نوع التسوية'),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(children: [
+                    Expanded(child: ChoiceChip(label: const Text('بند'), selected: byItem, onSelected: (s){ setLocal(()=> byItem = true); })),
+                    const SizedBox(width: 8),
+                    Expanded(child: ChoiceChip(label: const Text('مبلغ مباشر'), selected: !byItem, onSelected: (s){ setLocal(()=> byItem = false); })),
+                  ]),
+                  const SizedBox(height: 8),
+                  if (byItem) ...[
+                    TextField(
+                      controller: productCtrl,
+                      decoration: const InputDecoration(labelText: 'المنتج', hintText: 'اكتب اسم المنتج'),
+                      onChanged: (v) async {
+                        selectedProduct = null;
+                        await fetchSuggestions(v);
+                        setLocal((){});
+                      },
+                    ),
+                    if (productSuggestions.isNotEmpty)
+                      Container(
+                        constraints: const BoxConstraints(maxHeight: 180),
+                        margin: const EdgeInsets.only(top: 6),
+                        decoration: BoxDecoration(color: Colors.white, border: Border.all(color: Colors.grey), borderRadius: BorderRadius.circular(6)),
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          physics: const ClampingScrollPhysics(),
+                          itemCount: productSuggestions.length,
+                          itemBuilder: (c,i){
+                            final p = productSuggestions[i];
+                            return ListTile(
+                              dense: true,
+                              title: Text(p.name),
+                              subtitle: Text('ID: ${p.id ?? ''}'),
+                              onTap: (){
+                                selectedProduct = p;
+                                productCtrl.text = p.name;
+                                productSuggestions = [];
+                                setLocal((){});
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                    const SizedBox(height: 8),
+                    Row(children:[
+                      Expanded(child: TextField(controller: qtyCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'الكمية'))),
+                      const SizedBox(width: 8),
+                      Expanded(child: TextField(controller: priceCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'السعر'))),
+                    ]),
+                  ] else ...[
+                    TextField(controller: amountCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'مبلغ التسوية')),
+                  ],
+                  const SizedBox(height: 8),
+                  TextField(controller: noteCtrl, decoration: const InputDecoration(labelText: 'ملاحظة (اختياري)')),
+                ],
+              ),
+            ),
+          );
+        }),
+        actions: [
+          TextButton(onPressed: ()=> Navigator.pop(ctx, false), child: const Text('إلغاء')),
+          ElevatedButton(onPressed: () async {
+            try {
+              double delta = 0; int? productId; String? productName; double? qty; double? price;
+              if (byItem) {
+                if (selectedProduct == null) throw 'اختر منتجاً';
+                qty = double.tryParse(qtyCtrl.text.trim());
+                price = double.tryParse(priceCtrl.text.trim());
+                if (qty == null || price == null) throw 'أدخل الكمية والسعر بشكل صحيح';
+                delta = (qty * price).toDouble();
+                productId = selectedProduct!.id;
+                productName = selectedProduct!.name;
+              } else {
+                final v = double.tryParse(amountCtrl.text.trim());
+                if (v == null) throw 'أدخل مبلغاً صحيحاً';
+                delta = v;
+              }
+              if (type == 'credit') delta = -delta.abs(); else delta = delta.abs();
+              await db.insertInvoiceAdjustment(InvoiceAdjustment(invoiceId: invoiceId, type: type, amountDelta: delta, productId: productId, productName: productName, quantity: qty, price: price, note: noteCtrl.text.trim().isEmpty ? null : noteCtrl.text.trim()));
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تمت إضافة التسوية')));
+              }
+              Navigator.pop(ctx, true);
+            } catch (e) {
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
+              }
+            }
+          }, child: const Text('حفظ')), 
+        ],
       ),
     );
   }
