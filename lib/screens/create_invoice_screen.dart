@@ -1209,38 +1209,91 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       final List<InvoiceAdjustment> itemAdditionsForSection = adjs.where((a) => a.productId != null && a.type == 'debit' && !sameDayAddedItemAdjs.contains(a)).toList();
       final List<InvoiceAdjustment> itemCreditsForSection = adjs.where((a) => a.productId != null && a.type == 'credit').toList();
       final List<InvoiceAdjustment> amountOnlyAdjs = adjs.where((a) => a.productId == null).toList();
-      final bool showSettlementSections = itemAdditionsForSection.isNotEmpty || itemCreditsForSection.isNotEmpty || amountOnlyAdjs.isNotEmpty;
+      final bool showSettlementSections = itemAdditionsForSection.isNotEmpty || itemCreditsForSection.isNotEmpty || amountOnlyAdjs.isNotEmpty || sameDayAddedItemAdjs.isNotEmpty;
+      
+      print('=== DEBUG SETTLEMENT SECTIONS ===');
+      print('DEBUG: itemAdditionsForSection.length = ${itemAdditionsForSection.length}');
+      print('DEBUG: itemCreditsForSection.length = ${itemCreditsForSection.length}');
+      print('DEBUG: amountOnlyAdjs.length = ${amountOnlyAdjs.length}');
+      print('DEBUG: sameDayAddedItemAdjs.length = ${sameDayAddedItemAdjs.length}');
+      print('DEBUG: showSettlementSections = $showSettlementSections');
+      print('=== END DEBUG SETTLEMENT SECTIONS ===');
       final bool includeSameDayOnlyCase = sameDayAddedItemAdjs.isNotEmpty && !showSettlementSections;
 
       // حساب الإجماليات المعروضة بحسب الحالة الخاصة
-      final double sameDayAddsTotal = sameDayAddedItemAdjs.fold(0.0, (sum, a) => sum + (a.amountDelta));
+      final double sameDayAddsTotal = sameDayAddedItemAdjs.fold(0.0, (sum, a) {
+        // للتسويات البنود: احسب من price * quantity
+        final double price = a.price ?? 0.0;
+        final double quantity = a.quantity ?? 0.0;
+        return sum + (price * quantity);
+      });
       final double itemsTotalForDisplay = includeSameDayOnlyCase ? (itemsTotal + sameDayAddsTotal) : itemsTotal;
       final double settlementsTotalForDisplay = includeSameDayOnlyCase ? 0.0 : settlementsTotal;
       final double preDiscountTotal = (itemsTotalForDisplay + settlementsTotalForDisplay);
       final double afterDiscount = ((preDiscountTotal - discount).clamp(0.0, double.infinity)).toDouble();
-
+      
       // المبلغ المدفوع من الحقل
       final double paid = double.tryParse(_paidAmountController.text.replaceAll(',', '')) ?? 0.0;
+      final isCash = _paymentType == 'نقد';
+      
 
       // تحديد مبالغ التسويات النقدية/الدين لحساب المبلغ المدفوع المعروض
       final double cashSettlements = showSettlementSections
-          ? adjs.where((a) => (a.settlementPaymentType ?? 'نقد') == 'نقد').fold(0.0, (sum, a) => sum + a.amountDelta)
+          ? [...adjs, ...sameDayAddedItemAdjs].where((a) => a.settlementPaymentType == 'نقد').fold(0.0, (sum, a) {
+              // للتسويات البنود: احسب من price * quantity
+              if (a.productId != null) {
+                final double price = a.price ?? 0.0;
+                final double quantity = a.quantity ?? 0.0;
+                return sum + (price * quantity);
+              } else {
+                // للتسويات المبلغ: استخدم amountDelta
+                return sum + a.amountDelta;
+              }
+            })
           : 0.0;
       final double debtSettlements = showSettlementSections
-          ? adjs.where((a) => a.settlementPaymentType == 'دين').fold(0.0, (sum, a) => sum + a.amountDelta)
+          ? [...adjs, ...sameDayAddedItemAdjs].where((a) => a.settlementPaymentType == 'دين').fold(0.0, (sum, a) {
+              // للتسويات البنود: احسب من price * quantity
+              if (a.productId != null) {
+                final double price = a.price ?? 0.0;
+                final double quantity = a.quantity ?? 0.0;
+                return sum + (price * quantity);
+              } else {
+                // للتسويات المبلغ: استخدم amountDelta
+                return sum + a.amountDelta;
+              }
+            })
           : 0.0;
+      
+      // تشخيص للمشكلة
+      print('=== DEBUG PDF SETTLEMENTS ===');
+      print('DEBUG PDF: paid = $paid');
+      print('DEBUG PDF: cashSettlements = $cashSettlements');
+      print('DEBUG PDF: debtSettlements = $debtSettlements');
+      print('DEBUG PDF: showSettlementSections = $showSettlementSections');
+      print('DEBUG PDF: adjs.length = ${adjs.length}');
+      for (int i = 0; i < adjs.length; i++) {
+        final adj = adjs[i];
+        print('DEBUG PDF: adj[$i] = {');
+        print('  productId: ${adj.productId}');
+        print('  productName: ${adj.productName}');
+        print('  type: ${adj.type}');
+        print('  amountDelta: ${adj.amountDelta}');
+        print('  settlementPaymentType: ${adj.settlementPaymentType}');
+        print('  price: ${adj.price}');
+        print('  quantity: ${adj.quantity}');
+        print('  createdAt: ${adj.createdAt}');
+        print('}');
+      }
+      print('=== END DEBUG PDF SETTLEMENTS ===');
+      
       double displayedPaidForSettlementsCase;
-      if (!showSettlementSections) {
-        displayedPaidForSettlementsCase = paid;
-      } else if (debtSettlements == 0 && cashSettlements != 0) {
-        // كل التسويات نقد => المبلغ المدفوع = إجمالي القائمة
+      if (isCash && !showSettlementSections) {
+        // للفواتير النقدية بدون تسويات: المبلغ المدفوع يجب أن يساوي الإجمالي دائماً
         displayedPaidForSettlementsCase = afterDiscount;
-      } else if (cashSettlements == 0 && debtSettlements != 0) {
-        // كل التسويات دين => لا تضاف إلى المدفوع
-        displayedPaidForSettlementsCase = paid;
       } else {
-        // حالة مختلطة: أضف الجزء النقدي إلى المدفوع دون تجاوز الإجمالي
-        displayedPaidForSettlementsCase = ((paid + cashSettlements).clamp(0.0, afterDiscount)).toDouble();
+        // للفواتير بالدين أو الفواتير النقدية مع تسويات: إضافة التسويات النقدية إلى المبلغ المدفوع الأصلي
+        displayedPaidForSettlementsCase = paid + cashSettlements;
       }
 
       // حساب الديون
@@ -1284,13 +1337,34 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           previousDebt = matchedCustomer.currentTotalDebt;
         }
       }
-      final isCash = _paymentType == 'نقد';
-      final remaining = isCash ? 0 : (afterDiscount - paid);
+      
+      // حساب المبلغ المتبقي والدين الحالي
+      final double remainingForPdf;
+      if (isCash && !showSettlementSections) {
+        // للفواتير النقدية بدون تسويات: المبلغ المتبقي دائماً صفر
+        remainingForPdf = 0;
+      } else {
+        // للفواتير بالدين أو الفواتير النقدية مع تسويات: احسب المتبقي من الإجمالي ناقص المبلغ المدفوع (بما في ذلك التسويات النقدية)
+        remainingForPdf = afterDiscount - displayedPaidForSettlementsCase;
+      }
+      
+      // حساب الدين الحالي بناءً على التسويات
+      if (showSettlementSections) {
+        // إذا كانت هناك تسويات، احسب الدين بناءً على التسويات الدينية
+        currentDebt = previousDebt + debtSettlements;
+      } else {
+        // إذا لم تكن هناك تسويات، احسب الدين بناءً على نوع الدفع الأصلي
       if (isCash) {
         currentDebt = previousDebt;
       } else {
-        currentDebt = previousDebt + remaining;
+          currentDebt = previousDebt + remainingForPdf;
+        }
       }
+
+      // للفواتير المحفوظة: إزالة "الدين السابق" من العرض
+      final bool isSavedInvoice = _invoiceToManage?.id != null;
+      final double previousDebtForPdf = 0.0; // إزالة عرض الدين السابق
+      final double currentDebtForPdf = currentDebt;
 
       int invoiceId;
       if (_invoiceToManage != null && _invoiceToManage!.id != null) {
@@ -1313,9 +1387,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 'adj': a,
               }),
       ];
-
+      
       const itemsPerPage = 20;
       final totalPages = (combinedRows.length / itemsPerPage).ceil().clamp(1, double.infinity).toInt();
+      bool printedSummaryInLastPage = false;
 
       for (var pageIndex = 0; pageIndex < totalPages; pageIndex++) {
         final start = pageIndex * itemsPerPage;
@@ -1323,6 +1398,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             ? combinedRows.length
             : start + itemsPerPage;
         final pageRows = combinedRows.sublist(start, end);
+
+        final bool isLast = pageIndex == totalPages - 1;
+        final bool deferSummary = isLast && (pageRows.length >= 18) && showSettlementSections;
 
         pdf.addPage(
           pw.Page(
@@ -1392,27 +1470,27 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           if (row['type'] == 'item') {
                             final item = row['item'] as InvoiceItem;
                             final quantity = (item.quantityIndividual ?? item.quantityLargeUnit ?? 0.0);
-                            Product? product;
-                            try {
+                          Product? product;
+                          try {
                               product = allProducts.firstWhere((p) => p.name == item.productName);
-                            } catch (e) {
-                              product = null;
-                            }
-                            final idText = formatProductId5(product?.id);
-                            return pw.TableRow(
-                              children: [
+                          } catch (e) {
+                            product = null;
+                          }
+                          final idText = formatProductId5(product?.id);
+                          return pw.TableRow(
+                            children: [
                                 _dataCell(formatNumber(item.itemTotal, forceDecimal: true), font),
                                 _dataCell(formatNumber(item.appliedPrice, forceDecimal: true), font),
-                                _dataCell(
-                                  buildUnitConversionStringForPdf(item, product),
-                                  font,
-                                ),
+                              _dataCell(
+                                buildUnitConversionStringForPdf(item, product),
+                                font,
+                              ),
                                 _dataCell('${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}', font),
                                 _dataCell(item.productName, font, align: pw.TextAlign.right),
-                                _dataCell(idText, font),
-                                _dataCell('${index + 1}', font),
-                              ],
-                            );
+                              _dataCell(idText, font),
+                              _dataCell('${index + 1}', font),
+                            ],
+                          );
                           } else {
                             final a = row['adj'] as InvoiceAdjustment;
                             final double price = a.price ?? 0.0;
@@ -1469,8 +1547,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     // --- بنود تسوية مضافة في نفس اليوم (تظهر ضمن القائمة) ---
                     if (sameDayAddedItemAdjs.isNotEmpty && !includeSameDayOnlyCase) ...[
                       pw.SizedBox(height: 4),
-                      pw.Text('بنود أضيفت بالتسوية (ضمن القائمة)', style: pw.TextStyle(font: font, fontSize: 12, fontWeight: pw.FontWeight.bold)),
-                      pw.SizedBox(height: 2),
                       pw.Table(
                         border: pw.TableBorder.all(width: 0.2),
                         columnWidths: {
@@ -1515,12 +1591,18 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       pw.SizedBox(height: 6),
                     ],
 
-                    // --- المجاميع والتسويات في الصفحة الأخيرة فقط ---
-                    if (pageIndex == totalPages - 1) ...[
+                    // --- المجاميع والتسويات في الصفحة الأخيرة فقط (إلا إذا أُجّلت) ---
+                    if (isLast && !deferSummary) ...[
                       // --- طباعة التسويات ---
                       if (_invoiceToManage != null && _invoiceToManage!.id != null && (itemAdditionsForSection.isNotEmpty || itemCreditsForSection.isNotEmpty || amountOnlyAdjs.isNotEmpty)) ...[
                         pw.SizedBox(height: 6),
-                        pw.Text('التسويات', style: pw.TextStyle(font: font, fontSize: 13, fontWeight: pw.FontWeight.bold)),
+                        pw.Row(
+                          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                          children: [
+                            pw.Text('التعديلات', style: pw.TextStyle(font: font, fontSize: 13, fontWeight: pw.FontWeight.bold)),
+                            pw.Text('التاريخ والوقت: ${DateTime.now().year}/${DateTime.now().month.toString().padLeft(2, '0')}/${DateTime.now().day.toString().padLeft(2, '0')} ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}', style: pw.TextStyle(font: font, fontSize: 10)),
+                          ],
+                        ),
                         pw.SizedBox(height: 4),
                         // تسويات البنود (إضافة)
                         if (itemAdditionsForSection.isNotEmpty) ...[
@@ -1609,7 +1691,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                   _dataCell(qty.toStringAsFixed(2), font),
                                   _dataCell(a.productName ?? '', font, align: pw.TextAlign.right),
                                   _dataCell(idText, font),
-                                  _dataCell('${idx + 1}', font),
+                                  _dataCell('-', font),
                                 ]);
                               })
                             ],
@@ -1618,7 +1700,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         ],
                         // تسويات مبلغ فقط (معكوسة الأعمدة لتناسب اتجاه العربية)
                         if (amountOnlyAdjs.isNotEmpty) ...[
-                          pw.Text('تسوية مبالغ', style: pw.TextStyle(font: font, fontSize: 12)),
+                          pw.Row(
+                            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                            children: [
+                              pw.Text('تعديل مبالغ', style: pw.TextStyle(font: font, fontSize: 12)),
+                              pw.Text('التاريخ والوقت: ${DateTime.now().year}/${DateTime.now().month.toString().padLeft(2, '0')}/${DateTime.now().day.toString().padLeft(2, '0')} ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}', style: pw.TextStyle(font: font, fontSize: 10)),
+                            ],
+                          ),
                           pw.SizedBox(height: 2),
                           pw.Table(
                             border: pw.TableBorder.all(width: 0.2),
@@ -1652,16 +1740,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         crossAxisAlignment: pw.CrossAxisAlignment.end,
                         children: [
                           if (hasAdjustments && !includeSameDayOnlyCase) ...[
-                            pw.Row(
-                              mainAxisAlignment: pw.MainAxisAlignment.end,
-                              children: [
+                          pw.Row(
+                            mainAxisAlignment: pw.MainAxisAlignment.end,
+                            children: [
                                 _summaryRow('الإجمالي قبل التعديل:', itemsTotalForDisplay, font),
                                 pw.SizedBox(width: 10),
                                 _summaryRow('إجمالي التسويات:', settlementsTotalForDisplay, font),
                                 pw.SizedBox(width: 10),
                                 _summaryRow('الإجمالي قبل الخصم:', preDiscountTotal, font),
-                                pw.SizedBox(width: 10),
-                                _summaryRow('الخصم:', discount, font),
+                              pw.SizedBox(width: 10),
+                              _summaryRow('الخصم:', discount, font),
                               ],
                             ),
                             pw.SizedBox(height: 4),
@@ -1669,9 +1757,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                               mainAxisAlignment: pw.MainAxisAlignment.end,
                               children: [
                                 _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font),
-                                pw.SizedBox(width: 10),
-                                _summaryRow('إجمالي القائمة:', afterDiscount, font),
-                                pw.SizedBox(width: 10),
+                              pw.SizedBox(width: 10),
                                 _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font),
                               ],
                             ),
@@ -1685,24 +1771,22 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                               pw.SizedBox(width: 10),
                               _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font),
                               pw.SizedBox(width: 10),
-                              _summaryRow('المبلغ المدفوع:', paid, font),
+                              _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font),
                             ],
                           ),
                           pw.SizedBox(height: 4),
                           // عند وجود تسويات عرضنا "إجمالي القائمة" في السطر الثاني أعلاه
                           pw.SizedBox(height: 6),
                           // إضافة المبلغ المتبقي والدين السابق والدين الحالي وأجور التحميل
-                          if (!((_invoiceToManage?.status == 'محفوظة') &&
-                              !(_invoiceToManage?.isLocked ?? false))) ...[
+                          // عرض المتبقي دائماً في الملخص النهائي،
+                          // خصوصاً عند وجود تسويات بالدين حتى لو كانت الفاتورة نقد.
+                          if (true) ...[
                             pw.Row(
                               mainAxisAlignment: pw.MainAxisAlignment.end,
                               children: [
-                                _summaryRow('المبلغ المتبقي:', remaining, font),
+                                _summaryRow('المبلغ المتبقي:', remainingForPdf, font),
                                 pw.SizedBox(width: 10),
-                                _summaryRow(
-                                    'المبلغ المطلوب السابق:', previousDebt, font),
-                                pw.SizedBox(width: 10),
-                                _summaryRow('المبلغ المطلوب الحالي:', currentDebt, font),
+                                _summaryRow('المبلغ المطلوب الحالي:', currentDebtForPdf, font),
                                 pw.SizedBox(width: 10),
                                 _summaryRow('اجور التحميل:', 
                                     double.tryParse(_loadingFeeController.text) ?? 0.0, font),
@@ -1723,6 +1807,105 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         'صفحة ${pageIndex + 1} من $totalPages',
                         style: pw.TextStyle(font: font, fontSize: 11),
                       ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        );
+        if (isLast && !deferSummary) { printedSummaryInLastPage = true; }
+      }
+
+      // إذا تم تأجيل الملخص بسبب ضيق الصفحة الأخيرة، اطبعه في صفحة مستقلة لضمان ظهوره
+      if (!printedSummaryInLastPage) {
+        pdf.addPage(
+          pw.Page(
+            pageFormat: PdfPageFormat.a4,
+            margin: pw.EdgeInsets.only(top: 10, bottom: 10, left: 10, right: 10),
+            build: (pw.Context context) {
+              return pw.Directionality(
+                textDirection: pw.TextDirection.rtl,
+                child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+                  children: [
+                    if (_invoiceToManage != null && _invoiceToManage!.id != null && (itemAdditionsForSection.isNotEmpty || itemCreditsForSection.isNotEmpty || amountOnlyAdjs.isNotEmpty)) ...[
+                      pw.Row(
+                        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                        children: [
+                          pw.Text('التعديلات', style: pw.TextStyle(font: font, fontSize: 13, fontWeight: pw.FontWeight.bold)),
+                          pw.Text('التاريخ والوقت: ${DateTime.now().year}/${DateTime.now().month.toString().padLeft(2, '0')}/${DateTime.now().day.toString().padLeft(2, '0')} ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}', style: pw.TextStyle(font: font, fontSize: 10)),
+                        ],
+                      ),
+                      pw.SizedBox(height: 6),
+                      if (itemAdditionsForSection.isNotEmpty) ...[
+                        pw.Text('تسوية البنود - إضافة', style: pw.TextStyle(font: font, fontSize: 12)),
+                        pw.SizedBox(height: 2),
+                        // لإيجاز الكود: إعادة استخدام نفس جداول البنود كما في الصفحة الأخيرة
+                        // نطبع فقط مبالغ وخانات أساسية لضمان المساحة
+                        pw.Table(
+                          border: pw.TableBorder.all(width: 0.2),
+                          columnWidths: { 0: const pw.FixedColumnWidth(90), 1: const pw.FixedColumnWidth(70), 2: const pw.FlexColumnWidth(1) },
+                          children: [
+                            pw.TableRow(children: [ _headerCell('المبلغ', font), _headerCell('السعر', font), _headerCell('التفاصيل', font) ]),
+                            ...itemAdditionsForSection.map((a) {
+                              final qty = a.quantity ?? 0; final price = a.price ?? 0; final amount = price * qty;
+                              return pw.TableRow(children: [ _dataCell(formatNumber(amount, forceDecimal: true), font), _dataCell(formatNumber(price, forceDecimal: true), font), _dataCell(a.productName ?? '', font, align: pw.TextAlign.right) ]);
+                            })
+                          ],
+                        ),
+                        pw.SizedBox(height: 6),
+                      ],
+                      if (itemCreditsForSection.isNotEmpty) ...[
+                        pw.Text('تسوية البنود - إرجاع', style: pw.TextStyle(font: font, fontSize: 12)),
+                        pw.SizedBox(height: 2),
+                        pw.Table(
+                          border: pw.TableBorder.all(width: 0.2),
+                          columnWidths: { 0: const pw.FixedColumnWidth(90), 1: const pw.FixedColumnWidth(70), 2: const pw.FlexColumnWidth(1) },
+                          children: [
+                            pw.TableRow(children: [ _headerCell('المبلغ', font), _headerCell('السعر', font), _headerCell('التفاصيل', font) ]),
+                            ...itemCreditsForSection.map((a) {
+                              final qty = a.quantity ?? 0; final price = a.price ?? 0; final amount = price * qty;
+                              return pw.TableRow(children: [ _dataCell(formatNumber(amount, forceDecimal: true), font), _dataCell(formatNumber(price, forceDecimal: true), font), _dataCell(a.productName ?? '', font, align: pw.TextAlign.right) ]);
+                            })
+                          ],
+                        ),
+                        pw.SizedBox(height: 6),
+                      ],
+                      if (amountOnlyAdjs.isNotEmpty) ...[
+                        pw.Table(
+                          border: pw.TableBorder.all(width: 0.2),
+                          columnWidths: { 0: const pw.FlexColumnWidth(1), 1: const pw.FixedColumnWidth(70), 2: const pw.FixedColumnWidth(90) },
+                          children: [
+                            pw.TableRow(children: [ _headerCell('ملاحظة', font), _headerCell('النوع', font), _headerCell('المبلغ', font) ]),
+                            ...amountOnlyAdjs.map((a) { final kind = a.type == 'debit' ? 'تسوية إضافة' : 'تسوية إرجاع'; return pw.TableRow(children: [ _dataCell(a.note ?? '-', font, align: pw.TextAlign.right), _dataCell(kind, font), _dataCell(formatNumber(a.amountDelta, forceDecimal: true), font) ]); })
+                          ],
+                        ),
+                      ],
+                      pw.SizedBox(height: 10),
+                    ],
+                    // الملخص النهائي
+                    pw.Column(
+                      crossAxisAlignment: pw.CrossAxisAlignment.end,
+                      children: [
+                        if (hasAdjustments && !includeSameDayOnlyCase) ...[
+                          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
+                            _summaryRow('الإجمالي قبل التعديل:', itemsTotalForDisplay, font), pw.SizedBox(width: 10), _summaryRow('إجمالي التسويات:', settlementsTotalForDisplay, font), pw.SizedBox(width: 10), _summaryRow('الإجمالي قبل الخصم:', preDiscountTotal, font), pw.SizedBox(width: 10), _summaryRow('الخصم:', discount, font),
+                          ]),
+                          pw.SizedBox(height: 4),
+                          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
+                            _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font), pw.SizedBox(width: 10), _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font),
+                          ]),
+                        ] else ...[
+                          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
+                            _summaryRow('الإجمالي قبل الخصم:', itemsTotalForDisplay, font), pw.SizedBox(width: 10), _summaryRow('الخصم:', discount, font), pw.SizedBox(width: 10), _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font), pw.SizedBox(width: 10), _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font),
+                          ]),
+                        ],
+                        pw.SizedBox(height: 6),
+                        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
+                          _summaryRow('المبلغ المتبقي:', remainingForPdf, font), pw.SizedBox(width: 10), _summaryRow('المبلغ المطلوب الحالي:', currentDebtForPdf, font), pw.SizedBox(width: 10), _summaryRow('اجور التحميل:', double.tryParse(_loadingFeeController.text) ?? 0.0, font),
+                        ]),
+                      ],
                     ),
                   ],
                 ),
@@ -1953,10 +2136,59 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     });
   }
 
+  // فحص إذا كانت التسويات الراجعة تتجاوز المبلغ المتبقي الفعلي
+  Future<bool> _isRefundExceedingRemaining(double newRefundAmount) async {
+    if (_invoiceToManage == null) return false;
+    
+    // حساب المبلغ المتبقي الحالي
+    final remainingAmount = await _calculateRemainingAmount();
+    
+    // إضافة التسوية الجديدة
+    final totalRefunds = remainingAmount + newRefundAmount.abs();
+    
+    // فحص إذا تجاوزت المبلغ المتبقي (أصبحت سالبة)
+    return totalRefunds < 0;
+  }
+
+  // حساب المبلغ المتبقي بعد التسويات
+  Future<double> _calculateRemainingAmount() async {
+    if (_invoiceToManage == null) return 0.0;
+    
+    // حساب إجمالي الفاتورة
+    final itemsTotal = _invoiceToManage!.totalAmount;
+    final discount = _invoiceToManage!.discount;
+    final afterDiscount = itemsTotal - discount;
+    
+    // حساب التسويات
+    final adjustments = await _db.getInvoiceAdjustments(_invoiceToManage!.id!);
+    final cashSettlements = adjustments
+        .where((adj) => adj.settlementPaymentType == 'نقد')
+        .fold<double>(0.0, (sum, adj) => sum + adj.amountDelta);
+    final debtSettlements = adjustments
+        .where((adj) => adj.settlementPaymentType == 'دين')
+        .fold<double>(0.0, (sum, adj) => sum + adj.amountDelta);
+    
+    // حساب المبلغ المدفوع المعروض
+    final double displayedPaid;
+    if (_invoiceToManage!.paymentType == 'نقد' && adjustments.isNotEmpty) {
+      // للفواتير النقدية مع تسويات: المبلغ المدفوع = المبلغ الأصلي + التسويات النقدية فقط
+      displayedPaid = _invoiceToManage!.amountPaidOnInvoice + cashSettlements;
+    } else {
+      // للفواتير بالدين أو الفواتير النقدية بدون تسويات
+      displayedPaid = _invoiceToManage!.amountPaidOnInvoice + cashSettlements;
+    }
+    
+    // حساب المبلغ المتبقي
+    return afterDiscount - displayedPaid;
+  }
+
   Future<void> _openSettlementAmountDialog() async {
     final TextEditingController amountCtrl = TextEditingController();
     final TextEditingController noteCtrl = TextEditingController();
-    String paymentKind = (_invoiceToManage?.paymentType == 'دين') ? 'دين' : 'نقد';
+    // الإرجاع/الحذف لا يملك خيار (دين/نقد) ويجب أن يؤثر على الدين تلقائياً
+    String paymentKind = _settlementIsDebit
+        ? ((_invoiceToManage?.paymentType == 'دين') ? 'دين' : 'نقد')
+        : 'دين';
     final bool? ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1969,16 +2201,18 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
               decoration: const InputDecoration(labelText: 'المبلغ'),
             ),
-            const SizedBox(height: 8),
-            DropdownButtonFormField<String>(
-              value: paymentKind,
-              onChanged: (v) { if (v != null) paymentKind = v; },
-              items: const [
-                DropdownMenuItem(value: 'دين', child: Text('دين')),
-                DropdownMenuItem(value: 'نقد', child: Text('نقد')),
-              ],
-              decoration: const InputDecoration(labelText: 'طريقة دفع التسوية'),
-            ),
+            if (_settlementIsDebit) ...[
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                value: paymentKind,
+                onChanged: (v) { if (v != null) paymentKind = v; },
+                items: const [
+                  DropdownMenuItem(value: 'دين', child: Text('دين')),
+                  DropdownMenuItem(value: 'نقد', child: Text('نقد')),
+                ],
+                decoration: const InputDecoration(labelText: 'طريقة دفع التسوية'),
+              ),
+            ],
             const SizedBox(height: 8),
             TextField(
               controller: noteCtrl,
@@ -1999,6 +2233,24 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       return;
     }
     final delta = _settlementIsDebit ? v.abs() : -v.abs();
+    
+    // فحص إذا كانت التسوية راجعة وتتجاوز المبلغ المتبقي الفعلي
+    if (!_settlementIsDebit) {
+      final isExceeding = await _isRefundExceedingRemaining(v.abs());
+      if (isExceeding) {
+        final remainingAmount = await _calculateRemainingAmount();
+        final maxAllowedRefund = remainingAmount.abs();
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('التسوية الراجعة تتجاوز المبلغ المتبقي. الحد الأقصى المسموح: ${formatNumber(maxAllowedRefund, forceDecimal: true)} دينار'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+    }
+    
     await _db.insertInvoiceAdjustment(InvoiceAdjustment(
       invoiceId: _invoiceToManage!.id!,
       type: _settlementIsDebit ? 'debit' : 'credit',
@@ -2007,7 +2259,26 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       settlementPaymentType: paymentKind,
     ));
     await _loadSettlementInfo();
+    
+    // فحص إذا كان المبلغ المتبقي أصبح سالباً (يحتاج كاش)
     if (mounted) {
+      final remainingAmount = await _calculateRemainingAmount();
+      if (remainingAmount < 0) {
+        final cashToGive = (-remainingAmount).abs();
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('تنبيه'),
+            content: Text('يجب أن تعطيه ${formatNumber(cashToGive, forceDecimal: true)} دينار كاش'),
+            actions: [
+              ElevatedButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('موافق'),
+              ),
+            ],
+          ),
+        );
+      }
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم حفظ تسوية المبلغ')));
     }
   }
@@ -2435,8 +2706,37 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   Future<void> _saveSettlementItems() async {
     if (_invoiceToManage == null || _settlementItems.isEmpty) return;
+    
+    // فحص إذا كانت التسويات الراجعة تتجاوز المبلغ المتبقي الفعلي
+    if (!_settlementIsDebit) {
+      final totalRefundAmount = _settlementItems.fold<double>(0.0, (sum, item) => sum + item.itemTotal);
+      final isExceeding = await _isRefundExceedingRemaining(totalRefundAmount);
+      if (isExceeding) {
+        final remainingAmount = await _calculateRemainingAmount();
+        final maxAllowedRefund = remainingAmount.abs();
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('التسويات الراجعة تتجاوز المبلغ المتبقي. الحد الأقصى المسموح: ${formatNumber(maxAllowedRefund, forceDecimal: true)} دينار'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+    }
+    
     for (final it in _settlementItems) {
       final delta = (_settlementIsDebit ? 1 : -1) * (it.itemTotal);
+      final paymentType = _settlementIsDebit ? _settlementPaymentType : 'دين';
+      
+      print('=== DEBUG SAVING SETTLEMENT ITEM ===');
+      print('DEBUG: _settlementIsDebit = $_settlementIsDebit');
+      print('DEBUG: _settlementPaymentType = $_settlementPaymentType');
+      print('DEBUG: final paymentType = $paymentType');
+      print('DEBUG: productName = ${it.productName}');
+      print('DEBUG: itemTotal = ${it.itemTotal}');
+      print('=== END DEBUG SAVING SETTLEMENT ITEM ===');
+      
       await _db.insertInvoiceAdjustment(InvoiceAdjustment(
         invoiceId: _invoiceToManage!.id!,
         type: _settlementIsDebit ? 'debit' : 'credit',
@@ -2448,7 +2748,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         unit: it.unit,
         saleType: it.saleType,
         unitsInLargeUnit: it.unitsInLargeUnit,
-        settlementPaymentType: _settlementPaymentType,
+        settlementPaymentType: paymentType,
         note: 'تسوية بند',
       ));
     }
@@ -2464,6 +2764,26 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         _settlePriceCtrl.clear();
         _settleUnitCtrl.clear();
       });
+      
+      // فحص إذا كان المبلغ المتبقي أصبح سالباً (يحتاج كاش)
+      final remainingAmount = await _calculateRemainingAmount();
+      if (remainingAmount < 0) {
+        final cashToGive = (-remainingAmount).abs();
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('تنبيه'),
+            content: Text('يجب أن تعطيه ${formatNumber(cashToGive, forceDecimal: true)} دينار كاش'),
+            actions: [
+              ElevatedButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('موافق'),
+              ),
+            ],
+          ),
+        );
+      }
+      
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم حفظ بنود التسوية')));
     }
   }
@@ -3762,11 +4082,46 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         double.tryParse(_paidAmountController.text.replaceAll(',', '')) ?? 0;
                     double displayedPaidAmount = enteredPaidAmount;
                     double displayedRemainingAmount = total - enteredPaidAmount;
+                    final double totalAfterAdjustments =
+                        total + (_invoiceAdjustments.isNotEmpty ? _totalSettlementAmount : 0.0);
+
+                    // حساب التسويات النقدية والدينية
+                    final double cashSettlements = _invoiceAdjustments
+                        .where((a) => (a.settlementPaymentType ?? 'نقد') == 'نقد')
+                        .fold(0.0, (sum, a) {
+                          // للتسويات البنود: احسب من price * quantity
+                          if (a.productId != null) {
+                            final double price = a.price ?? 0.0;
+                            final double quantity = a.quantity ?? 0.0;
+                            return sum + (price * quantity);
+                          } else {
+                            // للتسويات المبلغ: استخدم amountDelta
+                            return sum + a.amountDelta;
+                          }
+                        });
+                    final double debtSettlements = _invoiceAdjustments
+                        .where((a) => a.settlementPaymentType == 'دين')
+                        .fold(0.0, (sum, a) {
+                          // للتسويات البنود: احسب من price * quantity
+                          if (a.productId != null) {
+                            final double price = a.price ?? 0.0;
+                            final double quantity = a.quantity ?? 0.0;
+                            return sum + (price * quantity);
+                          } else {
+                            // للتسويات المبلغ: استخدم amountDelta
+                            return sum + a.amountDelta;
+                          }
+                        });
 
                     if (_paymentType == 'نقد') {
-                      displayedPaidAmount = total;
+                      // للفواتير النقدية: المبلغ المدفوع يجب أن يساوي الإجمالي كاملاً
+                      displayedPaidAmount = totalAfterAdjustments;
                       displayedRemainingAmount = 0;
-                    } else {}
+                    } else {
+                      // للفواتير بالدين: إضافة التسويات النقدية إلى المبلغ المدفوع المعروض
+                      displayedPaidAmount = enteredPaidAmount + cashSettlements;
+                      displayedRemainingAmount = totalAfterAdjustments - displayedPaidAmount;
+                    }
 
                     return Card(
                       color: Colors.grey[100],
@@ -3785,6 +4140,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 'المبلغ الإجمالي:  ${formatNumber(total, forceDecimal: true)} دينار',
                                 style: const TextStyle(
                                     fontWeight: FontWeight.bold)),
+                            if (_invoiceAdjustments.isNotEmpty) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                  'المبلغ الإجمالي بعد التعديلات:  ${formatNumber(totalAfterAdjustments, forceDecimal: true)} دينار',
+                                  style: const TextStyle(fontWeight: FontWeight.bold)),
+                            ],
                             const SizedBox(height: 4),
                             Text(
                                 'المبلغ المسدد:    ${formatNumber(displayedPaidAmount, forceDecimal: true)} دينار',
@@ -3793,11 +4154,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             Text(
                                 'المتبقي:         ${formatNumber(displayedRemainingAmount, forceDecimal: true)} دينار',
                                 style: const TextStyle(color: Colors.red)),
-                            if (_paymentType == 'دين')
+                            if (_paymentType == 'دين' || debtSettlements != 0)
                               Padding(
                                 padding: const EdgeInsets.only(top: 8.0),
                                 child: Text(
-                                    'أصبح الدين: ${formatNumber(displayedRemainingAmount, forceDecimal: true)} دينار',
+                                    'أصبح الدين: ${formatNumber(displayedRemainingAmount + debtSettlements, forceDecimal: true)} دينار',
                                     style:
                                         const TextStyle(color: Colors.black87)),
                               ),
@@ -3838,34 +4199,96 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                       ),
                                     ),
                                     const SizedBox(height: 8),
-                                    ...(_invoiceAdjustments.map((adj) => Padding(
-                                      padding: const EdgeInsets.only(bottom: 4),
-                                      child: Row(
+                                    Builder(
+                                      builder: (context) {
+                                        final List<InvoiceAdjustment> itemAdjustments = _invoiceAdjustments
+                                            .where((a) => (a.productId != null || (a.productName ?? '').isNotEmpty))
+                                            .toList();
+                                        final List<InvoiceAdjustment> amountOnlyAdjustments = _invoiceAdjustments
+                                            .where((a) => (a.productId == null && (a.productName == null || a.productName!.isEmpty)))
+                                            .toList();
+
+                                        return Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
                                         children: [
-                                          Icon(
-                                            adj.type == 'debit' ? Icons.add : Icons.remove,
-                                            size: 16,
-                                            color: adj.type == 'debit' ? Colors.green[700] : Colors.red[700],
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Expanded(
-                                            child: Text(
-                                              '${adj.type == 'debit' ? 'إضافة' : 'خصم'}: ${adj.productName ?? 'مبلغ مباشر'}${adj.quantity != null && adj.price != null ? ' (${formatNumber(adj.quantity!, forceDecimal: true)} × ${formatNumber(adj.price!, forceDecimal: true)} = ${formatNumber(adj.amountDelta, forceDecimal: true)})' : adj.quantity != null ? ' (${formatNumber(adj.quantity!, forceDecimal: true)} وحدة)' : ''} - ${formatNumber(adj.amountDelta, forceDecimal: true)} دينار',
-                                              style: const TextStyle(fontSize: 12),
-                                            ),
-                                          ),
-                                          if (adj.note?.isNotEmpty == true)
-                                            Text(
-                                              '(${adj.note})',
-                                              style: TextStyle(
-                                                fontSize: 10,
-                                                color: Colors.grey[600],
-                                                fontStyle: FontStyle.italic,
+                                            if (itemAdjustments.isNotEmpty) ...[
+                                              SingleChildScrollView(
+                                                scrollDirection: Axis.horizontal,
+                                                child: DataTable(
+                                                  headingRowHeight: 32,
+                                                  dataRowMinHeight: 32,
+                                                  dataRowMaxHeight: 40,
+                                                  columns: const [
+                                                    DataColumn(label: Text('ت')),
+                                                    DataColumn(label: Text('المبلغ')),
+                                                    DataColumn(label: Text('ID')),
+                                                    DataColumn(label: Text('التفاصيل')),
+                                                    DataColumn(label: Text('العدد')),
+                                                    DataColumn(label: Text('نوع البيع')),
+                                                    DataColumn(label: Text('السعر')),
+                                                    DataColumn(label: Text('عدد الوحدات')),
+                                                    DataColumn(label: Text('التاريخ/الوقت')),
+                                                  ],
+                                                  rows: List<DataRow>.generate(
+                                                    itemAdjustments.length,
+                                                    (index) {
+                                                      final adj = itemAdjustments[index];
+                                                      final double quantity = adj.quantity ?? 0.0;
+                                                      final double price = adj.price ?? 0.0;
+                                                      final double rowAmount = (quantity * price);
+                                                      final String sign = adj.type == 'debit' ? '+' : '−';
+                                                      final String dt = '${adj.createdAt.year}/${adj.createdAt.month.toString().padLeft(2,'0')}/${adj.createdAt.day.toString().padLeft(2,'0')} ${adj.createdAt.hour.toString().padLeft(2,'0')}:${adj.createdAt.minute.toString().padLeft(2,'0')}';
+                                                      return DataRow(cells: [
+                                                        DataCell(Text('${index + 1}')),
+                                                        DataCell(Row(
+                                                          mainAxisSize: MainAxisSize.min,
+                                                          children: [
+                                                            Text(sign, style: TextStyle(color: adj.type == 'debit' ? Colors.green[700] : Colors.red[700], fontWeight: FontWeight.bold)),
+                                                            const SizedBox(width: 4),
+                                                            Text(formatNumber(rowAmount, forceDecimal: true)),
+                                                          ],
+                                                        )),
+                                                        DataCell(Text(adj.productId?.toString() ?? '')),
+                                                        DataCell(Text(adj.productName ?? '')),
+                                                        DataCell(Text(quantity.toStringAsFixed(2))),
+                                                        DataCell(Text(adj.saleType ?? '')),
+                                                        DataCell(Text(price.toStringAsFixed(2))),
+                                                        DataCell(Text((adj.unitsInLargeUnit ?? 0).toString())),
+                                                        DataCell(Text(dt)),
+                                                      ]);
+                                                    },
+                                                  ),
+                                                ),
                                               ),
-                                            ),
-                                        ],
-                                      ),
-                                    ))),
+                                              const SizedBox(height: 8),
+                                            ],
+
+                                            if (amountOnlyAdjustments.isNotEmpty) ...[
+                                              DataTable(
+                                                headingRowHeight: 32,
+                                                dataRowMinHeight: 32,
+                                                dataRowMaxHeight: 40,
+                                                columns: const [
+                                                  DataColumn(label: Text('ملاحظة')),
+                                                  DataColumn(label: Text('النوع')),
+                                                  DataColumn(label: Text('المبلغ')),
+                                                  DataColumn(label: Text('التاريخ/الوقت')),
+                                                ],
+                                                rows: amountOnlyAdjustments.map((adj) {
+                                                  final String dt = '${adj.createdAt.year}/${adj.createdAt.month.toString().padLeft(2,'0')}/${adj.createdAt.day.toString().padLeft(2,'0')} ${adj.createdAt.hour.toString().padLeft(2,'0')}:${adj.createdAt.minute.toString().padLeft(2,'0')}';
+                                                  return DataRow(cells: [
+                                                    DataCell(Text(adj.note ?? '')),
+                                                    DataCell(Text(adj.type == 'debit' ? 'إضافة' : 'حذف')),
+                                                    DataCell(Text(formatNumber(adj.amountDelta, forceDecimal: true))),
+                                                    DataCell(Text(dt)),
+                                                  ]);
+                                                }).toList(),
+                                              ),
+                                            ],
+                                          ],
+                                        );
+                                      },
+                                    ),
                                   ],
                                 ),
                               ),

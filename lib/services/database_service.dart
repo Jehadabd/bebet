@@ -1342,17 +1342,26 @@ class DatabaseService {
               await db.transaction((txn) async {
                 final customer = await getCustomerByIdUsingTransaction(txn, invoice.customerId!);
                 if (customer != null) {
-                  final newDebt = customer.currentTotalDebt + debtDelta;
+                  final double currentDebt = customer.currentTotalDebt;
+                  double intendedNewDebt = currentDebt + debtDelta;
+                  double appliedDelta = debtDelta;
+                  double refundCash = 0.0;
+                  // لا نسمح بأن يصبح الدين سالباً؛ الفائض يُعاد نقداً
+                  if (intendedNewDebt < 0) {
+                    refundCash = -intendedNewDebt; // مقدار النقد الواجب إرجاعه
+                    appliedDelta = -currentDebt;   // خفض الدين حتى الصفر فقط
+                    intendedNewDebt = 0.0;
+                  }
                   await txn.update('customers', {
-                    'current_total_debt': newDebt,
+                    'current_total_debt': intendedNewDebt,
                     'last_modified_at': DateTime.now().toIso8601String(),
                   }, where: 'id = ?', whereArgs: [customer.id]);
                   await txn.insert('transactions', {
                     'customer_id': customer.id,
                     'transaction_date': DateTime.now().toIso8601String(),
-                    'amount_changed': debtDelta,
-                    'new_balance_after_transaction': newDebt,
-                    'transaction_note': (adjustment.type == 'debit' ? 'تسوية إضافة' : 'تسوية حذف') + ' مرتبطة بالفاتورة رقم ${invoice.id}',
+                    'amount_changed': appliedDelta,
+                    'new_balance_after_transaction': intendedNewDebt,
+                    'transaction_note': ((adjustment.type == 'debit' ? 'تسوية إضافة' : 'تسوية حذف') + ' مرتبطة بالفاتورة رقم ${invoice.id}' + (refundCash > 0 ? ' | استرجاع نقدي للعميل: ' + refundCash.toStringAsFixed(0) : '')),
                     'transaction_type': 'SETTLEMENT',
                     'description': 'Invoice settlement adjustment',
                     'created_at': DateTime.now().toIso8601String(),
@@ -1386,17 +1395,25 @@ class DatabaseService {
                   await db.transaction((txn) async {
                     final customer = await getCustomerByIdUsingTransaction(txn, invoice.customerId!);
                     if (customer != null) {
-                      final newDebt = customer.currentTotalDebt + debtDelta;
+                      final double currentDebt = customer.currentTotalDebt;
+                      double intendedNewDebt = currentDebt + debtDelta;
+                      double appliedDelta = debtDelta;
+                      double refundCash = 0.0;
+                      if (intendedNewDebt < 0) {
+                        refundCash = -intendedNewDebt;
+                        appliedDelta = -currentDebt;
+                        intendedNewDebt = 0.0;
+                      }
                       await txn.update('customers', {
-                        'current_total_debt': newDebt,
+                        'current_total_debt': intendedNewDebt,
                         'last_modified_at': DateTime.now().toIso8601String(),
                       }, where: 'id = ?', whereArgs: [customer.id]);
                       await txn.insert('transactions', {
                         'customer_id': customer.id,
                         'transaction_date': DateTime.now().toIso8601String(),
-                        'amount_changed': debtDelta,
-                        'new_balance_after_transaction': newDebt,
-                        'transaction_note': (adjustment.type == 'debit' ? 'تسوية إضافة' : 'تسوية حذف') + ' مرتبطة بالفاتورة رقم ${invoice.id}',
+                        'amount_changed': appliedDelta,
+                        'new_balance_after_transaction': intendedNewDebt,
+                        'transaction_note': ((adjustment.type == 'debit' ? 'تسوية إضافة' : 'تسوية حذف') + ' مرتبطة بالفاتورة رقم ${invoice.id}' + (refundCash > 0 ? ' | استرجاع نقدي للعميل: ' + refundCash.toStringAsFixed(0) : '')),
                         'transaction_type': 'SETTLEMENT',
                         'description': 'Invoice settlement adjustment',
                         'created_at': DateTime.now().toIso8601String(),
