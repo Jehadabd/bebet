@@ -1516,36 +1516,8 @@ class DatabaseService {
     // Calculate the change in debt
     final debtChange = newDebtContribution - oldDebtContribution;
 
-    // Update customer's debt if a customer is linked and there's a debt change
-    if (invoice.customerId != null && debtChange != 0) {
-      final customer = await getCustomerById(
-          invoice.customerId!); // Use the customerId from the invoice
-      if (customer != null) {
-        final updatedCustomer = customer.copyWith(
-          currentTotalDebt: customer.currentTotalDebt + debtChange,
-          lastModifiedAt: DateTime.now(),
-        );
-        await updateCustomer(updatedCustomer);
-
-        // Record the debt change transaction
-        await insertTransaction(
-          DebtTransaction(
-            id: null,
-            customerId: customer.id!,
-            invoiceId: invoice.id!,
-            amountChanged:
-                debtChange, // Positive for increase, negative for decrease
-            transactionDate: DateTime.now(),
-            newBalanceAfterTransaction: customer.currentTotalDebt +
-                debtChange, // This will be the balance AFTER this transaction
-            transactionNote: _generateInvoiceUpdateTransactionNote(
-                oldInvoice, invoice, debtChange), // Generate a descriptive note
-            transactionType: 'Invoice_Debt_Adjustment',
-            createdAt: DateTime.now(),
-          ),
-        );
-      }
-    }
+    // Note: Debt transaction handling is now done in create_invoice_screen.dart
+    // to avoid duplicate transactions. This method only updates the invoice.
 
     // Update installer's total billed amount if installer name changed or total amount changed
     if (oldInvoice.installerName != invoice.installerName ||

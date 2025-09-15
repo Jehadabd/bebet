@@ -289,6 +289,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       _installerNameController.addListener(_onFieldChanged);
       _paidAmountController.addListener(_onFieldChanged);
       _discountController.addListener(_onFieldChanged);
+      _discountController.addListener(_onDiscountChanged);
 
       if (_invoiceToManage != null) {
         print(
@@ -393,6 +394,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         _totalAmountController.text = _invoiceItems
             .fold(0.0, (sum, item) => sum + item.itemTotal)
             .toStringAsFixed(2);
+        
+        // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً
+        if (_invoiceToManage != null && _paymentType == 'نقد' && !_isViewOnly) {
+          final newTotal = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal) - _discount;
+          _paidAmountController.text = formatNumber(newTotal);
+        }
       });
     } catch (e) {
       print('Error loading auto-saved data: $e');
@@ -451,6 +458,24 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     }
   }
 
+  // معالج تغيير الخصم
+  void _onDiscountChanged() {
+    try {
+      final discountText = _discountController.text.replaceAll(',', '');
+      final newDiscount = double.tryParse(discountText) ?? 0.0;
+      _discount = newDiscount;
+      
+      // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً
+      if (_invoiceToManage != null && _paymentType == 'نقد' && !_isViewOnly) {
+        final currentTotalAmount = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+        final newTotal = currentTotalAmount - _discount;
+        _paidAmountController.text = formatNumber(newTotal);
+      }
+    } catch (e) {
+      print('Error in onDiscountChanged: $e');
+    }
+  }
+
   Future<void> _loadInvoiceItems() async {
     try {
       if (_invoiceToManage != null && _invoiceToManage!.id != null) {
@@ -491,6 +516,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       _installerNameController.removeListener(_onFieldChanged);
       _paidAmountController.removeListener(_onFieldChanged);
       _discountController.removeListener(_onFieldChanged);
+      _discountController.removeListener(_onDiscountChanged);
 
       // إلغاء المؤقت
       _debounceTimer?.cancel();
@@ -608,6 +634,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       if (_discount < 0) {
         _discount = 0.0;
         _discountController.text = formatNumber(0);
+      }
+      
+      // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً عند تغيير الخصم
+      if (_invoiceToManage != null && _paymentType == 'نقد' && !_isViewOnly) {
+        final newTotal = currentTotalAmount - _discount;
+        _paidAmountController.text = formatNumber(newTotal);
       }
     } catch (e) {
       print('Error in guardDiscount: $e');
@@ -782,6 +814,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           _currentUnitHierarchy = [];
           _guardDiscount();
           _updatePaidAmountIfCash();
+          
+          // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً
+          if (_invoiceToManage != null && _paymentType == 'نقد' && !_isViewOnly) {
+            final newTotal = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal) - _discount;
+            _paidAmountController.text = formatNumber(newTotal);
+          }
+          
           _autoSave();
           if (_invoiceToManage != null &&
               _invoiceToManage!.status == 'معلقة' &&
@@ -842,6 +881,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         _invoiceItems.removeAt(index);
         _guardDiscount();
         _updatePaidAmountIfCash();
+        
+        // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً
+        if (_invoiceToManage != null && _paymentType == 'نقد' && !_isViewOnly) {
+          final newTotal = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal) - _discount;
+          _paidAmountController.text = formatNumber(newTotal);
+        }
+        
         _recalculateTotals();
         _autoSave();
         if (_invoiceToManage != null &&
@@ -862,6 +908,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   Future<Invoice?> _saveInvoice({bool printAfterSave = false}) async {
     if (!_formKey.currentState!.validate()) return null;
+    
+    // حفظ حالة "فاتورة جديدة" قبل أي عمليات أخرى
+    final bool isNewInvoice = _invoiceToManage == null;
+    
+    print('=== بداية حفظ الفاتورة ===');
+    print('هل فاتورة جديدة: $isNewInvoice');
+    print('معرف الفاتورة الحالية: ${_invoiceToManage?.id}');
     print('--- بيانات الفاتورة عند الحفظ ---');
     print('اسم العميل: ${_customerNameController.text}');
     print('رقم الهاتف: ${_customerPhoneController.text}');
@@ -911,9 +964,26 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
       double currentTotalAmount =
           _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-      double paid = double.tryParse(_paidAmountController.text.replaceAll(',', '')) ?? 0.0;
-      double debt = (currentTotalAmount - _discount) - paid;
       double totalAmount = currentTotalAmount - _discount;
+      
+      // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً
+      double paid = double.tryParse(_paidAmountController.text.replaceAll(',', '')) ?? 0.0;
+      if (_invoiceToManage != null && _paymentType == 'نقد') {
+        paid = totalAmount; // للفواتير النقدية المعدلة، المبلغ المدفوع = الإجمالي الجديد
+        _paidAmountController.text = formatNumber(paid);
+      }
+      
+      double debt = totalAmount - paid;
+      
+      print('=== معلومات الفاتورة ===');
+      print('نوع الدفع: $_paymentType');
+      print('إجمالي الفاتورة: $totalAmount');
+      print('المبلغ المدفوع: $paid');
+      print('المبلغ المتبقي (الدين): $debt');
+      print('اسم العميل: ${customer?.name}');
+      print('معرف العميل: ${customer?.id}');
+      print('الدين الحالي للعميل: ${customer?.currentTotalDebt}');
+      print('=== نهاية معلومات الفاتورة ===');
 
       // تحقق من نسبة الخصم
       final totalAmountForDiscount =
@@ -1060,27 +1130,152 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             'Inserted new invoice. Invoice ID: $invoiceId, Status: ${invoice.status}');
       }
 
-      if (_paymentType == 'دين' && customer != null && debt > 0) {
-        final updatedCustomer = customer.copyWith(
-          currentTotalDebt: (customer.currentTotalDebt) + debt,
-          lastModifiedAt: DateTime.now(),
-        );
-        await _db.updateCustomer(updatedCustomer);
+      // تحديث الديون بناءً على نوع العملية
+      if (customer != null) {
+        
+        print('=== بداية منطق تحديث الديون ===');
+        print('نوع الدفع: $_paymentType');
+        print('هل فاتورة جديدة: $isNewInvoice');
+        print('المبلغ المتبقي (debt): $debt');
+        
+        double debtChange = 0.0;
+        String transactionDescription = '';
+        
+        if (!isNewInvoice) {
+          // تعديل فاتورة موجودة - حساب الفرق
+          final oldTotal = _invoiceToManage!.totalAmount;
+          final newTotal = totalAmount;
+          final oldPaid = _invoiceToManage!.amountPaidOnInvoice;
+          final newPaid = paid;
+          
+          if (_paymentType == 'نقد') {
+            // للفواتير النقدية: المبلغ المدفوع يجب أن يساوي الإجمالي الجديد
+            debtChange = newTotal - oldTotal;
+            if (debtChange != 0) {
+              transactionDescription = debtChange > 0 
+                  ? 'تعديل فاتورة نقدية رقم $invoiceId - إضافة ${debtChange.abs().toStringAsFixed(2)} دينار'
+                  : 'تعديل فاتورة نقدية رقم $invoiceId - خصم ${debtChange.abs().toStringAsFixed(2)} دينار';
+            }
+          } else {
+            // للفواتير بالدين: حساب الفرق في المبلغ المتبقي
+            final oldRemaining = oldTotal - oldPaid;
+            final newRemaining = newTotal - newPaid;
+            debtChange = newRemaining - oldRemaining;
+            
+            if (debtChange != 0) {
+              transactionDescription = debtChange > 0 
+                  ? 'تعديل فاتورة رقم $invoiceId - إضافة ${debtChange.abs().toStringAsFixed(2)} دينار'
+                  : 'تعديل فاتورة رقم $invoiceId - خصم ${debtChange.abs().toStringAsFixed(2)} دينار';
+            }
+          }
+        } else {
+          // فاتورة جديدة
+          print('=== فاتورة جديدة ===');
+          print('نوع الدفع: $_paymentType');
+          print('المبلغ المتبقي (debt): $debt');
+          
+          if (_paymentType == 'دين') {
+            print('دخول منطق الفاتورة الجديدة بالدين');
+            debtChange = debt; // احفظ الدين حتى لو كان صفر أو سالب
+            transactionDescription = debt > 0 
+                ? 'دين فاتورة رقم $invoiceId'
+                : debt < 0 
+                    ? 'دفعة زائدة لفاتورة رقم $invoiceId'
+                    : 'فاتورة رقم $invoiceId - مدفوعة بالكامل';
+            
+            print('=== فاتورة جديدة بالدين ===');
+            print('المبلغ المتبقي (debt): $debt');
+            print('تغيير الدين (debtChange): $debtChange');
+            print('وصف المعاملة: $transactionDescription');
+            print('=== نهاية فاتورة جديدة بالدين ===');
+          } else {
+            print('فاتورة جديدة نقدية - لا يتم حفظ دين');
+          }
+          print('=== نهاية فاتورة جديدة ===');
+        }
+        
+        print('=== فحص شرط حفظ الدين ===');
+        print('نوع الدفع: $_paymentType');
+        print('هل العميل موجود: ${customer != null}');
+        print('معرف العميل: ${customer?.id}');
+        print('تغيير الدين: $debtChange');
+        print('هل فاتورة جديدة: $isNewInvoice');
+        print('هل سيتم حفظ معاملة الدين: ${_paymentType == 'دين' && customer != null && debtChange != 0}');
+        print('=== نهاية فحص شرط حفظ الدين ===');
+        
+        // للفواتير بالدين: احفظ معاملة الدين فقط إذا كان هناك تغيير
+        if (_paymentType == 'دين' && customer != null && debtChange != 0) {
+          print('=== حفظ معاملة الدين ===');
+          print('نوع الدفع: $_paymentType');
+          print('تغيير الدين: $debtChange');
+          print('وصف المعاملة: $transactionDescription');
+          print('الدين السابق: ${customer.currentTotalDebt}');
+          print('الدين الجديد: ${customer.currentTotalDebt + debtChange}');
+          print('معرف العميل: ${customer.id}');
+          print('معرف الفاتورة: $invoiceId');
+          
+          final updatedCustomer = customer.copyWith(
+            currentTotalDebt: (customer.currentTotalDebt) + debtChange,
+            lastModifiedAt: DateTime.now(),
+          );
+          await _db.updateCustomer(updatedCustomer);
 
-        final debtTransaction = DebtTransaction(
-          id: null,
-          customerId: customer.id!,
-          amountChanged: debt,
-          transactionType: 'invoice_debt',
-          description: 'دين فاتورة رقم ${invoiceId ?? _invoiceToManage?.id}',
-          newBalanceAfterTransaction: updatedCustomer.currentTotalDebt,
-          invoiceId: invoiceId,
-        );
-        await _db.insertDebtTransaction(debtTransaction);
+          final debtTransaction = DebtTransaction(
+            id: null,
+            customerId: customer.id!,
+            amountChanged: debtChange,
+            transactionType: _invoiceToManage != null ? 'invoice_edit' : 'invoice_debt',
+            description: transactionDescription,
+            newBalanceAfterTransaction: updatedCustomer.currentTotalDebt,
+            invoiceId: invoiceId,
+          );
+          await _db.insertDebtTransaction(debtTransaction);
+          print('تم حفظ معاملة الدين بنجاح');
+          print('تم تحديث دين العميل إلى: ${updatedCustomer.currentTotalDebt}');
+          print('=== نهاية حفظ معاملة الدين ===');
+        } else {
+          print('=== لم يتم حفظ معاملة الدين ===');
+          print('السبب: ${_paymentType != 'دين' ? 'نوع الدفع ليس دين' : customer == null ? 'العميل غير موجود' : 'تغيير الدين = 0'}');
+          print('=== نهاية عدم حفظ معاملة الدين ===');
+        }
       }
 
       String extraMsg = '';
-      if (_paymentType == 'دين') {
+      if (_invoiceToManage != null) {
+        // تعديل فاتورة موجودة - رسالة فقط (لا نحفظ معاملة هنا)
+        if (customer != null) {
+          final oldTotal = _invoiceToManage!.totalAmount;
+          final newTotal = totalAmount;
+          final oldPaid = _invoiceToManage!.amountPaidOnInvoice;
+          final newPaid = paid;
+          
+          if (_paymentType == 'نقد') {
+            // للفواتير النقدية
+            final debtChange = newTotal - oldTotal;
+            if (debtChange != 0) {
+              extraMsg = debtChange > 0 
+                  ? '\nتم إضافة ${debtChange.abs().toStringAsFixed(2)} دينار إلى حساب العميل (فاتورة نقدية)'
+                  : '\nتم خصم ${debtChange.abs().toStringAsFixed(2)} دينار من حساب العميل (فاتورة نقدية)';
+            } else {
+              extraMsg = '\nلم يتغير المبلغ (فاتورة نقدية)';
+            }
+          } else {
+            // للفواتير بالدين - رسالة فقط (المعاملة تم حفظها أعلاه)
+            final oldRemaining = oldTotal - oldPaid;
+            final newRemaining = newTotal - newPaid;
+            final debtChange = newRemaining - oldRemaining;
+            
+            if (debtChange != 0) {
+              extraMsg = debtChange > 0 
+                  ? '\nتم إضافة ${debtChange.abs().toStringAsFixed(2)} دينار إلى حساب العميل'
+                  : '\nتم خصم ${debtChange.abs().toStringAsFixed(2)} دينار من حساب العميل';
+            } else {
+              extraMsg = '\nلم يتغير المبلغ المتبقي';
+            }
+          }
+        }
+      } else if (_paymentType == 'دين') {
+        // فاتورة جديدة - رسالة فقط (المعاملة تم حفظها أعلاه)
         extraMsg =
             '\nتمت إضافة ${debt.toStringAsFixed(2)} دينار كدين للعميل لأن الفاتورة ${currentTotalAmount.toStringAsFixed(2)} - خصم ${_discount.toStringAsFixed(2)} - مسدد ${paid.toStringAsFixed(2)}';
       }
@@ -1101,14 +1296,23 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       });
 
       if (mounted) {
+        final actionText = _invoiceToManage != null ? 'تم تعديل الفاتورة بنجاح' : 'تم حفظ الفاتورة بنجاح';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('تم حفظ الفاتورة بنجاح$extraMsg'),
+            content: Text('$actionText$extraMsg'),
             backgroundColor: Colors.green,
           ),
         );
-        Navigator.of(context)
-            .popUntil((route) => route.isFirst); // العودة للصفحة الرئيسية
+        
+        if (_invoiceToManage == null) {
+          // العودة للصفحة الرئيسية فقط للفواتير الجديدة
+          Navigator.of(context).popUntil((route) => route.isFirst);
+        } else {
+          // للفواتير المعدلة، البقاء في نفس الصفحة مع تفعيل وضع العرض
+          setState(() {
+            _isViewOnly = true;
+          });
+        }
       }
       return updatedInvoice;
     } catch (e) {
@@ -2134,6 +2338,41 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       _settleUnitCtrl.clear();
       _settlementPaymentType = (_invoiceToManage?.paymentType == 'دين') ? 'دين' : 'نقد';
     });
+  }
+
+  // دالة تفعيل وضع التعديل
+  void _enableEditMode() {
+    setState(() {
+      _isViewOnly = false;
+    });
+    
+    // إظهار رسالة تأكيد
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('تم تفعيل وضع التعديل - يمكنك الآن إضافة أو حذف أصناف'),
+        backgroundColor: Colors.blue,
+        duration: Duration(seconds: 3),
+      ),
+    );
+  }
+
+  // دالة إلغاء التعديل
+  void _cancelEdit() {
+    setState(() {
+      _isViewOnly = true;
+    });
+    
+    // إعادة تحميل البيانات الأصلية
+    _loadInvoiceItems();
+    
+    // إظهار رسالة تأكيد
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('تم إلغاء التعديل - تم استعادة البيانات الأصلية'),
+        backgroundColor: Colors.orange,
+        duration: Duration(seconds: 2),
+      ),
+    );
   }
 
   // فحص إذا كانت التسويات الراجعة تتجاوز المبلغ المتبقي الفعلي
@@ -3305,9 +3544,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       ),
       child: Scaffold(
         appBar: AppBar(
-          title: Text(_invoiceToManage != null && !_isViewOnly
-              ? 'تعديل فاتورة'
-              : (_isViewOnly ? 'عرض فاتورة' : 'إنشاء فاتورة')),
+          title: Text(_invoiceToManage != null 
+              ? (_isViewOnly ? 'عرض فاتورة' : 'تعديل فاتورة')
+              : 'إنشاء فاتورة'),
           centerTitle: true,
           actions: [
             // زر جديد لإعادة التعيين
@@ -3325,12 +3564,38 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               tooltip: 'طباعة الفاتورة',
               onPressed: _invoiceItems.isEmpty ? null : _printInvoice,
             ),
-            if (_invoiceToManage != null && _isViewOnly)
+            if (_invoiceToManage != null && _isViewOnly) ...[
+              IconButton(
+                icon: const Icon(Icons.edit),
+                tooltip: 'تعديل الفاتورة',
+                onPressed: _enableEditMode,
+              ),
               IconButton(
                 icon: const Icon(Icons.playlist_add),
-                tooltip: 'تسوية الفاتورة',
-                onPressed: _openSettlementChoice,
+                tooltip: 'تسوية الفاتورة - تحت التطوير',
+                onPressed: () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('هذه الميزة تحت التطوير حالياً'),
+                      backgroundColor: Colors.orange,
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                },
               ),
+            ],
+            if (_invoiceToManage != null && !_isViewOnly) ...[
+              IconButton(
+                icon: const Icon(Icons.save),
+                tooltip: 'حفظ التعديلات',
+                onPressed: _saveInvoice,
+              ),
+              IconButton(
+                icon: const Icon(Icons.cancel),
+                tooltip: 'إلغاء التعديل',
+                onPressed: _cancelEdit,
+              ),
+            ],
           ],
         ),
         body: Padding(
