@@ -2,6 +2,7 @@
 // screens/inventory_screen.dart
 import 'package:flutter/material.dart';
 import '../services/database_service.dart'; // Assumed DatabaseService exists
+import '../models/monthly_overview.dart';
 import 'package:intl/intl.dart'; // For formatting dates and currency
 
 class InventoryScreen extends StatefulWidget {
@@ -13,7 +14,7 @@ class InventoryScreen extends StatefulWidget {
 
 class _InventoryScreenState extends State<InventoryScreen> {
   final DatabaseService _db = DatabaseService();
-  Map<String, MonthlySalesSummary> _monthlySummaries = {};
+  Map<String, MonthlyOverview> _monthlySummaries = {};
   bool _isLoading = true;
 
   @override
@@ -197,7 +198,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
                       final date = DateTime.parse(
                           '${monthYear.split('-')[0]}-${monthYear.split('-')[1].padLeft(2, '0')}-01');
-                      final monthName = DateFormat.yMMMM('ar').format(date);
+                      final monthName = '${date.year}-${date.month.toString().padLeft(2, '0')}';
                       final isCurrentMonth =
                           date.year == now.year && date.month == now.month;
 

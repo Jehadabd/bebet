@@ -10,6 +10,9 @@ import '../models/invoice.dart'; // تأكد من أن المسار صحيح و�
 import '../models/invoice_item.dart'; // تأكد من أن المسار صحيح
 import '../models/installer.dart'; // تأكد من أن المسار صحيح
 import '../models/invoice_adjustment.dart';
+import '../models/person_data.dart';
+import '../models/inventory_data.dart';
+import '../models/monthly_overview.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:pdf/pdf.dart';
 import 'package:path_provider/path_provider.dart';
@@ -1833,6 +1836,67 @@ class DatabaseService {
         db, id); //  يمكن إعادة استخدام دالة المعاملة
   }
 
+  /// جلب آخر N أسعار لنفس العميل ولنفس المنتج من الفواتير "المحفوظة"
+  /// تُستخدم لميزة تنبيه سجل الأسعار.
+  /// تُعيد قائمة من الخرائط تحتوي: applied_price, invoice_date, sale_type
+  Future<List<Map<String, dynamic>>> getLastNPricesForCustomerProduct({
+    required String customerName,
+    String? customerPhone,
+    required String productName,
+    int limit = 3,
+    String? saleType,
+  }) async {
+    final db = await database;
+    try {
+      // نستخدم LEFT JOIN على customers للسماح بالفواتير التي لا تملك customer_id
+      // المطابقة تتم بأحد مسارين:
+      // 1) customer_id موجود: طابق على اسم ورقم هاتف العميل (إن وُجد الهاتف)
+      // 2) customer_id غير موجود: طابق على اسم العميل النصي داخل الفاتورة
+      final bool noPhone = customerPhone == null || customerPhone.trim().isEmpty;
+      final String phoneParam = (customerPhone ?? '').trim();
+      final String ignoreFlag = noPhone ? '1' : '0';
+      final List<dynamic> args = [
+        customerName.trim(),                // c.name = ?
+        phoneParam,                         // ? = ''
+        ignoreFlag,                         // ? = '1'
+        phoneParam,                         // c.phone = ?
+        customerName.trim(),                // i.customer_name = ? (عند عدم وجود customer_id)
+        productName.trim(),                 // ii.product_name = ?
+      ];
+      String saleTypeFilter = '';
+      if (saleType != null && saleType.trim().isNotEmpty) {
+        saleTypeFilter = ' AND ii.sale_type = ? ';
+        args.add(saleType.trim());
+      }
+      args.add(limit);
+
+      final sql = '''
+        SELECT 
+          ii.applied_price AS applied_price,
+          i.invoice_date AS invoice_date,
+          ii.sale_type AS sale_type,
+          i.id AS invoice_id
+        FROM invoices i
+        JOIN invoice_items ii ON ii.invoice_id = i.id
+        LEFT JOIN customers c ON c.id = i.customer_id
+        WHERE i.status = 'محفوظة'
+          AND (
+            (i.customer_id IS NOT NULL AND c.name = ? AND ( ? = '' OR ? = '1' OR c.phone = ?))
+            OR (i.customer_id IS NULL AND i.customer_name = ?)
+          )
+          AND ii.product_name = ?
+          $saleTypeFilter
+        ORDER BY i.invoice_date DESC
+        LIMIT ?
+      ''';
+
+      final rows = await db.rawQuery(sql, args);
+      return rows;
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
   Future<List<InvoiceItem>> getInvoiceItems(int invoiceId) async {
     final db = await database;
     return await getInvoiceItemsUsingTransaction(
@@ -1840,18 +1904,24 @@ class DatabaseService {
   }
 
   // --- تقرير المبيعات الشهري ---
-  Future<Map<String, MonthlySalesSummary>> getMonthlySalesSummary({DateTime? fromDate}) async {
+  Future<Map<String, MonthlyOverview>> getMonthlySalesSummary({DateTime? fromDate}) async {
     final db = await database;
     try {
-      // استخدم التاريخ المحدد إن وُجد، وإلا بداية اليوم الحالي
-      final now = DateTime.now();
-      final DateTime startTs = fromDate ?? DateTime(now.year, now.month, now.day);
-      final List<Map<String, dynamic>> invoiceMaps = await db.query(
+      // إذا تم تمرير fromDate نُطبّق الفلترة، وإلا نجلب جميع الفواتير لحساب الجرد الشهري بشكل صحيح
+      List<Map<String, dynamic>> invoiceMaps;
+      if (fromDate != null) {
+        invoiceMaps = await db.query(
         'invoices',
         where: 'invoice_date >= ?',
-        whereArgs: [startTs.toIso8601String()],
+          whereArgs: [fromDate.toIso8601String()],
         orderBy: 'invoice_date DESC',
       );
+      } else {
+        invoiceMaps = await db.query(
+          'invoices',
+          orderBy: 'invoice_date DESC',
+        );
+      }
       //  تحويل جميع الخرائط إلى كائنات Invoice أولاً للتعامل مع التواريخ بشكل صحيح
       final List<Invoice> allInvoices =
           invoiceMaps.map((map) => Invoice.fromMap(map)).toList();
@@ -1870,7 +1940,7 @@ class DatabaseService {
         invoicesByMonth.putIfAbsent(monthYear, () => []).add(invoice);
       }
 
-      final Map<String, MonthlySalesSummary> monthlySummaries = {};
+      final Map<String, MonthlyOverview> monthlySummaries = {};
 
       for (var entry in invoicesByMonth.entries) {
         final monthYear = entry.key;
@@ -1908,7 +1978,8 @@ class DatabaseService {
                 ii.sale_type AS sale_type,
                 p.unit AS product_unit,
                 p.cost_price AS product_cost_price,
-                p.length_per_unit AS length_per_unit
+                p.length_per_unit AS length_per_unit,
+                p.unit_costs AS unit_costs
               FROM invoice_items ii
               JOIN products p ON p.name = ii.product_name
               WHERE ii.invoice_id = ?
@@ -1923,6 +1994,11 @@ class DatabaseService {
               final double productCost = (row['product_cost_price'] as num?)?.toDouble() ?? 0.0;
               final double? lengthPerUnit = (row['length_per_unit'] as num?)?.toDouble();
               final double? actualCostPerUnit = (row['actual_cost_per_unit'] as num?)?.toDouble();
+              final String? unitCostsJson = row['unit_costs'] as String?;
+              Map<String, dynamic> unitCosts = const {};
+              if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
+                try { unitCosts = jsonDecode(unitCostsJson) as Map<String, dynamic>; } catch (_) {}
+              }
 
               final bool soldAsLargeUnit = ql > 0;
               final double soldUnitsCount = soldAsLargeUnit ? ql : qi;
@@ -1934,10 +2010,16 @@ class DatabaseService {
 
               double costPerSoldUnit;
               if (soldAsLargeUnit) {
-                final bool isMeterRoll = productUnit == 'meter' && lengthPerUnit != null && (saleType == 'لفة');
-                costPerSoldUnit = isMeterRoll
-                    ? productCost * (lengthPerUnit ?? 1.0)
-                    : productCost * uilu;
+                // أولاً: إن كانت تكلفة الوحدة الكبيرة مخزنة استخدمها مباشرة
+                final dynamic stored = unitCosts[saleType];
+                if (stored is num) {
+                  costPerSoldUnit = stored.toDouble();
+                } else {
+                  final bool isMeterRoll = productUnit == 'meter' && lengthPerUnit != null && (saleType == 'لفة');
+                  costPerSoldUnit = isMeterRoll
+                      ? productCost * (lengthPerUnit ?? 1.0)
+                      : productCost * uilu;
+                }
               } else {
                 costPerSoldUnit = productCost;
               }
@@ -2065,7 +2147,7 @@ class DatabaseService {
           netProfit += addProfitFromAdj;
         } catch (_) {}
 
-        monthlySummaries[monthYear] = MonthlySalesSummary(
+        monthlySummaries[monthYear] = MonthlyOverview(
           monthYear: monthYear,
           totalSales: totalSales,
           netProfit: netProfit,
@@ -3335,56 +3417,126 @@ class DatabaseService {
       int customerId, int year) async {
     final db = await database;
     try {
+      // الخطوة 1: إحضار مجاميع المبيعات وعدد الفواتير والمعاملات شهرياً (بدون أرباح)
       final List<Map<String, dynamic>> maps = await db.rawQuery('''
         SELECT 
-          strftime('%m', i.invoice_date) as month,
-          SUM(i.total_amount) as total_sales,
-          SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
-              (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit
-                    ELSE ii.quantity_individual END)) as total_profit,
-          COUNT(DISTINCT i.id) as total_invoices,
-          COUNT(DISTINCT t.id) as total_transactions,
-          SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit
-                    ELSE ii.quantity_individual END)) as total_selling_price,
-          SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END) as total_quantity
-        FROM invoices i
-        LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
-        LEFT JOIN products p ON ii.product_name = p.name
-        LEFT JOIN transactions t ON i.customer_id = t.customer_id 
-          AND strftime('%Y', i.invoice_date) = strftime('%Y', t.transaction_date)
-          AND strftime('%m', i.invoice_date) = strftime('%m', t.transaction_date)
-        WHERE i.customer_id = ? AND strftime('%Y', i.invoice_date) = ? AND i.status = 'محفوظة'
-        GROUP BY strftime('%m', i.invoice_date)
-        ORDER BY month ASC
-      ''', [customerId, year.toString()]);
+          m.month AS month,
+          m.total_sales AS total_sales,
+          m.total_invoices AS total_invoices,
+          COALESCE(t.total_transactions, 0) AS total_transactions
+        FROM (
+          SELECT 
+            strftime('%m', invoice_date) AS month,
+            SUM(total_amount) AS total_sales,
+            COUNT(DISTINCT id) AS total_invoices
+          FROM invoices
+          WHERE customer_id = ? AND strftime('%Y', invoice_date) = ? AND status = 'محفوظة'
+          GROUP BY strftime('%m', invoice_date)
+        ) m
+        LEFT JOIN (
+          SELECT strftime('%m', transaction_date) AS month, COUNT(DISTINCT id) AS total_transactions
+          FROM transactions
+          WHERE customer_id = ? AND strftime('%Y', transaction_date) = ?
+          GROUP BY strftime('%m', transaction_date)
+        ) t ON t.month = m.month
+        ORDER BY m.month ASC
+      ''', [customerId, year.toString(), customerId, year.toString()]);
  
       final Map<int, PersonMonthData> monthlyData = {};
       for (final map in maps) {
         final month = int.parse(map['month'] as String);
-        final totalSellingPrice = (map['total_selling_price'] ?? 0.0) as double;
-        final totalQuantity = (map['total_quantity'] ?? 0.0) as double;
-        
-        // حساب متوسط سعر البيع
-        double averageSellingPrice = 0.0;
-        if (totalQuantity > 0) {
-          averageSellingPrice = totalSellingPrice / totalQuantity;
-        }
-        
         monthlyData[month] = PersonMonthData(
-          totalProfit: (map['total_profit'] ?? 0.0) as double,
+          totalProfit: 0.0, // سنحسبها بدقة في الخطوة 2
           totalSales: (map['total_sales'] ?? 0.0) as double,
           totalInvoices: (map['total_invoices'] ?? 0) as int,
           totalTransactions: (map['total_transactions'] ?? 0) as int,
-          averageSellingPrice: averageSellingPrice,
-          totalQuantity: totalQuantity,
+          invoices: const [],
         );
       }
  
-      // دمج تسويات البنود شهرياً لهذا العميل
+      // الخطوة 2: حساب الربح بدقة لكل بند بيع وفق منطق تقارير البضاعة (على مستوى وحدة البيع)
+      final List<Map<String, dynamic>> itemRows = await db.rawQuery('''
+        SELECT 
+          strftime('%m', i.invoice_date) AS month,
+          ii.applied_price AS applied_price,
+          ii.quantity_individual AS qi,
+          ii.quantity_large_unit AS ql,
+          ii.units_in_large_unit AS uilu,
+          ii.actual_cost_price AS acp,
+          ii.cost_price AS item_cost,
+          ii.sale_type AS sale_type,
+          p.unit AS product_unit,
+          p.cost_price AS product_cost,
+          p.length_per_unit AS length_per_unit,
+          p.unit_costs AS unit_costs
+        FROM invoices i
+        JOIN invoice_items ii ON i.id = ii.invoice_id
+        LEFT JOIN products p ON ii.product_name = p.name
+        WHERE i.customer_id = ? AND strftime('%Y', i.invoice_date) = ? AND i.status = 'محفوظة'
+      ''', [customerId, year.toString()]);
+
+      for (final r in itemRows) {
+        final int month = int.parse((r['month'] as String));
+        final double applied = ((r['applied_price'] as num?) ?? 0).toDouble();
+        final double qi = ((r['qi'] as num?) ?? 0).toDouble();
+        final double ql = ((r['ql'] as num?) ?? 0).toDouble();
+        final double uilu = ((r['uilu'] as num?) ?? 0).toDouble();
+        final double? acp = (r['acp'] as num?)?.toDouble();
+        final double itemCost = ((r['item_cost'] as num?) ?? 0).toDouble();
+        final String saleType = (r['sale_type'] as String?) ?? '';
+        final String productUnit = (r['product_unit'] as String?) ?? '';
+        final double productCost = ((r['product_cost'] as num?) ?? 0).toDouble();
+        final double? lengthPerUnit = (r['length_per_unit'] as num?)?.toDouble();
+        final String? unitCostsJson = r['unit_costs'] as String?;
+        Map<String, dynamic> unitCosts = const {};
+        if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
+          try { unitCosts = jsonDecode(unitCostsJson) as Map<String, dynamic>; } catch (_) {}
+        }
+
+        final bool soldAsLargeUnit = ql > 0;
+        final double saleUnitsCount = soldAsLargeUnit ? ql : qi;
+
+        double costPerSaleUnit;
+        if (acp != null && acp > 0) {
+          // التكلفة الفعلية للوحدة المباعة
+          costPerSaleUnit = acp;
+        } else if (soldAsLargeUnit) {
+          // بيع بوحدة كبيرة: حاول استخدام التكلفة المخزنة للوحدة مباشرة إن وُجدت
+          final dynamic stored = unitCosts[saleType];
+          if (stored is num) {
+            costPerSaleUnit = stored.toDouble();
+          } else if (productUnit == 'meter' && saleType == 'لفة') {
+            costPerSaleUnit = productCost * ((lengthPerUnit ?? 1.0));
+          } else {
+            costPerSaleUnit = productCost * (uilu > 0 ? uilu : 1.0);
+          }
+        } else {
+          // بيع بالوحدة الأساسية (قطعة/متر)
+          costPerSaleUnit = itemCost > 0 ? itemCost : productCost;
+        }
+
+        final double profitContribution = (applied - costPerSaleUnit) * saleUnitsCount;
+        final existing = monthlyData[month];
+        if (existing != null) {
+          monthlyData[month] = PersonMonthData(
+            totalProfit: existing.totalProfit + profitContribution,
+            totalSales: existing.totalSales,
+            totalInvoices: existing.totalInvoices,
+            totalTransactions: existing.totalTransactions,
+            invoices: existing.invoices,
+          );
+        } else {
+          monthlyData[month] = PersonMonthData(
+            totalProfit: profitContribution,
+            totalSales: 0.0,
+            totalInvoices: 0,
+            totalTransactions: 0,
+            invoices: const [],
+          );
+        }
+      }
+
+      // الخطوة 3: دمج تسويات البنود شهرياً لهذا العميل (debit/credit) كمساهمات إضافية في المبيعات والربح
       try {
         final invIds = await db.rawQuery('''
           SELECT id 
@@ -3432,8 +3584,7 @@ class DatabaseService {
                 totalSales: existing.totalSales + salesContribution,
                 totalInvoices: existing.totalInvoices,
                 totalTransactions: existing.totalTransactions,
-                averageSellingPrice: 0.0,
-                totalQuantity: existing.totalQuantity + signedBaseQty,
+                invoices: existing.invoices,
               );
             } else {
               monthlyData[month] = PersonMonthData(
@@ -3441,24 +3592,11 @@ class DatabaseService {
                 totalSales: salesContribution,
                 totalInvoices: 0,
                 totalTransactions: 0,
-                averageSellingPrice: 0.0,
-                totalQuantity: signedBaseQty,
+                invoices: const [],
               );
             }
           }
-          // إعادة حساب متوسط سعر البيع لكل شهر
-          for (final entry in monthlyData.entries) {
-            final q = entry.value.totalQuantity;
-            final s = entry.value.totalSales;
-            monthlyData[entry.key] = PersonMonthData(
-              totalProfit: entry.value.totalProfit,
-              totalSales: s,
-              totalInvoices: entry.value.totalInvoices,
-              totalTransactions: entry.value.totalTransactions,
-              averageSellingPrice: q > 0 ? (s / q) : 0.0,
-              totalQuantity: q,
-            );
-          }
+          // لا حاجة لإعادة حساب متوسط السعر أو الكمية هنا لأن PersonMonthData لا يتضمنهما
         }
       } catch (_) {}
 
@@ -3504,6 +3642,213 @@ class DatabaseService {
           maps.length, (i) => DebtTransaction.fromMap(maps[i]));
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  /// طباعة تفصيل فاتورة محددة بالمعرف: عناصر، تحويل الكمية الأساسية، التكلفة، الربح، وإجمالي الفاتورة
+  Future<void> debugPrintInvoiceById(int invoiceId) async {
+    final db = await database;
+    try {
+      final invRows = await db.rawQuery('''
+        SELECT id, invoice_date, customer_name, total_amount, status
+        FROM invoices WHERE id = ? LIMIT 1
+      ''', [invoiceId]);
+      if (invRows.isEmpty) {
+        print('[InvoiceDebug] Invoice #$invoiceId not found');
+        return;
+      }
+      final inv = invRows.first;
+      print('[InvoiceDebug] --- Invoice #${inv['id']} date=${inv['invoice_date']} customer=${inv['customer_name']} status=${inv['status']} total=${inv['total_amount']} ---');
+
+      final itemRows = await db.rawQuery('''
+        SELECT ii.product_name, ii.applied_price,
+               ii.actual_cost_price AS acp,
+               ii.cost_price AS item_cost,
+               ii.sale_type, ii.quantity_individual, ii.quantity_large_unit, ii.units_in_large_unit,
+               p.unit AS product_unit, p.length_per_unit, p.cost_price AS product_cost, p.unit_costs AS unit_costs
+        FROM invoice_items ii
+        LEFT JOIN products p ON ii.product_name = p.name
+        WHERE ii.invoice_id = ?
+        ORDER BY ii.id ASC
+      ''', [invoiceId]);
+
+      double totalSales = 0.0;
+      double totalProfit = 0.0;
+      for (final r in itemRows) {
+        final String prod = (r['product_name'] as String?) ?? '';
+        final double applied = ((r['applied_price'] as num?) ?? 0).toDouble();
+        final double? acp = (r['acp'] as num?)?.toDouble();
+        final double itemCost = ((r['item_cost'] as num?) ?? 0).toDouble();
+        final String saleType = (r['sale_type'] as String?) ?? '';
+        final double qi = ((r['quantity_individual'] as num?) ?? 0).toDouble();
+        final double ql = ((r['quantity_large_unit'] as num?) ?? 0).toDouble();
+        final double uilu = ((r['units_in_large_unit'] as num?) ?? 0).toDouble();
+        final String productUnit = (r['product_unit'] as String?) ?? '';
+        final double? lengthPerUnit = (r['length_per_unit'] as num?)?.toDouble();
+        final double productCost = ((r['product_cost'] as num?) ?? 0).toDouble();
+        final String? unitCostsJson = r['unit_costs'] as String?;
+        Map<String, dynamic> unitCosts = const {};
+        if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
+          try { unitCosts = jsonDecode(unitCostsJson) as Map<String, dynamic>; } catch (_) {}
+        }
+
+        final bool soldAsLargeUnit = ql > 0;
+        final double saleUnitsCount = soldAsLargeUnit ? ql : qi;
+
+        double costPerSaleUnit;
+        if (acp != null && acp > 0) {
+          costPerSaleUnit = acp;
+        } else if (soldAsLargeUnit) {
+          // أولاً جرّب قراءة تكلفة الوحدة الكبيرة مباشرة من unit_costs إن كانت مخزنة
+          final dynamic stored = unitCosts[saleType];
+          if (stored is num) {
+            costPerSaleUnit = stored.toDouble();
+          } else if (productUnit == 'meter' && saleType == 'لفة') {
+            costPerSaleUnit = productCost * (lengthPerUnit ?? 1.0);
+          } else {
+            costPerSaleUnit = productCost * (uilu > 0 ? uilu : 1.0);
+          }
+        } else {
+          costPerSaleUnit = itemCost > 0 ? itemCost : productCost;
+        }
+
+        final double lineAmount = applied * saleUnitsCount;
+        final double lineCostTotal = costPerSaleUnit * saleUnitsCount;
+        final double lineProfit = lineAmount - lineCostTotal;
+        totalSales += lineAmount;
+        totalProfit += lineProfit;
+        print('[InvoiceDebug][Item] prod="$prod" type=$saleType qty=$saleUnitsCount price=$applied amount=$lineAmount costPerUnit=$costPerSaleUnit costTotal=$lineCostTotal profit=$lineProfit');
+      }
+
+      // التسويات الخاصة بهذه الفاتورة
+      final adjRows = await db.rawQuery('''
+        SELECT ia.type, ia.quantity, ia.price, ia.sale_type, ia.units_in_large_unit,
+               p.unit AS product_unit, p.cost_price AS product_cost, p.length_per_unit AS length_per_unit
+        FROM invoice_adjustments ia
+        LEFT JOIN products p ON p.id = ia.product_id
+        WHERE ia.product_id IS NOT NULL AND ia.invoice_id = ?
+      ''', [invoiceId]);
+      for (final r in adjRows) {
+        final String type = (r['type'] as String?) ?? 'debit';
+        final double qtySaleUnits = ((r['quantity'] as num?) ?? 0).toDouble();
+        final double pricePerSaleUnit = ((r['price'] as num?) ?? 0).toDouble();
+        final String saleType = (r['sale_type'] as String?) ?? ((r['product_unit'] as String?) == 'meter' ? 'متر' : 'قطعة');
+        final double unitsInLargeUnit = ((r['units_in_large_unit'] as num?)?.toDouble()) ?? 1.0;
+        final String productUnit = (r['product_unit'] as String?) ?? 'piece';
+        final double baseCost = ((r['product_cost'] as num?)?.toDouble()) ?? 0.0;
+        final double? lengthPerUnit = (r['length_per_unit'] as num?)?.toDouble();
+        if (qtySaleUnits == 0) continue;
+        final double salesContribution = (type == 'debit' ? 1 : -1) * qtySaleUnits * pricePerSaleUnit;
+        double baseQty;
+        if (productUnit == 'meter' && saleType == 'لفة') {
+          final double factor = (unitsInLargeUnit > 0) ? unitsInLargeUnit : (lengthPerUnit ?? 1.0);
+          baseQty = qtySaleUnits * factor;
+        } else if (saleType == 'قطعة' || saleType == 'متر') {
+          baseQty = qtySaleUnits;
+        } else {
+          baseQty = qtySaleUnits * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+        }
+        final double signedBaseQty = (type == 'debit' ? 1 : -1) * baseQty;
+        final double costContribution = baseCost * signedBaseQty;
+        totalSales += salesContribution;
+        totalProfit += (salesContribution - costContribution);
+        print('[InvoiceDebug][Adj] type=$type saleType=$saleType baseQty=$signedBaseQty price=$pricePerSaleUnit baseCost=$baseCost sales=$salesContribution profit=${salesContribution - costContribution}');
+      }
+
+      print('[InvoiceDebug] === Totals for invoice #$invoiceId: sales=$totalSales profit=$totalProfit ===');
+    } catch (e) {
+      print('debugPrintInvoiceById failed: $e');
+    }
+  }
+
+  Future<void> debugPrintProductsForInvoice(int invoiceId) async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> rows = await db.rawQuery('''
+        SELECT DISTINCT ii.product_name AS product_name
+        FROM invoice_items ii
+        WHERE ii.invoice_id = ?
+      ''', [invoiceId]);
+
+      if (rows.isEmpty) {
+        print('[ProductDebug] No products found for invoice #$invoiceId');
+        return;
+      }
+
+      for (final r in rows) {
+        final String productName = r['product_name'] as String;
+        final List<Map<String, dynamic>> pr = await db.rawQuery('''
+          SELECT p.name, p.unit, p.unit_price, p.cost_price, p.pieces_per_unit,
+                 p.length_per_unit, p.unit_hierarchy, p.unit_costs
+          FROM products p
+          WHERE p.name = ?
+          LIMIT 1
+        ''', [productName]);
+        if (pr.isEmpty) {
+          print('[ProductDebug] product not found in products: "$productName"');
+          continue;
+        }
+
+        final Map<String, dynamic> p = pr.first;
+        final String unit = (p['unit'] ?? '') as String;
+        final double? baseCost = (p['cost_price'] as num?)?.toDouble();
+        final int? piecesPerUnit = (p['pieces_per_unit'] as num?)?.toInt();
+        final double? lengthPerUnit = (p['length_per_unit'] as num?)?.toDouble();
+        final String? unitHierarchyJson = p['unit_hierarchy'] as String?;
+        final String? unitCostsJson = p['unit_costs'] as String?;
+
+        List<dynamic> hierarchy = const [];
+        Map<String, dynamic> unitCosts = const {};
+        try {
+          if (unitHierarchyJson != null && unitHierarchyJson.trim().isNotEmpty) {
+            hierarchy = jsonDecode(unitHierarchyJson) as List<dynamic>;
+          }
+        } catch (_) {}
+        try {
+          if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
+            unitCosts = jsonDecode(unitCostsJson) as Map<String, dynamic>;
+          }
+        } catch (_) {}
+
+        print('[ProductDebug] name="$productName" unit=$unit baseCost=${baseCost ?? 0} piecesPerUnit=${piecesPerUnit ?? 0} lengthPerUnit=${lengthPerUnit ?? 0}');
+
+        if (unitCosts.isNotEmpty) {
+          final entries = unitCosts.entries
+              .map((e) => '${e.key}=${(e.value is num) ? (e.value as num).toDouble() : e.value}')
+              .join(', ');
+          print('[ProductDebug][UnitCosts] $entries');
+        } else {
+          print('[ProductDebug][UnitCosts] <empty>');
+        }
+
+        if (hierarchy.isNotEmpty) {
+          for (final h in hierarchy) {
+            if (h is Map<String, dynamic>) {
+              final String unitName = (h['unit_name'] ?? '') as String;
+              final dynamic qtyRaw = h['quantity'];
+              double qty = 0;
+              if (qtyRaw is num) qty = qtyRaw.toDouble();
+              print('[ProductDebug][Hierarchy] $unitName qty=$qty');
+            }
+          }
+        } else {
+          print('[ProductDebug][Hierarchy] <empty>');
+        }
+
+        // What unit multipliers were used for this product in this invoice
+        final List<Map<String, dynamic>> used = await db.rawQuery('''
+          SELECT ii.sale_type, ii.units_in_large_unit AS uilu
+          FROM invoice_items ii
+          WHERE ii.invoice_id = ? AND ii.product_name = ?
+        ''', [invoiceId, productName]);
+        for (final u in used) {
+          final String saleType = (u['sale_type'] ?? '') as String;
+          final double uilu = ((u['uilu'] as num?) ?? 0).toDouble();
+          print('[ProductDebug][UsedInInv] sale_type=$saleType units_in_large_unit=$uilu');
+        }
+      }
+    } catch (e) {
+      print('[ProductDebug] Error: $e');
     }
   }
 
@@ -4001,50 +4346,4 @@ class PersonYearData {
   });
 }
 
-class PersonMonthData {
-  final double totalProfit;
-  final double totalSales;
-  final int totalInvoices;
-  final int totalTransactions;
-  final double averageSellingPrice;
-  final double totalQuantity;
-
-  PersonMonthData({
-    required this.totalProfit,
-    required this.totalSales,
-    required this.totalInvoices,
-    required this.totalTransactions,
-    required this.averageSellingPrice,
-    required this.totalQuantity,
-  });
-}
-
-//  MonthlySalesSummary class
-class MonthlySalesSummary {
-  final String monthYear;
-  final double totalSales;
-  final double netProfit;
-  final double cashSales;
-  final double creditSales;
-  final double totalReturns; // إجمالي الراجع
-  final double totalDebtPayments; // إجمالي تسديد الديون
-  final double settlementAdditions; // تسوية الإضافة (مبلغ + ملاحظة فقط)
-  final double settlementReturns; // تسوية الإرجاع (مبلغ + ملاحظة فقط)
-
-  MonthlySalesSummary({
-    required this.monthYear,
-    required this.totalSales,
-    required this.netProfit,
-    required this.cashSales,
-    required this.creditSales,
-    required this.totalReturns, // إضافة إجمالي الراجع
-    required this.totalDebtPayments, // إضافة إجمالي تسديد الديون
-    required this.settlementAdditions,
-    required this.settlementReturns,
-  });
-
-  @override
-  String toString() {
-    return 'MonthlySummary($monthYear: Sales=$totalSales, Profit=$netProfit, Cash=$cashSales, Credit=$creditSales, Returns=$totalReturns, DebtPayments=$totalDebtPayments, SettlementAdd=$settlementAdditions, SettlementReturn=$settlementReturns)';
-  }
-}
+// إزالة تعريفات مكررة للـ PersonMonthData و MonthlySalesSummary لاستخدام نماذج المجلد models

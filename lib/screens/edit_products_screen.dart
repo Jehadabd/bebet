@@ -19,12 +19,22 @@ class _EditProductsScreenState extends State<EditProductsScreen> {
   List<Product> _filteredProducts = [];
   bool _loading = true;
   final TextEditingController _searchController = TextEditingController();
+  final PasswordService _passwordService = PasswordService();
 
   @override
   void initState() {
     super.initState();
     _searchController.addListener(_onSearchChanged);
-    _loadProducts();
+    // Require password before showing the screen content
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final bool canAccess = await _showPasswordDialog();
+      if (!mounted) return;
+      if (canAccess) {
+        _loadProducts();
+      } else {
+        Navigator.of(context).pop();
+      }
+    });
   }
 
   Future<void> _loadProducts() async {
@@ -52,6 +62,39 @@ class _EditProductsScreenState extends State<EditProductsScreen> {
       _filteredProducts =
           _products.where((p) => p.name.contains(query)).toList();
     }
+  }
+
+  Future<bool> _showPasswordDialog() async {
+    final TextEditingController passwordController = TextEditingController();
+    bool? result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('الرجاء إدخال كلمة السر'),
+        content: TextField(
+          controller: passwordController,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: 'كلمة السر',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final bool isCorrect =
+                  await _passwordService.verifyPassword(passwordController.text);
+              Navigator.of(context).pop(isCorrect);
+            },
+            child: const Text('تأكيد'),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
   }
 
   void _editProduct(Product product) async {
@@ -163,7 +206,7 @@ class _EditProductsScreenState extends State<EditProductsScreen> {
                                       product.name,
                                       style: const TextStyle(fontWeight: FontWeight.bold),
                                     ),
-                                    subtitle: Text('الوحدة: ${product.unit} | سعر 1: ${product.price1.toStringAsFixed(2)}'),
+                                    subtitle: Text('الوحدة: ${product.unit} | سعر 1: ${product.price1.toStringAsFixed(2)} | التكلفة: ${product.costPrice != null ? product.costPrice!.toStringAsFixed(2) : '-'}'),
                                     trailing: const Icon(Icons.edit),
                                     onTap: () => _editProduct(product),
                                   ),
@@ -199,7 +242,7 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
   late TextEditingController _piecesPerUnitController;
   late TextEditingController _lengthPerUnitController;
   String _selectedUnit = 'piece';
-  bool _showCostPrice = false;
+  bool _showCostPrice = true;
   final PasswordService _passwordService = PasswordService();
   List<Map<String, dynamic>> _unitHierarchyList = [];
   final List<String> _unitOptions = [
@@ -234,6 +277,10 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     _lengthPerUnitController = TextEditingController(
         text: widget.product.lengthPerUnit?.toString() ?? '');
     _selectedUnit = widget.product.unit;
+    // Normalize legacy/base unit: 'roll' should not be a base option; treat it as 'meter'
+    if (_selectedUnit == 'roll') {
+      _selectedUnit = 'meter';
+    }
     if (_selectedUnit == 'piece' &&
         widget.product.unitHierarchy != null &&
         widget.product.unitHierarchy!.isNotEmpty) {
@@ -502,7 +549,6 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                 items: const [
                   DropdownMenuItem(value: 'piece', child: Text('قطعة')),
                   DropdownMenuItem(value: 'meter', child: Text('متر')),
-                  DropdownMenuItem(value: 'roll', child: Text('لفة')),
                 ],
                 onChanged: (value) {
                   if (value != null) {
@@ -608,52 +654,12 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                 enabled: false,
               ),
               const SizedBox(height: 16),
-              GestureDetector(
-                onTap: () async {
-                  if (!_showCostPrice) {
-                    final bool canAccess = await _showPasswordDialog();
-                    if (canAccess) {
-                      setState(() {
-                        _showCostPrice = true;
-                      });
-                    } else {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('كلمة السر غير صحيحة.')),
-                      );
-                    }
-                  }
-                },
-                child: AbsorbPointer(
-                  absorbing: !_showCostPrice,
-                  child: AnimatedOpacity(
-                    opacity: _showCostPrice ? 1.0 : 0.0,
-                    duration: const Duration(milliseconds: 300),
-                    child: TextField(
-                      controller: _costPriceController,
-                      decoration: InputDecoration(
-                        labelText: _showCostPrice
-                            ? 'سعر التكلفة'
-                            : 'انقر للإدخال (محمي)',
-                        enabled: _showCostPrice,
-                        fillColor: _showCostPrice ? null : Colors.grey[200],
-                        filled: !_showCostPrice,
-                      ),
-                      keyboardType:
-                          const TextInputType.numberWithOptions(decimal: true),
-                      readOnly: !_showCostPrice,
-                    ),
-                  ),
-                ),
+              TextField(
+                controller: _costPriceController,
+                decoration: const InputDecoration(labelText: 'سعر التكلفة'),
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
               ),
-              if (!_showCostPrice)
-                const Padding(
-                  padding: EdgeInsets.only(top: 8.0),
-                  child: Text(
-                    'سعر التكلفة محمي بكلمة سر. انقر لإظهاره.',
-                    style: TextStyle(
-                        color: Colors.redAccent, fontStyle: FontStyle.italic),
-                  ),
-                ),
               const SizedBox(height: 16),
               TextField(
                 controller: _price1Controller,

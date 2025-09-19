@@ -80,23 +80,7 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
     }
   }
 
-  String _getMonthName(int month) {
-    const monthNames = [
-      'يناير',
-      'فبراير',
-      'مارس',
-      'أبريل',
-      'مايو',
-      'يونيو',
-      'يوليو',
-      'أغسطس',
-      'سبتمبر',
-      'أكتوبر',
-      'نوفمبر',
-      'ديسمبر'
-    ];
-    return monthNames[month - 1];
-  }
+  String _numericMonth(int year, int month) => '${year}-${month.toString().padLeft(2, '0')}';
 
   String _formatDate(DateTime date) {
     return '${date.day}/${date.month}/${date.year}';
@@ -124,13 +108,13 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final monthName = _getMonthName(widget.month);
+    final monthName = _numericMonth(widget.year, widget.month);
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FB),
       appBar: AppBar(
         title: Text(
-          '${widget.product.name} - ${monthName} ${widget.year}',
+          '${widget.product.name} - ${monthName}',
           style: const TextStyle(fontSize: 16),
         ),
         centerTitle: true,

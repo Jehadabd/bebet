@@ -83,33 +83,17 @@ class _PersonMonthDetailsScreenState extends State<PersonMonthDetailsScreen> {
     }
   }
 
-  String _getMonthName(int month) {
-    const monthNames = [
-      'يناير',
-      'فبراير',
-      'مارس',
-      'أبريل',
-      'مايو',
-      'يونيو',
-      'يوليو',
-      'أغسطس',
-      'سبتمبر',
-      'أكتوبر',
-      'نوفمبر',
-      'ديسمبر'
-    ];
-    return monthNames[month - 1];
-  }
+  String _numericMonth(int year, int month) => '${year}-${month.toString().padLeft(2, '0')}';
 
   @override
   Widget build(BuildContext context) {
-    final monthName = _getMonthName(widget.month);
+    final monthName = _numericMonth(widget.year, widget.month);
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FB),
       appBar: AppBar(
         title: Text(
-          '${widget.customer.name} - ${monthName} ${widget.year}',
+          '${widget.customer.name} - ${monthName}',
           style: const TextStyle(fontSize: 16),
         ),
         centerTitle: true,

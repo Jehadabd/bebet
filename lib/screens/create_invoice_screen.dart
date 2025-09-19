@@ -1392,6 +1392,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       final itemsTotal =
           filteredItems.fold(0.0, (sum, item) => sum + item.itemTotal);
       final discount = _discount;
+      // إضافة أجور التحميل ضمن مجاميع الفاتورة
+      final double loadingFee = double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
       // جلب تسويات الفاتورة (إن وجدت) وحساب إجماليها
       List<InvoiceAdjustment> adjs = [];
       double settlementsTotal = 0.0;
@@ -1433,7 +1435,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       });
       final double itemsTotalForDisplay = includeSameDayOnlyCase ? (itemsTotal + sameDayAddsTotal) : itemsTotal;
       final double settlementsTotalForDisplay = includeSameDayOnlyCase ? 0.0 : settlementsTotal;
-      final double preDiscountTotal = (itemsTotalForDisplay + settlementsTotalForDisplay);
+      // preDiscountTotal يشمل البنود + التسويات المعروضة + أجور التحميل
+      final double preDiscountTotal = (itemsTotalForDisplay + settlementsTotalForDisplay + loadingFee);
       final double afterDiscount = ((preDiscountTotal - discount).clamp(0.0, double.infinity)).toDouble();
       
       // المبلغ المدفوع من الحقل
@@ -1568,7 +1571,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       // للفواتير المحفوظة: إزالة "الدين السابق" من العرض
       final bool isSavedInvoice = _invoiceToManage?.id != null;
       final double previousDebtForPdf = 0.0; // إزالة عرض الدين السابق
-      final double currentDebtForPdf = currentDebt;
+      // في حالة طباعة فاتورة محفوظة: لا نضيف المتبقي مرة أخرى حتى لا يتضاعف الدين.
+      // نطبع الدين الحالي كما هو مسجل في سجل الديون للعميل.
+      final double currentDebtForPdf = (_invoiceToManage != null && _invoiceToManage!.status == 'محفوظة')
+          ? previousDebt
+          : currentDebt;
 
       int invoiceId;
       if (_invoiceToManage != null && _invoiceToManage!.id != null) {
@@ -1993,7 +2000,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 _summaryRow('المبلغ المطلوب الحالي:', currentDebtForPdf, font),
                                 pw.SizedBox(width: 10),
                                 _summaryRow('اجور التحميل:', 
-                                    double.tryParse(_loadingFeeController.text) ?? 0.0, font),
+                                    double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0, font),
                               ],
                             ),
                           ],
@@ -2107,7 +2114,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         ],
                         pw.SizedBox(height: 6),
                         pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
-                          _summaryRow('المبلغ المتبقي:', remainingForPdf, font), pw.SizedBox(width: 10), _summaryRow('المبلغ المطلوب الحالي:', currentDebtForPdf, font), pw.SizedBox(width: 10), _summaryRow('اجور التحميل:', double.tryParse(_loadingFeeController.text) ?? 0.0, font),
+                          _summaryRow('المبلغ المتبقي:', remainingForPdf, font), pw.SizedBox(width: 10), _summaryRow('المبلغ المطلوب الحالي:', currentDebtForPdf, font), pw.SizedBox(width: 10), _summaryRow('اجور التحميل:', double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0, font),
                         ]),
                       ],
                     ),
@@ -4305,6 +4312,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       isViewOnly: _isViewOnly,
                       isPlaceholder: item.productName.isEmpty,
                       databaseService: _db, // إضافة DatabaseService للبحث الذكي
+                    currentCustomerName: _customerNameController.text.trim(),
+                    currentCustomerPhone: _customerPhoneController.text.trim().isEmpty ? null : _customerPhoneController.text.trim(),
                       onItemUpdated: (updatedItem) {
                         setState(() {
                           final i = _invoiceItems.indexWhere(
@@ -4941,6 +4950,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     );
     return result ?? false;
   }
+
 }
 
 class EditableInvoiceItemRow extends StatefulWidget {
@@ -4955,6 +4965,8 @@ class EditableInvoiceItemRow extends StatefulWidget {
   final FocusNode? quantityFocusNode; // جديد: لطلب التركيز على العدد من الخارج
   final FocusNode? priceFocusNode; // جديد: لطلب التركيز على السعر من الخارج
   final DatabaseService? databaseService; // جديد: للبحث الذكي
+  final String currentCustomerName; // اسم العميل الحالي لقراءة سجل أسعاره
+  final String? currentCustomerPhone; // هاتف العميل لتحسين المطابقة
 
   const EditableInvoiceItemRow({
     Key? key,
@@ -4969,6 +4981,8 @@ class EditableInvoiceItemRow extends StatefulWidget {
     this.quantityFocusNode,
     this.priceFocusNode,
     this.databaseService, // جديد: للبحث الذكي
+    required this.currentCustomerName,
+    this.currentCustomerPhone,
   }) : super(key: key);
 
   @override
@@ -4990,6 +5004,9 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   Timer? _rowIdDebounce;
   List<Product> _rowIdOptions = [];
   TextEditingController? _detailsController; // reference to details field controller
+  bool _hasShownLowPriceWarning = false;
+  double? _lowestRecentPrice; // أدنى سعر خلال آخر 3 فواتير
+  String? _lowestRecentInfo; // وصف مختصر: التاريخ ونوع البيع
 
   String _formatNumber(num value) {
     return NumberFormat('#,##0.##', 'en_US').format(value);
@@ -5025,6 +5042,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
       ),
     );
     _idController = TextEditingController(text: prod.id?.toString() ?? '');
+    // احضر أدنى سعر تاريخي بمجرد تهيئة الصف
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _fetchLowestRecentPrice();
+    });
   }
 
   @override
@@ -5184,6 +5205,8 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         _openPriceDropdown = true;
       });
     });
+    // تحديث أقل سعر تاريخي عند تغيير نوع البيع
+    _fetchLowestRecentPrice();
   }
 
   void _updatePrice(String value) {
@@ -5195,21 +5218,34 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
           1;
       // منطق السعر المخصص: إذا كان المستخدم أدخل سعراً يدوياً (غير مطابق لسعر الوحدة أو سعر التكلفة)
       bool isCustomPrice = true;
-      double? costPrice = _currentItem.costPrice;
-      double unitPrice = _currentItem.unitPrice;
-
-      // تحقق من السعر المنخفض
-      if ((costPrice != null && newPrice < costPrice) || newPrice < unitPrice) {
+      // احسب تكلفة الوحدة الفعلية من بيانات العنصر نفسه لمقارنة دقيقة
+      double? effectiveCostPerUnit;
+      if (_currentItem.actualCostPrice != null) {
+        effectiveCostPerUnit = _currentItem.actualCostPrice;
+      } else if (_currentItem.costPrice != null && quantity > 0) {
+        // إذا كانت costPrice هي تكلفة إجمالية للسطر، حوّلها إلى تكلفة للوحدة
+        effectiveCostPerUnit = _currentItem.costPrice! / quantity;
+      }
+      const double eps = 1e-6;
+      // تحذير فقط إذا كان السعر المدخل أقل من تكلفة الوحدة الفعلية (بدون مقارنته بسعر الوحدة البيعية)
+      if (effectiveCostPerUnit != null && (newPrice + eps) < effectiveCostPerUnit) {
+        if (!_hasShownLowPriceWarning) {
+          _hasShownLowPriceWarning = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content:
-                  Text('⚠️ السعر المدخل أقل من سعر التكلفة أو سعر الوحدة!'),
+                  Text('⚠️ السعر المدخل أقل من سعر التكلفة!'),
               backgroundColor: Colors.orange,
-              duration: Duration(seconds: 3),
+              duration: Duration(seconds: 5),
             ),
           );
         });
+          // إعادة تعيين السماح بعرض التحذير مرة أخرى بعد التعديل التالي إذا لزم
+          Future.delayed(const Duration(seconds: 5), () {
+            if (mounted) setState(() => _hasShownLowPriceWarning = false);
+        });
+        }
       }
       // الحساب: المبلغ = السعر * العدد مباشرة بغض النظر عن نوع الوحدة
       _currentItem = _currentItem.copyWith(
@@ -5219,6 +5255,50 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
       // اترك المُدخل كما يكتبه المستخدم؛ المُنسق سيضيف الفواصل تلقائياً
     });
     widget.onItemUpdated(_currentItem);
+    // تحديث الأيقونة حسب السعر الحالي
+    _fetchLowestRecentPrice();
+  }
+
+  Future<void> _fetchLowestRecentPrice() async {
+    try {
+      final db = widget.databaseService;
+      if (db == null) return;
+      final String customer = widget.currentCustomerName.trim();
+      if (customer.isEmpty) return;
+      final String productName = _currentItem.productName.trim();
+      if (productName.isEmpty) return;
+      final results = await db.getLastNPricesForCustomerProduct(
+        customerName: customer,
+        customerPhone: widget.currentCustomerPhone,
+        productName: productName,
+        limit: 3,
+        saleType: _currentItem.saleType,
+      );
+      if (results.isEmpty) {
+        setState(() {
+          _lowestRecentPrice = null;
+          _lowestRecentInfo = null;
+        });
+        return;
+      }
+      double minPrice = results
+          .map((r) => (r['applied_price'] as num).toDouble())
+          .reduce((a, b) => a < b ? a : b);
+      final minRow = results.firstWhere(
+          (r) => (r['applied_price'] as num).toDouble() == minPrice,
+          orElse: () => results.first);
+      final String dateStr = (minRow['invoice_date'] as String?) ?? '';
+      final int? invoiceId = (minRow['invoice_id'] as int?);
+      final String saleType = (minRow['sale_type'] as String?) ?? (_currentItem.saleType ?? '');
+      setState(() {
+        _lowestRecentPrice = minPrice;
+        final String d = dateStr.isNotEmpty ? dateStr : '';
+        final String idText = invoiceId != null ? 'فاتورة #$invoiceId' : '';
+        _lowestRecentInfo = [idText, d, saleType].where((s) => s != null && s.toString().trim().isNotEmpty).join(' — ');
+      });
+    } catch (_) {
+      // ignore أخطاء الاستعلام البسيطة
+    }
   }
 
   void _applyProductSelection(Product prod) {
@@ -5243,6 +5323,8 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     widget.onItemUpdated(_currentItem);
     // نقل المؤشر مباشرة إلى حقل العدد
     FocusScope.of(context).requestFocus(_quantityFocusNode);
+    // بعد اختيار المنتج، حدّث أقل سعر تاريخي لعرض الأيقونة إن لزم
+    _fetchLowestRecentPrice();
   }
 
   String formatCurrency(num value) {
@@ -5674,6 +5756,23 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                           textAlign: TextAlign.center,
                           style: Theme.of(context).textTheme.bodyMedium),
               ),
+            ),
+            // أيقونة التنبيه في أقصى اليمين
+            SizedBox(
+              width: 40,
+              child: Builder(builder: (context) {
+                final bool showIcon = _lowestRecentPrice != null &&
+                    !widget.isViewOnly &&
+                    _currentItem.appliedPrice > (_lowestRecentPrice ?? 0);
+                if (!showIcon) return const SizedBox.shrink();
+                return Tooltip(
+                  message:
+                      'سعر أقل سابقاً: ${formatCurrency(_lowestRecentPrice!)}\n${_lowestRecentInfo ?? ''}',
+                  preferBelow: false,
+                  child: Icon(Icons.error_outline,
+                      color: Colors.orange.shade700, size: 22),
+                );
+              }),
             ),
             if (!widget.isViewOnly && !widget.isPlaceholder)
               SizedBox(

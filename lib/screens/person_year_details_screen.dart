@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/customer.dart';
 import '../services/database_service.dart';
 import 'person_month_details_screen.dart';
-import '../services/database_service.dart' show PersonMonthData;
+import '../models/person_data.dart' show PersonMonthData;
 
 class PersonYearDetailsScreen extends StatefulWidget {
   final Customer customer;
@@ -41,6 +41,11 @@ class _PersonYearDetailsScreenState extends State<PersonYearDetailsScreen> {
         widget.customer.id!,
         widget.year,
       );
+      // اطبع تفصيلاً لفاتورة محددة إذا رغبت بالتحقق الفوري عبر التيرمنال
+      try {
+        await _databaseService.debugPrintInvoiceById(86);
+        await _databaseService.debugPrintProductsForInvoice(86);
+      } catch (_) {}
       setState(() {
         _monthlyData = monthlyData;
         _isLoading = false;
@@ -59,22 +64,8 @@ class _PersonYearDetailsScreenState extends State<PersonYearDetailsScreen> {
     }
   }
 
-  String getArabicMonthName(int month) {
-    const months = [
-      'يناير',
-      'فبراير',
-      'مارس',
-      'أبريل',
-      'مايو',
-      'يونيو',
-      'يوليو',
-      'أغسطس',
-      'سبتمبر',
-      'أكتوبر',
-      'نوفمبر',
-      'ديسمبر'
-    ];
-    return months[month - 1];
+  String getNumericMonthLabel(int year, int month) {
+    return '${year}-${month.toString().padLeft(2, '0')}';
   }
 
   @override
@@ -143,7 +134,7 @@ class _PersonYearDetailsScreenState extends State<PersonYearDetailsScreen> {
   }
 
   Widget _buildMonthCard(int month, PersonMonthData? monthData) {
-    final monthName = getArabicMonthName(month);
+    final monthName = getNumericMonthLabel(widget.year, month);
     final hasData = monthData != null &&
         (monthData.totalProfit > 0 || monthData.totalSales > 0);
 

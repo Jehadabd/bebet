@@ -27,7 +27,7 @@ pw.Widget buildPdfHeader(
                   ),
                 ),
                 pw.Center(
-                  child: pw.Text('لتجارة المواد الصحية والعدد اليدوية والانشائية  ',
+                  child: pw.Text('لتجارة المواد الصحية والعدد اليدوية والانشائية ',
                       style: pw.TextStyle(font: font, fontSize: 17)),
                 ),
                 pw.Center(

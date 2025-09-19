@@ -64,22 +64,8 @@ class _ProductYearDetailsScreenState extends State<ProductYearDetailsScreen> {
     }
   }
 
-  String getArabicMonthName(int month) {
-    const months = [
-      'يناير',
-      'فبراير',
-      'مارس',
-      'أبريل',
-      'مايو',
-      'يونيو',
-      'يوليو',
-      'أغسطس',
-      'سبتمبر',
-      'أكتوبر',
-      'نوفمبر',
-      'ديسمبر'
-    ];
-    return months[month - 1];
+  String getNumericMonthLabel(int year, int month) {
+    return '${year}-${month.toString().padLeft(2, '0')}';
   }
 
   @override
@@ -149,7 +135,7 @@ class _ProductYearDetailsScreenState extends State<ProductYearDetailsScreen> {
   }
 
   Widget _buildMonthCard(int month, double quantity, double profit) {
-    final monthName = getArabicMonthName(month);
+    final monthName = getNumericMonthLabel(widget.year, month);
     final hasSales = quantity > 0;
 
     return Card(
