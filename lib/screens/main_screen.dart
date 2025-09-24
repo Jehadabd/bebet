@@ -153,6 +153,7 @@ class _MainScreenState extends State<MainScreen> {
           crossAxisSpacing: gridSpacing,
           childAspectRatio: childAspectRatio,
           children: [
+
             _buildFeatureButton(
               icon: Icons.book,
               title: 'سجل الديون',
@@ -530,6 +531,16 @@ class _MainScreenState extends State<MainScreen> {
                 }
               },
               color: const Color(0xFF673AB7),
+              fontSize: buttonFontSize,
+              iconSize: iconSize,
+              padding: buttonPadding,
+              spacing: buttonSpacing,
+            ),           
+             _buildFeatureButton(
+              icon: Icons.factory,
+              title: 'الموردون',
+              onTap: () => Navigator.pushNamed(context, '/suppliers'),
+              color: const Color(0xFF455A64),
               fontSize: buttonFontSize,
               iconSize: iconSize,
               padding: buttonPadding,

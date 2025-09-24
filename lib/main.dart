@@ -15,6 +15,7 @@ import 'screens/edit_products_screen.dart';
 import 'screens/installers_list_screen.dart';
 import 'screens/inventory_screen.dart';
 import 'screens/reports_screen.dart';
+import 'screens/suppliers_list_screen.dart';
 import 'services/password_service.dart';
 import 'screens/password_setup_screen.dart';
 import 'screens/printer_settings_screen.dart';
@@ -115,6 +116,7 @@ class MyApp extends StatelessWidget {
           '/installers': (context) => const InstallersListScreen(),
           '/inventory': (context) => const InventoryScreen(),
           '/reports': (context) => const ReportsScreen(),
+          '/suppliers': (context) => const SuppliersListScreen(),
         },
         initialRoute: initialRoute,
       ),

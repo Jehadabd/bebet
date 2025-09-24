@@ -120,32 +120,32 @@ class InvoicePdfService {
                     ],
                   ),
                   pw.Divider(height: 5, thickness: 0.5),
+                  // جدول الفاتورة الرئيسي: ترتيب مطلوب: ت، ID، التفاصيل، نوع البيع، العدد، عدد الوحدات، السعر، المبلغ
                   pw.Table(
                     border: pw.TableBorder.all(width: 0.2),
                     columnWidths: {
-                      0: const pw.FixedColumnWidth(20), // تسلسل
-                      1: const pw.FixedColumnWidth(90), // المبلغ
-                      2: const pw.FixedColumnWidth(35), // ID
-                      3: const pw.FixedColumnWidth(70), // السعر
-                      4: const pw.FixedColumnWidth(65), // عدد الوحدات
-                      5: const pw.FixedColumnWidth(80), // العدد
-                      6: const pw.FlexColumnWidth(0.8), // التفاصيل
+                      0: const pw.FixedColumnWidth(20), // ت
+                      1: const pw.FixedColumnWidth(60), // ID
+                      2: const pw.FlexColumnWidth(1.3), // التفاصيل
+                      3: const pw.FixedColumnWidth(70), // نوع البيع
+                      4: const pw.FixedColumnWidth(70), // العدد
+                      5: const pw.FixedColumnWidth(65), // عدد الوحدات
+                      6: const pw.FixedColumnWidth(70), // السعر
+                      7: const pw.FixedColumnWidth(90), // المبلغ
                     },
                     defaultVerticalAlignment:
                         pw.TableCellVerticalAlignment.middle,
                     children: [
-                      pw.TableRow(
-                        decoration: const pw.BoxDecoration(),
-                        children: [
-                          headerCell('ت', font),
-                          headerCell('المبلغ', font),
-                          headerCell('ID', font),
-                          headerCell('السعر', font),
-                          headerCell('عدد الوحدات', font),
-                          headerCell('العدد', font),
-                          headerCell('التفاصيل ', font),
-                        ],
-                      ),
+                      pw.TableRow(children: [
+                        headerCell('ت', font),
+                        headerCell('ID', font),
+                        headerCell('التفاصيل', font),
+                        headerCell('نوع البيع', font),
+                        headerCell('العدد', font),
+                        headerCell('عدد الوحدات', font),
+                        headerCell('السعر', font),
+                        headerCell('المبلغ', font),
+                      ]),
                       ...pageItems.asMap().entries.map((entry) {
                         final index = entry.key + (pageIndex * itemsPerPage);
                         final item = entry.value;
@@ -156,17 +156,16 @@ class InvoicePdfService {
                         } catch (e) {
                           product = null;
                         }
-                        return pw.TableRow(
-                          children: [
-                            dataCell('${index + 1}', font),
-                            dataCell(formatNumber(item.itemTotal, forceDecimal: true), font),
-                            dataCell(formatProductId(product?.id), font),
-                            dataCell(formatNumber(item.appliedPrice, forceDecimal: true), font),
-                            dataCell(buildUnitConversionStringForPdf(item, product), font),
-                            dataCell('${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}', font),
-                            dataCell(item.productName, font, align: pw.TextAlign.right),
-                          ],
-                        );
+                        return pw.TableRow(children: [
+                          dataCell('${index + 1}', font),
+                          dataCell(formatProductId(product?.id), font),
+                          dataCell(item.productName, font, align: pw.TextAlign.right),
+                          dataCell(item.saleType ?? '', font),
+                          dataCell('${formatNumber(quantity, forceDecimal: true)}', font),
+                          dataCell(buildUnitConversionStringForPdf(item, product), font),
+                          dataCell(formatNumber(item.appliedPrice, forceDecimal: true), font),
+                          dataCell(formatNumber(item.itemTotal, forceDecimal: true), font),
+                        ]);
                       }).toList(),
                     ],
                   ),
@@ -224,6 +223,116 @@ class InvoicePdfService {
     return pdf;
   }
 
+  // وثيقة تجهيز بدون أسعار أو مبالغ (تسلسل، ID، التفاصيل، العدد، نوع البيع فقط)
+  static Future<pw.Document> generatePickingListPdf({
+    required List<InvoiceItem> invoiceItems,
+    required List<Product> allProducts,
+    required String customerName,
+    required int invoiceId,
+    required DateTime selectedDate,
+    required pw.Font font,
+    required pw.Font alnaserFont,
+    required pw.MemoryImage logoImage,
+  }) async {
+    final pdf = pw.Document();
+    const itemsPerPage = 28;
+    final totalPages = (invoiceItems.length / itemsPerPage).ceil().clamp(1, 9999);
+    for (var pageIndex = 0; pageIndex < totalPages; pageIndex++) {
+      final start = pageIndex * itemsPerPage;
+      final end = (start + itemsPerPage) > invoiceItems.length
+          ? invoiceItems.length
+          : start + itemsPerPage;
+      final pageItems = invoiceItems.sublist(start, end);
+      pdf.addPage(
+        pw.Page(
+          pageFormat: PdfPageFormat.a4,
+          margin: const pw.EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          build: (pw.Context context) {
+            return pw.Directionality(
+              textDirection: pw.TextDirection.rtl,
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Row(
+                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                    children: [
+                      pw.Column(
+                        crossAxisAlignment: pw.CrossAxisAlignment.start,
+                        children: [
+                          pw.Text('قائمة تجهيز - فاتورة #$invoiceId',
+                              style: pw.TextStyle(
+                                  font: alnaserFont,
+                                  fontSize: 20,
+                                  fontWeight: pw.FontWeight.bold)),
+                          pw.SizedBox(height: 4),
+                          pw.Text('العميل: $customerName',
+                              style: pw.TextStyle(font: font, fontSize: 12)),
+                          pw.Text(
+                              'التاريخ: ${selectedDate.year}/${selectedDate.month}/${selectedDate.day}',
+                              style: pw.TextStyle(font: font, fontSize: 12)),
+                        ],
+                      ),
+                      pw.Container(width: 80, height: 80, child: pw.Image(logoImage))
+                    ],
+                  ),
+                  pw.SizedBox(height: 6),
+                  // جدول عناصر التجهيز بالعكس بصرياً: نرتب الأعمدة من اليسار إلى اليمين كالتالي
+                  // التأشيرة، العدد، نوع البيع، التفاصيل، ID، ت (ليظهر ت أقصى اليمين)
+                  pw.Table(
+                    border: pw.TableBorder.all(width: 0.2),
+                    columnWidths: const {
+                      0: pw.FixedColumnWidth(70),  // التأشيرة (أقصى اليسار)
+                      1: pw.FixedColumnWidth(70),  // العدد
+                      2: pw.FixedColumnWidth(70),  // نوع البيع
+                      3: pw.FlexColumnWidth(1.2),  // التفاصيل
+                      4: pw.FixedColumnWidth(60),  // ID
+                      5: pw.FixedColumnWidth(22),  // ت (أقصى اليمين)
+                    },
+                    defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
+                    children: [
+                       pw.TableRow(children: [
+                         headerCell('التأشيرة', font),
+                         headerCell('العدد', font),
+                         headerCell('نوع البيع', font),
+                         headerCell('التفاصيل', font),
+                         headerCell('ID', font),
+                         headerCell('ت', font),
+                       ]),
+                      ...pageItems.asMap().entries.map((entry) {
+                        final idx = entry.key + (pageIndex * itemsPerPage);
+                        final item = entry.value;
+                        final quantity = (item.quantityIndividual ?? item.quantityLargeUnit ?? 0.0);
+                        Product? product;
+                        try {
+                          product = allProducts.firstWhere((p) => p.name == item.productName);
+                        } catch (_) {}
+                          return pw.TableRow(children: [
+                            dataCell('', font), // التأشيرة
+                            dataCell('${formatNumber(quantity, forceDecimal: true)}', font),
+                            dataCell(item.saleType ?? '', font),
+                            dataCell(item.productName, font, align: pw.TextAlign.right),
+                            dataCell(formatProductId(product?.id), font),
+                            dataCell('${idx + 1}', font),
+                          ]);
+                      }).toList(),
+                    ],
+                  ),
+                  pw.SizedBox(height: 6),
+                  pw.Align(
+                    alignment: pw.Alignment.center,
+                    child: pw.Text('صفحة ${pageIndex + 1} من $totalPages',
+                        style: pw.TextStyle(font: font, fontSize: 11)),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      );
+    }
+    return pdf;
+  }
+
   static pw.Widget headerCell(String text, pw.Font font) {
     return pw.Padding(
       padding: const pw.EdgeInsets.all(2),
@@ -246,10 +355,9 @@ class InvoicePdfService {
   }
 
   static String formatProductId(int? id) {
-    if (id == null) return '-----';
-    final s = id.toString();
-    if (s.length >= 5) return s.substring(0, 5);
-    return s.padLeft(5, '0');
+    // عرض المعرّف كما هو بدون حشو أصفار أو الهاشتاق
+    if (id == null) return '';
+    return id.toString();
   }
 
   static pw.Widget summaryRow(String label, num value, pw.Font font) {

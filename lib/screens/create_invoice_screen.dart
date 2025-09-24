@@ -17,6 +17,8 @@ import 'package:alnaser/models/printer_device.dart';
 import 'package:alnaser/services/printing_service.dart';
 import 'dart:io';
 import 'package:intl/intl.dart';
+import 'package:share_plus/share_plus.dart';
+import '../services/invoice_pdf_service.dart';
 import '../widgets/formatters.dart';
 import 'dart:async';
 import 'package:provider/provider.dart';
@@ -2297,6 +2299,64 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     }
   }
 
+  Future<void> _shareInvoice() async {
+    try {
+      final pdf = await _generateInvoicePdf();
+      final filePath = await _saveInvoicePdf(
+          pdf, _customerNameController.text, _selectedDate);
+      await Share.shareFiles([filePath], text: 'فاتورة ${_customerNameController.text}');
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('فشل مشاركة الفاتورة: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _printPickingList() async {
+    try {
+      // تحميل الخطوط والشعار كما في خدمة PDF
+      final fontData = await rootBundle.load('assets/fonts/Amiri-Regular.ttf');
+      final alnaserFontData = await rootBundle.load('assets/fonts/PTBLDHAD.TTF');
+      final logoBytes = await rootBundle.load('assets/icon/AL_NASSER_logo_transparent_medium.png');
+      final font = pw.Font.ttf(fontData);
+      final alnaserFont = pw.Font.ttf(alnaserFontData);
+      final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
+
+      final doc = await InvoicePdfService.generatePickingListPdf(
+        invoiceItems: _invoiceItems,
+        allProducts: await _db.getAllProducts(),
+        customerName: _customerNameController.text,
+        invoiceId: _invoiceToManage?.id ?? 0,
+        selectedDate: _selectedDate,
+        font: font,
+        alnaserFont: alnaserFont,
+        logoImage: logoImage,
+      );
+
+      // احفظ ثم افتح للطباعة على ويندوز
+      final filePath = await _saveInvoicePdf(doc, _customerNameController.text, _selectedDate);
+      if (Platform.isWindows) {
+        await Process.start('cmd', ['/c', 'start', '/min', '', filePath, '/p']);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('تم إرسال قائمة التجهيز للطابعة')),
+          );
+        }
+        return;
+      }
+      // على أندرويد/منصات أخرى: مشاركة/فتح الملف ليطبعه المستخدم
+      await Share.shareFiles([filePath], text: 'قائمة تجهيز ${_customerNameController.text}');
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('فشل طباعة التجهيز: $e')),
+        );
+      }
+    }
+  }
+
   // حوار خطوات التسوية: اختيار (إضافة/حذف) ثم (بند/مبلغ)
   Future<void> _openSettlementChoice() async {
     if (_invoiceToManage == null) return;
@@ -3570,6 +3630,17 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               icon: const Icon(Icons.print),
               tooltip: 'طباعة الفاتورة',
               onPressed: _invoiceItems.isEmpty ? null : _printInvoice,
+            ),
+            IconButton(
+              icon: const Icon(Icons.print_disabled),
+              tooltip: 'طباعة تجهيز (بدون أسعار)',
+              onPressed: _invoiceItems.isEmpty ? null : _printPickingList,
+            ),
+            // زر المشاركة الجديد
+            IconButton(
+              icon: const Icon(Icons.share),
+              tooltip: 'مشاركة الفاتورة PDF',
+              onPressed: _invoiceItems.isEmpty ? null : _shareInvoice,
             ),
             if (_invoiceToManage != null && _isViewOnly) ...[
               IconButton(

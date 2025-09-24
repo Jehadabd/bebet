@@ -9,6 +9,12 @@ import 'package:intl/intl.dart'; // Import for NumberFormat
 import '../services/database_service.dart'; // Added for DatabaseService
 import '../models/product.dart'; // Added for Product model
 import '../models/invoice_adjustment.dart'; // Added for InvoiceAdjustment model
+import 'package:share_plus/share_plus.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:flutter/services.dart' show rootBundle;
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
+import '../services/invoice_pdf_service.dart';
 
 class EditInvoicesScreen extends StatefulWidget {
   const EditInvoicesScreen({super.key});
@@ -444,6 +450,11 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                                           ],
                                         ),
                                         const SizedBox(width: 8),
+                                        IconButton(
+                                          tooltip: 'مشاركة الفاتورة PDF',
+                                          icon: const Icon(Icons.share),
+                                          onPressed: () => _shareInvoicePdf(invoice),
+                                        ),
                                         if (invoice.status == 'محفوظة')
                                           IconButton(
                                             tooltip: 'تسوية الفاتورة',
@@ -526,6 +537,63 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
               ),
       ),
     );
+  }
+
+  Future<void> _shareInvoicePdf(Invoice invoice) async {
+    try {
+      final db = DatabaseService();
+      final items = await db.getInvoiceItems(invoice.id!);
+      final products = await db.getAllProducts();
+
+      // تحميل الخطوط والشعار
+      final fontData = await rootBundle.load('assets/fonts/Amiri-Regular.ttf');
+      final alnaserFontData = await rootBundle.load('assets/fonts/PTBLDHAD.TTF');
+      final logoBytes = await rootBundle.load('assets/icon/AL_NASSER_logo_transparent_medium.png');
+      final font = pw.Font.ttf(fontData);
+      final alnaserFont = pw.Font.ttf(alnaserFontData);
+      final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
+
+      final doc = await InvoicePdfService.generateInvoicePdf(
+        invoiceItems: items,
+        allProducts: products,
+        customerName: invoice.customerName,
+        customerAddress: invoice.customerAddress ?? '',
+        invoiceId: invoice.id ?? 0,
+        selectedDate: invoice.invoiceDate,
+        discount: invoice.discount,
+        paid: invoice.amountPaidOnInvoice,
+        paymentType: invoice.paymentType,
+        invoiceToManage: invoice,
+        previousDebt: 0,
+        currentDebt: 0,
+        afterDiscount: (invoice.totalAmount - invoice.discount),
+        remaining: (invoice.totalAmount - invoice.discount - invoice.amountPaidOnInvoice),
+        font: font,
+        alnaserFont: alnaserFont,
+        logoImage: logoImage,
+        createdAt: invoice.createdAt,
+      );
+
+      // حفظ الملف
+      final safeCustomerName = invoice.customerName.replaceAll(RegExp(r'[^\w\u0600-\u06FF]+'), '_');
+      final formattedDate = DateFormat('yyyy-MM-dd').format(invoice.invoiceDate);
+      final fileName = '${safeCustomerName}_$formattedDate.pdf';
+      final directory = Directory('${Platform.environment['USERPROFILE']}/Documents/invoices');
+      if (!await directory.exists()) {
+        await directory.create(recursive: true);
+      }
+      final filePath = '${directory.path}/$fileName';
+      final file = File(filePath);
+      await file.writeAsBytes(await doc.save());
+
+      await Share.shareFiles([file.path], text: 'فاتورة ${invoice.customerName}');
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('فشل مشاركة الفاتورة: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _openSettlementDialog(BuildContext context, int invoiceId) async {
