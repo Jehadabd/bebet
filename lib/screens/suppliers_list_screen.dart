@@ -7,6 +7,7 @@ import 'supplier_details_screen.dart';
 import 'ai_import_review_screen.dart';
 import '../services/suppliers_service.dart';
 import '../services/database_service.dart';
+import 'package:intl/intl.dart';
 
 class SuppliersListScreen extends StatefulWidget {
   const SuppliersListScreen({Key? key}) : super(key: key);
@@ -19,6 +20,7 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
   final List<Supplier> _suppliers = [];
   final SuppliersService _suppliersService = SuppliersService();
   String _query = '';
+  final NumberFormat _nf = NumberFormat('#,##0', 'en');
 
   @override
   Widget build(BuildContext context) {
@@ -78,14 +80,24 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
                       ),
                       subtitle: Padding(
                         padding: const EdgeInsets.only(top: 4.0),
-                        child: Text(
-                          'الرصيد الحالي: ${supplier.currentBalance.toStringAsFixed(0)}',
-                          style: TextStyle(
-                            color: supplier.currentBalance > 0
-                                ? Colors.red.shade700
-                                : Colors.green.shade700,
-                            fontWeight: FontWeight.w600,
-                          ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'المبلغ المطلوب: ${_nf.format(supplier.currentBalance)}',
+                              style: TextStyle(
+                                color: supplier.currentBalance > 0
+                                    ? Colors.red.shade700
+                                    : Colors.green.shade700,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'إجمالي المشتريات: ${_nf.format(supplier.totalPurchases)}',
+                              style: const TextStyle(fontWeight: FontWeight.w600),
+                            ),
+                          ],
                         ),
                       ),
                       trailing: Icon(Icons.chevron_left, color: colorScheme.onSurface.withOpacity(0.6)),
@@ -140,7 +152,7 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
       MaterialPageRoute(
         builder: (_) => SupplierDetailsScreen(supplier: supplier),
       ),
-    );
+    ).then((_) => _reload()); // بعد العودة حدّث القائمة لتحديث الأرصدة
   }
 
   Future<void> _pickFileAndOpenAI() async {
@@ -173,7 +185,7 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
     }
 
     if (!mounted) return;
-    Navigator.of(context).push(
+    final saved = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => AiImportReviewScreen(
           fileBytes: bytes,
@@ -183,6 +195,9 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
         ),
       ),
     );
+    if (saved == true && mounted) {
+      await _reload();
+    }
   }
 
   String? _pendingAIType; // 'invoice' or 'receipt'

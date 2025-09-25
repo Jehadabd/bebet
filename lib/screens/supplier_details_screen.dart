@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import '../models/supplier.dart';
 import '../services/suppliers_service.dart';
+import '../services/database_service.dart';
 import 'ai_import_review_screen.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'new_supplier_invoice_screen.dart';
 import 'new_supplier_receipt_screen.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:intl/intl.dart';
 
 class SupplierDetailsScreen extends StatefulWidget {
   final Supplier supplier;
@@ -21,6 +23,9 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
   List<SupplierInvoice> _invoices = const [];
   List<SupplierReceipt> _receipts = const [];
   List<Attachment> _attachments = const [];
+  final NumberFormat _nf = NumberFormat('#,##0', 'en');
+  final Map<int, Map<String, double>> _invoiceBalances = {}; // id -> {before, after}
+  final Map<int, Map<String, double>> _receiptBalances = {}; // id -> {before, after}
 
   @override
   void initState() {
@@ -37,6 +42,7 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
       _receipts = rec;
       _attachments = att;
     });
+    _computeRunningBalances();
   }
 
   @override
@@ -102,13 +108,18 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
                   children: [
                     const SizedBox(height: 4),
                     Text(
-                      'الرصيد الحالي: ${widget.supplier.currentBalance.toStringAsFixed(0)}',
+                      'المبلغ المطلوب: ${_nf.format(widget.supplier.currentBalance)}',
                       style: TextStyle(
                         color: widget.supplier.currentBalance > 0
                             ? Colors.red.shade700
                             : Colors.green.shade700,
                         fontWeight: FontWeight.w600,
                       ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'إجمالي المشتريات: ${_nf.format(widget.supplier.totalPurchases)}',
+                      style: const TextStyle(fontWeight: FontWeight.w600),
                     ),
                     if ((widget.supplier.phoneNumber ?? '').isNotEmpty)
                       Text(widget.supplier.phoneNumber!),
@@ -161,8 +172,18 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
         return ListTile(
           leading: const Icon(Icons.receipt_long),
           title: Text(inv.invoiceNumber ?? 'بدون رقم'),
-          subtitle: Text(inv.invoiceDate.toIso8601String()),
-          trailing: Text(inv.totalAmount.toStringAsFixed(0)),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(inv.invoiceDate.toIso8601String()),
+              if (_invoiceBalances[inv.id ?? -1] != null)
+                Text(
+                  'قبل: ${_nf.format(_invoiceBalances[inv.id]!['before']!)}  →  بعد: ${_nf.format(_invoiceBalances[inv.id]!['after']!)}',
+                  style: const TextStyle(fontSize: 12),
+                ),
+            ],
+          ),
+          trailing: Text(_nf.format(inv.totalAmount)),
           onTap: () => _openInvoice(inv),
         );
       },
@@ -179,8 +200,18 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
         return ListTile(
           leading: const Icon(Icons.payments),
           title: Text(rec.receiptNumber ?? 'بدون رقم'),
-          subtitle: Text(rec.receiptDate.toIso8601String()),
-          trailing: Text(rec.amount.toStringAsFixed(0)),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(rec.receiptDate.toIso8601String()),
+              if (_receiptBalances[rec.id ?? -1] != null)
+                Text(
+                  'قبل: ${_nf.format(_receiptBalances[rec.id]!['before']!)}  →  بعد: ${_nf.format(_receiptBalances[rec.id]!['after']!)}',
+                  style: const TextStyle(fontSize: 12),
+                ),
+            ],
+          ),
+          trailing: Text(_nf.format(rec.amount)),
           onTap: () => _openReceipt(rec),
         );
       },
@@ -217,7 +248,9 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('التاريخ: ${inv.invoiceDate.toIso8601String()}'),
-              Text('الإجمالي: ${inv.totalAmount.toStringAsFixed(2)}'),
+              Text('الإجمالي: ${_nf.format(inv.totalAmount)}'),
+              if (_invoiceBalances[inv.id ?? -1] != null)
+                Text('الرصيد قبل: ${_nf.format(_invoiceBalances[inv.id]!['before']!)}  →  بعد: ${_nf.format(_invoiceBalances[inv.id]!['after']!)}'),
               const SizedBox(height: 8),
               const Text('المرفقات:'),
               if (atts.isEmpty) const Text('لا يوجد مرفقات'),
@@ -260,7 +293,9 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('التاريخ: ${rec.receiptDate.toIso8601String()}'),
-              Text('المبلغ: ${rec.amount.toStringAsFixed(2)}'),
+              Text('المبلغ: ${_nf.format(rec.amount)}'),
+              if (_receiptBalances[rec.id ?? -1] != null)
+                Text('الرصيد قبل: ${_nf.format(_receiptBalances[rec.id]!['before']!)}  →  بعد: ${_nf.format(_receiptBalances[rec.id]!['after']!)}'),
               const SizedBox(height: 8),
               const Text('المرفقات:'),
               if (atts.isEmpty) const Text('لا يوجد مرفقات'),
@@ -309,14 +344,15 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
       ),
       builder: (ctx) => SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(12.0),
+          padding: const EdgeInsets.all(16.0),
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              ListTile(
-                leading: const Icon(Icons.receipt_long),
-                title: const Text('فاتورة جديدة (يدوي)'),
-                onTap: () async {
+              ElevatedButton.icon(
+                icon: const Icon(Icons.receipt_long),
+                label: const Text('فاتورة جديدة (يدوي)'),
+                onPressed: () async {
                   Navigator.of(ctx).pop();
                   final saved = await Navigator.of(context).push<bool>(
                     MaterialPageRoute(
@@ -325,19 +361,23 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
                   );
                   if (saved == true) await _loadData();
                 },
+                style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
               ),
-              ListTile(
-                leading: const Icon(Icons.auto_awesome),
-                title: const Text('فاتورة بالذكاء (PDF/صورة)'),
-                onTap: () async {
+              const SizedBox(height: 12),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.auto_awesome),
+                label: const Text('فاتورة بالذكاء (PDF/صورة)'),
+                onPressed: () async {
                   Navigator.of(ctx).pop();
                   await _onAddByAI();
                 },
+                style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
               ),
-              ListTile(
-                leading: const Icon(Icons.payments),
-                title: const Text('سند قبض جديد'),
-                onTap: () async {
+              const SizedBox(height: 12),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.payments),
+                label: const Text('سند قبض جديد'),
+                onPressed: () async {
                   Navigator.of(ctx).pop();
                   final saved = await Navigator.of(context).push<bool>(
                     MaterialPageRoute(
@@ -346,6 +386,7 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
                   );
                   if (saved == true) await _loadData();
                 },
+                style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
               ),
             ],
           ),
@@ -419,6 +460,66 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
       );
     }
   }
+
+  void _computeRunningBalances() async {
+    _invoiceBalances.clear();
+    _receiptBalances.clear();
+    // جهّز تسلسل موحد للعمليات حسب التاريخ ثم id
+    final List<_Entry> entries = [];
+    for (final inv in _invoices) {
+      final remaining = inv.paymentType == 'نقد'
+          ? 0.0
+          : (inv.totalAmount - (inv.amountPaid));
+      entries.add(_Entry(
+        dt: inv.invoiceDate,
+        id: inv.id ?? -1,
+        kind: 'invoice',
+        delta: remaining < 0 ? 0.0 : remaining,
+      ));
+    }
+    for (final r in _receipts) {
+      entries.add(_Entry(
+        dt: r.receiptDate,
+        id: r.id ?? -1,
+        kind: 'receipt',
+        delta: -r.amount,
+      ));
+    }
+    // رتب من الأحدث إلى الأقدم
+    entries.sort((a, b) {
+      final c = b.dt.compareTo(a.dt);
+      if (c != 0) return c;
+      return b.id.compareTo(a.id);
+    });
+
+    // احسب الرصيد الرجعي بدءاً من current_balance الحالي من القاعدة لضمان التطابق
+    try {
+      final db = await DatabaseService().database;
+      final row = await db.query('suppliers', columns: ['current_balance'], where: 'id = ?', whereArgs: [widget.supplier.id], limit: 1);
+      double runningAfter = row.isNotEmpty ? ((row.first['current_balance'] as num?)?.toDouble() ?? widget.supplier.currentBalance) : widget.supplier.currentBalance;
+      for (final e in entries) {
+        final after = runningAfter;
+        final before = after - e.delta;
+        if (e.kind == 'invoice') {
+          _invoiceBalances[e.id] = {'before': before, 'after': after};
+        } else {
+          _receiptBalances[e.id] = {'before': before, 'after': after};
+        }
+        runningAfter = before;
+      }
+    } catch (_) {
+      // في حالة الفشل، لا نُظهر الأرقام لتجنب التضليل
+    }
+    if (mounted) setState(() {});
+  }
+}
+
+class _Entry {
+  final DateTime dt;
+  final int id;
+  final String kind; // invoice | receipt
+  final double delta;
+  _Entry({required this.dt, required this.id, required this.kind, required this.delta});
 }
 
 

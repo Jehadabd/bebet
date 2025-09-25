@@ -23,6 +23,7 @@ class SuppliersService {
         address TEXT,
         opening_balance REAL NOT NULL DEFAULT 0.0,
         current_balance REAL NOT NULL DEFAULT 0.0,
+        total_purchases REAL NOT NULL DEFAULT 0.0,
         created_at TEXT NOT NULL,
         last_modified_at TEXT NOT NULL,
         notes TEXT
@@ -58,6 +59,14 @@ class SuppliersService {
       if (!hasAmountPaid) {
         await db.execute(
             'ALTER TABLE supplier_invoices ADD COLUMN amount_paid REAL NOT NULL DEFAULT 0.0;');
+      }
+    } catch (_) {}
+    // Migration for suppliers.total_purchases
+    try {
+      final colsSup = await db.rawQuery('PRAGMA table_info(suppliers);');
+      final hasTotalPurchases = colsSup.any((c) => (c['name'] == 'total_purchases'));
+      if (!hasTotalPurchases) {
+        await db.execute('ALTER TABLE suppliers ADD COLUMN total_purchases REAL NOT NULL DEFAULT 0.0;');
       }
     } catch (_) {}
     await db.execute('''
@@ -105,15 +114,21 @@ class SuppliersService {
     await ensureTables();
     final db = await _db;
     final id = await db.insert('supplier_invoices', invoice.toMap());
-    final double delta = invoice.paymentType == 'نقد'
-        ? 0.0
-        : (invoice.totalAmount - invoice.amountPaid);
-    if (delta != 0) {
-      await db.rawUpdate(
-        'UPDATE suppliers SET current_balance = current_balance + ? , last_modified_at = ? WHERE id = ?',
-        [delta, DateTime.now().toIso8601String(), invoice.supplierId],
-      );
-    }
+    // احسب تأثير الفاتورة على الرصيد
+    final double remaining = (invoice.totalAmount - invoice.amountPaid);
+    final double delta = invoice.paymentType == 'نقد' ? 0.0 : (remaining > 0 ? remaining : 0.0);
+    // اطبع الرصيد قبل/بعد للتشخيص
+    try {
+      final beforeRow = await db.query('suppliers', columns: ['current_balance','total_purchases'], where: 'id = ?', whereArgs: [invoice.supplierId], limit: 1);
+      final double before = beforeRow.isNotEmpty ? ((beforeRow.first['current_balance'] as num?)?.toDouble() ?? 0.0) : 0.0;
+      final double after = before + delta;
+      print('DEBUG BALANCE (Invoice): supplier=${invoice.supplierId} total=${invoice.totalAmount} paid=${invoice.amountPaid} type=${invoice.paymentType} delta=$delta before=$before after=$after');
+    } catch (_) {}
+    // حدّث الرصيد والمشتريات الإجمالية (المشتريات تزيد دائماً بقيمة الفاتورة)
+    await db.rawUpdate(
+      'UPDATE suppliers SET current_balance = current_balance + ?, total_purchases = total_purchases + ?, last_modified_at = ? WHERE id = ?',
+      [delta, invoice.totalAmount, DateTime.now().toIso8601String(), invoice.supplierId],
+    );
     return id;
   }
 
@@ -121,6 +136,14 @@ class SuppliersService {
     await ensureTables();
     final db = await _db;
     final id = await db.insert('supplier_receipts', receipt.toMap());
+    // اطبع الرصيد قبل/بعد للتشخيص
+    try {
+      final beforeRow = await db.query('suppliers', columns: ['current_balance'], where: 'id = ?', whereArgs: [receipt.supplierId], limit: 1);
+      final double before = beforeRow.isNotEmpty ? ((beforeRow.first['current_balance'] as num?)?.toDouble() ?? 0.0) : 0.0;
+      final double delta = -receipt.amount;
+      final double after = before + delta;
+      print('DEBUG BALANCE (Receipt): supplier=${receipt.supplierId} amount=${receipt.amount} delta=$delta before=$before after=$after');
+    } catch (_) {}
     await db.rawUpdate(
       'UPDATE suppliers SET current_balance = current_balance - ? , last_modified_at = ? WHERE id = ?',
       [receipt.amount, DateTime.now().toIso8601String(), receipt.supplierId],

@@ -18,6 +18,8 @@ import 'package:alnaser/services/printing_service.dart';
 import 'dart:io';
 import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart' as pp;
 import '../services/invoice_pdf_service.dart';
 import '../widgets/formatters.dart';
 import 'dart:async';
@@ -2206,6 +2208,24 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     }
   }
 
+  // حفظ في مجلد مؤقت مناسب للمشاركة (Android/Windows/macOS)
+  Future<String> _saveInvoicePdfToTemp(
+      pw.Document pdf, String customerName, DateTime invoiceDate) async {
+    final safeCustomerName =
+        customerName.replaceAll(RegExp(r'[^\w\u0600-\u06FF]+'), '_');
+    final formattedDate = DateFormat('yyyy-MM-dd').format(invoiceDate);
+    final fileName = '${safeCustomerName}_$formattedDate.pdf';
+    final dir = await pp.getTemporaryDirectory();
+    final folder = Directory(p.join(dir.path, 'invoices_share_cache'));
+    if (!await folder.exists()) {
+      await folder.create(recursive: true);
+    }
+    final filePath = p.join(folder.path, fileName);
+    final file = File(filePath);
+    await file.writeAsBytes(await pdf.save(), flush: true);
+    return filePath;
+  }
+
   Future<void> _printInvoice() async {
     try {
       final pdf = await _generateInvoicePdf();
@@ -2302,9 +2322,17 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   Future<void> _shareInvoice() async {
     try {
       final pdf = await _generateInvoicePdf();
-      final filePath = await _saveInvoicePdf(
+      // استخدم مجلد مؤقت لضمان قدرة أنظمة المشاركة على الوصول للملف
+      final filePath = await _saveInvoicePdfToTemp(
           pdf, _customerNameController.text, _selectedDate);
-      await Share.shareFiles([filePath], text: 'فاتورة ${_customerNameController.text}');
+      final fileName = p.basename(filePath);
+      await Share.shareXFiles([
+        XFile(
+          filePath,
+          mimeType: 'application/pdf',
+          name: fileName,
+        )
+      ], text: 'فاتورة ${_customerNameController.text}');
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2336,7 +2364,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       );
 
       // احفظ ثم افتح للطباعة على ويندوز
-      final filePath = await _saveInvoicePdf(doc, _customerNameController.text, _selectedDate);
+      final filePath = await _saveInvoicePdfToTemp(doc, _customerNameController.text, _selectedDate);
       if (Platform.isWindows) {
         await Process.start('cmd', ['/c', 'start', '/min', '', filePath, '/p']);
         if (mounted) {
@@ -2347,7 +2375,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         return;
       }
       // على أندرويد/منصات أخرى: مشاركة/فتح الملف ليطبعه المستخدم
-      await Share.shareFiles([filePath], text: 'قائمة تجهيز ${_customerNameController.text}');
+      final fileName = p.basename(filePath);
+      await Share.shareXFiles([
+        XFile(
+          filePath,
+          mimeType: 'application/pdf',
+          name: fileName,
+        )
+      ], text: 'قائمة تجهيز ${_customerNameController.text}');
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

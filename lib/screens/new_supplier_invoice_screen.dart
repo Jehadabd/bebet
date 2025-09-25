@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:intl/intl.dart';
 
 import '../models/supplier.dart';
 import '../services/gemini_service.dart';
@@ -27,6 +28,9 @@ class _NewSupplierInvoiceScreenState extends State<NewSupplierInvoiceScreen> {
   bool _saving = false;
   Uint8List? _pickedBytes;
   String? _pickedMime;
+  String? _pickedName;
+  final NumberFormat _nf = NumberFormat('#,##0.##', 'en');
+  bool _formatting = false;
 
   final SuppliersService _service = SuppliersService();
 
@@ -61,16 +65,16 @@ class _NewSupplierInvoiceScreenState extends State<NewSupplierInvoiceScreen> {
             children: [
               Text('المورد: ${widget.supplier.companyName}', style: const TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              value: _paymentType,
-              decoration: const InputDecoration(labelText: 'طريقة الدفع'),
-              items: const [
-                DropdownMenuItem(value: 'نقد', child: Text('نقد')),
-                DropdownMenuItem(value: 'دين', child: Text('دين')),
-              ],
-              onChanged: (v) { if (v != null) setState(() { _paymentType = v; }); },
-            ),
-            const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                value: _paymentType,
+                decoration: const InputDecoration(labelText: 'طريقة الدفع'),
+                items: const [
+                  DropdownMenuItem(value: 'نقد', child: Text('نقد')),
+                  DropdownMenuItem(value: 'دين', child: Text('دين')),
+                ],
+                onChanged: (v) { if (v != null) setState(() { _paymentType = v; }); },
+              ),
+              const SizedBox(height: 12),
               TextFormField(
                 controller: _dateCtrl,
                 decoration: const InputDecoration(labelText: 'تاريخ الفاتورة (ISO yyyy-MM-dd)'),
@@ -86,19 +90,44 @@ class _NewSupplierInvoiceScreenState extends State<NewSupplierInvoiceScreen> {
                 controller: _totalCtrl,
                 decoration: const InputDecoration(labelText: 'الإجمالي'),
                 keyboardType: TextInputType.number,
-                validator: (v) => (double.tryParse(v ?? '') == null) ? 'أدخل رقم صحيح' : null,
+                onChanged: (v) => _onFormatNumber(_totalCtrl),
+                validator: (v) => (double.tryParse((v ?? '').replaceAll(',', '')) == null) ? 'أدخل رقم صحيح' : null,
               ),
               const SizedBox(height: 12),
               TextFormField(
                 controller: _discountCtrl,
                 decoration: const InputDecoration(labelText: 'الخصم (اختياري)'),
                 keyboardType: TextInputType.number,
+                onChanged: (v) => _onFormatNumber(_discountCtrl),
               ),
               const SizedBox(height: 12),
               TextFormField(
                 controller: _paidCtrl,
                 decoration: const InputDecoration(labelText: 'المدفوع عند الفاتورة (اختياري)'),
                 keyboardType: TextInputType.number,
+                onChanged: (v) => _onFormatNumber(_paidCtrl),
+              ),
+              const SizedBox(height: 16),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.attach_file),
+                title: Text(_pickedName == null ? 'إرفاق ملف (اختياري)' : _pickedName!),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextButton.icon(
+                      onPressed: _onPickAttachment,
+                      icon: const Icon(Icons.folder_open),
+                      label: const Text('اختيار'),
+                    ),
+                    if (_pickedBytes != null)
+                      IconButton(
+                        tooltip: 'إزالة',
+                        icon: const Icon(Icons.clear),
+                        onPressed: () => setState(() { _pickedBytes = null; _pickedMime = null; _pickedName = null; }),
+                      )
+                  ],
+                ),
               ),
               const SizedBox(height: 24),
               SizedBox(
@@ -117,7 +146,6 @@ class _NewSupplierInvoiceScreenState extends State<NewSupplierInvoiceScreen> {
   }
 
   Future<void> _onAutofillFromImage() async {
-    // اختر ملف
     final picked = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: const ['pdf', 'png', 'jpg', 'jpeg'],
@@ -134,6 +162,7 @@ class _NewSupplierInvoiceScreenState extends State<NewSupplierInvoiceScreen> {
     setState(() {
       _pickedBytes = file.bytes!;
       _pickedMime = mime;
+      _pickedName = file.name;
     });
 
     final apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
@@ -150,14 +179,13 @@ class _NewSupplierInvoiceScreenState extends State<NewSupplierInvoiceScreen> {
         fileMimeType: _pickedMime!,
         extractType: 'invoice',
       );
-      // عبئ الحقول إن توفرت
       final date = (data['invoice_date'] ?? '').toString();
       final num = (data['invoice_number'] ?? '').toString();
-      final total = (data['totals']?['grand_total'] ?? data['grand_total'] ?? data['total'] ?? '').toString();
+      final total = (data['totals']?['grand_total'] ?? data['grand_total'] ?? data['total'] ?? '');
       setState(() {
         if (date.isNotEmpty) _dateCtrl.text = date;
         if (num.isNotEmpty) _numberCtrl.text = num;
-        if (total.isNotEmpty) _totalCtrl.text = total;
+        if (total != null) { _totalCtrl.text = _nf.format(double.tryParse(total.toString()) ?? 0); }
       });
     } catch (e) {
       if (!mounted) return;
@@ -165,13 +193,31 @@ class _NewSupplierInvoiceScreenState extends State<NewSupplierInvoiceScreen> {
     }
   }
 
+  Future<void> _onPickAttachment() async {
+    final picked = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['pdf', 'png', 'jpg', 'jpeg'],
+      withData: true,
+    );
+    if (picked == null || picked.files.isEmpty) return;
+    final file = picked.files.first;
+    if (file.bytes == null) return;
+    final ext = (file.extension ?? '').toLowerCase();
+    final mime = ext == 'pdf' ? 'application/pdf' : (ext == 'png' ? 'image/png' : 'image/jpeg');
+    setState(() {
+      _pickedBytes = file.bytes!;
+      _pickedMime = mime;
+      _pickedName = file.name;
+    });
+  }
+
   Future<void> _onSave() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _saving = true);
     try {
-      final total = double.tryParse(_totalCtrl.text.trim()) ?? 0;
-      final discount = double.tryParse(_discountCtrl.text.trim()) ?? 0;
-      final paid = double.tryParse(_paidCtrl.text.trim()) ?? 0;
+      final total = double.tryParse(_totalCtrl.text.replaceAll(',', '').trim()) ?? 0;
+      final discount = double.tryParse(_discountCtrl.text.replaceAll(',', '').trim()) ?? 0;
+      final paid = double.tryParse(_paidCtrl.text.replaceAll(',', '').trim()) ?? 0;
       final inv = SupplierInvoice(
         supplierId: widget.supplier.id!,
         invoiceNumber: _numberCtrl.text.trim().isEmpty ? null : _numberCtrl.text.trim(),
@@ -203,6 +249,17 @@ class _NewSupplierInvoiceScreenState extends State<NewSupplierInvoiceScreen> {
       if (mounted) setState(() => _saving = false);
     }
   }
+
+  void _onFormatNumber(TextEditingController ctrl) {
+    if (_formatting) return;
+    _formatting = true;
+    final raw = ctrl.text.replaceAll(',', '').trim();
+    if (raw.isEmpty) { _formatting = false; return; }
+    final val = double.tryParse(raw);
+    if (val != null) {
+      ctrl.text = _nf.format(val);
+      ctrl.selection = TextSelection.collapsed(offset: ctrl.text.length);
+    }
+    _formatting = false;
+  }
 }
-
-

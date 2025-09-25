@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import '../services/gemini_service.dart';
 import '../services/suppliers_service.dart';
 import '../models/supplier.dart';
@@ -37,6 +38,10 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
   Set<String> _knownProductNames = {};
   Set<String> _knownProductNamesNorm = {};
   String _paymentType = 'دين';
+  final NumberFormat _nf = NumberFormat('#,##0.##', 'en');
+
+  String _fmt(num v) => _nf.format(v);
+  double? _supplierCurrentBalance; // الرصيد قبل العملية
 
   @override
   void initState() {
@@ -59,6 +64,7 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
         _suppliers = list;
       } else {
         _selectedSupplierId = widget.supplierId;
+        await _loadSupplierBalance(_selectedSupplierId!);
       }
       // Load known product names for lookup
       try {
@@ -77,6 +83,20 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
       _error = e.toString();
     }
     await _runExtraction();
+  }
+
+  Future<void> _loadSupplierBalance(int supplierId) async {
+    try {
+      final db = await DatabaseService().database;
+      final rows = await db.query('suppliers', columns: ['current_balance'], where: 'id = ?', whereArgs: [supplierId], limit: 1);
+      if (!mounted) return;
+      _supplierCurrentBalance = rows.isNotEmpty ? ((rows.first['current_balance'] as num?)?.toDouble() ?? 0.0) : 0.0;
+      setState(() {});
+    } catch (_) {
+      if (!mounted) return;
+      _supplierCurrentBalance = null;
+      setState(() {});
+    }
   }
 
   Future<void> _runExtraction() async {
@@ -378,8 +398,40 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? Center(child: Text('فشل الاستخراج: $_error'))
+              ? _buildError()
               : _buildForm(),
+    );
+  }
+
+  Widget _buildError() {
+    final message = _error ?? '';
+    // رسائل لطيفة لحالات 429/503
+    String friendly = message;
+    if (message.contains(' 429 ') || message.contains('code": 429') || message.contains('RESOURCE_EXHAUSTED')) {
+      friendly = 'الخدمة مشغولة الآن (429). الرجاء المحاولة بعد قليل.';
+    } else if (message.contains(' 503 ') || message.contains('UNAVAILABLE') || message.contains('code": 503')) {
+      friendly = 'الخدمة غير متاحة مؤقتاً (503). سنحاول مجدداً.';
+    }
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(friendly, textAlign: TextAlign.center),
+          const SizedBox(height: 12),
+          ElevatedButton.icon(
+            onPressed: _runExtraction,
+            icon: const Icon(Icons.refresh),
+            label: const Text('إعادة المحاولة'),
+          ),
+          const SizedBox(height: 8),
+          TextButton(
+            onPressed: () {
+              setState(() => _error = null);
+            },
+            child: const Text('تجاهل والملء يدوياً'),
+          )
+        ],
+      ),
     );
   }
 
@@ -394,11 +446,11 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
     );
     final TextEditingController amountCtrl = TextEditingController(
       text: isInvoice
-          ? (data['totals']?['grand_total']?.toString() ?? '')
-          : (data['amount']?.toString() ?? ''),
+          ? (() { final t = data['totals']?['grand_total']; return t == null ? '' : _fmt(_toDouble(t)); })()
+          : (() { final a = data['amount']; return a == null ? '' : _fmt(_toDouble(a)); })(),
     );
     final TextEditingController paidCtrl = TextEditingController(
-      text: isInvoice ? (data['amount_paid']?.toString() ?? '0') : '0',
+      text: isInvoice ? _fmt(_toDouble(data['amount_paid'] ?? 0)) : '0',
     );
     double remaining = 0.0;
     try {
@@ -451,7 +503,7 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
                   DataColumn(label: SizedBox(width: 220, child: Text('التفاصيل'))),
                   DataColumn(label: SizedBox(width: 80, child: Text('العدد')), numeric: true),
                   DataColumn(label: SizedBox(width: 100, child: Text('السعر')), numeric: true),
-                  DataColumn(label: SizedBox(width: 100, child: Text('المبلغ')), numeric: true),
+                  DataColumn(label: SizedBox(width: 120, child: Text('المبلغ')), numeric: true),
                 ],
                 rows: [
                   ...List.generate(lineItems.length, (index) {
@@ -515,15 +567,9 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
                           setState(() {});
                         },
                       )),
-                      DataCell(TextFormField(
-                        initialValue: (item['amount'] ?? 0).toString(),
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(border: InputBorder.none),
-                        onChanged: (v) {
-                          final val = double.tryParse(v) ?? 0;
-                          item['amount'] = val;
-                          setState(() {});
-                        },
+                      DataCell(Align(
+                        alignment: Alignment.centerRight,
+                        child: Text(_fmt(_toDouble(item['amount'] ?? 0))),
                       )),
                     ]);
                   })
@@ -535,7 +581,7 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
                 const Text('مجموع العناصر: ', style: TextStyle(fontWeight: FontWeight.bold)),
-                Text(lineItems.fold<double>(0, (s, e) => s + _toDouble(e['amount'])).toStringAsFixed(2),
+                Text(_fmt(lineItems.fold<double>(0, (s, e) => s + _toDouble(e['amount']))),
                     style: const TextStyle(fontWeight: FontWeight.bold)),
               ],
             ),
@@ -554,7 +600,10 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
                         child: Text(s.companyName),
                       ))
                   .toList(),
-              onChanged: (v) => setState(() => _selectedSupplierId = v),
+              onChanged: (v) async {
+                setState(() => _selectedSupplierId = v);
+                if (v != null) await _loadSupplierBalance(v);
+              },
             ),
             const SizedBox(height: 12),
           ],
@@ -607,6 +656,12 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
               ],
             ),
           ],
+          const SizedBox(height: 12),
+          if ((_selectedSupplierId ?? widget.supplierId) != null) _buildBalancePreview(
+            isInvoice: isInvoice,
+            totalText: amountCtrl.text,
+            paidText: paidCtrl.text,
+          ),
           const SizedBox(height: 24),
           ElevatedButton.icon(
             onPressed: () async {
@@ -632,6 +687,38 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
     );
   }
 
+  Widget _buildBalancePreview({
+    required bool isInvoice,
+    required String totalText,
+    required String paidText,
+  }) {
+    final current = (_supplierCurrentBalance ?? 0.0);
+    final total = double.tryParse(totalText.replaceAll(',', '').trim()) ?? 0.0;
+    final paid = double.tryParse(paidText.replaceAll(',', '').trim()) ?? 0.0;
+    double delta;
+    if (isInvoice) {
+      final remaining = (total - paid);
+      delta = _paymentType == 'نقد' ? 0.0 : (remaining < 0 ? 0.0 : remaining);
+    } else {
+      delta = -total;
+    }
+    final after = current + delta;
+    return Card(
+      margin: const EdgeInsets.only(top: 4),
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('قبل: ${_fmt(current)}'),
+            Text('التغير: ${_fmt(delta)}'),
+            Text('بعد: ${_fmt(after)}'),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _saveRecord({
     required bool isInvoice,
     required String dateText,
@@ -653,12 +740,23 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
       final supplierId = widget.supplierId ?? _selectedSupplierId ?? 0;
       if (isInvoice) {
         final lineItems = (_extracted?['line_items'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+        final total = _toDouble(amountText);
+        final paid = _toDouble((paidText ?? '0'));
+        String status;
+        if (paid >= total && total > 0) {
+          status = 'مسدد';
+        } else if (paid > 0 && paid < total) {
+          status = 'جزئي';
+        } else {
+          status = 'آجل';
+        }
         final inv = SupplierInvoice(
           supplierId: supplierId,
           invoiceNumber: numberText.isEmpty ? null : numberText,
           invoiceDate: DateTime.tryParse(dateText) ?? DateTime.now(),
-          totalAmount: double.tryParse(amountText) ?? 0,
-          amountPaid: double.tryParse((paidText ?? '0').trim()) ?? 0,
+          totalAmount: total,
+          amountPaid: paid,
+          status: status,
           paymentType: _paymentType,
         );
         ownerId = await _suppliersService.insertSupplierInvoice(inv);

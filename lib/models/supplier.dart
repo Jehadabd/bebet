@@ -8,6 +8,7 @@ class Supplier {
   String? address;
   double openingBalance;
   double currentBalance;
+  double totalPurchases;
   DateTime createdAt;
   DateTime lastModifiedAt;
   String? notes;
@@ -21,6 +22,7 @@ class Supplier {
     this.address,
     this.openingBalance = 0.0,
     double? currentBalance,
+    this.totalPurchases = 0.0,
     DateTime? createdAt,
     DateTime? lastModifiedAt,
     this.notes,
@@ -38,6 +40,7 @@ class Supplier {
       'address': address,
       'opening_balance': openingBalance,
       'current_balance': currentBalance,
+      'total_purchases': totalPurchases,
       'created_at': createdAt.toIso8601String(),
       'last_modified_at': lastModifiedAt.toIso8601String(),
       'notes': notes,
@@ -54,6 +57,7 @@ class Supplier {
       address: map['address'] as String?,
       openingBalance: (map['opening_balance'] as num?)?.toDouble() ?? 0.0,
       currentBalance: (map['current_balance'] as num?)?.toDouble() ?? 0.0,
+      totalPurchases: (map['total_purchases'] as num?)?.toDouble() ?? 0.0,
       createdAt: DateTime.parse(map['created_at'] as String),
       lastModifiedAt: DateTime.parse(map['last_modified_at'] as String),
       notes: map['notes'] as String?,
@@ -69,6 +73,7 @@ class Supplier {
     String? address,
     double? openingBalance,
     double? currentBalance,
+    double? totalPurchases,
     DateTime? createdAt,
     DateTime? lastModifiedAt,
     String? notes,
@@ -82,6 +87,7 @@ class Supplier {
       address: address ?? this.address,
       openingBalance: openingBalance ?? this.openingBalance,
       currentBalance: currentBalance ?? this.currentBalance,
+      totalPurchases: totalPurchases ?? this.totalPurchases,
       createdAt: createdAt ?? this.createdAt,
       lastModifiedAt: lastModifiedAt ?? this.lastModifiedAt,
       notes: notes ?? this.notes,
