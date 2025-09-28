@@ -103,6 +103,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   final _storage = GetStorage();
   bool _savedOrSuspended = false;
   Timer? _debounceTimer;
+  Timer? _liveDebtTimer;
 
   
 
@@ -234,12 +235,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     newPriceLevel ??= product.unitPrice;
 
     // لا نضيف مباشرة. نختار المنتج ونظهر خيارات الوحدة والكمية
+    // توحيد مسار التهيئة مع البحث الذكي لضمان إعداد الوحدات وأنواع البيع والأسعار بشكل صحيح
+    _onProductSelected(product);
     setState(() {
-      _selectedProduct = product;
       _selectedPriceLevel = newPriceLevel;
-      _quantityController.clear();
       _productIdSuggestion = null;
-      _quantityAutofocus = true;
     });
   }
 
@@ -395,13 +395,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           );
         }).toList();
 
-        _totalAmountController.text = _invoiceItems
-            .fold(0.0, (sum, item) => sum + item.itemTotal)
-            .toStringAsFixed(2);
+        double itemsTotal = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+        final double loadingFee = double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
+        _totalAmountController.text = (itemsTotal + loadingFee).toStringAsFixed(2);
         
         // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً
         if (_invoiceToManage != null && _paymentType == 'نقد' && !_isViewOnly) {
-          final newTotal = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal) - _discount;
+          final newTotal = (itemsTotal + loadingFee) - _discount;
           _paidAmountController.text = formatNumber(newTotal);
         }
       });
@@ -475,6 +475,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         final newTotal = currentTotalAmount - _discount;
         _paidAmountController.text = formatNumber(newTotal);
       }
+      _scheduleLiveDebtSync();
     } catch (e) {
       print('Error in onDiscountChanged: $e');
     }
@@ -495,10 +496,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         }
         setState(() {
           _invoiceItems = items;
-          _totalAmountController.text = _invoiceItems
-              .fold(0.0, (sum, item) => sum + item.itemTotal)
-              .toStringAsFixed(2);
+          double itemsTotal = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+          final double loadingFee = double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
+          _totalAmountController.text = (itemsTotal + loadingFee).toStringAsFixed(2);
         });
+        _scheduleLiveDebtSync();
       }
     } catch (e) {
       print('Error loading invoice items: $e');
@@ -613,8 +615,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     try {
       if (_paymentType == 'نقد') {
         _guardDiscount();
-        final currentTotalAmount =
-            _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+        final itemsTotal = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+        final double loadingFee = double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
+        final currentTotalAmount = itemsTotal + loadingFee;
         final total = currentTotalAmount - _discount;
         _paidAmountController.text =
             formatNumber(total.clamp(0, double.infinity));
@@ -627,8 +630,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   // دالة مركزية لحماية الخصم
   void _guardDiscount() {
     try {
-      final currentTotalAmount =
-          _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+      final itemsTotal = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+      final double loadingFee = double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
+      final currentTotalAmount = itemsTotal + loadingFee;
       // الحد الأعلى للخصم هو أقل من نصف الإجمالي
       final maxDiscount = (currentTotalAmount / 2) - 1;
       if (_discount > maxDiscount) {
@@ -900,6 +904,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           autoSaveSuspendedInvoice();
         }
       });
+      _scheduleLiveDebtSync();
     } catch (e) {
       print('Error removing invoice item by uid: $e');
       if (mounted) {
@@ -968,7 +973,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
       double currentTotalAmount =
           _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-      double totalAmount = currentTotalAmount - _discount;
+      // إضافة رسوم التحميل إلى المبلغ الإجمالي
+      final double loadingFee = double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
+      double totalAmount = (currentTotalAmount + loadingFee) - _discount;
       
       // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً
       double paid = double.tryParse(_paidAmountController.text.replaceAll(',', '')) ?? 0.0;
@@ -3523,12 +3530,82 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   }
 
   void _recalculateTotals() {
-    double total = _invoiceItems.fold(0, (sum, item) => sum + item.itemTotal);
+    double itemsTotal = _invoiceItems.fold(0, (sum, item) => sum + item.itemTotal);
+    // إضافة رسوم التحميل إلى الإجمالي المعروض
+    final double loadingFee = double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
+    double total = itemsTotal + loadingFee;
     _totalAmountController.text = formatNumber(total);
     if (_paymentType == 'نقد') {
       _paidAmountController.text = formatNumber(total - _discount);
     }
     setState(() {});
+    _scheduleLiveDebtSync();
+  }
+
+  Future<void> _syncLiveDebt() async {
+    try {
+      // متاح فقط للفواتير الموجودة ولها عميل
+      if (_invoiceToManage == null || _invoiceToManage!.id == null) return;
+      final int invoiceId = _invoiceToManage!.id!;
+      int? customerId = _invoiceToManage!.customerId;
+      if (customerId == null) {
+        // حاول إيجاد العميل بالاسم/الهاتف إذا لم يكن مرتبطاً
+        if (_customerNameController.text.trim().isEmpty) return;
+        final customer = await _db.findCustomerByNormalizedName(
+          _customerNameController.text.trim(),
+          phone: _customerPhoneController.text.trim().isEmpty
+              ? null
+              : _customerPhoneController.text.trim(),
+        );
+        if (customer == null || customer.id == null) return;
+        customerId = customer.id;
+      }
+      final int resolvedCustomerId = customerId!;
+
+      double newContribution = 0.0;
+      if (_paymentType == 'دين') {
+        // استخدم دالة المتبقي الحالية التي تأخذ بعين الاعتبار التسويات النقدية
+        final remaining = await _calculateRemainingAmount();
+        newContribution = remaining.clamp(0.0, double.infinity);
+      } else {
+        newContribution = 0.0;
+      }
+
+      await _db.setInvoiceDebtContribution(
+        invoiceId: invoiceId,
+        customerId: resolvedCustomerId,
+        newContribution: newContribution,
+        note: 'تعديل حي لمساهمة فاتورة #$invoiceId',
+      );
+    } catch (e) {
+      // لا تُظهر خطأ للمستخدم أثناء التعديل الحي؛ فقط سجّل
+      print('live debt sync error: $e');
+    }
+  }
+
+  void _scheduleLiveDebtSync() {
+    try {
+      _liveDebtTimer?.cancel();
+      _liveDebtTimer = Timer(const Duration(milliseconds: 500), _syncLiveDebt);
+    } catch (e) {
+      print('schedule live sync error: $e');
+    }
+  }
+
+  Future<void> _persistPaymentTypeLightweight() async {
+    try {
+      if (_invoiceToManage == null || _invoiceToManage!.id == null) return;
+      final paid = double.tryParse(_paidAmountController.text.replaceAll(',', '')) ?? 0.0;
+      // لا نعدّل البنود هنا؛ فقط نحفظ نوع الدفع والمبلغ المسدد والتاريخ
+      final updated = _invoiceToManage!.copyWith(
+        paymentType: _paymentType,
+        amountPaidOnInvoice: paid,
+        lastModifiedAt: DateTime.now(),
+      );
+      await _db.updateInvoice(updated);
+    } catch (e) {
+      print('light persist payment type error: $e');
+    }
   }
 
   @override
@@ -4447,6 +4524,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             });
                           }
                         });
+        _scheduleLiveDebtSync();
                       },
                       onItemRemovedByUid: _removeInvoiceItemByUid,
                     );
@@ -4715,6 +4793,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                   _updatePaidAmountIfCash();
                                   _autoSave();
                                 });
+                _scheduleLiveDebtSync();
+                _persistPaymentTypeLightweight();
                                 if (_invoiceToManage != null &&
                                     _invoiceToManage!.status == 'معلقة' &&
                                     (_invoiceToManage?.isLocked ?? false)) {
@@ -4735,6 +4815,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                   _paidAmountController.text = formatNumber(0);
                                   _autoSave();
                                 });
+                _scheduleLiveDebtSync();
+                _persistPaymentTypeLightweight();
                                 if (_invoiceToManage != null &&
                                     _invoiceToManage!.status == 'معلقة' &&
                                     (_invoiceToManage?.isLocked ?? false)) {

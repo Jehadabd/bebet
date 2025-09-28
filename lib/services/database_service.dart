@@ -1755,6 +1755,68 @@ class DatabaseService {
     }
   }
 
+  /// ضبط المساهمة الحالية لهذه الفاتورة في دين العميل بشكل مباشر (تعديل حي)
+  /// newContribution هي قيمة الدين التي يجب أن تمثلها هذه الفاتورة حالياً.
+  /// الدالة تحسب الفرق مع المساهمة الحالية (من جميع معاملات هذه الفاتورة ما عدا المدفوعات اليدوية)
+  /// ثم تطبق هذا الفرق على رصيد العميل وتكتب معاملة واحدة بالفارق.
+  Future<void> setInvoiceDebtContribution({
+    required int invoiceId,
+    required int customerId,
+    required double newContribution,
+    String? note,
+  }) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      // اجمع مساهمة الفاتورة الحالية من كل المعاملات المرتبطة بهذه الفاتورة باستثناء المدفوعات اليدوية
+      // نستثني manual_payment لأنها تمثل تسديد خارجي لا يجب أن يُحتسب ضمن مساهمة الفاتورة نفسها
+      final List<Map<String, Object?>> rows = await txn.query(
+        'transactions',
+        columns: ['amount_changed', 'transaction_type'],
+        where: 'invoice_id = ? AND (transaction_type IS NULL OR transaction_type <> ?)',
+        whereArgs: [invoiceId, 'manual_payment'],
+      );
+      double currentContribution = 0.0;
+      for (final r in rows) {
+        final num? v = r['amount_changed'] as num?;
+        currentContribution += (v ?? 0).toDouble();
+      }
+
+      final double delta = newContribution - currentContribution;
+      const double eps = 1e-6;
+      if (delta.abs() < eps) {
+        return; // لا حاجة لتغيير
+      }
+
+      // حدّث رصيد العميل
+      final customer = await getCustomerByIdUsingTransaction(txn, customerId);
+      if (customer == null) return;
+      final double newBalance = (customer.currentTotalDebt + delta);
+      await txn.update(
+        'customers',
+        {
+          'current_total_debt': newBalance,
+          'last_modified_at': DateTime.now().toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [customerId],
+      );
+
+      // اكتب معاملة تمثل الفارق فقط
+      await txn.insert('transactions', {
+        'customer_id': customerId,
+        'transaction_date': DateTime.now().toIso8601String(),
+        'amount_changed': delta,
+        'new_balance_after_transaction': newBalance,
+        'transaction_note': note ?? 'تعديل حي لمساهمة الفاتورة',
+        'transaction_type': 'invoice_live_update',
+        'description': 'Live delta applied to match invoice contribution',
+        'invoice_id': invoiceId,
+        'created_at': DateTime.now().toIso8601String(),
+        'audio_note_path': null,
+      });
+    });
+  }
+
   // Method to get the initial debt transaction for an invoice
   Future<DebtTransaction?> getInvoiceDebtTransaction(int invoiceId) async {
     final db = await database;
