@@ -106,6 +106,13 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
     _filteredInvoices = filtered;
   }
 
+  // دالة لاعتراض زر الرجوع
+  Future<bool> _onWillPop() async {
+    // في شاشة تعديل الفواتير، لا نحتاج لمعالجة خاصة
+    // لأنها لا تحتوي على تعديلات غير محفوظة
+    return true;
+  }
+
   @override
   void dispose() {
     _nameController
@@ -256,11 +263,13 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
         // Define IconButton theme (if any are used in future updates)
         iconTheme: IconThemeData(color: Colors.grey[700], size: 24.0),
       ),
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('تعديل القوائم (الفواتير)'),
-          // The title style is now managed by appBarTheme.titleTextStyle
-        ),
+      child: WillPopScope(
+        onWillPop: _onWillPop,
+        child: Scaffold(
+          appBar: AppBar(
+            title: const Text('تعديل القوائم (الفواتير)'),
+            // The title style is now managed by appBarTheme.titleTextStyle
+          ),
         body: _loading
             ? const Center(
                 child: CircularProgressIndicator(
@@ -455,7 +464,24 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                                           icon: const Icon(Icons.share),
                                           onPressed: () => _shareInvoicePdf(invoice),
                                         ),
-                                        if (invoice.status == 'محفوظة')
+                                        if (invoice.status == 'محفوظة') ...[
+                                          IconButton(
+                                            tooltip: 'تعديل الفاتورة',
+                                            icon: const Icon(Icons.edit),
+                                            onPressed: () async {
+                                              // افتح شاشة التعديل
+                                              await Navigator.push(
+                                                context,
+                                                MaterialPageRoute(
+                                                  builder: (context) => CreateInvoiceScreen(
+                                                    existingInvoice: invoice,
+                                                    isViewOnly: false, // وضع التعديل
+                                                  ),
+                                                ),
+                                              );
+                                              _fetchInvoices();
+                                            },
+                                          ),
                                           IconButton(
                                             tooltip: 'تسوية الفاتورة',
                                             icon: const Icon(Icons.playlist_add),
@@ -474,6 +500,7 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                                               _fetchInvoices();
                                             },
                                           ),
+                                        ],
                                       ],
                                     ),
                                     onTap: () async {
@@ -519,8 +546,7 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                                           builder: (context) =>
                                               CreateInvoiceScreen(
                                             existingInvoice: invoice,
-                                            isViewOnly:
-                                                invoice.status == 'محفوظة',
+                                            isViewOnly: invoice.status == 'محفوظة', // الفواتير المحفوظة للعرض فقط، المعلقة للتعديل
                                           ),
                                         ),
                                       ).then((_) {
@@ -535,6 +561,7 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                   ],
                 ),
               ),
+        ),
       ),
     );
   }

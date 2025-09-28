@@ -39,6 +39,29 @@ String formatProductId5(int? id) {
   return id.toString();
 }
 
+// دالة تنسيق رقم الهاتف للصيغة الدولية
+String _normalizePhoneNumber(String phone) {
+  // إزالة كل شيء غير الأرقام أو +
+  String cleaned = phone.replaceAll(RegExp(r'[^0-9+]'), '');
+  
+  // إزالة علامة + إذا كانت موجودة
+  if (cleaned.startsWith('+')) {
+    cleaned = cleaned.substring(1);
+  }
+  
+  // إذا بدأ بصفر محلي، استبدله برمز الدولة العراقية
+  if (cleaned.startsWith('0')) {
+    cleaned = '964' + cleaned.substring(1);
+  }
+  
+  // إذا لم يبدأ برمز الدولة، أضف رمز العراق
+  if (!cleaned.startsWith('964')) {
+    cleaned = '964' + cleaned;
+  }
+  
+  return cleaned;
+}
+
 // تعريف EditableInvoiceItemRow موجود هنا (أو تأكد من وجوده قبل استخدامه في ListView)
 // إذا كان التعريف موجود بالفعل، لا داعي لأي تعديل إضافي هنا.
 // إذا لم يكن موجودًا، أضف الكود الذي تم إنشاؤه في الخطوة السابقة هنا.
@@ -104,8 +127,61 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   bool _savedOrSuspended = false;
   Timer? _debounceTimer;
   Timer? _liveDebtTimer;
-
   
+  // متغير لتتبع التغييرات غير المحفوظة
+  bool _hasUnsavedChanges = false;
+  
+  // دالة لإظهار Dialog الحفظ عند الرجوع
+  Future<bool> _showSaveDialog() async {
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('تعديلات غير محفوظة'),
+          content: const Text('هل تريد حفظ التعديلات قبل الخروج؟'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false), // تجاهل
+              child: const Text('تجاهل'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true), // حفظ
+              child: const Text('حفظ'),
+            ),
+          ],
+        );
+      },
+    );
+    return result ?? false; // إذا أغلقت Dialog، نعتبرها تجاهل
+  }
+  
+  // دالة لاعتراض زر الرجوع
+  Future<bool> _onWillPop() async {
+    // إذا لم تكن في وضع تعديل أو لا توجد تغييرات غير محفوظة، اخرج مباشرة
+    if (_invoiceToManage == null || _isViewOnly || !_hasUnsavedChanges) {
+      return true;
+    }
+    
+    // إظهار Dialog الحفظ
+    final shouldSave = await _showSaveDialog();
+    
+    if (shouldSave) {
+      // حفظ الفاتورة
+      final savedInvoice = await _saveInvoice();
+      if (savedInvoice != null) {
+        // تم الحفظ بنجاح، _hasUnsavedChanges تم إعادة تعيينه في _saveInvoice
+        return true; // اخرج
+      } else {
+        return false; // فشل الحفظ، ابق في الشاشة
+      }
+    } else {
+      // تجاهل التعديلات - إعادة تحميل البيانات الأصلية
+      await _loadInvoiceItems();
+      _hasUnsavedChanges = false;
+      return true; // اخرج
+    }
+  }
 
   bool _isViewOnly = false;
 
@@ -452,6 +528,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   // معالج تغيير الحقول مع تأخير
   void _onFieldChanged() {
     try {
+      // تحديد أن هناك تغييرات غير محفوظة
+      if (_invoiceToManage != null && !_isViewOnly) {
+        _hasUnsavedChanges = true;
+      }
+      
       if (_debounceTimer?.isActive ?? false) {
         _debounceTimer!.cancel();
       }
@@ -468,6 +549,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       final discountText = _discountController.text.replaceAll(',', '');
       final newDiscount = double.tryParse(discountText) ?? 0.0;
       _discount = newDiscount;
+      
+      // تحديد أن هناك تغييرات غير محفوظة
+      if (_invoiceToManage != null && !_isViewOnly) {
+        _hasUnsavedChanges = true;
+      }
       
       // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً
       if (_invoiceToManage != null && _paymentType == 'نقد' && !_isViewOnly) {
@@ -571,6 +657,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         locale: const Locale('ar', 'SA'),
       );
       if (picked != null && picked != _selectedDate) {
+        // تحديد أن هناك تغييرات غير محفوظة
+        if (_invoiceToManage != null && !_isViewOnly) {
+          _hasUnsavedChanges = true;
+        }
+        
         setState(() {
           _selectedDate = picked;
           _autoSave(); // حفظ تلقائي عند تغيير التاريخ
@@ -697,6 +788,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   void _addInvoiceItem() {
     try {
+      // تحديد أن هناك تغييرات غير محفوظة
+      if (_invoiceToManage != null && !_isViewOnly) {
+        _hasUnsavedChanges = true;
+      }
+      
       if (_formKey.currentState!.validate() &&
           _selectedProduct != null &&
           _selectedPriceLevel != null) {
@@ -879,6 +975,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   void _removeInvoiceItemByUid(String uid) {
     try {
+      // تحديد أن هناك تغييرات غير محفوظة
+      if (_invoiceToManage != null && !_isViewOnly) {
+        _hasUnsavedChanges = true;
+      }
+      
       setState(() {
         final index = _invoiceItems.indexWhere((it) => it.uniqueId == uid);
         if (index == -1) return;
@@ -948,19 +1049,22 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       Customer? customer;
       if (_customerNameController.text.trim().isNotEmpty) {
         // التطبيع: إزالة المسافات من الاسم والبحث عبر الدالة الجديدة
+        String? normalizedPhone;
+        if (_customerPhoneController.text.trim().isNotEmpty) {
+          normalizedPhone = _normalizePhoneNumber(_customerPhoneController.text.trim());
+        }
+        
         customer = await _db.findCustomerByNormalizedName(
           _customerNameController.text.trim(),
-          phone: _customerPhoneController.text.trim().isEmpty
-              ? null
-              : _customerPhoneController.text.trim(),
+          phone: normalizedPhone,
         );
         if (customer == null) {
+          // استخدام الرقم المحول من الأعلى
+          
           customer = Customer(
             id: null,
             name: _customerNameController.text.trim(),
-            phone: _customerPhoneController.text.trim().isEmpty
-                ? null
-                : _customerPhoneController.text.trim(),
+            phone: normalizedPhone,
             address: _customerAddressController.text.trim(),
             createdAt: DateTime.now(),
             lastModifiedAt: DateTime.now(),
@@ -1026,10 +1130,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         newIsLocked = false;
       }
 
+      // تحويل رقم الهاتف إلى الصيغة الدولية للفاتورة أيضاً
+      String? normalizedPhoneForInvoice;
+      if (_customerPhoneController.text.trim().isNotEmpty) {
+        normalizedPhoneForInvoice = _normalizePhoneNumber(_customerPhoneController.text.trim());
+      }
+      
       Invoice invoice = Invoice(
         id: _invoiceToManage?.id,
         customerName: _customerNameController.text,
-        customerPhone: _customerPhoneController.text,
+        customerPhone: normalizedPhoneForInvoice,
         customerAddress: _customerAddressController.text,
         installerName: _installerNameController.text.isEmpty
             ? null
@@ -1325,6 +1435,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           });
         }
       }
+      
+      // إعادة تعيين تتبع التغييرات عند الحفظ الناجح
+      _hasUnsavedChanges = false;
+      
       return updatedInvoice;
     } catch (e) {
       String errorMessage = 'حدث خطأ عند حفظ الفاتورة: ￼[${e.toString()}';
@@ -3621,8 +3735,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     // استخدم القائمة الكاملة دائمًا لعرض جميع الصفوف بما في ذلك الصف الفارغ الجديد
     final displayedItems = _invoiceItems;
 
-    return Theme(
-      data: ThemeData(
+    return WillPopScope(
+      onWillPop: _onWillPop,
+      child: Theme(
+        data: ThemeData(
         colorScheme: ColorScheme.light(
           primary: primaryColor,
           onPrimary: Colors.white,
@@ -4498,6 +4614,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     currentCustomerName: _customerNameController.text.trim(),
                     currentCustomerPhone: _customerPhoneController.text.trim().isEmpty ? null : _customerPhoneController.text.trim(),
                       onItemUpdated: (updatedItem) {
+                        // تحديد أن هناك تغييرات غير محفوظة
+                        if (_invoiceToManage != null && !_isViewOnly) {
+                          _hasUnsavedChanges = true;
+                        }
+                        
                         setState(() {
                           final i = _invoiceItems.indexWhere(
                               (it) => it.uniqueId == updatedItem.uniqueId);
@@ -4787,6 +4908,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         onChanged: _isViewOnly
                             ? null
                             : (value) {
+                                // تحديد أن هناك تغييرات غير محفوظة
+                                if (_invoiceToManage != null && !_isViewOnly) {
+                                  _hasUnsavedChanges = true;
+                                }
+                                
                                 setState(() {
                                   _paymentType = value!;
                                   _guardDiscount();
@@ -4810,6 +4936,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         onChanged: _isViewOnly
                             ? null
                             : (value) {
+                                // تحديد أن هناك تغييرات غير محفوظة
+                                if (_invoiceToManage != null && !_isViewOnly) {
+                                  _hasUnsavedChanges = true;
+                                }
+                                
                                 setState(() {
                                   _paymentType = value!;
                                   _paidAmountController.text = formatNumber(0);
@@ -4931,6 +5062,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           ),
         ),
       ),
+    ),
     );
   }
 

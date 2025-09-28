@@ -17,6 +17,8 @@ import 'dart:io';
 import 'package:intl/intl.dart';
 import 'package:process/process.dart'; // For Process.start on Windows
 import 'package:audioplayers/audioplayers.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter/services.dart';
 
 class CustomerDetailsScreen extends StatefulWidget {
   final Customer customer;
@@ -105,6 +107,137 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
       _isPlaying = false;
       _currentlyPlayingPath = null;
     });
+  }
+
+  // دالة تنسيق رقم الهاتف للصيغة الدولية
+  String _normalizePhoneNumber(String phone) {
+    // إزالة كل شيء غير الأرقام أو +
+    String cleaned = phone.replaceAll(RegExp(r'[^0-9+]'), '');
+    
+    // إزالة علامة + إذا كانت موجودة
+    if (cleaned.startsWith('+')) {
+      cleaned = cleaned.substring(1);
+    }
+    
+    // إذا بدأ بصفر محلي، استبدله برمز الدولة العراقية
+    if (cleaned.startsWith('0')) {
+      cleaned = '964' + cleaned.substring(1);
+    }
+    
+    // إذا لم يبدأ برمز الدولة، أضف رمز العراق
+    if (!cleaned.startsWith('964')) {
+      cleaned = '964' + cleaned;
+    }
+    
+    return cleaned;
+  }
+
+  // دالة بناء رسالة الدين
+  String _buildDebtMessage() {
+    final customer = widget.customer;
+    final provider = context.read<AppProvider>();
+    final currentBalance = provider.selectedCustomer?.currentTotalDebt ?? 0.0;
+    
+    final formatter = NumberFormat('#,##0.00', 'ar_IQ');
+    final formattedAmount = formatter.format(currentBalance.abs());
+    
+    final dateFormatter = DateFormat('yyyy-MM-dd', 'ar_IQ');
+    final currentDate = dateFormatter.format(DateTime.now());
+    
+    String message = 'عزيزي ${customer.name}،\n\n';
+    
+    if (currentBalance > 0) {
+      message += 'لديك دين بقيمة $formattedAmount دينار.\n';
+    } else if (currentBalance < 0) {
+      message += 'لديك رصيد ائتماني بقيمة $formattedAmount دينار.\n';
+    } else {
+      message += 'رصيدك الحالي متوازن (صفر دينار).\n';
+    }
+    
+    message += 'تاريخ آخر تحديث: $currentDate\n\n';
+    message += 'الرجاء التواصل معنا لمراجعة الحساب.\n\n';
+    message += 'مع الشكر والتقدير.';
+    
+    return message;
+  }
+
+  // دالة إرسال رسالة واتساب
+  Future<void> _sendWhatsAppMessage() async {
+    final provider = context.read<AppProvider>();
+    final customer = provider.selectedCustomer ?? widget.customer;
+    
+    // التحقق من وجود رقم هاتف
+    if (customer.phone == null || customer.phone!.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('لا يوجد رقم هاتف مسجل للعميل'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
+
+    try {
+      // تنسيق رقم الهاتف
+      final phoneNumber = _normalizePhoneNumber(customer.phone!);
+      
+      // بناء رسالة الدين
+      final message = _buildDebtMessage();
+      
+      // ترميز الرسالة للرابط
+      final encodedMessage = Uri.encodeComponent(message);
+      
+      // إنشاء روابط واتساب
+      final whatsappAppUri = Uri.parse('whatsapp://send?phone=$phoneNumber&text=$encodedMessage');
+      final whatsappWebUri = Uri.parse('https://wa.me/$phoneNumber?text=$encodedMessage');
+      
+      // محاولة فتح تطبيق واتساب أولاً
+      if (await canLaunchUrl(whatsappAppUri)) {
+        await launchUrl(whatsappAppUri);
+        return;
+      }
+      
+      // إذا فشل، جرب رابط الويب
+      if (await canLaunchUrl(whatsappWebUri)) {
+        await launchUrl(whatsappWebUri, mode: LaunchMode.externalApplication);
+        return;
+      }
+      
+      // إذا فشل كلاهما، انسخ الرسالة للحافظة
+      await Clipboard.setData(ClipboardData(text: message));
+      
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('تعذر فتح واتساب'),
+            content: const Text('تم نسخ رسالة الدين إلى الحافظة. افتح واتساب والصقها لإرسالها.'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('حسناً'),
+              ),
+            ],
+          ),
+        );
+      }
+      
+    } catch (e) {
+      // في حالة الخطأ، انسخ الرسالة للحافظة
+      final message = _buildDebtMessage();
+      await Clipboard.setData(ClipboardData(text: message));
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('حدث خطأ: ${e.toString()}. تم نسخ الرسالة للحافظة.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    }
   }
 
   @override
@@ -249,16 +382,29 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                   },
                 );
                 if (result == true && mounted) {
+                  // تحويل رقم الهاتف إلى الصيغة الدولية تلقائياً
+                  String? normalizedPhone;
+                  if (phoneController.text.trim().isNotEmpty) {
+                    normalizedPhone = _normalizePhoneNumber(phoneController.text.trim());
+                  }
+                  
                   final updated = widget.customer.copyWith(
                     name: nameController.text.trim(),
-                    phone: phoneController.text.trim().isEmpty ? null : phoneController.text.trim(),
+                    phone: normalizedPhone,
                     address: addressController.text.trim(),
                     lastModifiedAt: DateTime.now(),
                   );
                   await context.read<AppProvider>().updateCustomer(updated);
                   if (mounted) {
+                    String message = 'تم تحديث بيانات العميل';
+                    if (normalizedPhone != null) {
+                      message += '\nتم تحويل رقم الهاتف إلى: $normalizedPhone';
+                    }
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('تم تحديث بيانات العميل')),
+                      SnackBar(
+                        content: Text(message),
+                        duration: const Duration(seconds: 3),
+                      ),
                     );
                   }
                 }
@@ -280,6 +426,12 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                   await _stopAudio();
                 },
               ),
+            // زر إرسال واتساب
+            IconButton(
+              icon: const Icon(Icons.message, color: Colors.white),
+              tooltip: 'إرسال رسالة واتساب',
+              onPressed: _sendWhatsAppMessage,
+            ),
             IconButton(
               icon: const Icon(Icons.delete,
                   color: Colors.white), // Color changed
