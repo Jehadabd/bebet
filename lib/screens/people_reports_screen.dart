@@ -353,8 +353,8 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
     );
   }
 
-  void _navigateToPersonDetails(PersonReportData person) {
-    Navigator.push(
+  Future<void> _navigateToPersonDetails(PersonReportData person) async {
+    await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => PersonDetailsScreen(
@@ -362,6 +362,16 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
         ),
       ),
     );
+    if (!mounted) return;
+    // بعد الرجوع: إن كان البحث فارغاً أعد القائمة كاملة، غير ذلك أعد تطبيق التصفية
+    final query = _searchController.text.trim();
+    if (query.isEmpty) {
+      setState(() {
+        _filteredPeople = _people;
+      });
+    } else {
+      _filterPeople();
+    }
   }
 }
 

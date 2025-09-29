@@ -137,28 +137,48 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
     final customer = widget.customer;
     final provider = context.read<AppProvider>();
     final currentBalance = provider.selectedCustomer?.currentTotalDebt ?? 0.0;
-    
-    final formatter = NumberFormat('#,##0.00', 'ar_IQ');
-    final formattedAmount = formatter.format(currentBalance.abs());
-    
-    final dateFormatter = DateFormat('yyyy-MM-dd', 'ar_IQ');
-    final currentDate = dateFormatter.format(DateTime.now());
-    
-    String message = 'عزيزي ${customer.name}،\n\n';
-    
-    if (currentBalance > 0) {
-      message += 'لديك دين بقيمة $formattedAmount دينار.\n';
-    } else if (currentBalance < 0) {
-      message += 'لديك رصيد ائتماني بقيمة $formattedAmount دينار.\n';
-    } else {
-      message += 'رصيدك الحالي متوازن (صفر دينار).\n';
+
+    // تنسيق المبلغ
+    final amountFormatter = NumberFormat('#,##0', 'en_US');
+    final formattedAmount = amountFormatter.format(currentBalance.abs());
+
+    // تحديد تاريخ آخر تحديث من آخر معاملة، وإن لم تتوفر فآخر تعديل للعميل
+    final transactions = provider.customerTransactions;
+    DateTime? lastTransactionDate;
+    for (final t in transactions) {
+      if (t.transactionDate != null) {
+        if (lastTransactionDate == null || t.transactionDate!.isAfter(lastTransactionDate)) {
+          lastTransactionDate = t.transactionDate;
+        }
+      }
     }
-    
-    message += 'تاريخ آخر تحديث: $currentDate\n\n';
-    message += 'الرجاء التواصل معنا لمراجعة الحساب.\n\n';
-    message += 'مع الشكر والتقدير.';
-    
-    return message;
+    final DateTime lastUpdate = lastTransactionDate ?? customer.lastModifiedAt;
+    final dateFormatter = DateFormat('yyyy-MM-dd', 'en_US');
+    final formattedLastUpdate = dateFormatter.format(lastUpdate);
+
+    // نص العنوان المطلوب
+    const String storeAddress = 'موقعنا : الموصل - القيارة - الجدعة - الشارع العام- مقابل برج اسياسيل\nمجمع الناصر لبيع المواد الكهربائية والصحية';
+
+    // بناء الرسالة
+    final StringBuffer message = StringBuffer();
+    message.writeln('السلام عليكم');
+    message.writeln('عزيزي ${customer.name}،');
+    message.writeln();
+
+    if (currentBalance > 0) {
+      message.writeln('لديك دين بقيمة $formattedAmount دينار.');
+    } else if (currentBalance < 0) {
+      message.writeln('لديك رصيد ائتماني بقيمة $formattedAmount دينار.');
+    } else {
+      message.writeln('رصيدك الحالي متوازن (صفر دينار).');
+    }
+
+    message.writeln('تاريخ آخر تحديث: $formattedLastUpdate');
+    message.writeln('الرجاء التواصل معنا لمراجعه الحساب');
+    message.writeln(storeAddress);
+    message.writeln('مع الشكر والتقدير');
+
+    return message.toString();
   }
 
   // دالة إرسال رسالة واتساب
@@ -179,6 +199,26 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
       return;
     }
 
+    // إظهار مؤشر تحميل
+    if (mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          content: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+              ),
+              const SizedBox(width: 16),
+              const Text('جاري فتح واتساب...'),
+            ],
+          ),
+        ),
+      );
+    }
+
     try {
       // تنسيق رقم الهاتف
       final phoneNumber = _normalizePhoneNumber(customer.phone!);
@@ -193,38 +233,75 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
       final whatsappAppUri = Uri.parse('whatsapp://send?phone=$phoneNumber&text=$encodedMessage');
       final whatsappWebUri = Uri.parse('https://wa.me/$phoneNumber?text=$encodedMessage');
       
-      // محاولة فتح تطبيق واتساب أولاً
-      if (await canLaunchUrl(whatsappAppUri)) {
-        await launchUrl(whatsappAppUri);
-        return;
+      bool success = false;
+      
+      // محاولة فتح تطبيق واتساب أولاً مع timeout
+      try {
+        if (await canLaunchUrl(whatsappAppUri)) {
+          await launchUrl(whatsappAppUri);
+          success = true;
+        }
+      } catch (e) {
+        print('خطأ في فتح تطبيق واتساب: $e');
       }
       
-      // إذا فشل، جرب رابط الويب
-      if (await canLaunchUrl(whatsappWebUri)) {
-        await launchUrl(whatsappWebUri, mode: LaunchMode.externalApplication);
-        return;
+      // إذا فشل تطبيق واتساب، انتظر قليلاً ثم جرب واتساب ويب
+      if (!success) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        
+        try {
+          if (await canLaunchUrl(whatsappWebUri)) {
+            await launchUrl(whatsappWebUri, mode: LaunchMode.externalApplication);
+            success = true;
+          }
+        } catch (e) {
+          print('خطأ في فتح واتساب ويب: $e');
+        }
       }
       
-      // إذا فشل كلاهما، انسخ الرسالة للحافظة
-      await Clipboard.setData(ClipboardData(text: message));
-      
+      // إغلاق مؤشر التحميل
       if (mounted) {
-        showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('تعذر فتح واتساب'),
-            content: const Text('تم نسخ رسالة الدين إلى الحافظة. افتح واتساب والصقها لإرسالها.'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('حسناً'),
-              ),
-            ],
-          ),
-        );
+        Navigator.pop(context);
+      }
+      
+      if (success) {
+        // نجح فتح واتساب
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('تم فتح واتساب بنجاح!'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+      } else {
+        // فشل فتح واتساب، انسخ الرسالة للحافظة
+        await Clipboard.setData(ClipboardData(text: message));
+        
+        if (mounted) {
+          showDialog(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('تعذر فتح واتساب'),
+              content: const Text('تم نسخ رسالة الدين إلى الحافظة. افتح واتساب والصقها لإرسالها.'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('حسناً'),
+                ),
+              ],
+            ),
+          );
+        }
       }
       
     } catch (e) {
+      // إغلاق مؤشر التحميل في حالة الخطأ
+      if (mounted) {
+        Navigator.pop(context);
+      }
+      
       // في حالة الخطأ، انسخ الرسالة للحافظة
       final message = _buildDebtMessage();
       await Clipboard.setData(ClipboardData(text: message));
