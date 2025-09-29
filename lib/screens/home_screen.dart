@@ -585,8 +585,10 @@ class CustomerListTile extends StatelessWidget {
               builder: (context) => CustomerDetailsScreen(customer: customer),
             ),
           ).then((_) {
-            // After returning from CustomerDetailsScreen, refresh the customers list
-            Provider.of<AppProvider>(context, listen: false).initialize();
+            // After returning: clear search filter and refresh full list
+            final app = Provider.of<AppProvider>(context, listen: false);
+            app.setSearchQuery('');
+            app.initialize();
           });
         },
       ),

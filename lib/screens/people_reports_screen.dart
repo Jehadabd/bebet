@@ -363,15 +363,12 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
       ),
     );
     if (!mounted) return;
-    // بعد الرجوع: إن كان البحث فارغاً أعد القائمة كاملة، غير ذلك أعد تطبيق التصفية
-    final query = _searchController.text.trim();
-    if (query.isEmpty) {
-      setState(() {
-        _filteredPeople = _people;
-      });
-    } else {
-      _filterPeople();
-    }
+    // بعد الرجوع: امسح البحث وأعد القائمة كاملة كأنها أول مرة
+    _searchController.text = '';
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _filteredPeople = _people;
+    });
   }
 }
 
