@@ -27,106 +27,177 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
     final filtered = _suppliers
         .where((s) => s.companyName.contains(_query))
         .toList();
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('الموردون'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.person_add),
-            onPressed: _onAddSupplier,
-            tooltip: 'إضافة مورد',
+    final Color primaryColor = const Color(0xFF3F51B5); // Indigo 700
+    final Color accentColor = const Color(0xFF8C9EFF); // Indigo A200
+    final Color textColor = const Color(0xFF212121);
+    final Color successColor = Colors.green.shade600;
+    final Color errorColor = Colors.red.shade700;
+
+    return Theme(
+      data: ThemeData(
+        colorScheme: ColorScheme.light(
+          primary: primaryColor,
+          onPrimary: Colors.white,
+          secondary: accentColor,
+          onSecondary: Colors.black,
+          surface: Colors.white,
+          onSurface: textColor,
+          background: Colors.white,
+          onBackground: textColor,
+          error: errorColor,
+          onError: Colors.white,
+          tertiary: successColor,
+        ),
+        fontFamily: 'Roboto',
+        textTheme: TextTheme(
+          titleLarge: const TextStyle(fontSize: 22.0, fontWeight: FontWeight.bold, color: Colors.white),
+          titleMedium: TextStyle(fontSize: 18.0, fontWeight: FontWeight.w600, color: textColor),
+          bodyLarge: TextStyle(fontSize: 16.0, color: textColor),
+          bodyMedium: TextStyle(fontSize: 14.0, color: textColor),
+          labelLarge: const TextStyle(fontSize: 16.0, color: Colors.white, fontWeight: FontWeight.w600),
+          labelMedium: TextStyle(fontSize: 14.0, color: Colors.grey[600]),
+          bodySmall: TextStyle(fontSize: 12.0, color: Colors.grey[700]),
+        ),
+        appBarTheme: AppBarTheme(
+          backgroundColor: primaryColor,
+          foregroundColor: Colors.white,
+          centerTitle: true,
+          elevation: 4,
+          titleTextStyle: const TextStyle(fontSize: 24.0, fontWeight: FontWeight.w600, color: Colors.white),
+        ),
+        cardTheme: const CardThemeData(
+          elevation: 3,
+          margin: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(12.0))),
+        ),
+        listTileTheme: ListTileThemeData(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+          tileColor: Colors.transparent,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10.0)),
+        ),
+        textButtonTheme: TextButtonThemeData(
+          style: TextButton.styleFrom(
+            foregroundColor: primaryColor,
+            textStyle: const TextStyle(fontSize: 16.0, fontWeight: FontWeight.w600),
           ),
-        ],
+        ),
+        iconTheme: IconThemeData(color: Colors.grey[700], size: 24.0),
       ),
-      body: Column(
-        children: [
-          FutureBuilder<void>(
-            future: _suppliersService.ensureTables(),
-            builder: (context, snapshot) => const SizedBox.shrink(),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: TextField(
-              decoration: InputDecoration(
-                prefixIcon: const Icon(Icons.search),
-                hintText: 'ابحث باسم الشركة',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                filled: true,
-              ),
-              onChanged: (v) => setState(() => _query = v),
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('الموردون'),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.person_add, color: Colors.white),
+              onPressed: _onAddSupplier,
+              tooltip: 'إضافة مورد',
             ),
-          ),
-          Expanded(
-            child: RefreshIndicator(
-              onRefresh: _reload,
-              child: ListView.separated(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                itemCount: filtered.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 12),
-                itemBuilder: (context, index) {
-                  final supplier = filtered[index];
-                  final colorScheme = Theme.of(context).colorScheme;
-                  return Card(
-                    elevation: 1.5,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    child: ListTile(
-                      leading: CircleAvatar(
-                        backgroundColor: colorScheme.primary.withOpacity(0.1),
-                        child: Icon(Icons.factory, color: colorScheme.primary),
-                      ),
-                      title: Text(
-                        supplier.companyName,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      subtitle: Padding(
-                        padding: const EdgeInsets.only(top: 4.0),
-                        child: Column(
+          ],
+        ),
+        body: Column(
+          children: [
+            FutureBuilder<void>(
+              future: _suppliersService.ensureTables(),
+              builder: (context, snapshot) => const SizedBox.shrink(),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: TextField(
+                decoration: InputDecoration(
+                  prefixIcon: const Icon(Icons.search),
+                  hintText: 'ابحث باسم الشركة',
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  filled: true,
+                ),
+                onChanged: (v) => setState(() => _query = v),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'قائمة الموردين',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          color: Theme.of(context).colorScheme.primary,
+                          fontWeight: FontWeight.bold,
+                        ),
+                  ),
+                  TextButton.icon(
+                    onPressed: _onAddSupplier,
+                    icon: Icon(Icons.add_circle_outline, color: Theme.of(context).colorScheme.secondary, size: 28),
+                    label: Text('إضافة مورد',
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Theme.of(context).colorScheme.secondary)),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: RefreshIndicator(
+                onRefresh: _reload,
+                child: ListView.separated(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  itemCount: filtered.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 12),
+                  itemBuilder: (context, index) {
+                    final supplier = filtered[index];
+                    final colorScheme = Theme.of(context).colorScheme;
+                    return Card(
+                      child: ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: colorScheme.primary.withOpacity(0.1),
+                          child: Icon(Icons.factory, color: colorScheme.primary),
+                        ),
+                        title: Text(
+                          supplier.companyName,
+                          style: Theme.of(context).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.bold),
+                        ),
+                        subtitle: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
+                            const SizedBox(height: 4),
                             Text(
                               'المبلغ المطلوب: ${_nf.format(supplier.currentBalance)}',
                               style: TextStyle(
-                                color: supplier.currentBalance > 0
-                                    ? Colors.red.shade700
-                                    : Colors.green.shade700,
+                                color: supplier.currentBalance > 0 ? errorColor : successColor,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
                             const SizedBox(height: 2),
-                            Text(
-                              'إجمالي المشتريات: ${_nf.format(supplier.totalPurchases)}',
-                              style: const TextStyle(fontWeight: FontWeight.w600),
-                            ),
+                            Text('إجمالي المشتريات: ${_nf.format(supplier.totalPurchases)}',
+                                style: const TextStyle(fontWeight: FontWeight.w600)),
                           ],
                         ),
+                        trailing: Icon(Icons.chevron_left, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6)),
+                        onTap: () => _openSupplierDetails(supplier),
                       ),
-                      trailing: Icon(Icons.chevron_left, color: colorScheme.onSurface.withOpacity(0.6)),
-                      onTap: () => _openSupplierDetails(supplier),
-                    ),
-                  );
-                },
+                    );
+                  },
+                ),
               ),
             ),
-          ),
-        ],
-      ),
-      floatingActionButton: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          FloatingActionButton.extended(
-            heroTag: 'addInvoiceAI',
-            icon: const Icon(Icons.auto_awesome),
-            label: const Text('إضافة عبر الذكاء'),
-            onPressed: _onAddByAI,
-          ),
-          const SizedBox(height: 12),
-          FloatingActionButton(
-            heroTag: 'addSupplier',
-            onPressed: _onAddSupplier,
-            child: const Icon(Icons.add),
-            tooltip: 'إضافة مورد',
-          ),
-        ],
+          ],
+        ),
+        floatingActionButton: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FloatingActionButton.extended(
+              heroTag: 'addInvoiceAI',
+              icon: const Icon(Icons.auto_awesome),
+              label: const Text('إضافة عبر الذكاء'),
+              onPressed: _onAddByAI,
+            ),
+            const SizedBox(height: 12),
+            FloatingActionButton(
+              heroTag: 'addSupplier',
+              onPressed: _onAddSupplier,
+              child: const Icon(Icons.add),
+              tooltip: 'إضافة مورد',
+            ),
+          ],
+        ),
       ),
     );
   }

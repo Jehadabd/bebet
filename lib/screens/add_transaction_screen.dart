@@ -122,7 +122,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
             final alnaserFont = pw.Font.ttf(await rootBundle
                 .load('assets/fonts/Old Antic Outline Shaded.ttf'));
             final logoBytes = await rootBundle
-                .load('assets/icon/AL_NASSER_logo_transparent_medium.png');
+                .load('assets/icon/alnasser.jpg');
             final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
             final pdf =
                 await ReceiptVoucherPdfService.generateReceiptVoucherPdf(

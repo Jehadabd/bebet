@@ -48,8 +48,27 @@ class DriveService {
         return false;
       }
     } else {
-      final accessToken = await _storage.read(key: 'access_token');
-      return accessToken != null;
+      try {
+        final accessToken = await _storage.read(key: 'access_token');
+        if (accessToken == null) return false;
+        
+        // محاولة اختبار التوكن
+        final client = await _getAuthenticatedClient();
+        final driveApi = drive.DriveApi(client);
+        await driveApi.files.list(pageSize: 1);
+        return true;
+      } catch (e) {
+        if (e.toString().contains('invalid_token')) {
+          // محاولة إعادة تسجيل الدخول التلقائي
+          try {
+            await _attemptAutoReSignIn();
+            return true;
+          } catch (_) {
+            return false;
+          }
+        }
+        return false;
+      }
     }
   }
 
@@ -102,27 +121,88 @@ class DriveService {
     } catch (_) {}
   }
 
+  // دالة إعادة تسجيل الدخول التلقائي
+  Future<void> _attemptAutoReSignIn() async {
+    try {
+      print('🔄 محاولة إعادة تسجيل الدخول التلقائي...');
+      
+      // مسح التوكنات القديمة
+      await _storage.delete(key: 'access_token');
+      await _storage.delete(key: 'refresh_token');
+      
+      // محاولة إعادة تسجيل الدخول
+      if (Platform.isAndroid || Platform.isIOS) {
+        // للموبايل: محاولة تسجيل دخول صامت
+        final account = await _googleSignIn.signInSilently();
+        if (account != null) {
+          final authData = await account.authentication;
+          await _storage.write(key: 'access_token', value: authData.accessToken);
+          await _storage.write(key: 'refresh_token', value: authData.idToken);
+          print('✅ تم إعادة تسجيل الدخول بنجاح (موبايل)');
+          return;
+        }
+      }
+      
+      // إذا فشل التسجيل الصامت، نحتاج تسجيل دخول يدوي
+      throw Exception('يحتاج إعادة تسجيل دخول يدوي');
+      
+    } catch (e) {
+      print('❌ فشل إعادة تسجيل الدخول التلقائي: $e');
+      throw Exception('انتهت صلاحية التوكن. يرجى إعادة تسجيل الدخول يدوياً من الإعدادات');
+    }
+  }
+
+  // دالة مساعدة لإظهار رسائل واضحة للمستخدم
+  String _getUserFriendlyMessage(String error) {
+    if (error.contains('invalid_token')) {
+      return 'انتهت صلاحية التوكن. جاري إعادة تسجيل الدخول تلقائياً...';
+    } else if (error.contains('انتهت صلاحية التوكن')) {
+      return 'انتهت صلاحية التوكن. يرجى إعادة تسجيل الدخول يدوياً من الإعدادات';
+    } else if (error.contains('network')) {
+      return 'مشكلة في الاتصال بالإنترنت. يرجى التحقق من الاتصال والمحاولة مرة أخرى';
+    } else if (error.contains('quota')) {
+      return 'تم تجاوز الحد المسموح من Google Drive. يرجى المحاولة لاحقاً';
+    } else {
+      return 'حدث خطأ غير متوقع: $error';
+    }
+  }
+
   Future<http.Client> _getAuthenticatedClient({bool forceRefresh = false}) async {
     final accessToken = await _storage.read(key: 'access_token');
     final refreshToken = await _storage.read(key: 'refresh_token');
-    if (accessToken == null) throw Exception('لم يتم تسجيل الدخول');
+    
+    if (accessToken == null) {
+      throw Exception('لم يتم تسجيل الدخول');
+    }
+    
     final credentials = auth.AccessCredentials(
       auth.AccessToken('Bearer', accessToken, DateTime.now().toUtc().add(const Duration(hours: 1))),
       refreshToken,
       _scopes,
     );
-    if (forceRefresh && refreshToken != null) {
-      final clientId = auth.ClientId(_clientIdString, _clientSecretString);
-      final client = http.Client();
+    
+    // محاولة تجديد التوكن إذا كان مطلوباً أو إذا كان Refresh Token متوفراً
+    if (forceRefresh && refreshToken != null && refreshToken.isNotEmpty) {
       try {
-        final refreshed = await auth.refreshCredentials(clientId, credentials, client);
-        await _storage.write(key: 'access_token', value: refreshed.accessToken.data);
-        await _storage.write(key: 'refresh_token', value: refreshed.refreshToken ?? '');
-        return auth.authenticatedClient(http.Client(), refreshed);
-      } finally {
-        client.close();
+        final clientId = auth.ClientId(_clientIdString, _clientSecretString);
+        final client = http.Client();
+        try {
+          final refreshed = await auth.refreshCredentials(clientId, credentials, client);
+          await _storage.write(key: 'access_token', value: refreshed.accessToken.data);
+          await _storage.write(key: 'refresh_token', value: refreshed.refreshToken ?? '');
+          return auth.authenticatedClient(http.Client(), refreshed);
+        } finally {
+          client.close();
+        }
+      } catch (e) {
+        // إذا فشل تجديد التوكن، نحاول إعادة تسجيل الدخول التلقائي
+        print('فشل تجديد التوكن: $e');
+        await _attemptAutoReSignIn();
+        // إعادة المحاولة مع التوكن الجديد
+        return await _getAuthenticatedClient(forceRefresh: false);
       }
     }
+    
     return auth.authenticatedClient(http.Client(), credentials);
   }
 
@@ -159,57 +239,15 @@ class DriveService {
 
   Future<void> uploadFile(File file, String fileName) async {
     try {
-      final client = await _getAuthenticatedClient();
-      final driveApi = drive.DriveApi(client);
-      final folderId = await _getFolderId(specificName: await _getUniqueFolderName());
-      final existingFiles = await driveApi.files.list(
-        q: "name = '$fileName' and '$folderId' in parents and trashed = false",
-        spaces: 'drive',
-      );
-      if (existingFiles.files?.isNotEmpty ?? false) {
-        final fileId = existingFiles.files!.first.id;
-        final media = drive.Media(file.openRead(), await file.length());
-        await driveApi.files.update(
-          drive.File()..name = fileName,
-          fileId!,
-          uploadMedia: media,
-        );
-      } else {
-        final driveFile = drive.File()
-          ..name = fileName
-          ..parents = [folderId!];
-        final media = drive.Media(file.openRead(), await file.length());
-        await driveApi.files.create(
-          driveFile,
-          uploadMedia: media,
-        );
-      }
+      await _uploadFileWithRetry(file, fileName);
     } catch (e) {
-      if (e.toString().contains('invalid_token')) {
-        final client = await _getAuthenticatedClient(forceRefresh: true);
-        final driveApi = drive.DriveApi(client);
-        final folderId = await _getFolderId(specificName: await _getUniqueFolderName());
-        final existingFiles = await driveApi.files.list(
-          q: "name = '$fileName' and '$folderId' in parents and trashed = false",
-          spaces: 'drive',
-        );
-        if (existingFiles.files?.isNotEmpty ?? false) {
-          final fileId = existingFiles.files!.first.id;
-          final media = drive.Media(file.openRead(), await file.length());
-          await driveApi.files.update(
-            drive.File()..name = fileName,
-            fileId!,
-            uploadMedia: media,
-          );
-        } else {
-          final driveFile = drive.File()
-            ..name = fileName
-            ..parents = [folderId!];
-          final media = drive.Media(file.openRead(), await file.length());
-          await driveApi.files.create(
-            driveFile,
-            uploadMedia: media,
-          );
+      if (e.toString().contains('invalid_token') || e.toString().contains('انتهت صلاحية التوكن')) {
+        print('انتهت صلاحية التوكن، محاولة إعادة تسجيل الدخول...');
+        try {
+          await _attemptAutoReSignIn();
+          await _uploadFileWithRetry(file, fileName);
+        } catch (reSignInError) {
+          throw Exception(_getUserFriendlyMessage(reSignInError.toString()));
         }
       } else {
         throw Exception('فشل رفع الملف: $e');
@@ -217,7 +255,55 @@ class DriveService {
     }
   }
 
+  // دالة مساعدة لرفع الملف مع إعادة المحاولة
+  Future<void> _uploadFileWithRetry(File file, String fileName) async {
+    final client = await _getAuthenticatedClient();
+    final driveApi = drive.DriveApi(client);
+    final folderId = await _getFolderId(specificName: await _getUniqueFolderName());
+    final existingFiles = await driveApi.files.list(
+      q: "name = '$fileName' and '$folderId' in parents and trashed = false",
+      spaces: 'drive',
+    );
+    if (existingFiles.files?.isNotEmpty ?? false) {
+      final fileId = existingFiles.files!.first.id;
+      final media = drive.Media(file.openRead(), await file.length());
+      await driveApi.files.update(
+        drive.File()..name = fileName,
+        fileId!,
+        uploadMedia: media,
+      );
+    } else {
+      final driveFile = drive.File()
+        ..name = fileName
+        ..parents = [folderId!];
+      final media = drive.Media(file.openRead(), await file.length());
+      await driveApi.files.create(
+        driveFile,
+        uploadMedia: media,
+      );
+    }
+  }
+
   Future<void> uploadDailyReport(File reportFile) async {
+    try {
+      await _uploadDailyReportWithRetry(reportFile);
+    } catch (e) {
+      if (e.toString().contains('invalid_token') || e.toString().contains('انتهت صلاحية التوكن')) {
+        print('انتهت صلاحية التوكن، محاولة إعادة تسجيل الدخول...');
+        try {
+          await _attemptAutoReSignIn();
+          await _uploadDailyReportWithRetry(reportFile);
+        } catch (reSignInError) {
+          throw Exception(_getUserFriendlyMessage(reSignInError.toString()));
+        }
+      } else {
+        throw Exception('فشل رفع سجل الديون: $e');
+      }
+    }
+  }
+
+  // دالة مساعدة لرفع سجل الديون مع إعادة المحاولة
+  Future<void> _uploadDailyReportWithRetry(File reportFile) async {
     final client = await _getAuthenticatedClient();
     final driveApi = drive.DriveApi(client);
     final folderId = await _getFolderId();
@@ -251,63 +337,49 @@ class DriveService {
     ValueChanged<double>? progress,
   }) async {
     try {
-      final client = await _getAuthenticatedClient();
-      final driveApi = drive.DriveApi(client);
-      final macFolderId = await _getFolderId(specificName: await _getUniqueFolderName());
-      final media = drive.Media(zipFile.openRead(), await zipFile.length(), contentType: 'application/zip');
-      final driveFile = drive.File()
-        ..name = zipFile.uri.pathSegments.last
-        ..parents = [macFolderId!];
-      await driveApi.files.create(driveFile, uploadMedia: media);
-      progress?.call(1.0);
-
-      final listRes = await driveApi.files.list(
-        q: "'$macFolderId' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false and name contains '.zip'",
-        spaces: 'drive',
-        $fields: 'files(id, name, createdTime)',
-        orderBy: 'createdTime desc',
-      );
-      final files = listRes.files ?? [];
-      if (files.length > 2) {
-        for (int i = 2; i < files.length; i++) {
-          final f = files[i];
-          try {
-            await driveApi.files.delete(f.id!);
-          } catch (e) {
-            debugPrint('Failed to delete old backup ${f.name}: $e');
-          }
-        }
-      }
+      await _uploadBackupZipWithRetry(zipFile, progress);
     } catch (e) {
-      if (e.toString().contains('invalid_token')) {
-        final client = await _getAuthenticatedClient(forceRefresh: true);
-        final driveApi = drive.DriveApi(client);
-        final macFolderId = await _getFolderId(specificName: await _getUniqueFolderName());
-        final media = drive.Media(zipFile.openRead(), await zipFile.length(), contentType: 'application/zip');
-        final driveFile = drive.File()
-          ..name = zipFile.uri.pathSegments.last
-          ..parents = [macFolderId!];
-        await driveApi.files.create(driveFile, uploadMedia: media);
-
-        final listRes = await driveApi.files.list(
-          q: "'$macFolderId' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false and name contains '.zip'",
-          spaces: 'drive',
-          $fields: 'files(id, name, createdTime)',
-          orderBy: 'createdTime desc',
-        );
-        final files = listRes.files ?? [];
-        if (files.length > 2) {
-          for (int i = 2; i < files.length; i++) {
-            final f = files[i];
-            try {
-              await driveApi.files.delete(f.id!);
-            } catch (e) {
-              debugPrint('Failed to delete old backup ${f.name}: $e');
-            }
-          }
+      if (e.toString().contains('invalid_token') || e.toString().contains('انتهت صلاحية التوكن')) {
+        print('انتهت صلاحية التوكن، محاولة إعادة تسجيل الدخول...');
+        try {
+          await _attemptAutoReSignIn();
+          await _uploadBackupZipWithRetry(zipFile, progress);
+        } catch (reSignInError) {
+          throw Exception(_getUserFriendlyMessage(reSignInError.toString()));
         }
       } else {
         throw Exception('فشل رفع النسخة الاحتياطية: $e');
+      }
+    }
+  }
+
+  // دالة مساعدة لرفع النسخة المضغوطة مع إعادة المحاولة
+  Future<void> _uploadBackupZipWithRetry(File zipFile, ValueChanged<double>? progress) async {
+    final client = await _getAuthenticatedClient();
+    final driveApi = drive.DriveApi(client);
+    final macFolderId = await _getFolderId(specificName: await _getUniqueFolderName());
+    final media = drive.Media(zipFile.openRead(), await zipFile.length(), contentType: 'application/zip');
+    final driveFile = drive.File()
+      ..name = zipFile.uri.pathSegments.last
+      ..parents = [macFolderId!];
+    await driveApi.files.create(driveFile, uploadMedia: media);
+    progress?.call(1.0);
+
+    final listRes = await driveApi.files.list(
+      q: "'$macFolderId' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false and name contains '.zip'",
+      spaces: 'drive',
+      $fields: 'files(id, name, createdTime)',
+      orderBy: 'createdTime desc',
+    );
+    final files = listRes.files ?? [];
+    if (files.length > 2) {
+      for (int i = 2; i < files.length; i++) {
+        final f = files[i];
+        try {
+          await driveApi.files.delete(f.id!);
+        } catch (e) {
+          debugPrint('Failed to delete old backup ${f.name}: $e');
+        }
       }
     }
   }

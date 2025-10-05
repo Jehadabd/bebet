@@ -3214,18 +3214,86 @@ class DatabaseService {
     }
   }
 
+  // دالة لتحديث الفواتير القديمة وربطها بالعملاء
+  Future<void> updateOldInvoicesWithCustomerIds() async {
+    final db = await database;
+    try {
+      print('🔄 بدء تحديث الفواتير القديمة...');
+      
+      // جلب جميع الفواتير التي لا تحتوي على customer_id
+      final List<Map<String, dynamic>> invoicesWithoutCustomerId = await db.rawQuery('''
+        SELECT id, customer_name, customer_phone, customer_address
+        FROM invoices 
+        WHERE customer_id IS NULL AND status = 'محفوظة'
+        ORDER BY created_at ASC
+      ''');
+      
+      print('📊 عدد الفواتير القديمة: ${invoicesWithoutCustomerId.length}');
+      
+      int updatedCount = 0;
+      
+      for (final invoice in invoicesWithoutCustomerId) {
+        final int invoiceId = invoice['id'] as int;
+        final String customerName = invoice['customer_name'] as String;
+        final String? customerPhone = invoice['customer_phone'] as String?;
+        final String? customerAddress = invoice['customer_address'] as String?;
+        
+        print('🔍 البحث عن عميل للفاتورة $invoiceId: $customerName');
+        
+        // البحث عن العميل بالاسم والهاتف
+        Customer? customer;
+        
+        if (customerPhone != null && customerPhone.trim().isNotEmpty) {
+          // البحث بالاسم والهاتف
+          customer = await findCustomerByNormalizedName(
+            customerName.trim(),
+            phone: customerPhone.trim(),
+          );
+        }
+        
+        if (customer == null) {
+          // البحث بالاسم فقط
+          customer = await findCustomerByNormalizedName(customerName.trim());
+        }
+        
+        if (customer != null && customer.id != null) {
+          // تحديث الفاتورة بربطها بالعميل
+          await db.update(
+            'invoices',
+            {'customer_id': customer.id},
+            where: 'id = ?',
+            whereArgs: [invoiceId],
+          );
+          
+          print('✅ تم ربط الفاتورة $invoiceId بالعميل ${customer.name} (ID: ${customer.id})');
+          updatedCount++;
+        } else {
+          print('❌ لم يتم العثور على عميل للفاتورة $invoiceId: $customerName');
+        }
+      }
+      
+      print('🎉 تم تحديث $updatedCount فاتورة من أصل ${invoicesWithoutCustomerId.length}');
+      
+    } catch (e) {
+      print('❌ خطأ في تحديث الفواتير القديمة: $e');
+      throw Exception('فشل في تحديث الفواتير القديمة: $e');
+    }
+  }
+
   // دوال تقارير الأشخاص
   Future<Map<String, dynamic>> getCustomerProfitData(int customerId) async {
     final db = await database;
     try {
-      // جلب بيانات الفواتير (المحفوظة فقط)
+      // جلب بيانات الفواتير (المحفوظة فقط) - تشمل الفواتير القديمة والجديدة
       final List<Map<String, dynamic>> invoiceMaps = await db.rawQuery('''
         SELECT 
           SUM(total_amount) as total_sales,
           COUNT(*) as total_invoices
         FROM invoices
-        WHERE customer_id = ? AND status = 'محفوظة'
-      ''', [customerId]);
+        WHERE (customer_id = ? OR (customer_id IS NULL AND customer_name = (
+          SELECT name FROM customers WHERE id = ?
+        ))) AND status = 'محفوظة'
+      ''', [customerId, customerId]);
  
       // جلب بيانات المعاملات المالية
       final List<Map<String, dynamic>> transactionMaps = await db.rawQuery('''
@@ -3251,8 +3319,10 @@ class DatabaseService {
         FROM invoices i
         JOIN invoice_items ii ON i.id = ii.invoice_id
         JOIN products p ON ii.product_name = p.name
-        WHERE i.customer_id = ? AND i.status = 'محفوظة'
-      ''', [customerId]);
+        WHERE (i.customer_id = ? OR (i.customer_id IS NULL AND i.customer_name = (
+          SELECT name FROM customers WHERE id = ?
+        ))) AND i.status = 'محفوظة'
+      ''', [customerId, customerId]);
  
       final totalSales = (invoiceMaps.first['total_sales'] ?? 0.0) as double;
       final totalInvoices = (invoiceMaps.first['total_invoices'] ?? 0) as int;

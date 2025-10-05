@@ -65,6 +65,7 @@ flutter:
     - assets/fonts/Old Antic Outline Shaded.ttf
     - assets/icon/AL_NASSER_logo_transparent_medium.png
     - assets/icon/photo_2025-07-07_12-12-56.jpg
+    - assets/icon/alnasser.jpg
 
 flutter_dotenv:
   file: .env

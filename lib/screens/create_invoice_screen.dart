@@ -1462,7 +1462,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       final pdf = pw.Document();
       // تحميل صورة اللوجو الجديدة من الأصول
       final logoBytes = await rootBundle
-          .load('assets/icon/AL_NASSER_logo_transparent_medium.png');
+          .load('assets/icon/alnasser.jpg');
       final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
       final font =
           pw.Font.ttf(await rootBundle.load('assets/fonts/Amiri-Regular.ttf'));
@@ -1745,9 +1745,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             build: (pw.Context context) {
               return pw.Directionality(
                 textDirection: pw.TextDirection.rtl,
-                child: pw.Column(
-                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                child: pw.Stack(
                   children: [
+                    pw.Column(
+                      crossAxisAlignment: pw.CrossAxisAlignment.start,
+                      children: [
                     // --- رأس الفاتورة مع اللوجو الجديد في الجهة اليمنى ---
                     buildPdfHeader(font, alnaserFont, logoImage),
                     pw.SizedBox(height: 4),
@@ -2145,6 +2147,33 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       ),
                     ),
                   ],
+                    ),
+                    pw.Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      child: pw.Container(
+                        alignment: pw.Alignment.topLeft,
+                        padding: const pw.EdgeInsets.only(top: 250, left: 0),
+                        child: pw.Transform.rotate(
+                          angle: 0.8,
+                          child: pw.Opacity(
+                            opacity: 0.09,
+                            child: pw.Text(
+                              'الناصر',
+                              style: pw.TextStyle(
+                                font: alnaserFont,
+                                fontSize: 220,
+                                color: PdfColors.grey400,
+                                fontWeight: pw.FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
                 ),
               );
             },
@@ -2468,7 +2497,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       // تحميل الخطوط والشعار كما في خدمة PDF
       final fontData = await rootBundle.load('assets/fonts/Amiri-Regular.ttf');
       final alnaserFontData = await rootBundle.load('assets/fonts/PTBLDHAD.TTF');
-      final logoBytes = await rootBundle.load('assets/icon/AL_NASSER_logo_transparent_medium.png');
+      final logoBytes = await rootBundle.load('assets/icon/alnasser.jpg');
       final font = pw.Font.ttf(fontData);
       final alnaserFont = pw.Font.ttf(alnaserFontData);
       final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());

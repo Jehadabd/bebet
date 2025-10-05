@@ -55,6 +55,14 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
 
     try {
       print('=== تحميل سجل الديون ===');
+      
+      // تحديث الفواتير القديمة وربطها بالعملاء
+      try {
+        await _databaseService.updateOldInvoicesWithCustomerIds();
+      } catch (e) {
+        print('تحذير: فشل في تحديث الفواتير القديمة: $e');
+      }
+      
       final customers = await _databaseService.getAllCustomers();
       print('عدد العملاء: ${customers.length}');
       final List<PersonReportData> peopleReports = [];

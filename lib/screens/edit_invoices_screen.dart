@@ -575,7 +575,7 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
       // تحميل الخطوط والشعار
       final fontData = await rootBundle.load('assets/fonts/Amiri-Regular.ttf');
       final alnaserFontData = await rootBundle.load('assets/fonts/PTBLDHAD.TTF');
-      final logoBytes = await rootBundle.load('assets/icon/AL_NASSER_logo_transparent_medium.png');
+      final logoBytes = await rootBundle.load('assets/icon/alnasser.jpg');
       final font = pw.Font.ttf(fontData);
       final alnaserFont = pw.Font.ttf(alnaserFontData);
       final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());

@@ -226,36 +226,55 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
       // بناء رسالة الدين
       final message = _buildDebtMessage();
       
+      // انسخ الرسالة للحافظة مسبقاً كخطة احتياطية في حال لم تُرفق تلقائياً
+      await Clipboard.setData(ClipboardData(text: message));
+
       // ترميز الرسالة للرابط
       final encodedMessage = Uri.encodeComponent(message);
-      
-      // إنشاء روابط واتساب
-      final whatsappAppUri = Uri.parse('whatsapp://send?phone=$phoneNumber&text=$encodedMessage');
-      final whatsappWebUri = Uri.parse('https://wa.me/$phoneNumber?text=$encodedMessage');
-      
-      bool success = false;
-      
-      // محاولة فتح تطبيق واتساب أولاً مع timeout
-      try {
-        if (await canLaunchUrl(whatsappAppUri)) {
-          await launchUrl(whatsappAppUri);
-          success = true;
-        }
-      } catch (e) {
-        print('خطأ في فتح تطبيق واتساب: $e');
+
+      // إنشاء روابط واتساب بحسب المنصة مع تسلسل محاولات قوي
+      final Uri androidDeepLink = Uri.parse('whatsapp://send?phone=$phoneNumber&text=$encodedMessage');
+      final Uri apiLink = Uri.parse('https://api.whatsapp.com/send?phone=$phoneNumber&text=$encodedMessage');
+      final Uri waMeLink = Uri.parse('https://wa.me/$phoneNumber?text=$encodedMessage');
+      final Uri webLink = Uri.parse('https://web.whatsapp.com/send?phone=$phoneNumber&text=$encodedMessage');
+
+      final List<Uri> attempts;
+      if (Platform.isAndroid) {
+        attempts = [androidDeepLink, apiLink, waMeLink];
+      } else if (Platform.isIOS) {
+        attempts = [waMeLink, apiLink];
+      } else {
+        // لسطح المكتب (ويندوز/ماك/لينكس): أعطِ أولوية لتطبيق سطح المكتب إن أمكن
+        attempts = [androidDeepLink, waMeLink, apiLink, webLink];
       }
-      
-      // إذا فشل تطبيق واتساب، انتظر قليلاً ثم جرب واتساب ويب
-      if (!success) {
-        await Future.delayed(const Duration(milliseconds: 500));
-        
+
+      bool success = false;
+
+      // محاولة خاصة بويندوز لفتح بروتوكول whatsapp:// مباشرة عبر start
+      if (Platform.isWindows && !success) {
         try {
-          if (await canLaunchUrl(whatsappWebUri)) {
-            await launchUrl(whatsappWebUri, mode: LaunchMode.externalApplication);
-            success = true;
+          final desktopProtocol = 'whatsapp://send?phone=$phoneNumber&text=$encodedMessage';
+          await Process.start('cmd', ['/c', 'start', '""', desktopProtocol]);
+          success = true;
+        } catch (_) {
+          // تجاهل واستمر بالمحاولات الأخرى
+        }
+      }
+      for (final uri in attempts) {
+        try {
+          if (await canLaunchUrl(uri)) {
+            final opened = await launchUrl(
+              uri,
+              mode: LaunchMode.externalApplication,
+            );
+            if (opened) {
+              success = true;
+              break;
+            }
           }
         } catch (e) {
-          print('خطأ في فتح واتساب ويب: $e');
+          // جرّب الرابط التالي في حال الفشل
+          continue;
         }
       }
       
@@ -265,26 +284,23 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
       }
       
       if (success) {
-        // نجح فتح واتساب
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('تم فتح واتساب بنجاح!'),
+              content: Text('تم فتح واتساب وتهيئة المحادثة. إذا لم تظهر الرسالة، اضغط Ctrl+V للصقها (تم نسخها).'),
               backgroundColor: Colors.green,
-              duration: Duration(seconds: 2),
+              duration: Duration(seconds: 3),
             ),
           );
         }
       } else {
-        // فشل فتح واتساب، انسخ الرسالة للحافظة
-        await Clipboard.setData(ClipboardData(text: message));
-        
+        // فشل فتح أي رابط — الرسالة موجودة في الحافظة بالفعل
         if (mounted) {
           showDialog(
             context: context,
             builder: (context) => AlertDialog(
               title: const Text('تعذر فتح واتساب'),
-              content: const Text('تم نسخ رسالة الدين إلى الحافظة. افتح واتساب والصقها لإرسالها.'),
+              content: const Text('لم نتمكن من فتح محادثة واتساب. تم نسخ الرسالة إلى الحافظة، افتح واتساب والصقها يدوياً.'),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context),
@@ -301,11 +317,8 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
       if (mounted) {
         Navigator.pop(context);
       }
-      
-      // في حالة الخطأ، انسخ الرسالة للحافظة
-      final message = _buildDebtMessage();
-      await Clipboard.setData(ClipboardData(text: message));
-      
+
+      // الرسالة منسوخة أصلاً للحافظة
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -469,9 +482,19 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                     name: nameController.text.trim(),
                     phone: normalizedPhone,
                     address: addressController.text.trim(),
+                    currentTotalDebt: widget.customer.currentTotalDebt, // الحفاظ على قيمة الدين الحالية
                     lastModifiedAt: DateTime.now(),
                   );
                   await context.read<AppProvider>().updateCustomer(updated);
+                  
+                  // تحديث الفواتير القديمة المرتبطة بهذا العميل
+                  try {
+                    final db = DatabaseService();
+                    await db.updateOldInvoicesWithCustomerIds();
+                  } catch (e) {
+                    print('تحذير: فشل في تحديث الفواتير القديمة: $e');
+                  }
+                  
                   if (mounted) {
                     String message = 'تم تحديث بيانات العميل';
                     if (normalizedPhone != null) {

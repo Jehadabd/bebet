@@ -47,9 +47,11 @@ class InvoicePdfService {
           build: (pw.Context context) {
             return pw.Directionality(
               textDirection: pw.TextDirection.rtl,
-              child: pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
+              child: pw.Stack(
                 children: [
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
                   pw.Row(
                     crossAxisAlignment: pw.CrossAxisAlignment.start,
                     children: [
@@ -213,6 +215,34 @@ class InvoicePdfService {
                       style: pw.TextStyle(font: font, fontSize: 11),
                     ),
                   ),
+                    ],
+                  ),
+                  // طبقة أمامية: كلمة الناصر نصف شفافة من بداية الجدول حتى أسفل الصفحة
+                  pw.Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: pw.Container(
+                      alignment: pw.Alignment.topLeft,
+                      padding: const pw.EdgeInsets.only(top: 130, left: 5),
+                      child: pw.Transform.rotate(
+                        angle: 0.6,
+                        child: pw.Opacity(
+                          opacity: 0.20,
+                          child: pw.Text(
+                            'الناصر',
+                            style: pw.TextStyle(
+                              font: alnaserFont,
+                              fontSize: 200,
+                              color: PdfColors.green,
+                              fontWeight: pw.FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 ],
               ),
             );
@@ -250,9 +280,11 @@ class InvoicePdfService {
           build: (pw.Context context) {
             return pw.Directionality(
               textDirection: pw.TextDirection.rtl,
-              child: pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
+              child: pw.Stack(
                 children: [
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
                   pw.Row(
                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                     children: [
@@ -322,6 +354,33 @@ class InvoicePdfService {
                     alignment: pw.Alignment.center,
                     child: pw.Text('صفحة ${pageIndex + 1} من $totalPages',
                         style: pw.TextStyle(font: font, fontSize: 11)),
+                  ),
+                    ],
+                  ),
+                  pw.Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: pw.Container(
+                      alignment: pw.Alignment.topLeft,
+                      padding: const pw.EdgeInsets.only(top: 250, left: 0),
+                      child: pw.Transform.rotate(
+                        angle: 0.8,
+                        child: pw.Opacity(
+                          opacity: 0.1,
+                          child: pw.Text(
+                            'الناصر',
+                            style: pw.TextStyle(
+                              font: alnaserFont,
+                              fontSize: 220,
+                              color: PdfColors.grey400,
+                              fontWeight: pw.FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 ],
               ),

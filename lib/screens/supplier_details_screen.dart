@@ -26,6 +26,7 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
   final NumberFormat _nf = NumberFormat('#,##0', 'en');
   final Map<int, Map<String, double>> _invoiceBalances = {}; // id -> {before, after}
   final Map<int, Map<String, double>> _receiptBalances = {}; // id -> {before, after}
+  late final NumberFormat _nfCompact = NumberFormat('#,##0', 'en');
 
   @override
   void initState() {
@@ -47,118 +48,255 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.supplier.companyName),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.receipt_long),
-            tooltip: 'إضافة فاتورة',
-            onPressed: () async {
-              final saved = await Navigator.of(context).push<bool>(
-                MaterialPageRoute(
-                  builder: (_) => NewSupplierInvoiceScreen(supplier: widget.supplier),
-                ),
-              );
-              if (saved == true) {
-                await _loadData();
-              }
-            },
+    // Match the exact theme/colors used in customer_details_screen.dart
+    final Color primaryColor = const Color(0xFF3F51B5); // Indigo 700
+    final Color accentColor = const Color(0xFF8C9EFF); // Indigo A200
+    final Color textColor = const Color(0xFF212121);
+    final Color successColor = Colors.green[600]!;
+    final Color errorColor = Colors.red[700]!;
+
+    return Theme(
+      data: ThemeData(
+        colorScheme: ColorScheme.light(
+          primary: primaryColor,
+          onPrimary: Colors.white,
+          secondary: accentColor,
+          onSecondary: Colors.black,
+          surface: Colors.white,
+          onSurface: textColor,
+          background: Colors.white,
+          onBackground: textColor,
+          error: errorColor,
+          onError: Colors.white,
+          tertiary: successColor,
+        ),
+        fontFamily: 'Roboto',
+        textTheme: TextTheme(
+          titleLarge: const TextStyle(fontSize: 22.0, fontWeight: FontWeight.bold, color: Colors.white),
+          titleMedium: TextStyle(fontSize: 18.0, fontWeight: FontWeight.w600, color: textColor),
+          bodyLarge: TextStyle(fontSize: 16.0, color: textColor),
+          bodyMedium: TextStyle(fontSize: 14.0, color: textColor),
+          labelLarge: const TextStyle(fontSize: 16.0, color: Colors.white, fontWeight: FontWeight.w600),
+          labelMedium: TextStyle(fontSize: 14.0, color: Colors.grey[600]),
+          bodySmall: TextStyle(fontSize: 12.0, color: Colors.grey[700]),
+        ),
+        appBarTheme: AppBarTheme(
+          backgroundColor: primaryColor,
+          foregroundColor: Colors.white,
+          centerTitle: true,
+          elevation: 4,
+          titleTextStyle: const TextStyle(fontSize: 24.0, fontWeight: FontWeight.w600, color: Colors.white),
+        ),
+        cardTheme: const CardThemeData(
+          elevation: 3,
+          margin: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(12.0))),
+        ),
+        listTileTheme: ListTileThemeData(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+          tileColor: Colors.transparent,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10.0)),
+        ),
+        textButtonTheme: TextButtonThemeData(
+          style: TextButton.styleFrom(
+            foregroundColor: primaryColor,
+            textStyle: const TextStyle(fontSize: 16.0, fontWeight: FontWeight.w600),
           ),
-          IconButton(
-            icon: const Icon(Icons.payments),
-            tooltip: 'إضافة سند قبض',
-            onPressed: () async {
-              final saved = await Navigator.of(context).push<bool>(
-                MaterialPageRoute(
-                  builder: (_) => NewSupplierReceiptScreen(supplier: widget.supplier),
-                ),
-              );
-              if (saved == true) {
-                await _loadData();
-              }
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.auto_awesome),
-            tooltip: 'إضافة عبر الذكاء',
-            onPressed: _onAddByAI,
-          ),
-        ],
+        ),
+        iconTheme: IconThemeData(color: Colors.grey[700], size: 24.0),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Card(
-              elevation: 1.5,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              child: ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: Theme.of(context).colorScheme.primary.withOpacity(0.1),
-                  child: Icon(Icons.factory, color: Theme.of(context).colorScheme.primary),
-                ),
-                title: Text(
-                  widget.supplier.companyName,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-                subtitle: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SizedBox(height: 4),
-                    Text(
-                      'المبلغ المطلوب: ${_nf.format(widget.supplier.currentBalance)}',
-                      style: TextStyle(
-                        color: widget.supplier.currentBalance > 0
-                            ? Colors.red.shade700
-                            : Colors.green.shade700,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      'إجمالي المشتريات: ${_nf.format(widget.supplier.totalPurchases)}',
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    if ((widget.supplier.phoneNumber ?? '').isNotEmpty)
-                      Text(widget.supplier.phoneNumber!),
-                  ],
-                ),
-              ),
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(widget.supplier.companyName),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.receipt_long, color: Colors.white),
+              tooltip: 'فاتورة جديدة (دين)',
+              onPressed: () async {
+                final saved = await Navigator.of(context).push<bool>(
+                  MaterialPageRoute(
+                    builder: (_) => NewSupplierInvoiceScreen(supplier: widget.supplier),
+                  ),
+                );
+                if (saved == true) {
+                  await _loadData();
+                }
+              },
             ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: DefaultTabController(
-                length: 3,
-                child: Column(
-                  children: [
-                    const TabBar(
-                      tabs: [
-                        Tab(text: 'الفواتير'),
-                        Tab(text: 'سندات القبض'),
-                        Tab(text: 'المرفقات'),
-                      ],
-                    ),
-                    Expanded(
-                      child: TabBarView(children: [
-                        _buildInvoices(),
-                        _buildReceipts(),
-                        _buildAttachments(),
-                      ]),
-                    )
-                  ],
-                ),
-              ),
-            )
+            IconButton(
+              icon: const Icon(Icons.payments, color: Colors.white),
+              tooltip: 'سند قبض (تسديد دين)',
+              onPressed: () async {
+                final saved = await Navigator.of(context).push<bool>(
+                  MaterialPageRoute(
+                    builder: (_) => NewSupplierReceiptScreen(supplier: widget.supplier),
+                  ),
+                );
+                if (saved == true) {
+                  await _loadData();
+                }
+              },
+            ),
+            IconButton(
+              icon: const Icon(Icons.auto_awesome, color: Colors.white),
+              tooltip: 'إضافة عبر الذكاء',
+              onPressed: _onAddByAI,
+            ),
           ],
         ),
+        body: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Card(
+                elevation: 3,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                child: Padding(
+                  padding: const EdgeInsets.all(20.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'معلومات المورد',
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              color: Theme.of(context).colorScheme.primary,
+                              fontWeight: FontWeight.bold,
+                            ),
+                      ),
+                      const SizedBox(height: 16),
+                      _buildInfoRow(context, 'الهاتف', (widget.supplier.phoneNumber ?? '').isEmpty ? 'غير متوفر' : widget.supplier.phoneNumber!),
+                      const SizedBox(height: 12),
+                      _buildInfoRow(context, 'العنوان', (widget.supplier.address ?? '').isEmpty ? 'غير متوفر' : widget.supplier.address!),
+                      const SizedBox(height: 12),
+                      _buildInfoRow(
+                        context,
+                        'إجمالي المديونية',
+                        '${_nf.format(widget.supplier.currentBalance)} دينار',
+                        valueColor: (widget.supplier.currentBalance) > 0
+                            ? Theme.of(context).colorScheme.error
+                            : Theme.of(context).colorScheme.tertiary,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'سجل المعاملات',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          color: Theme.of(context).colorScheme.primary,
+                          fontWeight: FontWeight.bold,
+                        ),
+                  ),
+                  TextButton.icon(
+                    onPressed: _openQuickActions,
+                    icon: Icon(Icons.add_circle_outline, color: Theme.of(context).colorScheme.secondary, size: 28),
+                    label: Text('إضافة معاملة',
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Theme.of(context).colorScheme.secondary)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Expanded(child: _buildUnifiedTimeline(context)),
+            ],
+          ),
+        ),
+        floatingActionButton: FloatingActionButton.extended(
+          onPressed: _openQuickActions,
+          icon: const Icon(Icons.add),
+          label: const Text('إضافة'),
+        ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _openQuickActions,
-        icon: const Icon(Icons.add),
-        label: const Text('إضافة'),
-      ),
+    );
+  }
+
+  Widget _buildInfoRow(BuildContext context, String label, String value, {Color? valueColor}) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: Theme.of(context).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.bold)),
+        Text(value, style: Theme.of(context).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.bold, color: valueColor)),
+      ],
+    );
+  }
+
+  Widget _buildUnifiedTimeline(BuildContext context) {
+    // Merge invoices (debt) and receipts (payment)
+    final List<_Entry> entries = [];
+    for (final inv in _invoices) {
+      final remaining = inv.paymentType == 'نقد' ? 0.0 : (inv.totalAmount - inv.amountPaid);
+      final delta = remaining < 0 ? 0.0 : remaining; // add debt
+      entries.add(_Entry(dt: inv.invoiceDate, id: inv.id ?? -1, kind: 'invoice', delta: delta));
+    }
+    for (final r in _receipts) {
+      entries.add(_Entry(dt: r.receiptDate, id: r.id ?? -1, kind: 'receipt', delta: -r.amount)); // payment reduces debt
+    }
+    entries.sort((a, b) {
+      final c = b.dt.compareTo(a.dt);
+      if (c != 0) return c;
+      return b.id.compareTo(a.id);
+    });
+
+    if (entries.isEmpty) {
+      return Center(child: Text('لا توجد معاملات', style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Colors.grey[600])));
+    }
+
+    return ListView.separated(
+      padding: const EdgeInsets.symmetric(horizontal: 0, vertical: 8),
+      itemCount: entries.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 12),
+      itemBuilder: (context, index) {
+        final e = entries[index];
+        final isDebt = e.delta > 0;
+        final color = isDebt ? Theme.of(context).colorScheme.error : Theme.of(context).colorScheme.tertiary;
+        final icon = isDebt ? Icons.add : Icons.remove;
+        final titleAmount = _nf.format(e.delta.abs());
+
+        String subtitle = '';
+        Map<String, double>? balanceMap;
+        if (e.kind == 'invoice') {
+          balanceMap = _invoiceBalances[e.id];
+          subtitle = 'فاتورة مشتريات';
+        } else {
+          balanceMap = _receiptBalances[e.id];
+          subtitle = 'سند قبض';
+        }
+        final dateStr = DateFormat('yyyy/MM/dd').format(e.dt);
+
+        return Card(
+          elevation: 2,
+          margin: const EdgeInsets.only(bottom: 0),
+          child: ListTile(
+            leading: CircleAvatar(
+              backgroundColor: color.withOpacity(0.1),
+              child: Icon(icon, color: color, size: 28),
+            ),
+            title: Text('$titleAmount دينار', style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: color, fontWeight: FontWeight.bold)),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (balanceMap != null)
+                  Text('الرصيد بعد المعاملة: ${_nf.format(balanceMap['after'] ?? 0)} دينار'),
+                Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
+              ],
+            ),
+            trailing: Text(dateStr, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[700], fontSize: 12)),
+            onTap: () async {
+              if (e.kind == 'invoice') {
+                final inv = _invoices.firstWhere((x) => (x.id ?? -999) == e.id, orElse: () => _invoices.first);
+                await _openInvoice(inv);
+              } else {
+                final rec = _receipts.firstWhere((x) => (x.id ?? -999) == e.id, orElse: () => _receipts.first);
+                await _openReceipt(rec);
+              }
+            },
+          ),
+        );
+      },
     );
   }
 

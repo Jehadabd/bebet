@@ -21,6 +21,9 @@ class PdfService {
     // تحميل الخط العربي Amiri
     final fontData = await rootBundle.load('assets/fonts/Amiri-Regular.ttf');
     final ttf = pw.Font.ttf(fontData);
+    // تحميل الشعار الجديد
+    final logoBytes = await rootBundle.load('assets/icon/alnasser.jpg');
+    final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
 
     final pdf = pw.Document();
 
@@ -37,17 +40,22 @@ class PdfService {
           textDirection: pw.TextDirection.rtl,
         ),
         build: (context) => [
-          // العنوان الرئيسي
-          pw.Container(
-            alignment: pw.Alignment.center,
-            child: pw.Text(
-              'سجل الديون',
-              textAlign: pw.TextAlign.center,
-              style: pw.TextStyle(
-                fontSize: 28,
-                fontWeight: pw.FontWeight.bold,
+          // العنوان الرئيسي مع الشعار
+          pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: pw.CrossAxisAlignment.center,
+            children: [
+              pw.Container(width: 80, height: 80, child: pw.Image(logoImage, fit: pw.BoxFit.contain)),
+              pw.Text(
+                'سجل الديون',
+                textAlign: pw.TextAlign.center,
+                style: pw.TextStyle(
+                  fontSize: 28,
+                  fontWeight: pw.FontWeight.bold,
+                ),
               ),
-            ),
+              pw.SizedBox(width: 80),
+            ],
           ),
           pw.SizedBox(height: 8),
           // التاريخ والوقت
