@@ -109,12 +109,17 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
       
       print('=== نهاية تحميل سجل الديون ===');
 
+      // إخفاء الأشخاص الذين ليس لديهم أي معاملات ديون ولا يوجد عليهم دين حالي
+      final visiblePeople = peopleReports
+          .where((p) => p.totalTransactions > 0 || p.customer.currentTotalDebt > 0)
+          .toList();
+
       // ترتيب الأشخاص من الأكثر سحباً (أعلى قيمة مبيعات)
-      peopleReports.sort((a, b) => b.totalSales.compareTo(a.totalSales));
+      visiblePeople.sort((a, b) => b.totalSales.compareTo(a.totalSales));
 
       setState(() {
-        _people = peopleReports;
-        _filteredPeople = peopleReports; // Initialize filtered list
+        _people = visiblePeople;
+        _filteredPeople = visiblePeople; // Initialize filtered list
         _isLoading = false;
       });
     } catch (e) {

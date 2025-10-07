@@ -948,6 +948,24 @@ class DatabaseService {
     }
   }
 
+  // إرجاع العملاء الذين لديهم دين حالي أو لديهم أي معاملة في جدول المعاملات
+  Future<List<Customer>> getCustomersForDebtRegister({String orderBy = 'name ASC'}) async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT c.*
+        FROM customers c
+        WHERE c.current_total_debt > 0
+           OR EXISTS (SELECT 1 FROM transactions t WHERE t.customer_id = c.id LIMIT 1)
+        ORDER BY ${orderBy.replaceAll("'", "")}
+      ''');
+      return List.generate(maps.length, (i) => Customer.fromMap(maps[i]));
+    } catch (e) {
+      print('Error getting customers for debt register: $e');
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
   Future<Customer?> getCustomerById(int id) async {
     final db = await database;
     try {

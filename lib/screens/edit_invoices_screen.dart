@@ -464,43 +464,6 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                                           icon: const Icon(Icons.share),
                                           onPressed: () => _shareInvoicePdf(invoice),
                                         ),
-                                        if (invoice.status == 'محفوظة') ...[
-                                          IconButton(
-                                            tooltip: 'تعديل الفاتورة',
-                                            icon: const Icon(Icons.edit),
-                                            onPressed: () async {
-                                              // افتح شاشة التعديل
-                                              await Navigator.push(
-                                                context,
-                                                MaterialPageRoute(
-                                                  builder: (context) => CreateInvoiceScreen(
-                                                    existingInvoice: invoice,
-                                                    isViewOnly: false, // وضع التعديل
-                                                  ),
-                                                ),
-                                              );
-                                              _fetchInvoices();
-                                            },
-                                          ),
-                                          IconButton(
-                                            tooltip: 'تسوية الفاتورة',
-                                            icon: const Icon(Icons.playlist_add),
-                                            onPressed: () async {
-                                              // افتح شاشة التسوية بوضع الفاتورة
-                                              await Navigator.push(
-                                                context,
-                                                MaterialPageRoute(
-                                                  builder: (context) => CreateInvoiceScreen(
-                                                    existingInvoice: invoice,
-                                                    isViewOnly: true,
-                                                    settlementForInvoice: invoice,
-                                                  ),
-                                                ),
-                                              );
-                                              _fetchInvoices();
-                                            },
-                                          ),
-                                        ],
                                       ],
                                     ),
                                     onTap: () async {

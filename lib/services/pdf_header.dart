@@ -27,7 +27,7 @@ pw.Widget buildPdfHeader(
                   ),
                 ),
                 pw.Center(
-                  child: pw.Text('لتجارة المواد الكهربائية والكيبلات',
+                  child: pw.Text(' لتجارة المواد الكهربائية والكيبلات و العدداليدوية والصحية',
                       style: pw.TextStyle(font: font, fontSize: 17)),
                 ),
                 pw.Center(
@@ -36,10 +36,31 @@ pw.Widget buildPdfHeader(
                     style: pw.TextStyle(font: font, fontSize: 13),
                   ),
                 ),
+                // أرقام الهواتف مع اتجاه LTR لضمان عرض صحيح للأرقام بين العربية
+                pw.SizedBox(height: 4),
                 pw.Center(
-                  child: pw.Text('0773 284 5260  |  0770 304 0821',
-                      style: pw.TextStyle(
-                          font: font, fontSize: 13, color: PdfColors.black)),
+                  child: pw.Row(
+                    mainAxisSize: pw.MainAxisSize.min,
+                    children: [
+                      pw.Text('كهربائيات  ', style: pw.TextStyle(font: font, fontSize: 13, color: PdfColors.black)),
+                      pw.Directionality(
+                        textDirection: pw.TextDirection.ltr,
+                        child: pw.Text(' (0773 284 5260  |  0770 304 0821) ', style: pw.TextStyle(font: font, fontSize: 13, color: PdfColors.black)),
+                      ),
+                    ],
+                  ),
+                ),
+                pw.Center(
+                  child: pw.Row(
+                    mainAxisSize: pw.MainAxisSize.min,
+                    children: [
+                      pw.Text('صحيات  ', style: pw.TextStyle(font: font, fontSize: 13, color: PdfColors.black)),
+                      pw.Directionality(
+                        textDirection: pw.TextDirection.ltr,
+                        child: pw.Text(' (0771 406 3064  |  0770 305 1353) ', style: pw.TextStyle(font: font, fontSize: 13, color: PdfColors.black)),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),

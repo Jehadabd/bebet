@@ -25,7 +25,10 @@ class _HomeScreenState extends State<HomeScreen> {
     // Use Future.microtask or addPostFrameCallback to ensure context is available
     // and to avoid issues with calling methods on providers too early.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<AppProvider>().initialize();
+      final app = context.read<AppProvider>();
+      // تأكد من تصفية البحث الفارغة عند الدخول للشاشة لتجنب بقاء فلتر قديم
+      app.setSearchQuery('');
+      app.initialize();
     });
   }
 

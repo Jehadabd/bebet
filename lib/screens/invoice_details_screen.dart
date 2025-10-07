@@ -228,7 +228,12 @@ class _InvoiceDetailsScreenState extends State<InvoiceDetailsScreen> {
   }
 
   Widget _buildItemRow(InvoiceItem item) {
-    final quantity = item.quantityIndividual ?? item.quantityLargeUnit ?? 0.0;
+    final double quantity = item.quantityIndividual ?? item.quantityLargeUnit ?? 0.0;
+    final double costPrice = item.actualCostPrice ?? item.costPrice ?? 0.0;
+    final double profitPerUnit = item.appliedPrice - costPrice;
+    final double totalProfit = profitPerUnit * quantity;
+    final double totalSelling = item.appliedPrice * quantity;
+    final double profitPercent = totalSelling > 0 ? (totalProfit / totalSelling) * 100.0 : 0.0;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -236,6 +241,10 @@ class _InvoiceDetailsScreenState extends State<InvoiceDetailsScreen> {
       decoration: BoxDecoration(
         color: const Color(0xFFF8F9FA),
         borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: totalProfit >= 0 ? Colors.green.withOpacity(0.25) : Colors.red.withOpacity(0.25),
+          width: 1,
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -282,6 +291,69 @@ class _InvoiceDetailsScreenState extends State<InvoiceDetailsScreen> {
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: totalProfit >= 0 ? Colors.green.withOpacity(0.08) : Colors.red.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      totalProfit >= 0 ? Icons.trending_up : Icons.trending_down,
+                      size: 16,
+                      color: totalProfit >= 0 ? Colors.green : Colors.red,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      'تفاصيل الربح',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: totalProfit >= 0 ? Colors.green : Colors.red,
+                      ),
+                    ),
+                    const Spacer(),
+                    Text(
+                      '${profitPercent.toStringAsFixed(1)}%'
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'التكلفة: ${costPrice.toStringAsFixed(2)} د.ع',
+                        style: const TextStyle(fontSize: 12, color: Color(0xFF666666)),
+                      ),
+                    ),
+                    Text(
+                      'الربح/الوحدة: ${profitPerUnit.toStringAsFixed(2)} د.ع',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: totalProfit >= 0 ? Colors.green : Colors.red,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'الربح الإجمالي: ${totalProfit.toStringAsFixed(2)} د.ع',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: totalProfit >= 0 ? Colors.green : Colors.red,
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),

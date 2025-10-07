@@ -536,7 +536,7 @@ class _MainScreenState extends State<MainScreen> {
               padding: buttonPadding,
               spacing: buttonSpacing,
             ),           
-             _buildFeatureButton(
+              _buildFeatureButton(
               icon: Icons.factory,
               title: 'الموردون',
               onTap: () => Navigator.pushNamed(context, '/suppliers'),

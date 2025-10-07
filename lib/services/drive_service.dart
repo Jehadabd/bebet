@@ -8,6 +8,7 @@ import 'package:googleapis_auth/auth_io.dart' as auth;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
+import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
@@ -35,15 +36,11 @@ class DriveService {
   Future<bool> isSignedIn() async {
     if (Platform.isAndroid || Platform.isIOS) {
       try {
-        final isSignedIn = await _googleSignIn.isSignedIn();
-        if (isSignedIn) {
-          final account = await _googleSignIn.signInSilently();
-          if (account == null) {
-            await signOut();
-            return false;
-          }
-        }
-        return isSignedIn;
+        // Prefer silent sign-in; do not clear tokens on failure.
+        final account = await _googleSignIn.signInSilently();
+        if (account != null) return true;
+        // Fallback to current sign-in state
+        return await _googleSignIn.isSignedIn();
       } catch (_) {
         return false;
       }
@@ -76,9 +73,7 @@ class DriveService {
     if (Platform.isAndroid || Platform.isIOS) {
       final GoogleSignInAccount? account = await _googleSignIn.signIn();
       if (account == null) throw Exception('تم إلغاء تسجيل الدخول');
-      final GoogleSignInAuthentication authData = await account.authentication;
-      await _storage.write(key: 'access_token', value: authData.accessToken);
-      await _storage.write(key: 'refresh_token', value: authData.idToken);
+      // On mobile, build an authenticated client directly from GoogleSignIn
       final client = await _getAuthenticatedClient();
       final driveApi = drive.DriveApi(client);
       await driveApi.files.list(pageSize: 1);
@@ -126,18 +121,11 @@ class DriveService {
     try {
       print('🔄 محاولة إعادة تسجيل الدخول التلقائي...');
       
-      // مسح التوكنات القديمة
-      await _storage.delete(key: 'access_token');
-      await _storage.delete(key: 'refresh_token');
-      
       // محاولة إعادة تسجيل الدخول
       if (Platform.isAndroid || Platform.isIOS) {
         // للموبايل: محاولة تسجيل دخول صامت
         final account = await _googleSignIn.signInSilently();
         if (account != null) {
-          final authData = await account.authentication;
-          await _storage.write(key: 'access_token', value: authData.accessToken);
-          await _storage.write(key: 'refresh_token', value: authData.idToken);
           print('✅ تم إعادة تسجيل الدخول بنجاح (موبايل)');
           return;
         }
@@ -168,6 +156,14 @@ class DriveService {
   }
 
   Future<http.Client> _getAuthenticatedClient({bool forceRefresh = false}) async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      final authClient = await _googleSignIn.authenticatedClient();
+      if (authClient == null) {
+        throw Exception('لم يتم تسجيل الدخول');
+      }
+      return authClient;
+    }
+
     final accessToken = await _storage.read(key: 'access_token');
     final refreshToken = await _storage.read(key: 'refresh_token');
     
@@ -372,9 +368,17 @@ class DriveService {
       orderBy: 'createdTime desc',
     );
     final files = listRes.files ?? [];
-    if (files.length > 2) {
-      for (int i = 2; i < files.length; i++) {
-        final f = files[i];
+    // حذف النسخ القديمة والنسخ ذات الاسم القديم (yyyy-MM-dd.zip)
+    // الإبقاء فقط على أحدث 3 نسخ باسم التوقيت الكامل
+    final isLegacy = RegExp(r'^\d{4}-\d{2}-\d{2}\.zip$');
+    int kept = 0;
+    for (int i = 0; i < files.length; i++) {
+      final f = files[i];
+      final name = f.name ?? '';
+      final isTimestamped = RegExp(r'^\d{4}-\d{2}-\d{2}_[0-2]\d-[0-5]\d-[0-5]\d\.zip$').hasMatch(name);
+      final shouldDelete = isLegacy.hasMatch(name) || (isTimestamped ? kept >= 3 : false);
+      if (isTimestamped) kept++;
+      if (shouldDelete) {
         try {
           await driveApi.files.delete(f.id!);
         } catch (e) {

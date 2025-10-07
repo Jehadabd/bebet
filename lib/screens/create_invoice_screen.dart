@@ -1724,7 +1724,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               }),
       ];
       
-      const itemsPerPage = 20;
+      const itemsPerPage = 19;
       final totalPages = (combinedRows.length / itemsPerPage).ceil().clamp(1, double.infinity).toInt();
       bool printedSummaryInLastPage = false;
 
@@ -1736,7 +1736,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         final pageRows = combinedRows.sublist(start, end);
 
         final bool isLast = pageIndex == totalPages - 1;
-        final bool deferSummary = isLast && (pageRows.length >= 18) && showSettlementSections;
+        final bool deferSummary = isLast && (pageRows.length >= 17) && showSettlementSections;
 
         pdf.addPage(
           pw.Page(
@@ -2159,7 +2159,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         child: pw.Transform.rotate(
                           angle: 0.8,
                           child: pw.Opacity(
-                            opacity: 0.09,
+                            opacity: 0.11,
                             child: pw.Text(
                               'الناصر',
                               style: pw.TextStyle(

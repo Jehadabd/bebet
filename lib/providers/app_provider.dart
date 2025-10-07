@@ -81,7 +81,8 @@ class AppProvider with ChangeNotifier {
 
   // Customer operations
   Future<void> _loadCustomers() async {
-    _customers = await _db.getAllCustomers();
+    // استخدم قائمة سجل الديون: تظهر من لديهم دين أو لديهم معاملات
+    _customers = await _db.getCustomersForDebtRegister();
     _customers.sort((a, b) => a.name.compareTo(b.name));
     _applySearchFilter();
   }
@@ -374,7 +375,7 @@ class AppProvider with ChangeNotifier {
       // 3) إنشاء ملف zip باسم التاريخ yyyy-MM-dd.zip
       onProgress?.call(0.45);
       final now = DateTime.now();
-      final zipName = '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}.zip';
+      final zipName = '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}-${now.minute.toString().padLeft(2, '0')}-${now.second.toString().padLeft(2, '0')}.zip';
       final zipFile = File('${tempDir.path}/$zipName');
       final encoder = ZipFileEncoder();
       encoder.create(zipFile.path);
