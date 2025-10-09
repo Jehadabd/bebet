@@ -745,45 +745,51 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     }
   }
 
-  // --- دالة حساب التكلفة الفعلية بناءً على نوع الوحدة المباعة ---
+  // --- دالة حساب التكلفة الفعلية بناءً على نوع وحدة البيع (تعامل مع غياب/صفر unit_costs) ---
   double _calculateActualCostPrice(Product product, String saleUnit, double quantity) {
-    // إذا كانت الوحدة المباعة هي القطعة الواحدة، استخدم تكلفة القطعة
-    if (saleUnit == 'قطعة' || saleUnit == 'متر') {
-      return product.costPrice ?? 0.0;
+    final double baseCost = product.costPrice ?? 0.0;
+    // بيع بالوحدة الأساسية
+    if ((product.unit == 'piece' && saleUnit == 'قطعة') ||
+        (product.unit == 'meter' && saleUnit == 'متر')) {
+      return baseCost;
     }
-    
-    // إذا كانت الوحدة المباعة أكبر، احسب التكلفة من النظام الهيراركي
-    if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
+
+    // جرّب قراءة تكلفة الوحدة المباعة من unit_costs; اعتبر الصفر كأنه غير متوفر
+    Map<String, double> unitCosts = const {};
+    try { unitCosts = product.getUnitCostsMap(); } catch (_) {}
+    final double? stored = unitCosts[saleUnit];
+    if (stored != null && stored > 0) {
+      return stored;
+    }
+
+    // للمتر و"لفة": استخدم طول اللفة عند عدم توفر تكلفة مخزنة
+    if (product.unit == 'meter' && saleUnit == 'لفة') {
+      final double lengthPerUnit = product.lengthPerUnit ?? 1.0;
+      return baseCost * lengthPerUnit;
+    }
+
+    // للقطعة مع هرمية: احسب المضاعف التراكمي حتى وحدة البيع المطلوبة
+    if (product.unit == 'piece' && product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
       try {
-        final hierarchy = jsonDecode(product.unitHierarchy!) as List;
-        final unitCosts = product.getUnitCostsMap();
-        
-        // البحث عن الوحدة المباعة في النظام الهيراركي
-        for (var unit in hierarchy) {
-          if (unit['unit_name'] == saleUnit) {
-            // إذا وجدت التكلفة محسوبة مسبقاً، استخدمها
-            if (unitCosts.containsKey(saleUnit)) {
-              return unitCosts[saleUnit]!;
-            }
-            
-            // إذا لم تكن محسوبة، احسبها الآن
-            double currentCost = product.costPrice ?? 0.0;
-            for (var hUnit in hierarchy) {
-              if (hUnit['unit_name'] == saleUnit) {
-                break; // توقف عند الوحدة المطلوبة
-              }
-              currentCost = currentCost * (hUnit['quantity'] as num);
-            }
-            return currentCost;
+        final List<dynamic> hierarchy = jsonDecode(product.unitHierarchy!) as List<dynamic>;
+        double multiplier = 1.0;
+        for (final level in hierarchy) {
+          final String unitName = (level['unit_name'] ?? level['name'] ?? '').toString();
+          final double qty = (level['quantity'] is num)
+              ? (level['quantity'] as num).toDouble()
+              : double.tryParse(level['quantity'].toString()) ?? 1.0;
+          multiplier *= qty;
+          if (unitName == saleUnit) {
+            return baseCost * multiplier;
           }
         }
       } catch (e) {
         print('خطأ في حساب التكلفة الهيراركية: $e');
       }
     }
-    
-    // إذا لم يتم العثور على تكلفة هيراركية، استخدم تكلفة القطعة
-    return product.costPrice ?? 0.0;
+
+    // رجوع آمن
+    return baseCost;
   }
 
   void _addInvoiceItem() {
@@ -1407,6 +1413,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
       // تحديث حالة الفاتورة في الذاكرة مباشرة بعد الحفظ
       final updatedInvoice = await _db.getInvoiceById(invoiceId);
+      // طباعة تفصيل الفاتورة بالنظام الهرمي بعد الحفظ للمقارنة والتشخيص
+      try {
+        await _db.debugPrintInvoiceById(invoiceId);
+        await _db.debugPrintProductsForInvoice(invoiceId);
+      } catch (_) {}
       setState(() {
         _invoiceToManage = updatedInvoice;
         if (_invoiceToManage != null &&
@@ -2134,8 +2145,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         ],
                       ),
                       pw.SizedBox(height: 6),
-                      pw.Center(
-                          child: pw.Text('شكراً لتعاملكم معنا',
+                      pw.Align(
+                          child: pw.Text('تنويه: أي ملاحظات على تجهيز المواد تُقبل خلال 3 أيام من تاريخ الفاتورة فقط  وشكراً لتعاملكم معنا',
                               style: pw.TextStyle(font: font, fontSize: 11))),
                     ],
 

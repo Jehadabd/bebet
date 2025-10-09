@@ -22,12 +22,12 @@ pw.Widget buildPdfHeader(
                       fontSize: 45,
                       height: 0,
                       fontWeight: pw.FontWeight.bold,
-                      color: PdfColors.green,
+                      color: PdfColors.black,
                     ),
                   ),
                 ),
                 pw.Center(
-                  child: pw.Text(' لتجارة المواد الكهربائية والكيبلات و العدداليدوية والصحية',
+                  child: pw.Text('لتجارة المواد الصحية والعدد اليدوية والانشائية والكهربائيات والكيبلات',
                       style: pw.TextStyle(font: font, fontSize: 17)),
                 ),
                 pw.Center(

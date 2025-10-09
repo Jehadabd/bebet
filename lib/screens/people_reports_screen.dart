@@ -54,28 +54,13 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
     });
 
     try {
-      print('=== تحميل سجل الديون ===');
-      
-      // تحديث الفواتير القديمة وربطها بالعملاء
-      try {
-        await _databaseService.updateOldInvoicesWithCustomerIds();
-      } catch (e) {
-        print('تحذير: فشل في تحديث الفواتير القديمة: $e');
-      }
-      
+      // تحديث الفواتير القديمة وربطها بالعملاء (بدون طباعات تشخيصية)
+      try { await _databaseService.updateOldInvoicesWithCustomerIds(); } catch (_) {}
+
       final customers = await _databaseService.getAllCustomers();
-      print('عدد العملاء: ${customers.length}');
       final List<PersonReportData> peopleReports = [];
 
       for (final customer in customers) {
-        print('--- عميل: ${customer.name} ---');
-        print('معرف العميل: ${customer.id}');
-        print('رقم الهاتف: ${customer.phone ?? "غير متوفر"}');
-        print('العنوان: ${customer.address ?? "غير متوفر"}');
-        print('الدين الحالي: ${customer.currentTotalDebt}');
-        print('تاريخ الإنشاء: ${customer.createdAt}');
-        print('آخر تعديل: ${customer.lastModifiedAt}');
-        
         final profitData =
             await _databaseService.getCustomerProfitData(customer.id!);
 
@@ -86,32 +71,12 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
           totalInvoices: profitData['totalInvoices'] ?? 0,
           totalTransactions: profitData['totalTransactions'] ?? 0,
         ));
-        
-        print('إجمالي المبيعات: ${profitData['totalSales'] ?? 0.0}');
-        print('إجمالي الأرباح: ${profitData['totalProfit'] ?? 0.0}');
-        print('عدد الفواتير: ${profitData['totalInvoices'] ?? 0}');
-        print('عدد المعاملات: ${profitData['totalTransactions'] ?? 0}');
-        
-        // جلب معاملات الدين للعميل
-        try {
-          final debtTransactions = await _databaseService.getDebtTransactionsForCustomer(customer.id!);
-          print('معاملات الدين: ${debtTransactions.length}');
-          for (int i = 0; i < debtTransactions.length; i++) {
-            final transaction = debtTransactions[i];
-            print('  معاملة ${i + 1}: ${transaction.description} - ${transaction.amountChanged} - ${transaction.newBalanceAfterTransaction}');
-          }
-        } catch (e) {
-          print('خطأ في جلب معاملات الدين: $e');
-        }
-        
-        print('--- نهاية عميل: ${customer.name} ---');
       }
-      
-      print('=== نهاية تحميل سجل الديون ===');
 
       // إخفاء الأشخاص الذين ليس لديهم أي معاملات ديون ولا يوجد عليهم دين حالي
+      // السماح بظهور من لديه فواتير حتى لو لم تظهر له معاملات دين أو دين حالي
       final visiblePeople = peopleReports
-          .where((p) => p.totalTransactions > 0 || p.customer.currentTotalDebt > 0)
+          .where((p) => p.totalTransactions > 0 || p.customer.currentTotalDebt > 0 || p.totalInvoices > 0)
           .toList();
 
       // ترتيب الأشخاص من الأكثر سحباً (أعلى قيمة مبيعات)

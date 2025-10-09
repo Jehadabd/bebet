@@ -41,11 +41,6 @@ class _PersonYearDetailsScreenState extends State<PersonYearDetailsScreen> {
         widget.customer.id!,
         widget.year,
       );
-      // اطبع تفصيلاً لفاتورة محددة إذا رغبت بالتحقق الفوري عبر التيرمنال
-      try {
-        await _databaseService.debugPrintInvoiceById(86);
-        await _databaseService.debugPrintProductsForInvoice(86);
-      } catch (_) {}
       setState(() {
         _monthlyData = monthlyData;
         _isLoading = false;

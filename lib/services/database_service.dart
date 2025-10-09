@@ -3941,7 +3941,7 @@ class DatabaseService {
 
         final Map<String, dynamic> p = pr.first;
         final String unit = (p['unit'] ?? '') as String;
-        final double? baseCost = (p['cost_price'] as num?)?.toDouble();
+        final double baseCost = ((p['cost_price'] as num?)?.toDouble() ?? 0.0);
         final int? piecesPerUnit = (p['pieces_per_unit'] as num?)?.toInt();
         final double? lengthPerUnit = (p['length_per_unit'] as num?)?.toDouble();
         final String? unitHierarchyJson = p['unit_hierarchy'] as String?;
@@ -3960,7 +3960,7 @@ class DatabaseService {
           }
         } catch (_) {}
 
-        print('[ProductDebug] name="$productName" unit=$unit baseCost=${baseCost ?? 0} piecesPerUnit=${piecesPerUnit ?? 0} lengthPerUnit=${lengthPerUnit ?? 0}');
+        print('[ProductDebug] name="$productName" unit=$unit baseCost=$baseCost piecesPerUnit=${piecesPerUnit ?? 0} lengthPerUnit=${lengthPerUnit ?? 0}');
 
         if (unitCosts.isNotEmpty) {
           final entries = unitCosts.entries
@@ -3979,6 +3979,22 @@ class DatabaseService {
               double qty = 0;
               if (qtyRaw is num) qty = qtyRaw.toDouble();
               print('[ProductDebug][Hierarchy] $unitName qty=$qty');
+              // طباعة تكلفة الوحدة الكبيرة المحسوبة/المخزنة بوضوح
+              double derivedCost;
+              final dynamic stored = unitCosts[unitName];
+              if (stored is num) {
+                derivedCost = stored.toDouble();
+                print('[ProductDebug][Cost][$unitName] storedUnitCost=$derivedCost');
+              } else {
+                // للمتر و"لفة" استخدم طول اللفة
+                if (unit == 'meter' && unitName == 'لفة') {
+                  final double len = (lengthPerUnit ?? 1.0);
+                  derivedCost = baseCost * len;
+                } else {
+                  derivedCost = baseCost * (qty > 0 ? qty : 1.0);
+                }
+                print('[ProductDebug][Cost][$unitName] computedUnitCost=$derivedCost (from baseCost x qty)');
+              }
             }
           }
         } else {
@@ -3995,6 +4011,22 @@ class DatabaseService {
           final String saleType = (u['sale_type'] ?? '') as String;
           final double uilu = ((u['uilu'] as num?) ?? 0).toDouble();
           print('[ProductDebug][UsedInInv] sale_type=$saleType units_in_large_unit=$uilu');
+          // طباعة تكلفة الوحدة المستخدمة فعلياً بوضوح
+          double saleUnitCost;
+          final dynamic stored = unitCosts[saleType];
+          if (stored is num) {
+            saleUnitCost = stored.toDouble();
+            print('[ProductDebug][UsedInInvCost] sale_type=$saleType unitCostSource=stored unitCost=$saleUnitCost');
+          } else if (unit == 'meter' && saleType == 'لفة') {
+            saleUnitCost = baseCost * ((lengthPerUnit ?? 1.0));
+            print('[ProductDebug][UsedInInvCost] sale_type=$saleType unitCostSource=lengthBased unitCost=$saleUnitCost');
+          } else if (saleType == 'قطعة' || saleType == 'متر' || uilu == 0) {
+            saleUnitCost = baseCost;
+            print('[ProductDebug][UsedInInvCost] sale_type=$saleType unitCostSource=base unitCost=$saleUnitCost');
+          } else {
+            saleUnitCost = baseCost * uilu;
+            print('[ProductDebug][UsedInInvCost] sale_type=$saleType unitCostSource=multiplied unitCost=$saleUnitCost');
+          }
         }
       }
     } catch (e) {

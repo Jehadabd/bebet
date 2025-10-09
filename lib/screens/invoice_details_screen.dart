@@ -34,6 +34,12 @@ class _InvoiceDetailsScreenState extends State<InvoiceDetailsScreen> {
     });
 
     try {
+      // اطبع تفاصيل الفاتورة والبنود بالنظام الهرمي للمقارنة التشخيصية
+      try {
+        await _databaseService.debugPrintInvoiceById(widget.invoiceId);
+        await _databaseService.debugPrintProductsForInvoice(widget.invoiceId);
+      } catch (_) {}
+
       final invoice = await _databaseService.getInvoiceById(widget.invoiceId);
       final items = await _databaseService.getInvoiceItems(widget.invoiceId);
 
