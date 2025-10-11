@@ -4,6 +4,8 @@ import 'package:pdf/pdf.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:io';
 import 'pdf_header.dart';
+import 'package:alnaser/services/settings_manager.dart';
+import 'package:alnaser/models/app_settings.dart';
 
 class ReceiptVoucherPdfService {
   static Future<pw.Document> generateReceiptVoucherPdf({
@@ -17,6 +19,10 @@ class ReceiptVoucherPdfService {
     required pw.Font alnaserFont,
     required pw.MemoryImage logoImage,
   }) async {
+    // تحميل الإعدادات العامة
+    final settingsManager = SettingsManager();
+    final appSettings = await settingsManager.getAppSettings();
+    
     final pdf = pw.Document();
     pdf.addPage(
       pw.Page(
@@ -28,7 +34,7 @@ class ReceiptVoucherPdfService {
             child: pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
-                buildPdfHeader(font, alnaserFont, logoImage, logoSize: 150),
+                buildPdfHeader(font, alnaserFont, logoImage, logoSize: 150, appSettings: appSettings),
                 pw.SizedBox(height: 8),
                 pw.Center(
                   child: pw.Text(

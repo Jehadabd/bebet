@@ -8,6 +8,7 @@ import '../services/database_service.dart';
 import '../models/customer.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/password_service.dart';
+import '../screens/general_settings_screen.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -457,8 +458,8 @@ class _MainScreenState extends State<MainScreen> {
             ),
             _buildFeatureButton(
               icon: Icons.print,
-              title: 'إعدادات الطابعة',
-              onTap: () => Navigator.pushNamed(context, '/printer_settings'),
+              title: 'الإعدادات',
+              onTap: () => Navigator.pushNamed(context, '/general_settings'),
               color: const Color(0xFF607D8B),
               fontSize: buttonFontSize,
               iconSize: iconSize,

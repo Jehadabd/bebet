@@ -15,6 +15,8 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import '../services/invoice_pdf_service.dart';
+import 'package:alnaser/services/settings_manager.dart';
+import 'package:alnaser/models/app_settings.dart';
 
 class EditInvoicesScreen extends StatefulWidget {
   const EditInvoicesScreen({super.key});
@@ -543,6 +545,10 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
       final alnaserFont = pw.Font.ttf(alnaserFontData);
       final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
 
+      // تحميل الإعدادات العامة
+      final settingsManager = SettingsManager();
+      final appSettings = await settingsManager.getAppSettings();
+
       final doc = await InvoicePdfService.generateInvoicePdf(
         invoiceItems: items,
         allProducts: products,
@@ -562,6 +568,7 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
         alnaserFont: alnaserFont,
         logoImage: logoImage,
         createdAt: invoice.createdAt,
+        appSettings: appSettings,
       );
 
       // حفظ الملف

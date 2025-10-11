@@ -19,6 +19,8 @@ import 'dart:io';
 import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path/path.dart' as p;
+import 'package:alnaser/services/settings_manager.dart';
+import 'package:alnaser/models/app_settings.dart';
 import 'package:path_provider/path_provider.dart' as pp;
 import '../services/invoice_pdf_service.dart';
 import '../widgets/formatters.dart';
@@ -32,6 +34,8 @@ import 'dart:convert';
 import 'package:flutter/scheduler.dart';
 import '../services/pdf_header.dart';
 import '../models/invoice_adjustment.dart';
+import '../services/settings_manager.dart';
+import '../models/app_settings.dart';
 
 // Helper: format product ID - show raw value without zero-padding
 String formatProductId5(int? id) {
@@ -791,7 +795,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     // رجوع آمن
     return baseCost;
   }
-
   void _addInvoiceItem() {
     try {
       // تحديد أن هناك تغييرات غير محفوظة
@@ -1465,12 +1468,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       return null;
     }
   }
-
-  
-
   Future<pw.Document> _generateInvoicePdf() async {
     try {
       final pdf = pw.Document();
+      
+      // تحميل الإعدادات العامة
+      final settingsManager = SettingsManager();
+      final appSettings = await settingsManager.getAppSettings();
+      
       // تحميل صورة اللوجو الجديدة من الأصول
       final logoBytes = await rootBundle
           .load('assets/icon/alnasser.jpg');
@@ -1762,7 +1767,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       crossAxisAlignment: pw.CrossAxisAlignment.start,
                       children: [
                     // --- رأس الفاتورة مع اللوجو الجديد في الجهة اليمنى ---
-                    buildPdfHeader(font, alnaserFont, logoImage),
+                    buildPdfHeader(font, alnaserFont, logoImage, appSettings: appSettings),
                     pw.SizedBox(height: 4),
                     // --- معلومات العميل والتاريخ ---
                     pw.Row(
@@ -1804,13 +1809,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         pw.TableRow(
                           decoration: const pw.BoxDecoration(),
                           children: [
-                            _headerCell('المبلغ', font),
-                            _headerCell('السعر', font),
+                            _headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
+                            _headerCell('السعر', font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
                             _headerCell('عدد الوحدات', font),
-                            _headerCell('العدد', font),
-                            _headerCell('التفاصيل ', font),
-                            _headerCell('ID', font),
-                            _headerCell('ت', font),
+                            _headerCell('العدد', font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
+                            _headerCell('التفاصيل ', font, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
+                            _headerCell('ID', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
+                            _headerCell('ت', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
                           ],
                         ),
                         ...pageRows.asMap().entries.map((entry) {
@@ -1828,16 +1833,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           final idText = formatProductId5(product?.id);
                           return pw.TableRow(
                             children: [
-                                _dataCell(formatNumber(item.itemTotal, forceDecimal: true), font),
-                                _dataCell(formatNumber(item.appliedPrice, forceDecimal: true), font),
+                                _dataCell(formatNumber(item.itemTotal, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
+                                _dataCell(formatNumber(item.appliedPrice, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
                               _dataCell(
                                 buildUnitConversionStringForPdf(item, product),
                                 font,
                               ),
-                                _dataCell('${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}', font),
-                                _dataCell(item.productName, font, align: pw.TextAlign.right),
-                              _dataCell(idText, font),
-                              _dataCell('${index + 1}', font),
+                                _dataCell('${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}', font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
+                                _dataCell(item.productName, font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
+                              _dataCell(idText, font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
+                              _dataCell('${index + 1}', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
                             ],
                           );
                           } else {
@@ -1878,13 +1883,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             }();
                             return pw.TableRow(
                               children: [
-                                _dataCell(formatNumber(total, forceDecimal: true), font),
-                                _dataCell(formatNumber(price, forceDecimal: true), font),
+                                _dataCell(formatNumber(total, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
+                                _dataCell(formatNumber(price, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
                                 _dataCell(unitConv, font),
-                                _dataCell('${formatNumber(qty, forceDecimal: true)} ${a.saleType ?? ''}', font),
-                                _dataCell(a.productName ?? '-', font, align: pw.TextAlign.right),
-                                _dataCell(idText, font),
-                                _dataCell('${index + 1}', font),
+                                _dataCell('${formatNumber(qty, forceDecimal: true)} ${a.saleType ?? ''}', font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
+                                _dataCell(a.productName ?? '-', font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
+                                _dataCell(idText, font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
+                                _dataCell('${index + 1}', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
                               ],
                             );
                           }
@@ -1910,13 +1915,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                         defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
                         children: [
                           pw.TableRow(children: [
-                            _headerCell('المبلغ', font),
-                            _headerCell('السعر', font),
+                            _headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
+                            _headerCell('السعر', font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
                             _headerCell('عدد الوحدات', font),
-                            _headerCell('العدد', font),
-                            _headerCell('التفاصيل', font),
-                            _headerCell('ID', font),
-                            _headerCell('ت', font),
+                            _headerCell('العدد', font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
+                            _headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
+                            _headerCell('ID', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
+                            _headerCell('ت', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
                           ]),
                           ...sameDayAddedItemAdjs.asMap().entries.map((entry) {
                             final idx = entry.key;
@@ -1926,13 +1931,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             final amount = price * qty;
                             final idText = formatProductId5(a.productId);
                             return pw.TableRow(children: [
-                              _dataCell(formatNumber(amount, forceDecimal: true), font),
-                              _dataCell(formatNumber(price, forceDecimal: true), font),
+                              _dataCell(formatNumber(amount, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
+                              _dataCell(formatNumber(price, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
                               _dataCell((a.unitsInLargeUnit != null && a.unitsInLargeUnit! > 0) ? a.unitsInLargeUnit!.toStringAsFixed(2) : '-', font),
-                              _dataCell(qty.toStringAsFixed(2), font),
-                              _dataCell(a.productName ?? '', font, align: pw.TextAlign.right),
-                              _dataCell(idText, font),
-                              _dataCell('${idx + 1}', font),
+                              _dataCell(qty.toStringAsFixed(2), font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
+                              _dataCell(a.productName ?? '', font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
+                              _dataCell(idText, font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
+                              _dataCell('${idx + 1}', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
                             ]);
                           })
                         ],
@@ -1971,13 +1976,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
                             children: [
                               pw.TableRow(children: [
-                                _headerCell('المبلغ', font),
-                                _headerCell('السعر', font),
+                                _headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
+                                _headerCell('السعر', font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
                                 _headerCell('عدد الوحدات', font),
-                                _headerCell('العدد', font),
-                                _headerCell('التفاصيل', font),
-                                _headerCell('ID', font),
-                                _headerCell('ت', font),
+                                _headerCell('العدد', font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
+                                _headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
+                                _headerCell('ID', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
+                                _headerCell('ت', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
                               ]),
                               ...itemAdditionsForSection.toList().asMap().entries.map((entry) {
                                 final idx = entry.key;
@@ -1987,13 +1992,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 final amount = price * qty;
                                 final idText = formatProductId5(a.productId);
                                 return pw.TableRow(children: [
-                                  _dataCell(formatNumber(amount, forceDecimal: true), font),
-                                  _dataCell(formatNumber(price, forceDecimal: true), font),
+                                  _dataCell(formatNumber(amount, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
+                                  _dataCell(formatNumber(price, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
                                   _dataCell((a.unitsInLargeUnit != null && a.unitsInLargeUnit! > 0) ? a.unitsInLargeUnit!.toStringAsFixed(2) : '-', font),
-                                  _dataCell(qty.toStringAsFixed(2), font),
-                                  _dataCell(a.productName ?? '', font, align: pw.TextAlign.right),
-                                  _dataCell(idText, font),
-                                  _dataCell('${idx + 1}', font),
+                                  _dataCell(qty.toStringAsFixed(2), font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
+                                  _dataCell(a.productName ?? '', font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
+                                  _dataCell(idText, font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
+                                  _dataCell('${idx + 1}', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
                                 ]);
                               })
                             ],
@@ -2018,13 +2023,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
                             children: [
                               pw.TableRow(children: [
-                                _headerCell('المبلغ', font),
-                                _headerCell('السعر', font),
+                                _headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
+                                _headerCell('السعر', font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
                                 _headerCell('عدد الوحدات', font),
-                                _headerCell('العدد', font),
-                                _headerCell('التفاصيل', font),
-                                _headerCell('ID', font),
-                                _headerCell('ت', font),
+                                _headerCell('العدد', font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
+                                _headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
+                                _headerCell('ID', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
+                                _headerCell('ت', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
                               ]),
                               ...itemCreditsForSection.toList().asMap().entries.map((entry) {
                                 final idx = entry.key;
@@ -2034,13 +2039,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 final amount = price * qty;
                                 final idText = formatProductId5(a.productId);
                                 return pw.TableRow(children: [
-                                  _dataCell(formatNumber(-amount, forceDecimal: true), font),
-                                  _dataCell(formatNumber(price, forceDecimal: true), font),
+                                  _dataCell(formatNumber(-amount, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
+                                  _dataCell(formatNumber(price, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
                                   _dataCell((a.unitsInLargeUnit != null && a.unitsInLargeUnit! > 0) ? a.unitsInLargeUnit!.toStringAsFixed(2) : '-', font),
-                                  _dataCell(qty.toStringAsFixed(2), font),
-                                  _dataCell(a.productName ?? '', font, align: pw.TextAlign.right),
-                                  _dataCell(idText, font),
-                                  _dataCell('-', font),
+                                  _dataCell(qty.toStringAsFixed(2), font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
+                                  _dataCell(a.productName ?? '', font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
+                                  _dataCell(idText, font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
+                                  _dataCell('-', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
                                 ]);
                               })
                             ],
@@ -2076,7 +2081,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 return pw.TableRow(children: [
                                   _dataCell(a.note ?? '-', font, align: pw.TextAlign.right),
                                   _dataCell(kind, font),
-                                  _dataCell(formatNumber(a.amountDelta, forceDecimal: true), font),
+                                  _dataCell(formatNumber(a.amountDelta, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
                                 ]);
                               })
                             ],
@@ -2096,31 +2101,31 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 pw.SizedBox(width: 10),
                                 _summaryRow('إجمالي التسويات:', settlementsTotalForDisplay, font),
                                 pw.SizedBox(width: 10),
-                                _summaryRow('الإجمالي قبل الخصم:', preDiscountTotal, font),
+                                _summaryRow('الإجمالي قبل الخصم:', preDiscountTotal, font, color: PdfColor.fromInt(appSettings.totalBeforeDiscountColor)),
                               pw.SizedBox(width: 10),
-                              _summaryRow('الخصم:', discount, font),
+                              _summaryRow('الخصم:', discount, font, color: PdfColor.fromInt(appSettings.discountColor)),
                               ],
                             ),
                             pw.SizedBox(height: 4),
                             pw.Row(
                               mainAxisAlignment: pw.MainAxisAlignment.end,
                               children: [
-                                _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font),
+                                _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font, color: PdfColor.fromInt(appSettings.totalAfterDiscountColor)),
                               pw.SizedBox(width: 10),
-                                _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font),
+                                _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font, color: PdfColor.fromInt(appSettings.paidAmountColor)),
                               ],
                             ),
                           ],
                           if (!hasAdjustments || includeSameDayOnlyCase) pw.Row(
                             mainAxisAlignment: pw.MainAxisAlignment.end,
                             children: [
-                              _summaryRow('الإجمالي قبل الخصم:', itemsTotalForDisplay, font),
+                              _summaryRow('الإجمالي قبل الخصم:', itemsTotalForDisplay, font, color: PdfColor.fromInt(appSettings.totalBeforeDiscountColor)),
                               pw.SizedBox(width: 10),
-                              _summaryRow('الخصم:', discount, font),
+                              _summaryRow('الخصم:', discount, font, color: PdfColor.fromInt(appSettings.discountColor)),
                               pw.SizedBox(width: 10),
-                              _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font),
+                              _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font, color: PdfColor.fromInt(appSettings.totalAfterDiscountColor)),
                               pw.SizedBox(width: 10),
-                              _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font),
+                              _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font, color: PdfColor.fromInt(appSettings.paidAmountColor)),
                             ],
                           ),
                           pw.SizedBox(height: 4),
@@ -2133,12 +2138,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             pw.Row(
                               mainAxisAlignment: pw.MainAxisAlignment.end,
                               children: [
-                                _summaryRow('المبلغ المتبقي:', remainingForPdf, font),
+                                _summaryRow('المبلغ المتبقي:', remainingForPdf, font, color: PdfColor.fromInt(appSettings.remainingAmountColor)),
                                 pw.SizedBox(width: 10),
-                                _summaryRow('المبلغ المطلوب الحالي:', currentDebtForPdf, font),
+                                _summaryRow('المبلغ المطلوب الحالي:', currentDebtForPdf, font, color: PdfColor.fromInt(appSettings.currentDebtColor)),
                                 pw.SizedBox(width: 10),
                                 _summaryRow('اجور التحميل:', 
-                                    double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0, font),
+                                    double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0, font, color: PdfColor.fromInt(appSettings.loadingFeesColor)),
                               ],
                             ),
                           ],
@@ -2147,7 +2152,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       pw.SizedBox(height: 6),
                       pw.Align(
                           child: pw.Text('تنويه: أي ملاحظات على تجهيز المواد تُقبل خلال 3 أيام من تاريخ الفاتورة فقط  وشكراً لتعاملكم معنا',
-                              style: pw.TextStyle(font: font, fontSize: 11))),
+                              style: pw.TextStyle(font: font, fontSize: 11, color: PdfColor.fromInt(appSettings.noticeColor)))),
                     ],
 
                     pw.Align(
@@ -2192,7 +2197,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         );
         if (isLast && !deferSummary) { printedSummaryInLastPage = true; }
       }
-
       // إذا تم تأجيل الملخص بسبب ضيق الصفحة الأخيرة، اطبعه في صفحة مستقلة لضمان ظهوره
       if (!printedSummaryInLastPage) {
         pdf.addPage(
@@ -2223,10 +2227,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           border: pw.TableBorder.all(width: 0.2),
                           columnWidths: { 0: const pw.FixedColumnWidth(90), 1: const pw.FixedColumnWidth(70), 2: const pw.FlexColumnWidth(1) },
                           children: [
-                            pw.TableRow(children: [ _headerCell('المبلغ', font), _headerCell('السعر', font), _headerCell('التفاصيل', font) ]),
+                            pw.TableRow(children: [ _headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor)), _headerCell('السعر', font, color: PdfColor.fromInt(appSettings.itemPriceColor)), _headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor)) ]),
                             ...itemAdditionsForSection.map((a) {
                               final qty = a.quantity ?? 0; final price = a.price ?? 0; final amount = price * qty;
-                              return pw.TableRow(children: [ _dataCell(formatNumber(amount, forceDecimal: true), font), _dataCell(formatNumber(price, forceDecimal: true), font), _dataCell(a.productName ?? '', font, align: pw.TextAlign.right) ]);
+                              return pw.TableRow(children: [ _dataCell(formatNumber(amount, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)), _dataCell(formatNumber(price, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemPriceColor)), _dataCell(a.productName ?? '', font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor)) ]);
                             })
                           ],
                         ),
@@ -2239,10 +2243,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           border: pw.TableBorder.all(width: 0.2),
                           columnWidths: { 0: const pw.FixedColumnWidth(90), 1: const pw.FixedColumnWidth(70), 2: const pw.FlexColumnWidth(1) },
                           children: [
-                            pw.TableRow(children: [ _headerCell('المبلغ', font), _headerCell('السعر', font), _headerCell('التفاصيل', font) ]),
+                            pw.TableRow(children: [ _headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor)), _headerCell('السعر', font, color: PdfColor.fromInt(appSettings.itemPriceColor)), _headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor)) ]),
                             ...itemCreditsForSection.map((a) {
                               final qty = a.quantity ?? 0; final price = a.price ?? 0; final amount = price * qty;
-                              return pw.TableRow(children: [ _dataCell(formatNumber(amount, forceDecimal: true), font), _dataCell(formatNumber(price, forceDecimal: true), font), _dataCell(a.productName ?? '', font, align: pw.TextAlign.right) ]);
+                              return pw.TableRow(children: [ _dataCell(formatNumber(amount, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)), _dataCell(formatNumber(price, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemPriceColor)), _dataCell(a.productName ?? '', font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor)) ]);
                             })
                           ],
                         ),
@@ -2253,8 +2257,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           border: pw.TableBorder.all(width: 0.2),
                           columnWidths: { 0: const pw.FlexColumnWidth(1), 1: const pw.FixedColumnWidth(70), 2: const pw.FixedColumnWidth(90) },
                           children: [
-                            pw.TableRow(children: [ _headerCell('ملاحظة', font), _headerCell('النوع', font), _headerCell('المبلغ', font) ]),
-                            ...amountOnlyAdjs.map((a) { final kind = a.type == 'debit' ? 'تسوية إضافة' : 'تسوية إرجاع'; return pw.TableRow(children: [ _dataCell(a.note ?? '-', font, align: pw.TextAlign.right), _dataCell(kind, font), _dataCell(formatNumber(a.amountDelta, forceDecimal: true), font) ]); })
+                            pw.TableRow(children: [ _headerCell('ملاحظة', font), _headerCell('النوع', font), _headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor)) ]),
+                            ...amountOnlyAdjs.map((a) { final kind = a.type == 'debit' ? 'تسوية إضافة' : 'تسوية إرجاع'; return pw.TableRow(children: [ _dataCell(a.note ?? '-', font, align: pw.TextAlign.right), _dataCell(kind, font), _dataCell(formatNumber(a.amountDelta, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)) ]); })
                           ],
                         ),
                       ],
@@ -2266,20 +2270,20 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       children: [
                         if (hasAdjustments && !includeSameDayOnlyCase) ...[
                           pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
-                            _summaryRow('الإجمالي قبل التعديل:', itemsTotalForDisplay, font), pw.SizedBox(width: 10), _summaryRow('إجمالي التسويات:', settlementsTotalForDisplay, font), pw.SizedBox(width: 10), _summaryRow('الإجمالي قبل الخصم:', preDiscountTotal, font), pw.SizedBox(width: 10), _summaryRow('الخصم:', discount, font),
+                            _summaryRow('الإجمالي قبل التعديل:', itemsTotalForDisplay, font), pw.SizedBox(width: 10), _summaryRow('إجمالي التسويات:', settlementsTotalForDisplay, font), pw.SizedBox(width: 10), _summaryRow('الإجمالي قبل الخصم:', preDiscountTotal, font, color: PdfColor.fromInt(appSettings.totalBeforeDiscountColor)), pw.SizedBox(width: 10), _summaryRow('الخصم:', discount, font, color: PdfColor.fromInt(appSettings.discountColor)),
                           ]),
                           pw.SizedBox(height: 4),
                           pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
-                            _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font), pw.SizedBox(width: 10), _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font),
+                            _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font, color: PdfColor.fromInt(appSettings.totalAfterDiscountColor)), pw.SizedBox(width: 10), _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font, color: PdfColor.fromInt(appSettings.paidAmountColor)),
                           ]),
                         ] else ...[
                           pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
-                            _summaryRow('الإجمالي قبل الخصم:', itemsTotalForDisplay, font), pw.SizedBox(width: 10), _summaryRow('الخصم:', discount, font), pw.SizedBox(width: 10), _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font), pw.SizedBox(width: 10), _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font),
+                            _summaryRow('الإجمالي قبل الخصم:', itemsTotalForDisplay, font, color: PdfColor.fromInt(appSettings.totalBeforeDiscountColor)), pw.SizedBox(width: 10), _summaryRow('الخصم:', discount, font, color: PdfColor.fromInt(appSettings.discountColor)), pw.SizedBox(width: 10), _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font, color: PdfColor.fromInt(appSettings.totalAfterDiscountColor)), pw.SizedBox(width: 10), _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font, color: PdfColor.fromInt(appSettings.paidAmountColor)),
                           ]),
                         ],
                         pw.SizedBox(height: 6),
                         pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
-                          _summaryRow('المبلغ المتبقي:', remainingForPdf, font), pw.SizedBox(width: 10), _summaryRow('المبلغ المطلوب الحالي:', currentDebtForPdf, font), pw.SizedBox(width: 10), _summaryRow('اجور التحميل:', double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0, font),
+                          _summaryRow('المبلغ المتبقي:', remainingForPdf, font, color: PdfColor.fromInt(appSettings.remainingAmountColor)), pw.SizedBox(width: 10), _summaryRow('المبلغ المطلوب الحالي:', currentDebtForPdf, font, color: PdfColor.fromInt(appSettings.currentDebtColor)), pw.SizedBox(width: 10), _summaryRow('اجور التحميل:', double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0, font, color: PdfColor.fromInt(appSettings.loadingFeesColor)),
                         ]),
                       ],
                     ),
@@ -2303,40 +2307,40 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   }
 
   // دالة لخلايا الرأس
-  pw.Widget _headerCell(String text, pw.Font font) {
+  pw.Widget _headerCell(String text, pw.Font font, {PdfColor? color}) {
     return pw.Padding(
       padding: const pw.EdgeInsets.all(2),
       child: pw.Text(text,
           style: pw.TextStyle(
-              font: font, fontSize: 13, fontWeight: pw.FontWeight.bold),
+              font: font, fontSize: 13, fontWeight: pw.FontWeight.bold, color: color ?? PdfColors.black),
           textAlign: pw.TextAlign.center),
     );
   }
 
   // دالة لخلايا البيانات
   pw.Widget _dataCell(String text, pw.Font font,
-      {pw.TextAlign align = pw.TextAlign.center}) {
+      {pw.TextAlign align = pw.TextAlign.center, PdfColor? color}) {
     return pw.Padding(
       padding: const pw.EdgeInsets.all(2),
       child: pw.Text(text,
           style: pw.TextStyle(
-              font: font, fontSize: 13, fontWeight: pw.FontWeight.bold),
+              font: font, fontSize: 13, fontWeight: pw.FontWeight.bold, color: color ?? PdfColors.black),
           textAlign: align),
     );
   }
 
   // دالة لصفوف المجاميع
-  pw.Widget _summaryRow(String label, num value, pw.Font font) {
+  pw.Widget _summaryRow(String label, num value, pw.Font font, {PdfColor? color}) {
     return pw.Padding(
       padding: const pw.EdgeInsets.symmetric(vertical: 1),
       child: pw.Row(
         mainAxisSize: pw.MainAxisSize.min,
         children: [
-          pw.Text(label, style: pw.TextStyle(font: font, fontSize: 11)),
+          pw.Text(label, style: pw.TextStyle(font: font, fontSize: 11, color: color)),
           pw.SizedBox(width: 5),
           pw.Text(formatNumber(value, forceDecimal: true),
               style: pw.TextStyle(
-                  font: font, fontSize: 13, fontWeight: pw.FontWeight.bold)),
+                  font: font, fontSize: 13, fontWeight: pw.FontWeight.bold, color: color)),
         ],
       ),
     );
@@ -2513,6 +2517,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       final alnaserFont = pw.Font.ttf(alnaserFontData);
       final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
 
+      // تحميل الإعدادات العامة
+      final settingsManager = SettingsManager();
+      final appSettings = await settingsManager.getAppSettings();
+
       final doc = await InvoicePdfService.generatePickingListPdf(
         invoiceItems: _invoiceItems,
         allProducts: await _db.getAllProducts(),
@@ -2522,6 +2530,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         font: font,
         alnaserFont: alnaserFont,
         logoImage: logoImage,
+        appSettings: appSettings,
       );
 
       // احفظ ثم افتح للطباعة على ويندوز
@@ -2784,7 +2793,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم حفظ تسوية المبلغ')));
     }
   }
-
   Widget _buildSettlementPanel() {
     final Color gridBorderColor = Colors.grey.shade300;
     return Card(
@@ -3532,7 +3540,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       print('Auto-save suspended invoice error: $e');
     }
   }
-
   // 2. أضف دالة توليد الوحدات:
   void _onProductSelected(Product product) {
     try {
@@ -4633,7 +4640,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     // ... existing ListView.builder code ...
                   ],
                 ),
-
                 ListView.builder(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
@@ -5348,7 +5354,6 @@ class EditableInvoiceItemRow extends StatefulWidget {
   @override
   State<EditableInvoiceItemRow> createState() => _EditableInvoiceItemRowState();
 }
-
 class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   late InvoiceItem _currentItem;
   late TextEditingController _quantityController;
@@ -5691,7 +5696,6 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     final formatter = NumberFormat('#,##0.00', 'en_US');
     return formatter.format(value);
   }
-
   @override
   Widget build(BuildContext context) {
     final Color gridBorderColor = Colors.grey.shade300;

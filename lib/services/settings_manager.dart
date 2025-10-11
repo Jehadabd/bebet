@@ -1,9 +1,26 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:alnaser/models/printer_device.dart'; // Import the new PrinterDevice model
+import 'package:alnaser/models/app_settings.dart'; // Import AppSettings model
+import 'package:alnaser/models/printer_device.dart'; // Import PrinterDevice model
 
 class SettingsManager {
+  static const _keyAppSettings = 'app_settings';
   static const _keyDefaultPrinter = 'default_printer';
+
+  Future<void> saveAppSettings(AppSettings settings) async {
+    final prefs = await SharedPreferences.getInstance();
+    final settingsJson = jsonEncode(settings.toJson());
+    await prefs.setString(_keyAppSettings, settingsJson);
+  }
+
+  Future<AppSettings> getAppSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    final settingsJson = prefs.getString(_keyAppSettings);
+    if (settingsJson != null) {
+      return AppSettings.fromJson(jsonDecode(settingsJson));
+    }
+    return AppSettings(); // Return default settings if none are saved
+  }
 
   Future<void> saveDefaultPrinter(PrinterDevice printer) async {
     final prefs = await SharedPreferences.getInstance();

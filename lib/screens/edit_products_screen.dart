@@ -254,6 +254,40 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     'كرتون',
   ];
 
+  Map<String, double> _computeUnitCostsPreview() {
+    final Map<String, double> costs = {};
+    final double baseCost = double.tryParse(_costPriceController.text.trim()) ?? (widget.product.costPrice ?? 0.0);
+    if (baseCost <= 0) return costs;
+
+    if (_selectedUnit == 'piece') {
+      double current = baseCost;
+      costs['قطعة'] = current;
+      if (_unitHierarchyList.isNotEmpty) {
+        try {
+          for (final level in _unitHierarchyList) {
+            final String unitName = (level['unit_name'] ?? '').toString();
+            if (unitName.isEmpty) continue;
+            final double qty = (level['quantity'] is num)
+                ? (level['quantity'] as num).toDouble()
+                : double.tryParse((level['quantity'] ?? '').toString()) ?? 1.0;
+            current = current * qty;
+            costs[unitName] = current;
+          }
+        } catch (_) {}
+      }
+    } else if (_selectedUnit == 'meter') {
+      costs['متر'] = baseCost;
+      final double length = double.tryParse(_lengthPerUnitController.text.trim()) ?? (widget.product.lengthPerUnit ?? 0.0);
+      if (length > 0) {
+        costs['لفة'] = baseCost * length;
+      }
+    } else {
+      // وحدات أخرى كقاعدة
+      costs[_selectedUnit] = baseCost;
+    }
+    return costs;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -659,8 +693,37 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                 decoration: const InputDecoration(labelText: 'سعر التكلفة'),
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
+                onChanged: (_) => setState(() {}),
               ),
               const SizedBox(height: 16),
+              // معاينة تكاليف الوحدات حسب الهرمية
+              Builder(builder: (context) {
+                final preview = _computeUnitCostsPreview();
+                if (preview.isEmpty) return const SizedBox.shrink();
+                return Card(
+                  elevation: 2,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'تكاليف الوحدات (معاينة)',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 8),
+                        ...preview.entries.map((e) => Row(
+                              children: [
+                                Expanded(child: Text('وحدة: ${e.key}')),
+                                Text(e.value.toStringAsFixed(2)),
+                              ],
+                            )),
+                      ],
+                    ),
+                  ),
+                );
+              }),
               TextField(
                 controller: _price1Controller,
                 decoration: const InputDecoration(labelText: 'سعر 1 (المفرد)'),

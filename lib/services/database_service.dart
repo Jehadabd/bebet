@@ -1070,6 +1070,41 @@ class DatabaseService {
       // تطبيع اسم المنتج وحفظه في العمود المطبع
       final productMap = product.toMap();
       productMap['name_norm'] = normalizeArabic(product.name);
+      // بناء unit_costs تلقائياً عند وجود تكلفة أساس أو طول/هرمية
+      try {
+        if (product.costPrice != null && product.costPrice! > 0) {
+          final Map<String, dynamic> newUnitCosts = {};
+          if (product.unit == 'piece') {
+            double currentCost = product.costPrice!;
+            newUnitCosts['قطعة'] = currentCost;
+            if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
+              try {
+                final List<dynamic> hierarchy = jsonDecode(product.unitHierarchy!.replaceAll("'", '"')) as List<dynamic>;
+                for (final level in hierarchy) {
+                  final String unitName = (level['unit_name'] ?? level['name'] ?? '').toString();
+                  final double qty = (level['quantity'] is num)
+                      ? (level['quantity'] as num).toDouble()
+                      : double.tryParse(level['quantity'].toString()) ?? 1.0;
+                  currentCost = currentCost * qty;
+                  if (unitName.isNotEmpty) {
+                    newUnitCosts[unitName] = currentCost;
+                  }
+                }
+              } catch (_) {}
+            }
+          } else if (product.unit == 'meter') {
+            newUnitCosts['متر'] = product.costPrice!;
+            if (product.lengthPerUnit != null && product.lengthPerUnit! > 0) {
+              newUnitCosts['لفة'] = product.costPrice! * product.lengthPerUnit!;
+            }
+          } else {
+            newUnitCosts[product.unit] = product.costPrice!;
+          }
+          productMap['unit_costs'] = jsonEncode(newUnitCosts);
+        }
+      } catch (e) {
+        print('WARN: Failed to build unit_costs on insert: $e');
+      }
       
       return await db.insert('products', productMap);
     } catch (e) {
@@ -2490,6 +2525,68 @@ class DatabaseService {
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
+  }
+
+  /// إصلاح تكاليف الوحدات للمنتجات ذات النظام الهرمي/المتر استناداً إلى تكلفة الأساس الحالية
+  Future<int> repairHierarchicalUnitCosts() async {
+    final db = await database;
+    int updated = 0;
+    try {
+      final List<Map<String, dynamic>> rows = await db.rawQuery('''
+        SELECT id, name, unit, cost_price, unit_hierarchy, length_per_unit
+        FROM products
+        WHERE (unit_hierarchy IS NOT NULL AND TRIM(unit_hierarchy) <> '')
+           OR (unit = 'meter' AND length_per_unit IS NOT NULL AND length_per_unit > 0)
+      ''');
+
+      for (final r in rows) {
+        final int id = r['id'] as int;
+        final String unit = (r['unit'] as String?) ?? 'piece';
+        final double baseCost = ((r['cost_price'] as num?)?.toDouble() ?? 0.0);
+        final String? unitHierarchy = r['unit_hierarchy'] as String?;
+        final double? lengthPerUnit = (r['length_per_unit'] as num?)?.toDouble();
+
+        if (baseCost <= 0) continue;
+
+        final Map<String, dynamic> newUnitCosts = {};
+        if (unit == 'piece') {
+          double currentCost = baseCost;
+          newUnitCosts['قطعة'] = currentCost;
+          if (unitHierarchy != null && unitHierarchy.trim().isNotEmpty) {
+            try {
+              final List<dynamic> hierarchy = jsonDecode(unitHierarchy.replaceAll("'", '"')) as List<dynamic>;
+              for (final level in hierarchy) {
+                final String unitName = (level['unit_name'] ?? level['name'] ?? '').toString();
+                final double qty = (level['quantity'] is num)
+                    ? (level['quantity'] as num).toDouble()
+                    : double.tryParse(level['quantity'].toString()) ?? 1.0;
+                currentCost = currentCost * qty;
+                if (unitName.isNotEmpty) {
+                  newUnitCosts[unitName] = currentCost;
+                }
+              }
+            } catch (_) {}
+          }
+        } else if (unit == 'meter') {
+          newUnitCosts['متر'] = baseCost;
+          if (lengthPerUnit != null && lengthPerUnit > 0) {
+            newUnitCosts['لفة'] = baseCost * lengthPerUnit;
+          }
+        } else {
+          newUnitCosts[unit] = baseCost;
+        }
+
+        try {
+          await db.update('products', {'unit_costs': jsonEncode(newUnitCosts), 'last_modified_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [id]);
+          updated++;
+        } catch (e) {
+          print('Repair unit_costs failed for product #$id: $e');
+        }
+      }
+    } catch (e) {
+      print('repairHierarchicalUnitCosts error: $e');
+    }
+    return updated;
   }
 
   /// دالة لإعادة بناء فهرس FTS5
@@ -4345,39 +4442,74 @@ class DatabaseService {
         double totalSelling = 0.0;
         double totalCost = 0.0;
         for (final item in items) {
-          final double sellingPrice =
-              (item['applied_price'] ?? 0.0) as double;
-          final double costPrice = (item['actual_cost_price'] ??
-              item['cost_price'] ??
-              item['product_cost_price'] ??
-              0.0) as double;
-          final double quantityIndividual =
-              (item['quantity_individual'] ?? 0.0) as double;
-          final double quantityLargeUnit =
-              (item['quantity_large_unit'] ?? 0.0) as double;
-          final double unitsInLargeUnit =
-              (item['units_in_large_unit'] ?? 1.0) as double;
-          
-          // حساب الكمية الإجمالية (بالوحدات الأساسية) للعرض
+          final double sellingPrice = ((item['applied_price'] as num?) ?? 0).toDouble();
+          final double? actualCostPrice = (item['actual_cost_price'] as num?)?.toDouble();
+          final double itemCostPrice = ((item['cost_price'] as num?) ?? 0).toDouble();
+          final double productCostPrice = ((item['product_cost_price'] as num?) ?? 0).toDouble();
+          final double quantityIndividual = ((item['quantity_individual'] as num?) ?? 0).toDouble();
+          final double quantityLargeUnit = ((item['quantity_large_unit'] as num?) ?? 0).toDouble();
+          final double unitsInLargeUnit = ((item['units_in_large_unit'] as num?) ?? 1).toDouble();
+
+          // الكمية الإجمالية (بالوحدة الأساسية)
           final double currentItemTotalQuantity = quantityLargeUnit > 0
               ? (quantityLargeUnit * unitsInLargeUnit)
               : quantityIndividual;
-          
-          // حساب المبيعات والتكلفة بناءً على الوحدات المباعة
+
+          // تكلفة وحدة البيع: أولوية للتكلفة الفعلية، ثم المخزنة لوحدة البيع، ثم مضاعفة الأساس
+          double costPerSaleUnit;
+          if (actualCostPrice != null && actualCostPrice > 0) {
+            costPerSaleUnit = actualCostPrice;
+          } else if (quantityLargeUnit > 0) {
+            // نحاول قراءة unit_costs للوحدة الكبيرة
+            double? stored;
+            try {
+              final pr = await db.rawQuery('SELECT unit, length_per_unit, unit_costs FROM products WHERE name = ? LIMIT 1', [item['product_name']]);
+              if (pr.isNotEmpty) {
+                final String? unitCostsJson = pr.first['unit_costs'] as String?;
+                final String productUnit = (pr.first['unit'] as String?) ?? 'piece';
+                final double? lengthPerUnit = (pr.first['length_per_unit'] as num?)?.toDouble();
+                Map<String, dynamic> unitCosts = const {};
+                if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
+                  try { unitCosts = jsonDecode(unitCostsJson) as Map<String, dynamic>; } catch (_) {}
+                }
+                // sale_type غير موجود في هذا الاستعلام؛ نفترض Large unit إذا quantity_large_unit > 0
+                // سنستنتج التكلفة: إن وُجدت قيمة للوحدة الكبيرة ضمن unit_costs (مثل "باكيت"/"كرتون") فلن تصلنا هنا مباشرة
+                // لذا نعتمد مسار fallback العام: للمتر/لفة استخدم الطول، وإلا استخدم ضرب الأساس
+                stored = null; // لا نملك sale_type هنا، لذا لا نستطيع الانتقاء بالاسم؛ سنستخدم fallback
+                if (stored != null && stored > 0) {
+                  costPerSaleUnit = stored;
+                } else if (productUnit == 'meter') {
+                  final double base = productCostPrice > 0 ? productCostPrice : (itemCostPrice > 0 ? itemCostPrice : 0.0);
+                  costPerSaleUnit = base * ((lengthPerUnit ?? 1.0));
+                } else {
+                  final double base = productCostPrice > 0 ? productCostPrice : (itemCostPrice > 0 ? itemCostPrice : 0.0);
+                  costPerSaleUnit = base * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+                }
+              } else {
+                final double base = productCostPrice > 0 ? productCostPrice : (itemCostPrice > 0 ? itemCostPrice : 0.0);
+                costPerSaleUnit = base * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+              }
+            } catch (_) {
+              final double base = productCostPrice > 0 ? productCostPrice : (itemCostPrice > 0 ? itemCostPrice : 0.0);
+              costPerSaleUnit = base * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+            }
+          } else {
+            // بيع بالوحدة الأساسية
+            costPerSaleUnit = itemCostPrice > 0 ? itemCostPrice : productCostPrice;
+          }
+
           if (quantityLargeUnit > 0) {
             totalSelling += sellingPrice * quantityLargeUnit;
-            totalCost += costPrice * quantityLargeUnit;
-            totalProfit += (sellingPrice - costPrice) * quantityLargeUnit;
+            totalCost += costPerSaleUnit * quantityLargeUnit;
+            totalProfit += (sellingPrice - costPerSaleUnit) * quantityLargeUnit;
           } else {
             totalSelling += sellingPrice * quantityIndividual;
-            totalCost += costPrice * quantityIndividual;
-            totalProfit += (sellingPrice - costPrice) * quantityIndividual;
+            totalCost += costPerSaleUnit * quantityIndividual;
+            totalProfit += (sellingPrice - costPerSaleUnit) * quantityIndividual;
           }
-          
+
           totalQuantity += currentItemTotalQuantity;
-          saleUnitsCount += quantityLargeUnit > 0
-              ? quantityLargeUnit
-              : quantityIndividual;
+          saleUnitsCount += quantityLargeUnit > 0 ? quantityLargeUnit : quantityIndividual;
         }
         final invoice = Invoice.fromMap(items.first);
         final double avgSellingPrice =
