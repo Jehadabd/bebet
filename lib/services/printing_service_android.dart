@@ -11,11 +11,9 @@ import 'package:flutter_esc_pos_network/flutter_esc_pos_network.dart';
 import 'package:alnaser/services/printing_service.dart';
 
 class PrintingServiceAndroid implements PrintingService {
-  final SettingsManager _settingsManager = SettingsManager();
-
   @override
   Future<PrinterDevice?> getDefaultPrinter() async {
-    return await _settingsManager.getDefaultPrinter();
+    return await SettingsManager.getDefaultPrinter();
   }
 
   @override
@@ -91,7 +89,7 @@ class PrintingServiceAndroid implements PrintingService {
 
   @override
   Future<void> printData(Uint8List dataToPrint, {List<int>? escPosCommands, PrinterDevice? printerDevice}) async {
-    final defaultPrinter = printerDevice ?? await _settingsManager.getDefaultPrinter();
+    final defaultPrinter = printerDevice ?? await SettingsManager.getDefaultPrinter();
     if (defaultPrinter == null) {
       print('No default printer set.');
       return;

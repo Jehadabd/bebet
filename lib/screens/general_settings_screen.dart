@@ -11,7 +11,6 @@ class GeneralSettingsScreen extends StatefulWidget {
 }
 
 class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
-  final SettingsManager _settingsManager = SettingsManager();
   late AppSettings _appSettings;
   final List<TextEditingController> _phoneNumberControllers = [];
   final TextEditingController _companyDescriptionController = TextEditingController();
@@ -43,7 +42,7 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
   }
 
   Future<void> _loadSettings() async {
-    _appSettings = await _settingsManager.getAppSettings();
+    _appSettings = await SettingsManager.getAppSettings();
     
     // تحميل الألوان
     _remainingAmountColor = Color(_appSettings.remainingAmountColor);
@@ -107,7 +106,7 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
       noticeColor: _noticeColor.value,
       paidAmountColor: _paidAmountColor.value,
     );
-    await _settingsManager.saveAppSettings(_appSettings);
+    await SettingsManager.saveAppSettings(_appSettings);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('تم حفظ الإعدادات بنجاح')),
@@ -309,6 +308,18 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
             margin: const EdgeInsets.only(bottom: 20),
             elevation: 4,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            child: ListTile(
+              leading: const Icon(Icons.font_download_outlined, color: Colors.blue),
+              title: const Text('إعدادات الخطوط', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              subtitle: const Text('تخصيص نوع ووزن الخط لعناصر الفاتورة'),
+              trailing: const Icon(Icons.chevron_left),
+              onTap: () => Navigator.pushNamed(context, '/font_settings'),
+            ),
+          ),
+          Card(
+            margin: const EdgeInsets.only(bottom: 20),
+            elevation: 4,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             child: Padding(
               padding: const EdgeInsets.all(16.0),
               child: Column(
@@ -451,6 +462,13 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                     trailing: CircleAvatar(backgroundColor: _currentDebtColor, radius: 15),
                     onTap: () => _pickColor('currentDebt'),
                   ),
+
+                  // المبلغ المدفوع
+                  ListTile(
+                    title: const Text('المبلغ المدفوع'),
+                    trailing: CircleAvatar(backgroundColor: _paidAmountColor, radius: 15),
+                    onTap: () => _pickColor('paidAmount'),
+                  ),
                 ],
               ),
             ),
@@ -557,13 +575,6 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                     title: const Text('التنويه'),
                     trailing: CircleAvatar(backgroundColor: _noticeColor, radius: 15),
                     onTap: () => _pickColor('notice'),
-                  ),
-                  
-                  // المبلغ المدفوع
-                  ListTile(
-                    title: const Text('المبلغ المدفوع'),
-                    trailing: CircleAvatar(backgroundColor: _paidAmountColor, radius: 15),
-                    onTap: () => _pickColor('paidAmount'),
                   ),
                 ],
               ),

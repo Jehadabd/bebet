@@ -33,6 +33,55 @@ class DriveService {
 
   bool get isSupported => true;
 
+  // مفاتيح التخزين للمصداقية الكاملة
+  static const _kCredAccessToken = 'access_token';
+  static const _kCredRefreshToken = 'refresh_token';
+  static const _kCredExpiry = 'access_token_expiry_iso8601';
+  static const _kCredTokenType = 'access_token_type';
+  static const _kCredScopes = 'oauth_scopes_csv';
+
+  Future<void> _saveCredentials(auth.AccessCredentials credentials) async {
+    await _storage.write(key: _kCredAccessToken, value: credentials.accessToken.data);
+    await _storage.write(key: _kCredTokenType, value: credentials.accessToken.type);
+    await _storage.write(key: _kCredExpiry, value: credentials.accessToken.expiry.toUtc().toIso8601String());
+    await _storage.write(key: _kCredRefreshToken, value: credentials.refreshToken ?? '');
+    await _storage.write(key: _kCredScopes, value: credentials.scopes.join(','));
+  }
+
+  Future<auth.AccessCredentials?> _loadCredentials() async {
+    final at = await _storage.read(key: _kCredAccessToken);
+    final rt = await _storage.read(key: _kCredRefreshToken);
+    final tp = await _storage.read(key: _kCredTokenType);
+    final ex = await _storage.read(key: _kCredExpiry);
+    final sc = await _storage.read(key: _kCredScopes);
+    if (at == null || tp == null || ex == null || sc == null) {
+      // توافق قديم: حاول قراءة المفاتيح القديمة فقط إذا كانت موجودة
+      final legacyAt = await _storage.read(key: 'access_token');
+      final legacyRt = await _storage.read(key: 'refresh_token');
+      if (legacyAt != null) {
+        return auth.AccessCredentials(
+          auth.AccessToken('Bearer', legacyAt, DateTime.now().toUtc().add(const Duration(minutes: 55))),
+          legacyRt,
+          _scopes,
+        );
+      }
+      return null;
+    }
+    return auth.AccessCredentials(
+      auth.AccessToken(tp, at, DateTime.tryParse(ex) ?? DateTime.now().toUtc().add(const Duration(minutes: 55))),
+      (rt == null || rt.isEmpty) ? null : rt,
+      sc.split(',').where((e) => e.trim().isNotEmpty).toList(),
+    );
+  }
+
+  Future<void> _clearCredentials() async {
+    await _storage.delete(key: _kCredAccessToken);
+    await _storage.delete(key: _kCredRefreshToken);
+    await _storage.delete(key: _kCredExpiry);
+    await _storage.delete(key: _kCredTokenType);
+    await _storage.delete(key: _kCredScopes);
+  }
+
   Future<bool> isSignedIn() async {
     if (Platform.isAndroid || Platform.isIOS) {
       try {
@@ -45,19 +94,10 @@ class DriveService {
         return false;
       }
     } else {
-      try {
-        final accessToken = await _storage.read(key: 'access_token');
-        if (accessToken == null) return false;
-        
-        // محاولة اختبار التوكن
-        final client = await _getAuthenticatedClient();
-        final driveApi = drive.DriveApi(client);
-        await driveApi.files.list(pageSize: 1);
-        return true;
-      } catch (e) {
-        // If there's any error, assume not signed in.
-        return false;
-      }
+      // على سطح المكتب: اعتبر المستخدم "مسجلاً" طالما لدينا بيانات اعتماد محفوظة محلياً
+      // حتى لو انتهت صلاحيتها على خوادم جوجل. سنطلب إعادة تسجيل الدخول فقط عند محاولة إجراء يتطلب الشبكة.
+      final creds = await _loadCredentials();
+      return creds != null;
     }
   }
 
@@ -87,8 +127,7 @@ class DriveService {
             }
           },
         );
-        await _storage.write(key: 'access_token', value: credentials.accessToken.data);
-        await _storage.write(key: 'refresh_token', value: credentials.refreshToken ?? '');
+        await _saveCredentials(credentials);
         final driveApi = drive.DriveApi(auth.authenticatedClient(client, credentials));
         await driveApi.files.list(pageSize: 1);
         return true;
@@ -103,8 +142,7 @@ class DriveService {
       if (Platform.isAndroid || Platform.isIOS) {
         await _googleSignIn.signOut();
       }
-      await _storage.delete(key: 'access_token');
-      await _storage.delete(key: 'refresh_token');
+      await _clearCredentials();
     } catch (_) {}
   }
 
@@ -132,40 +170,31 @@ class DriveService {
       return authClient;
     }
 
-    final accessToken = await _storage.read(key: 'access_token');
-    final refreshToken = await _storage.read(key: 'refresh_token');
-    
-    if (accessToken == null) {
+    final loaded = await _loadCredentials();
+    if (loaded == null) {
       throw Exception('لم يتم تسجيل الدخول');
     }
-    
-    final credentials = auth.AccessCredentials(
-      auth.AccessToken('Bearer', accessToken, DateTime.now().toUtc().add(const Duration(hours: 1))),
-      refreshToken,
-      _scopes,
-    );
-    
-    // محاولة تجديد التوكن إذا كان مطلوباً أو إذا كان Refresh Token متوفراً
-    if (forceRefresh && refreshToken != null && refreshToken.isNotEmpty) {
+
+    // إذا كانت الصلاحية ستنتهي قريباً أو طُلب تحديث قسري، قم بالتحديث
+    final willExpireSoon = DateTime.now().toUtc().isAfter(loaded.accessToken.expiry.subtract(const Duration(minutes: 5)));
+    if ((forceRefresh || willExpireSoon) && (loaded.refreshToken != null && loaded.refreshToken!.isNotEmpty)) {
       try {
         final clientId = auth.ClientId(_clientIdString, _clientSecretString);
         final client = http.Client();
         try {
-          final refreshed = await auth.refreshCredentials(clientId, credentials, client);
-          await _storage.write(key: 'access_token', value: refreshed.accessToken.data);
-          await _storage.write(key: 'refresh_token', value: refreshed.refreshToken ?? '');
+          final refreshed = await auth.refreshCredentials(clientId, loaded, client);
+          await _saveCredentials(refreshed);
           return auth.authenticatedClient(http.Client(), refreshed);
         } finally {
           client.close();
         }
       } on Exception catch (e) {
-        // إذا فشل تجديد التوكن، لا نحاول إعادة تسجيل الدخول التلقائي
         print('فشل تجديد التوكن، يتطلب إعادة تسجيل الدخول يدوياً: $e');
         throw Exception('انتهت صلاحية التوكن. يرجى إعادة تسجيل الدخول يدوياً من الإعدادات');
       }
     }
-    
-    return auth.authenticatedClient(http.Client(), credentials);
+
+    return auth.authenticatedClient(http.Client(), loaded);
   }
 
   Future<String> _getUniqueFolderName() async {

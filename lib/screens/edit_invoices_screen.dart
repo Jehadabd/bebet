@@ -546,8 +546,7 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
       final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
 
       // تحميل الإعدادات العامة
-      final settingsManager = SettingsManager();
-      final appSettings = await settingsManager.getAppSettings();
+      final appSettings = await SettingsManager.getAppSettings();
 
       final doc = await InvoicePdfService.generateInvoicePdf(
         invoiceItems: items,

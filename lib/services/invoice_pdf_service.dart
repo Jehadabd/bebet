@@ -11,6 +11,8 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:alnaser/services/settings_manager.dart';
 import 'package:alnaser/models/app_settings.dart';
+import 'package:alnaser/models/font_settings.dart';
+import 'package:alnaser/services/font_manager.dart';
 
 class InvoicePdfService {
   static Future<pw.Document> generateInvoicePdf({
@@ -140,14 +142,14 @@ class InvoicePdfService {
                         pw.TableCellVerticalAlignment.middle,
                     children: [
                       pw.TableRow(children: [
-                        headerCell('ت', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                        headerCell('ID', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                        headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
+                        headerCell('ت', font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.serialNumber),
+                        headerCell('ID', font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.productId),
+                        headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor), fontSettings: appSettings.fontSettings.productDetails),
                         headerCell('نوع البيع', font),
-                        headerCell('العدد', font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
-                        headerCell('عدد الوحدات', font),
-                        headerCell('السعر', font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
-                        headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
+                        headerCell('العدد', font, color: PdfColor.fromInt(appSettings.itemQuantityColor), fontSettings: appSettings.fontSettings.quantity),
+                        headerCell('عدد الوحدات', font, fontSettings: appSettings.fontSettings.unitsCount),
+                        headerCell('السعر', font, color: PdfColor.fromInt(appSettings.itemPriceColor), fontSettings: appSettings.fontSettings.price),
+                        headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor), fontSettings: appSettings.fontSettings.amount),
                       ]),
                       ...pageItems.asMap().entries.map((entry) {
                         final index = entry.key + (pageIndex * itemsPerPage);
@@ -160,14 +162,14 @@ class InvoicePdfService {
                           product = null;
                         }
                         return pw.TableRow(children: [
-                          dataCell('${index + 1}', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                          dataCell(formatProductId(product?.id), font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                          dataCell(item.productName, font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
+                          dataCell('${index + 1}', font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.serialNumber),
+                          dataCell(formatProductId(product?.id), font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.productId),
+                          dataCell(item.productName, font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor), fontSettings: appSettings.fontSettings.productDetails),
                           dataCell(item.saleType ?? '', font),
-                          dataCell('${formatNumber(quantity, forceDecimal: true)}', font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
-                          dataCell(buildUnitConversionStringForPdf(item, product), font),
-                          dataCell(formatNumber(item.appliedPrice, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
-                          dataCell(formatNumber(item.itemTotal, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
+                          dataCell('${formatNumber(quantity, forceDecimal: true)}', font, color: PdfColor.fromInt(appSettings.itemQuantityColor), fontSettings: appSettings.fontSettings.quantity),
+                          dataCell(buildUnitConversionStringForPdf(item, product), font, fontSettings: appSettings.fontSettings.unitsCount),
+                          dataCell(formatNumber(item.appliedPrice, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemPriceColor), fontSettings: appSettings.fontSettings.price),
+                          dataCell(formatNumber(item.itemTotal, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor), fontSettings: appSettings.fontSettings.amount),
                         ]);
                       }).toList(),
                     ],
@@ -180,13 +182,13 @@ class InvoicePdfService {
                         pw.Row(
                           mainAxisAlignment: pw.MainAxisAlignment.end,
                           children: [
-                            summaryRow('الاجمالي قبل الخصم:', currentTotalAmount(invoiceItems), font),
+                            summaryRow('الاجمالي قبل الخصم:', currentTotalAmount(invoiceItems), font, fontSettings: appSettings.fontSettings.totalBeforeDiscount),
                             pw.SizedBox(width: 10),
-                            summaryRow('الخصم:', discount, font),
+                            summaryRow('الخصم:', discount, font, fontSettings: appSettings.fontSettings.discount),
                             pw.SizedBox(width: 10),
-                            summaryRow('الاجمالي بعد الخصم:', afterDiscount, font),
+                            summaryRow('الاجمالي بعد الخصم:', afterDiscount, font, fontSettings: appSettings.fontSettings.totalAfterDiscount),
                             pw.SizedBox(width: 10),
-                            summaryRow('المبلغ المدفوع:', paid, font, color: PdfColor.fromInt(appSettings.paidAmountColor)),
+                            summaryRow('المبلغ المدفوع:', paid, font, color: PdfColor.fromInt(appSettings.paidAmountColor), fontSettings: appSettings.fontSettings.paidAmount),
                           ],
                         ),
                         pw.SizedBox(height: 6),
@@ -194,11 +196,11 @@ class InvoicePdfService {
                           pw.Row(
                             mainAxisAlignment: pw.MainAxisAlignment.end,
                             children: [
-                              summaryRow('المبلغ المتبقي:', remaining, font, color: PdfColor.fromInt(appSettings.remainingAmountColor)),
+                              summaryRow('المبلغ المتبقي:', remaining, font, color: PdfColor.fromInt(appSettings.remainingAmountColor), fontSettings: appSettings.fontSettings.remainingAmount),
                               pw.SizedBox(width: 10),
-                              summaryRow('الدين السابق:', previousDebt, font),
+                              summaryRow('الدين السابق:', previousDebt, font, fontSettings: appSettings.fontSettings.previousDebt),
                               pw.SizedBox(width: 10),
-                              summaryRow('الدين الحالي:', currentDebt, font),
+                              summaryRow('الدين الحالي:', currentDebt, font, fontSettings: appSettings.fontSettings.currentRequiredAmount),
                             ],
                           ),
                         ],
@@ -327,11 +329,11 @@ class InvoicePdfService {
                     children: [
                        pw.TableRow(children: [
                          headerCell('التأشيرة', font),
-                         headerCell('العدد', font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
+                         headerCell('العدد', font, color: PdfColor.fromInt(appSettings.itemQuantityColor), fontSettings: appSettings.fontSettings.quantity),
                          headerCell('نوع البيع', font),
-                         headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
-                         headerCell('ID', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                         headerCell('ت', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
+                         headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor), fontSettings: appSettings.fontSettings.productDetails),
+                         headerCell('ID', font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.productId),
+                         headerCell('ت', font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.serialNumber),
                        ]),
                       ...pageItems.asMap().entries.map((entry) {
                         final idx = entry.key + (pageIndex * itemsPerPage);
@@ -343,11 +345,11 @@ class InvoicePdfService {
                         } catch (_) {}
                           return pw.TableRow(children: [
                             dataCell('', font), // التأشيرة
-                            dataCell('${formatNumber(quantity, forceDecimal: true)}', font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
+                            dataCell('${formatNumber(quantity, forceDecimal: true)}', font, color: PdfColor.fromInt(appSettings.itemQuantityColor), fontSettings: appSettings.fontSettings.quantity),
                             dataCell(item.saleType ?? '', font),
-                            dataCell(item.productName, font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
-                            dataCell(formatProductId(product?.id), font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                            dataCell('${idx + 1}', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
+                            dataCell(item.productName, font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor), fontSettings: appSettings.fontSettings.productDetails),
+                            dataCell(formatProductId(product?.id), font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.productId),
+                            dataCell('${idx + 1}', font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.serialNumber),
                           ]);
                       }).toList(),
                     ],
@@ -395,23 +397,47 @@ class InvoicePdfService {
     return pdf;
   }
 
-  static pw.Widget headerCell(String text, pw.Font font, {PdfColor? color}) {
+  static pw.Widget headerCell(String text, pw.Font font, {PdfColor? color, FontElementSettings? fontSettings}) {
+    // تطبيق إعدادات الخط إذا كانت متوفرة
+    pw.Font? customFont;
+    pw.FontWeight? customWeight;
+    
+    if (fontSettings != null) {
+      customFont = FontManager.getPdfFont(fontSettings.fontFamily);
+      customWeight = FontManager.getPdfFontWeight(fontSettings.fontWeight);
+    }
+    
     return pw.Padding(
       padding: const pw.EdgeInsets.all(2),
       child: pw.Text(text,
           style: pw.TextStyle(
-              font: font, fontSize: 13, fontWeight: pw.FontWeight.bold, color: color ?? PdfColors.black),
+              font: customFont ?? font, 
+              fontSize: 13, 
+              fontWeight: customWeight ?? pw.FontWeight.bold, 
+              color: color ?? PdfColors.black),
           textAlign: pw.TextAlign.center),
     );
   }
 
   static pw.Widget dataCell(String text, pw.Font font,
-      {pw.TextAlign align = pw.TextAlign.center, PdfColor? color}) {
+      {pw.TextAlign align = pw.TextAlign.center, PdfColor? color, FontElementSettings? fontSettings}) {
+    // تطبيق إعدادات الخط إذا كانت متوفرة
+    pw.Font? customFont;
+    pw.FontWeight? customWeight;
+    
+    if (fontSettings != null) {
+      customFont = FontManager.getPdfFont(fontSettings.fontFamily);
+      customWeight = FontManager.getPdfFontWeight(fontSettings.fontWeight);
+    }
+    
     return pw.Padding(
       padding: const pw.EdgeInsets.all(2),
       child: pw.Text(text,
           style: pw.TextStyle(
-              font: font, fontSize: 13, fontWeight: pw.FontWeight.bold, color: color ?? PdfColors.black),
+              font: customFont ?? font, 
+              fontSize: 13, 
+              fontWeight: customWeight ?? pw.FontWeight.bold, 
+              color: color ?? PdfColors.black),
           textAlign: align),
     );
   }
@@ -422,17 +448,29 @@ class InvoicePdfService {
     return id.toString();
   }
 
-  static pw.Widget summaryRow(String label, num value, pw.Font font, {PdfColor? color}) {
+  static pw.Widget summaryRow(String label, num value, pw.Font font, {PdfColor? color, FontElementSettings? fontSettings}) {
+    // تطبيق إعدادات الخط إذا كانت متوفرة
+    pw.Font? customFont;
+    pw.FontWeight? customWeight;
+    
+    if (fontSettings != null) {
+      customFont = FontManager.getPdfFont(fontSettings.fontFamily);
+      customWeight = FontManager.getPdfFontWeight(fontSettings.fontWeight);
+    }
+    
     return pw.Padding(
       padding: const pw.EdgeInsets.symmetric(vertical: 1),
       child: pw.Row(
         mainAxisSize: pw.MainAxisSize.min,
         children: [
-          pw.Text(label, style: pw.TextStyle(font: font, fontSize: 11, color: color)),
+          pw.Text(label, style: pw.TextStyle(font: customFont ?? font, fontSize: 11, color: color)),
           pw.SizedBox(width: 5),
           pw.Text(formatNumber(value, forceDecimal: true),
               style: pw.TextStyle(
-                  font: font, fontSize: 13, fontWeight: pw.FontWeight.bold, color: color)),
+                  font: customFont ?? font, 
+                  fontSize: 13, 
+                  fontWeight: customWeight ?? pw.FontWeight.bold, 
+                  color: color)),
         ],
       ),
     );

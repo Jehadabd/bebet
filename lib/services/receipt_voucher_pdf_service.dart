@@ -20,8 +20,7 @@ class ReceiptVoucherPdfService {
     required pw.MemoryImage logoImage,
   }) async {
     // تحميل الإعدادات العامة
-    final settingsManager = SettingsManager();
-    final appSettings = await settingsManager.getAppSettings();
+    final appSettings = await SettingsManager.getAppSettings();
     
     final pdf = pw.Document();
     pdf.addPage(

@@ -9,16 +9,14 @@ import 'package:alnaser/services/settings_manager.dart';
 import 'package:alnaser/services/printing_service.dart'; // Import the abstract base class
 
 class PrintingServiceWindows implements PrintingService {
-  final SettingsManager _settingsManager = SettingsManager();
-
   @override
   Future<PrinterDevice?> getDefaultPrinter() async {
-    return await _settingsManager.getDefaultPrinter();
+    return await SettingsManager.getDefaultPrinter();
   }
 
   @override
   Future<void> printData(Uint8List dataToPrint, {List<int>? escPosCommands, PrinterDevice? printerDevice}) async {
-    final defaultPrinter = printerDevice ?? await _settingsManager.getDefaultPrinter();
+    final defaultPrinter = printerDevice ?? await SettingsManager.getDefaultPrinter();
     if (defaultPrinter == null) {
       print('No default printer set.');
       return;

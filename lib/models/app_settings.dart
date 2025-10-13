@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'font_settings.dart';
 
 class AppSettings {
   final List<String> phoneNumbers;
@@ -21,6 +22,7 @@ class AppSettings {
   final int itemTotalColor;
   final int noticeColor;
   final int paidAmountColor;
+  final FontSettings fontSettings;
 
   AppSettings({
     this.phoneNumbers = const [],
@@ -43,6 +45,7 @@ class AppSettings {
     int? itemTotalColor,
     int? noticeColor,
     int? paidAmountColor,
+    FontSettings? fontSettings,
   }) : remainingAmountColor = remainingAmountColor ?? Colors.black.value,
        discountColor = discountColor ?? Colors.black.value,
        loadingFeesColor = loadingFeesColor ?? Colors.black.value,
@@ -61,7 +64,8 @@ class AppSettings {
        itemPriceColor = itemPriceColor ?? Colors.black.value,
        itemTotalColor = itemTotalColor ?? Colors.black.value,
        noticeColor = noticeColor ?? Colors.red.value,
-       paidAmountColor = paidAmountColor ?? Colors.black.value;
+       paidAmountColor = paidAmountColor ?? Colors.black.value,
+       fontSettings = fontSettings ?? FontSettings();
 
   Map<String, dynamic> toJson() => {
         'phoneNumbers': phoneNumbers,
@@ -84,6 +88,7 @@ class AppSettings {
         'itemTotalColor': itemTotalColor,
         'noticeColor': noticeColor,
         'paidAmountColor': paidAmountColor,
+        'fontSettings': fontSettings.toJson(),
       };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -107,6 +112,7 @@ class AppSettings {
         itemTotalColor: json['itemTotalColor'] ?? Colors.black.value,
         noticeColor: json['noticeColor'] ?? Colors.red.value,
         paidAmountColor: json['paidAmountColor'] ?? Colors.black.value,
+        fontSettings: FontSettings.fromJson(json['fontSettings'] ?? {}),
       );
 
   AppSettings copyWith({
@@ -130,6 +136,7 @@ class AppSettings {
     int? itemTotalColor,
     int? noticeColor,
     int? paidAmountColor,
+    FontSettings? fontSettings,
   }) {
     return AppSettings(
       phoneNumbers: phoneNumbers ?? this.phoneNumbers,
@@ -152,6 +159,7 @@ class AppSettings {
       itemTotalColor: itemTotalColor ?? this.itemTotalColor,
       noticeColor: noticeColor ?? this.noticeColor,
       paidAmountColor: paidAmountColor ?? this.paidAmountColor,
+      fontSettings: fontSettings ?? this.fontSettings,
     );
   }
 }

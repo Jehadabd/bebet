@@ -13,11 +13,9 @@ import 'package:flutter_esc_pos_network/flutter_esc_pos_network.dart'; // New im
 import 'package:win32/win32.dart'; // Import for Windows API calls
 
 abstract class PrintingService {
-  final SettingsManager _settingsManager = SettingsManager();
-
   // Method to get the default printer from settings
   Future<PrinterDevice?> getDefaultPrinter() async {
-    return await _settingsManager.getDefaultPrinter();
+    return await SettingsManager.getDefaultPrinter();
   }
 
   // --- Wi-Fi/LAN Printers ---
