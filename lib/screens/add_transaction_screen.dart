@@ -16,6 +16,7 @@ import 'package:record/record.dart';
 import '../services/receipt_voucher_pdf_service.dart';
 import '../services/printing_service.dart';
 import '../services/database_service.dart';
+import '../services/drive_service.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:flutter/services.dart' show rootBundle;
 
@@ -76,6 +77,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       final amount = double.parse(_amountController.text.replaceAll(',', ''));
       final amountChanged = _isDebt ? amount : -amount;
       final newBalance = widget.customer.currentTotalDebt + amountChanged;
+      final uuid = await DriveService().generateTransactionUuid();
       final transaction = DebtTransaction(
         customerId: widget.customer.id!,
         amountChanged: amountChanged,
@@ -87,6 +89,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
         createdAt: DateTime.now(), // Add createdAt for consistency
         transactionDate: DateTime.now(), // Add transactionDate for consistency
         audioNotePath: _audioNotePath,
+        transactionUuid: uuid,
       );
       await context.read<AppProvider>().addTransaction(transaction);
       if (mounted) {

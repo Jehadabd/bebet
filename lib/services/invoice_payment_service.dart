@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../models/invoice.dart';
 import '../services/database_service.dart';
 import '../models/transaction.dart';
+import '../services/drive_service.dart';
 
 class InvoicePaymentService {
   // دالة لإعادة حساب المجاميع
@@ -96,6 +97,7 @@ class InvoicePaymentService {
           lastModifiedAt: DateTime.now(),
         );
         await db.updateCustomer(updatedCustomer);
+        final txUuid = await DriveService().generateTransactionUuid();
         await db.insertTransaction(
           DebtTransaction(
             id: null,
@@ -107,6 +109,7 @@ class InvoicePaymentService {
             transactionNote: 'تسديد راجع على الفاتورة رقم ${updatedInvoice.id}',
             transactionType: 'return_payment',
             createdAt: DateTime.now(),
+            transactionUuid: txUuid,
           ),
         );
       }

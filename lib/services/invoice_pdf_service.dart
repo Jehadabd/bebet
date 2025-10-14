@@ -69,6 +69,7 @@ class InvoicePdfService {
                                 'الــــــنــــــاصــــــر',
                                 style: pw.TextStyle(
                                   font: alnaserFont,
+                                  fontFallback: [font],
                                   fontSize: 45,
                                   height: 0,
                                   fontWeight: pw.FontWeight.bold,
@@ -237,6 +238,7 @@ class InvoicePdfService {
                             'الناصر',
                             style: pw.TextStyle(
                               font: alnaserFont,
+                              fontFallback: [font],
                               fontSize: 200,
                               color: PdfColors.green,
                               fontWeight: pw.FontWeight.bold,

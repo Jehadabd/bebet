@@ -1,6 +1,6 @@
 // widgets/app_drawer.dart
 import 'package:flutter/material.dart';
-import '../screens/font_settings_screen.dart';
+// removed font settings navigation
 
 class AppDrawer extends StatelessWidget {
   @override
@@ -48,12 +48,7 @@ class AppDrawer extends StatelessWidget {
           _buildDrawerItem(context, 'العملاء', Icons.people, () {}),
           _buildDrawerItem(context, 'التقارير', Icons.analytics, () {}),
           Divider(),
-          _buildDrawerItem(context, 'إعدادات الخطوط', Icons.font_download, () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => FontSettingsScreen()),
-            );
-          }),
+          
           _buildDrawerItem(context, 'الإعدادات', Icons.settings, () {}),
           _buildDrawerItem(context, 'الدعم', Icons.help, () {}),
         ],

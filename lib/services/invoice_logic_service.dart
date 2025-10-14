@@ -19,6 +19,7 @@ import 'package:pdf/pdf.dart';
 import 'package:printing/printing.dart';
 import 'package:flutter/services.dart';
 import 'package:get_storage/get_storage.dart';
+import '../services/drive_service.dart';
 
 class InvoiceLogicService {
   // هنا يتم نقل جميع الدوال المنطقية من شاشة الفاتورة
@@ -285,6 +286,7 @@ class InvoiceLogicService {
           lastModifiedAt: DateTime.now(),
         );
         await db.updateCustomer(updatedCustomer);
+        final txUuid = await DriveService().generateTransactionUuid();
         final debtTransaction = DebtTransaction(
           id: null,
           customerId: customer.id!,
@@ -293,6 +295,7 @@ class InvoiceLogicService {
           description: 'دين فاتورة رقم ${invoiceId ?? invoiceToManage?.id}',
           newBalanceAfterTransaction: updatedCustomer.currentTotalDebt,
           invoiceId: invoiceId,
+          transactionUuid: txUuid,
         );
         await db.insertDebtTransaction(debtTransaction);
       }

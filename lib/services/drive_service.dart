@@ -1,6 +1,9 @@
 
 // services/drive_service.dart
 import 'dart:io';
+import 'dart:convert';
+import 'dart:convert'; // Added for jsonEncode and jsonDecode
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:google_sign_in/google_sign_in.dart';
@@ -17,7 +20,8 @@ class DriveService {
   final GoogleSignIn _googleSignIn = GoogleSignIn(
     scopes: [
       'email',
-      drive.DriveApi.driveFileScope,
+      // نحتاج صلاحية رؤية جميع الملفات بما فيها التي رُفعت يدوياً من الويب
+      drive.DriveApi.driveScope,
     ],
   );
   final _storage = const FlutterSecureStorage();
@@ -26,7 +30,8 @@ class DriveService {
   String get _clientIdString => dotenv.env['GOOGLE_CLIENT_ID'] ?? '';
   String get _clientSecretString => dotenv.env['GOOGLE_CLIENT_SECRET'] ?? '';
   String get _redirectUrlString => dotenv.env['GOOGLE_REDIRECT_URL'] ?? 'http://localhost';
-  final _scopes = [drive.DriveApi.driveFileScope, 'email', 'profile'];
+  // نطاقات OAuth لسطح المكتب
+  final _scopes = [drive.DriveApi.driveScope, 'email', 'profile'];
 
   factory DriveService() => _instance;
   DriveService._internal();
@@ -175,6 +180,12 @@ class DriveService {
       throw Exception('لم يتم تسجيل الدخول');
     }
 
+    // تأكد من أن الصلاحيات تحتوي على driveScope الكامل لرؤية الملفات المرفوعة يدوياً
+    if (!loaded.scopes.contains(drive.DriveApi.driveScope)) {
+      await _clearCredentials();
+      throw Exception('تم تحديث صلاحيات Google Drive، يرجى إعادة تسجيل الدخول للسماح بالوصول الكامل');
+    }
+
     // إذا كانت الصلاحية ستنتهي قريباً أو طُلب تحديث قسري، قم بالتحديث
     final willExpireSoon = DateTime.now().toUtc().isAfter(loaded.accessToken.expiry.subtract(const Duration(minutes: 5)));
     if ((forceRefresh || willExpireSoon) && (loaded.refreshToken != null && loaded.refreshToken!.isNotEmpty)) {
@@ -195,6 +206,39 @@ class DriveService {
     }
 
     return auth.authenticatedClient(http.Client(), loaded);
+  }
+
+  // يولد معرف جهاز ثابت نسبياً بالاعتماد على BSSID للواي فاي وعنوان/معرّف بديل
+  // ثم يستخدمه كبادئة لمعّرف المعاملة لتجنّب التصادم بين الأجهزة بدون إنترنت.
+  Future<String> _getStableDeviceIdPrefix() async {
+    try {
+      final info = NetworkInfo();
+      final wifiMac = await info.getWifiBSSID();
+      final btMac = await info.getWifiIP(); // بديل للبلوتوث حيث لا تتوفر API موحدة
+      final wifiPart = (wifiMac ?? 'unknownWifi').replaceAll(':', '-').toUpperCase();
+      final btPart = (btMac ?? 'unknownBt').replaceAll(':', '-').toUpperCase();
+      return '${wifiPart}-${btPart}';
+    } catch (_) {
+      return 'UNKNOWNWIFI-UNKNOWNBT';
+    }
+  }
+
+  String _randomBase36(int length) {
+    final rand = Random.secure();
+    const chars = '0123456789abcdefghijklmnopqrstuvwxyz';
+    final buf = StringBuffer();
+    for (int i = 0; i < length; i++) {
+      buf.write(chars[rand.nextInt(chars.length)]);
+    }
+    return buf.toString();
+  }
+
+  // يبني transactionUuid بالشكل: WIFI-BT:epochMillis-rand
+  Future<String> generateTransactionUuid() async {
+    final prefix = await _getStableDeviceIdPrefix();
+    final epoch = DateTime.now().toUtc().millisecondsSinceEpoch;
+    final rand = _randomBase36(10);
+    return '$prefix:$epoch-$rand';
   }
 
   Future<String> _getUniqueFolderName() async {
@@ -352,6 +396,137 @@ class DriveService {
       }
     }
   }
+}
+
+// امتدادات للمزامنة
+extension DriveSyncExtension on DriveService {
+  static const String syncFolderName = 'مزامنة';
+
+  Future<String> _getDeviceJsonName() async {
+    try {
+      final info = NetworkInfo();
+      final wifiMac = await info.getWifiBSSID();
+      final btMac = await info.getWifiIP(); // ملاحظة: لا توجد API موحدة للبلوتوث على كل المنصات
+      final wifiPart = (wifiMac ?? 'unknownWifi').replaceAll(':', '-').toUpperCase();
+      final btPart = (btMac ?? 'unknownBt').replaceAll(':', '-').toUpperCase();
+      return '${wifiPart}_${btPart}.json';
+    } catch (_) {
+      return 'UNKNOWN_DEVICE.json';
+    }
+  }
+
+  Future<String> _ensureSyncFolderId() async {
+    final client = await _getAuthenticatedClient();
+    final driveApi = drive.DriveApi(client);
+    final list = await driveApi.files.list(
+      q: "name = '$syncFolderName' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+      spaces: 'drive',
+    );
+    if ((list.files?.isNotEmpty ?? false)) {
+      return list.files!.first.id!;
+    }
+    final folder = drive.File()
+      ..name = syncFolderName
+      ..mimeType = 'application/vnd.google-apps.folder';
+    final created = await driveApi.files.create(folder);
+    return created.id!;
+  }
+
+  Future<Map<String, dynamic>> _readJsonFileByName(String folderId, String fileName) async {
+    final client = await _getAuthenticatedClient();
+    final driveApi = drive.DriveApi(client);
+    final res = await driveApi.files.list(
+      q: "name = '$fileName' and '$folderId' in parents and trashed = false",
+      spaces: 'drive',
+    );
+    if ((res.files?.isEmpty ?? true)) return {};
+    final fileId = res.files!.first.id!;
+    final media = await driveApi.files.get(fileId, downloadOptions: drive.DownloadOptions.fullMedia) as drive.Media;
+    final bytes = <int>[];
+    await for (final chunk in media.stream) {
+      bytes.addAll(chunk);
+    }
+    if (bytes.isEmpty) return {};
+    return _safeDecodeUtf8Json(bytes);
+  }
+
+  Map<String, dynamic> _safeDecodeUtf8Json(List<int> bytes) {
+    try {
+      final s = utf8.decode(bytes);
+      final m = jsonDecode(s);
+      if (m is Map<String, dynamic>) return m;
+      debugPrint('SYNC JSON: decoded non-map root, ignoring');
+      return {};
+    } catch (e) {
+      debugPrint('SYNC JSON: failed to decode JSON: ' + e.toString());
+      return {};
+    }
+  }
+
+  Future<void> _writeJsonFileByName(String folderId, String fileName, Map<String, dynamic> content) async {
+    final client = await _getAuthenticatedClient();
+    final driveApi = drive.DriveApi(client);
+    final bytes = utf8.encode(jsonEncode(content));
+    final tmp = await File('${Directory.systemTemp.path}/$fileName').create(recursive: true);
+    await tmp.writeAsBytes(bytes, flush: true);
+    final result = await driveApi.files.list(
+      q: "name = '$fileName' and '$folderId' in parents and trashed = false",
+      spaces: 'drive',
+    );
+    if (result.files?.isNotEmpty ?? false) {
+      final fileId = result.files!.first.id!;
+      final media = drive.Media(tmp.openRead(), await tmp.length(), contentType: 'application/json');
+      await driveApi.files.update(drive.File()..name = fileName, fileId, uploadMedia: media);
+    } else {
+      final f = drive.File()
+        ..name = fileName
+        ..parents = [folderId];
+      final media = drive.Media(tmp.openRead(), await tmp.length(), contentType: 'application/json');
+      await driveApi.files.create(f, uploadMedia: media);
+    }
+    try { await tmp.delete(); } catch (_) {}
+  }
+
+  Future<List<drive.File>> _listAllDeviceJsonFiles(String folderId) async {
+    final client = await _getAuthenticatedClient();
+    final driveApi = drive.DriveApi(client);
+    final res = await driveApi.files.list(
+      q: "'$folderId' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder' and name contains '.json'",
+      spaces: 'drive',
+      $fields: 'files(id, name, modifiedTime)',
+    );
+    return res.files ?? [];
+  }
+
+  Future<List<drive.File>> _listAllDeviceJsonFilesFromAnySyncFolder() async {
+    final client = await _getAuthenticatedClient();
+    final driveApi = drive.DriveApi(client);
+    // ابحث عن جميع المجلدات باسم "مزامنة" ثم اجمع كل ملفات .json منها
+    final folders = await driveApi.files.list(
+      q: "name = '$syncFolderName' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+      spaces: 'drive',
+      $fields: 'files(id, name)'
+    );
+    final List<drive.File> all = [];
+    for (final f in (folders.files ?? [])) {
+      final fid = f.id;
+      if (fid == null) continue;
+      final res = await driveApi.files.list(
+        q: "'$fid' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder' and name contains '.json'",
+        spaces: 'drive',
+        $fields: 'files(id, name, modifiedTime)'
+      );
+      all.addAll(res.files ?? []);
+    }
+    return all;
+  }
+
+  // واجهات عالية المستوى
+  Future<String> ensureSyncFolder() => _ensureSyncFolderId();
+  Future<String> getOwnDeviceJsonName() => _getDeviceJsonName();
+  Future<Map<String, dynamic>> readDeviceJson(String folderId, String fileName) => _readJsonFileByName(folderId, fileName);
+  Future<void> writeDeviceJson(String folderId, String fileName, Map<String, dynamic> content) => _writeJsonFileByName(folderId, fileName, content);
+  Future<List<drive.File>> listDeviceJsons(String folderId) => _listAllDeviceJsonFilesFromAnySyncFolder();
 }
 
 

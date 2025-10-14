@@ -15,7 +15,7 @@ import 'screens/edit_products_screen.dart';
 import 'screens/installers_list_screen.dart';
 import 'screens/inventory_screen.dart';
 import 'screens/reports_screen.dart';
-import 'screens/font_settings_screen.dart';
+// removed font settings screen import
 import 'screens/suppliers_list_screen.dart';
 import 'services/password_service.dart';
 import 'screens/password_setup_screen.dart';
@@ -108,7 +108,7 @@ class MyApp extends StatelessWidget {
           '/': (context) => const MainScreen(),
           '/password_setup': (context) => const PasswordSetupScreen(),
           '/general_settings': (context) => const GeneralSettingsScreen(),
-          '/font_settings': (context) => const FontSettingsScreen(),
+          // removed font settings route
          
           '/debt_register': (context) => const HomeScreen(),
           '/product_entry': (context) => const ProductEntryScreen(),

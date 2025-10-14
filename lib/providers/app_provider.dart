@@ -24,6 +24,7 @@ class AppProvider with ChangeNotifier {
   String _searchQuery = '';
   bool _isDriveSupported = false;
   bool _isDriveSignedInSync = false;
+  bool _autoCreateCustomerOnSync = true; // إنشاء العميل تلقائياً عند المزامنة إذا لم يكن موجوداً
 
   // Temporary invoice state for preserving unsaved invoice data
   String _tempCustomerName = '';
@@ -45,6 +46,7 @@ class AppProvider with ChangeNotifier {
   String get searchQuery => _searchQuery;
   bool get isDriveSupported => _isDriveSupported;
   bool get isDriveSignedInSync => _isDriveSignedInSync;
+  bool get autoCreateCustomerOnSync => _autoCreateCustomerOnSync;
 
   // Temporary invoice getters
   String get tempCustomerName => _tempCustomerName;
@@ -207,6 +209,205 @@ class AppProvider with ChangeNotifier {
     } finally {
       _setLoading(false);
     }
+  }
+
+  // مزامنة الديون عبر Google Drive
+  Future<void> syncDebts() async {
+    if (!_isDriveSupported) {
+      throw Exception('ميزة Google Drive غير مدعومة على هذا النظام');
+    }
+    _setLoading(true);
+    try {
+      // 1) تأكد من تسجيل الدخول
+      final signed = await _drive.isSignedIn();
+      if (!signed) {
+        await _drive.signIn();
+      }
+
+      // 2) تجهيز مسارات المزامنة
+      final syncFolderId = await _drive.ensureSyncFolder();
+      final ownFileName = await _drive.getOwnDeviceJsonName();
+      print('SYNC: syncFolderId=' + syncFolderId + ', ownFileName=' + ownFileName);
+
+      // 3) تحميل ملفنا الحالي (أو البدء بفارغ)
+      Map<String, dynamic> ownJson = await _drive.readDeviceJson(syncFolderId, ownFileName);
+      if (ownJson.isEmpty) ownJson = {};
+      print('SYNC: loaded own JSON with customer keys: ' + ownJson.keys.length.toString());
+
+      // 4) رفع معاملاتنا غير المرفوعة
+      final toUpload = await _db.getTransactionsToUpload();
+      print('SYNC: transactions to upload count = ' + toUpload.length.toString());
+      if (toUpload.isNotEmpty) {
+        for (final tx in toUpload) {
+          // احصل على اسم العميل بطريقة موثوقة من قاعدة البيانات عند الحاجة
+          Customer? customer;
+          try {
+            customer = _customers.firstWhere((c) => c.id == tx.customerId);
+          } catch (_) {
+            customer = await _db.getCustomerById(tx.customerId);
+          }
+          if (customer == null) {
+            print('SYNC WARN: لم يتم العثور على اسم عميل للمعاملة ${tx.id}, سيتم تجاهل رفعها لتجنب UNKNOWN');
+            continue;
+          }
+          final key = (customer.name).replaceAll(RegExp(r'[\s,]'), '');
+          ownJson[key] ??= { 'transactions': [], 'displayName': customer.name };
+          // تأكد من حفظ displayName إن لم يكن موجوداً
+          if (ownJson[key] is Map && (ownJson[key]['displayName'] == null || (ownJson[key]['displayName'] as String).isEmpty)) {
+            ownJson[key]['displayName'] = customer.name;
+          }
+          String? uuid = tx.transactionUuid;
+          if (uuid == null || uuid.isEmpty) {
+            uuid = _generateUuid();
+            await _db.setTransactionUuidById(tx.id!, uuid);
+          }
+          ownJson[key]['transactions'].add({
+            'transactionId': uuid,
+            'date': tx.transactionDate.toIso8601String(),
+            'amount': tx.amountChanged,
+            'type': tx.amountChanged < 0 ? 'debt_payment' : 'debt_addition',
+            'isRead': false,
+            'description': tx.description ?? "من الفرع الثاني",
+          });
+        }
+        // تنظيف المعاملات المقروءة في ملفنا
+        ownJson.updateAll((_, v) {
+          if (v is Map && v['transactions'] is List) {
+            v['transactions'] = (v['transactions'] as List).where((t) => (t['isRead'] ?? false) == false).toList();
+          }
+          return v;
+        });
+        await _drive.writeDeviceJson(syncFolderId, ownFileName, ownJson);
+        await _db.markTransactionsUploaded(
+          toUpload.map((t) => t.transactionUuid ?? '').where((s) => s.isNotEmpty).toList(),
+        );
+        print('SYNC: uploaded own JSON and marked ' + toUpload.length.toString() + ' as uploaded');
+      }
+
+      // 5) قراءة ملفات الأجهزة الأخرى
+      final allFiles = await _drive.listDeviceJsons(syncFolderId);
+      print('SYNC: found ' + allFiles.length.toString() + ' JSON files in sync folder');
+      for (final f in allFiles) { print('SYNC: file -> ' + (f.name ?? '')); }
+      for (final f in allFiles) {
+        final name = f.name ?? '';
+        if (name == ownFileName) continue;
+        print('SYNC: processing other device file ' + name);
+        final content = await _drive.readDeviceJson(syncFolderId, name);
+        if (content.isEmpty) { print('SYNC: file ' + name + ' has empty or invalid JSON'); continue; }
+        print('SYNC: file ' + name + ' top-level keys count = ' + content.keys.length.toString());
+        final firstKeys = content.keys.take(5).toList();
+        print('SYNC: first keys: ' + firstKeys.join(', '));
+        // Debug preview: print up to five customers and first five transactions from other device JSON
+        try {
+          print('=== معاينة ملف جهاز آخر: ' + name + ' ===');
+          int printedCustomers = 0;
+          for (final entry in content.entries) {
+            if (printedCustomers >= 5) break;
+            final customerKey = entry.key;
+            final obj = entry.value;
+            if (obj is Map && obj['transactions'] is List) {
+              final txs = (obj['transactions'] as List);
+              print('- عميل: ' + customerKey + ' | عدد المعاملات: ' + txs.length.toString());
+              final preview = txs.take(5);
+              for (final t in preview) {
+                final id = t['transactionId'];
+                final date = t['date'];
+                final amount = t['amount'];
+                final type = t['type'];
+                final isRead = t['isRead'];
+                print('  • id=' + (id?.toString() ?? '') + ' | date=' + (date?.toString() ?? '') + ' | amount=' + (amount?.toString() ?? '') + ' | type=' + (type?.toString() ?? '') + ' | isRead=' + (isRead?.toString() ?? ''));
+              }
+              printedCustomers++;
+            }
+          }
+          print('=== نهاية المعاينة ===');
+        } catch (e) {
+          print('فشل طباعة المعاينة لملف ' + name + ': ' + e.toString());
+        }
+        bool changed = false;
+        for (final entry in content.entries) {
+          final normName = entry.key.replaceAll(RegExp(r'[\s,]'), '');
+          final obj = entry.value;
+          if (obj is! Map) continue;
+          final txs = (obj['transactions'] as List?) ?? [];
+          // حاول مطابقة العميل محليًا
+          Customer? local;
+          try {
+            local = _customers.firstWhere(
+              (c) => c.name.replaceAll(RegExp(r'[\s,]'), '') == normName,
+            );
+          } catch (_) {
+            local = null;
+          }
+          if (local == null) {
+            if (_autoCreateCustomerOnSync) {
+              // أنشئ العميل تلقائياً ثم طبّق المعاملات
+              final createdName = (obj['displayName'] as String?)?.trim().isNotEmpty == true
+                  ? (obj['displayName'] as String)
+                  : entry.key.toString();
+              try {
+                final newId = await _db.insertCustomer(
+                  Customer(name: createdName, currentTotalDebt: 0.0),
+                );
+                local = Customer(id: newId, name: createdName, currentTotalDebt: 0.0);
+                _customers.add(local!);
+                _applySearchFilter();
+                print('SYNC: تم إنشاء عميل جديد أثناء المزامنة: ' + createdName + ' (id=' + newId.toString() + ')');
+              } catch (e) {
+                print('SYNC: فشل إنشاء عميل جديد ' + createdName + ': ' + e.toString());
+                continue;
+              }
+            } else {
+              print('SYNC: تجاهل عميل غير موجود محلياً: ' + entry.key.toString());
+              continue;
+            }
+          }
+          for (final t in txs) {
+            final isRead = (t['isRead'] ?? false) == true;
+            if (isRead) continue;
+            final String type = (t['type'] ?? 'debt_addition') as String;
+            final double amount = ((t['amount'] as num?) ?? 0).toDouble();
+            final double signedAmount = type == 'debt_payment' ? -amount.abs() : amount.abs();
+            final String? txId = t['transactionId'] as String?;
+            final String? desc = t['description'] as String?;
+            final DateTime occurred = DateTime.tryParse(t['date'] ?? '') ?? DateTime.now();
+            // أدرج محليًا إذا لم تكن موجودة
+            try {
+              await _db.insertExternalTransactionAndApply(
+                customerId: local.id!,
+                amount: signedAmount,
+                type: type.toUpperCase(),
+                note: 'من مزامنة جهاز آخر',
+                description: desc ?? 'إضافة من الكمبيوتر الثاني',
+                transactionUuid: txId,
+                occurredAt: occurred,
+              );
+            } catch (_) {}
+            // علّم كمقروءة
+            t['isRead'] = true;
+            changed = true;
+          }
+        }
+        if (changed) {
+          await _drive.writeDeviceJson(syncFolderId, name, content);
+        }
+      }
+
+      // 6) إعادة تحميل الحالة لعرض الأرصدة المحدثة
+      await _loadCustomers();
+      if (_selectedCustomer != null) {
+        await loadCustomerTransactions(_selectedCustomer!.id!);
+      }
+    } finally {
+      _setLoading(false);
+    }
+  }
+
+  String _generateUuid() {
+    // بديل بسيط لمنشئ UUID لتجنب إضافة تبعية الآن
+    final now = DateTime.now().microsecondsSinceEpoch;
+    final rand = (now ^ now.hashCode).abs();
+    return 'tx_${now}_$rand';
   }
 
   // رفع ملف قاعدة البيانات إلى Google Drive داخل مجلد باسم MAC

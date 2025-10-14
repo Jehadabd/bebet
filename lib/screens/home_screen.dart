@@ -513,7 +513,35 @@ class _HomeScreenState extends State<HomeScreen> {
               tooltip: 'تعديل البضاعة',
               child: const Icon(Icons.edit_note), // Modern icon
             ),
-            
+            const SizedBox(width: 16),
+            FloatingActionButton(
+              heroTag: 'sync_debts',
+              onPressed: () async {
+                final app = Provider.of<AppProvider>(context, listen: false);
+                try {
+                  await app.syncDebts();
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('تمت المزامنة بنجاح'),
+                        backgroundColor: Theme.of(context).colorScheme.tertiary,
+                      ),
+                    );
+                  }
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('فشلت المزامنة: $e'),
+                        backgroundColor: Theme.of(context).colorScheme.error,
+                      ),
+                    );
+                  }
+                }
+              },
+              tooltip: 'مزامنة',
+              child: const Icon(Icons.sync),
+            ),
           ],
         ),
       ),

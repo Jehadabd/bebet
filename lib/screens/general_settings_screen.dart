@@ -304,18 +304,7 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16.0),
         children: [
-          Card(
-            margin: const EdgeInsets.only(bottom: 20),
-            elevation: 4,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: ListTile(
-              leading: const Icon(Icons.font_download_outlined, color: Colors.blue),
-              title: const Text('إعدادات الخطوط', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              subtitle: const Text('تخصيص نوع ووزن الخط لعناصر الفاتورة'),
-              trailing: const Icon(Icons.chevron_left),
-              onTap: () => Navigator.pushNamed(context, '/font_settings'),
-            ),
-          ),
+          
           Card(
             margin: const EdgeInsets.only(bottom: 20),
             elevation: 4,

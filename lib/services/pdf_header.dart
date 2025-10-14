@@ -21,6 +21,7 @@ pw.Widget buildPdfHeader(
                     'الــــــنــــــاصــــــر',
                     style: pw.TextStyle(
                       font: alnaserFont,
+                      fontFallback: [font],
                       fontSize: 45,
                       height: 0,
                       fontWeight: pw.FontWeight.bold,

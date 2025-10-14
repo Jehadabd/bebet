@@ -11,6 +11,9 @@ class DebtTransaction {
   final int? invoiceId;
   final DateTime createdAt;
   final String? audioNotePath;
+  final bool isCreatedByMe;
+  final bool isUploaded;
+  final String? transactionUuid;
 
   DebtTransaction({
     this.id,
@@ -24,6 +27,9 @@ class DebtTransaction {
     this.invoiceId,
     DateTime? createdAt,
     this.audioNotePath,
+    this.isCreatedByMe = true,
+    this.isUploaded = false,
+    this.transactionUuid,
   })  : transactionDate = transactionDate ?? DateTime.now(),
         createdAt = createdAt ?? DateTime.now();
 
@@ -40,6 +46,9 @@ class DebtTransaction {
       'invoice_id': invoiceId,
       'created_at': createdAt.toIso8601String(),
       'audio_note_path': audioNotePath,
+      'is_created_by_me': isCreatedByMe ? 1 : 0,
+      'is_uploaded': isUploaded ? 1 : 0,
+      'transaction_uuid': transactionUuid,
     };
   }
 
@@ -48,15 +57,18 @@ class DebtTransaction {
       id: map['id'] as int,
       customerId: map['customer_id'] as int,
       transactionDate: DateTime.parse(map['transaction_date'] as String),
-      amountChanged: map['amount_changed'] as double,
+      amountChanged: (map['amount_changed'] as num).toDouble(),
       newBalanceAfterTransaction:
-          map['new_balance_after_transaction'] as double?,
+          (map['new_balance_after_transaction'] as num?)?.toDouble(),
       transactionNote: map['transaction_note'] as String?,
       transactionType: map['transaction_type'] as String,
       description: map['description'] as String?,
       invoiceId: map['invoice_id'] as int?,
       createdAt: DateTime.parse(map['created_at'] as String),
       audioNotePath: map['audio_note_path'] as String?,
+      isCreatedByMe: ((map['is_created_by_me'] as int?) ?? 1) == 1,
+      isUploaded: ((map['is_uploaded'] as int?) ?? 0) == 1,
+      transactionUuid: map['transaction_uuid'] as String?,
     );
   }
 
@@ -72,6 +84,9 @@ class DebtTransaction {
     int? invoiceId,
     DateTime? createdAt,
     String? audioNotePath,
+    bool? isCreatedByMe,
+    bool? isUploaded,
+    String? transactionUuid,
   }) {
     return DebtTransaction(
       id: id ?? this.id,
@@ -86,6 +101,9 @@ class DebtTransaction {
       invoiceId: invoiceId ?? this.invoiceId,
       createdAt: createdAt ?? this.createdAt,
       audioNotePath: audioNotePath ?? this.audioNotePath,
+      isCreatedByMe: isCreatedByMe ?? this.isCreatedByMe,
+      isUploaded: isUploaded ?? this.isUploaded,
+      transactionUuid: transactionUuid ?? this.transactionUuid,
     );
   }
 }

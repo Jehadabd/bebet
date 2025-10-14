@@ -23,7 +23,7 @@ import 'dart:convert';
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
   static Database? _database;
-  static const int _databaseVersion = 4;
+  static const int _databaseVersion = 5;
 
   factory DatabaseService() => _instance;
 
@@ -128,6 +128,40 @@ class DatabaseService {
       print('DEBUG DB: ensure invoice_logs failed in getter: $e');
     }
     // --- تحقق من وجود العمود قبل محاولة إضافته ---
+    // معاملات: أعمدة المزامنة
+    try {
+      final txInfo = await _database!.rawQuery('PRAGMA table_info(transactions);');
+      final hasIsCreatedByMe = txInfo.any((col) => col['name'] == 'is_created_by_me');
+      final hasIsUploaded = txInfo.any((col) => col['name'] == 'is_uploaded');
+      final hasTxnUuid = txInfo.any((col) => col['name'] == 'transaction_uuid');
+      if (!hasIsCreatedByMe) {
+        try {
+          await _database!.execute('ALTER TABLE transactions ADD COLUMN is_created_by_me INTEGER DEFAULT 1;');
+          print('DEBUG: Added is_created_by_me to transactions');
+        } catch (e) {
+          print('DEBUG: Failed adding is_created_by_me: $e');
+        }
+      }
+      if (!hasIsUploaded) {
+        try {
+          await _database!.execute('ALTER TABLE transactions ADD COLUMN is_uploaded INTEGER DEFAULT 0;');
+          print('DEBUG: Added is_uploaded to transactions');
+        } catch (e) {
+          print('DEBUG: Failed adding is_uploaded: $e');
+        }
+      }
+      if (!hasTxnUuid) {
+        try {
+          await _database!.execute('ALTER TABLE transactions ADD COLUMN transaction_uuid TEXT;');
+          await _database!.execute('CREATE UNIQUE INDEX IF NOT EXISTS ux_transactions_uuid ON transactions(transaction_uuid) WHERE transaction_uuid IS NOT NULL;');
+          print('DEBUG: Added transaction_uuid to transactions');
+        } catch (e) {
+          print('DEBUG: Failed adding transaction_uuid: $e');
+        }
+      }
+    } catch (e) {
+      print('DEBUG DB: Failed to inspect/add transactions sync columns: $e');
+    }
     final columns = await _database!.rawQuery("PRAGMA table_info(products);");
     final hasUnitHierarchy =
         columns.any((col) => col['name'] == 'unit_hierarchy');
@@ -2855,6 +2889,68 @@ class DatabaseService {
     final db = await database;
     return await db.insert('transactions', transaction.toMap(),
         conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<List<DebtTransaction>> getTransactionsToUpload() async {
+    final db = await database;
+    final maps = await db.query(
+      'transactions',
+      where: '(is_created_by_me = 1) AND (is_uploaded = 0 OR is_uploaded IS NULL)',
+      orderBy: 'transaction_date ASC, id ASC',
+    );
+    return maps.map((m) => DebtTransaction.fromMap(m)).toList();
+  }
+
+  Future<void> markTransactionsUploaded(List<String> transactionUuids) async {
+    if (transactionUuids.isEmpty) return;
+    final db = await database;
+    final placeholders = List.filled(transactionUuids.length, '?').join(',');
+    await db.rawUpdate(
+      'UPDATE transactions SET is_uploaded = 1 WHERE transaction_uuid IN ($placeholders)',
+      transactionUuids,
+    );
+  }
+
+  Future<void> insertExternalTransactionAndApply({
+    required int customerId,
+    required double amount,
+    required String type,
+    String? note,
+    String? description,
+    String? transactionUuid,
+    DateTime? occurredAt,
+  }) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      final customer = await getCustomerByIdUsingTransaction(txn, customerId);
+      if (customer == null) throw Exception('العميل غير موجود');
+      final double newBalance = (customer.currentTotalDebt) + amount;
+      await txn.update('customers', {
+        'current_total_debt': newBalance,
+        'last_modified_at': DateTime.now().toIso8601String(),
+      }, where: 'id = ?', whereArgs: [customer.id]);
+      await txn.insert('transactions', {
+        'customer_id': customer.id,
+        'transaction_date': (occurredAt ?? DateTime.now()).toIso8601String(),
+        'amount_changed': amount,
+        'new_balance_after_transaction': newBalance,
+        'transaction_note': note,
+        'transaction_type': type,
+        'description': description,
+        'created_at': DateTime.now().toIso8601String(),
+        'audio_note_path': null,
+        'is_created_by_me': 0,
+        'is_uploaded': 0,
+        'transaction_uuid': transactionUuid,
+      });
+    });
+  }
+
+  Future<void> setTransactionUuidById(int transactionId, String uuid) async {
+    final db = await database;
+    await db.update('transactions', {
+      'transaction_uuid': uuid,
+    }, where: 'id = ?', whereArgs: [transactionId]);
   }
 
   Future<List<DebtTransaction>> getDebtTransactionsForCustomer(
