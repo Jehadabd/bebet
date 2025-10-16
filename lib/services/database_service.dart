@@ -23,7 +23,7 @@ import 'dart:convert';
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
   static Database? _database;
-  static const int _databaseVersion = 5;
+  static const int _databaseVersion = 6;
 
   factory DatabaseService() => _instance;
 
@@ -899,6 +899,16 @@ class DatabaseService {
       }
     } catch (e) {
       print("DEBUG DB Error: adding/backfilling 'final_total': $e");
+    }
+
+    // إضافة عمود is_read_by_others للجدول transactions
+    if (oldVersion < 6) {
+      try {
+        await db.execute('ALTER TABLE transactions ADD COLUMN is_read_by_others INTEGER DEFAULT 0;');
+        print('DEBUG DB: is_read_by_others column added successfully to transactions table.');
+      } catch (e) {
+        print("DEBUG DB Error: Failed to add column 'is_read_by_others' to transactions table or it already exists: $e");
+      }
     }
 
     // Ensure invoice_adjustments table exists and has item fields

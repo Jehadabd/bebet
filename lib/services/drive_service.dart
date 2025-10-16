@@ -14,6 +14,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'database_service.dart';
+import '../models/transaction.dart';
 
 class DriveService {
   static final DriveService _instance = DriveService._internal();
@@ -527,6 +529,299 @@ extension DriveSyncExtension on DriveService {
   Future<Map<String, dynamic>> readDeviceJson(String folderId, String fileName) => _readJsonFileByName(folderId, fileName);
   Future<void> writeDeviceJson(String folderId, String fileName, Map<String, dynamic> content) => _writeJsonFileByName(folderId, fileName, content);
   Future<List<drive.File>> listDeviceJsons(String folderId) => _listAllDeviceJsonFilesFromAnySyncFolder();
+
+  // فحص وجود ملف المزامنة على Drive وحالة محتواه
+  Future<Map<String, dynamic>> getSyncFileStatus() async {
+    try {
+      final folderId = await _ensureSyncFolderId();
+      final deviceId = await _getStableDeviceIdPrefix();
+      final fileName = '${deviceId}.json';
+      
+      final client = await _getAuthenticatedClient();
+      final driveApi = drive.DriveApi(client);
+      final files = await driveApi.files.list(
+        q: "name = '$fileName' and '$folderId' in parents and trashed = false",
+        spaces: 'drive',
+      );
+      
+      if (files.files?.isEmpty ?? true) {
+        return {'exists': false, 'is_empty': false};
+      }
+      
+      // فحص محتوى الملف
+      final fileData = await _readJsonFileByName(folderId, fileName);
+      final isEmpty = fileData['transactions']?.isEmpty ?? true;
+      
+      return {
+        'exists': true,
+        'is_empty': isEmpty,
+        'status': fileData['status'] ?? 'normal'
+      };
+    } catch (e) {
+      print('Error checking sync file status: $e');
+      return {'exists': false, 'is_empty': false};
+    }
+  }
+
+  // نظام المزامنة المحسن - يتحقق من وجود الملف على Drive وحالة محتواه
+  Future<Map<String, dynamic>> getTransactionsToSync() async {
+    final db = DatabaseService();
+    
+    // فحص حالة ملف المزامنة على Drive
+    final fileStatus = await getSyncFileStatus();
+    final fileExists = fileStatus['exists'] as bool;
+    final fileIsEmpty = fileStatus['is_empty'] as bool;
+    
+    print('SYNC: File exists: $fileExists, is empty: $fileIsEmpty');
+    
+    // إذا لم يوجد الملف على Drive، نعيد تعيين حالة isUploaded
+    if (!fileExists) {
+      await resetUploadStatusForMissingFile();
+    }
+    
+    final transactions = await db.getTransactionsToUpload();
+    
+    // فلترة المعاملات بناءً على حالة الملف
+    final transactionsToSync = transactions.where((t) {
+      if (t.transactionUuid == null) return false;
+      
+      // إذا لم يوجد الملف على Drive، نرفع جميع المعاملات
+      if (!fileExists) {
+        return true;
+      }
+      
+      // إذا كان الملف فارغاً، لا نرفع أي معاملة
+      if (fileIsEmpty) {
+        return false;
+      }
+      
+      // إذا وجد الملف وليس فارغاً، نرفع فقط التي لم يتم قراءتها من أجهزة أخرى
+      // ولكن نرفع المعاملات التي أنشأناها نحن حتى لو تم قراءتها
+      return t.isUploaded && (!t.isReadByOthers || t.isCreatedByMe);
+    }).toList();
+    
+    print('SYNC: Transactions to sync: ${transactionsToSync.length}');
+    
+    return {
+      'transactions': transactionsToSync.map((t) => t.toMap()).toList(),
+      'device_id': await _getStableDeviceIdPrefix(),
+      'sync_timestamp': DateTime.now().toUtc().toIso8601String(),
+      'file_exists_on_drive': fileExists,
+      'file_is_empty': fileIsEmpty,
+    };
+  }
+
+  // تحديث حالة القراءة للمعاملات بعد قراءتها من جهاز آخر
+  Future<void> markTransactionsAsRead(List<String> transactionUuids) async {
+    if (transactionUuids.isEmpty) return;
+    final db = DatabaseService();
+    final placeholders = List.filled(transactionUuids.length, '?').join(',');
+    await db.database.then((db) => db.rawUpdate(
+      'UPDATE transactions SET is_read_by_others = 1 WHERE transaction_uuid IN ($placeholders)',
+      transactionUuids,
+    ));
+  }
+
+  // إعادة تعيين حالة isUploaded للمعاملات عند عدم وجود الملف على Drive
+  Future<void> resetUploadStatusForMissingFile() async {
+    final db = DatabaseService();
+    await db.database.then((db) => db.rawUpdate(
+      'UPDATE transactions SET is_uploaded = 0 WHERE is_uploaded = 1',
+    ));
+    print('SYNC: Reset upload status for all transactions due to missing file on Drive');
+  }
+
+  // نظام Heartbeat للتحقق من سلامة المزامنة
+  Future<void> updateSyncHeartbeat() async {
+    final folderId = await _ensureSyncFolderId();
+    final deviceId = await _getStableDeviceIdPrefix();
+    final heartbeatData = {
+      'device_id': deviceId,
+      'last_sync': DateTime.now().toUtc().toIso8601String(),
+      'version': '1.0',
+    };
+    await _writeJsonFileByName(folderId, '${deviceId}_heartbeat.json', heartbeatData);
+  }
+
+  Future<Map<String, dynamic>?> getLastSyncHeartbeat() async {
+    final folderId = await _ensureSyncFolderId();
+    final deviceId = await _getStableDeviceIdPrefix();
+    return await _readJsonFileByName(folderId, '${deviceId}_heartbeat.json');
+  }
+
+
+  // نظام Transaction Receipt - الحل الأكثر موثوقية
+  // عند قراءة معاملة من جهاز آخر، نرسل إيصال تأكيد
+  Future<void> sendTransactionReceipts(List<String> transactionUuids, String fromDeviceId) async {
+    if (transactionUuids.isEmpty) return;
+    
+    final folderId = await _ensureSyncFolderId();
+    final deviceId = await _getStableDeviceIdPrefix();
+    final receiptData = {
+      'from_device': deviceId,
+      'to_device': fromDeviceId,
+      'transaction_uuids': transactionUuids,
+      'receipt_timestamp': DateTime.now().toUtc().toIso8601String(),
+      'type': 'transaction_receipt',
+    };
+    
+    final receiptFileName = '${deviceId}_receipt_${DateTime.now().millisecondsSinceEpoch}.json';
+    await _writeJsonFileByName(folderId, receiptFileName, receiptData);
+  }
+
+  // معالجة الإيصالات الواردة وتحديث حالة المعاملات
+  Future<void> processIncomingReceipts() async {
+    final folderId = await _ensureSyncFolderId();
+    final deviceId = await _getStableDeviceIdPrefix();
+    
+    // البحث عن الإيصالات الموجهة لهذا الجهاز
+    final client = await _getAuthenticatedClient();
+    final driveApi = drive.DriveApi(client);
+    final receipts = await driveApi.files.list(
+      q: "'$folderId' in parents and trashed = false and name contains 'receipt' and name contains '$deviceId'",
+      spaces: 'drive',
+    );
+    
+    for (final receiptFile in receipts.files ?? []) {
+      try {
+        final receiptData = await _readJsonFileByName(folderId, receiptFile.name!);
+        if (receiptData['to_device'] == deviceId && receiptData['transaction_uuids'] != null) {
+          final uuids = List<String>.from(receiptData['transaction_uuids']);
+          await markTransactionsAsRead(uuids);
+          
+          // حذف الإيصال بعد معالجته
+          await driveApi.files.delete(receiptFile.id!);
+        }
+      } catch (e) {
+        print('Error processing receipt ${receiptFile.name}: $e');
+      }
+    }
+  }
+
+  // مزامنة شاملة مع نظام الإيصالات
+  Future<Map<String, dynamic>> performFullSync() async {
+    try {
+      // 1. معالجة الإيصالات الواردة أولاً
+      await processIncomingReceipts();
+      
+      // 2. الحصول على المعاملات المراد مزامنتها (مع فحص وجود الملف)
+      final syncData = await getTransactionsToSync();
+      
+      // 3. رفع المعاملات الجديدة (أو ملف فارغ إذا لم توجد معاملات)
+      final folderId = await _ensureSyncFolderId();
+      final deviceId = await _getStableDeviceIdPrefix();
+      final fileName = '${deviceId}.json';
+      
+      if (syncData['transactions'].isEmpty) {
+        // إذا لم توجد معاملات، نرفع ملف فارغ
+        final emptyData = {
+          'transactions': <Map<String, dynamic>>[],
+          'device_id': deviceId,
+          'sync_timestamp': DateTime.now().toUtc().toIso8601String(),
+          'file_exists_on_drive': true,
+          'status': 'empty'
+        };
+        await _writeJsonFileByName(folderId, fileName, emptyData);
+        print('SYNC: Uploading empty file - no transactions to sync');
+      } else {
+        await _writeJsonFileByName(folderId, fileName, syncData);
+        print('SYNC: Uploading ${syncData['transactions'].length} transactions');
+      }
+      
+      // 4. تحديث Heartbeat
+      await updateSyncHeartbeat();
+      
+      // 5. قراءة المعاملات من الأجهزة الأخرى
+      final otherDevices = await _listAllDeviceJsonFilesFromAnySyncFolder();
+      final List<String> readTransactionUuids = [];
+      
+      for (final deviceFile in otherDevices) {
+        if (deviceFile.name!.contains(deviceId)) continue; // تجاهل ملفاتنا
+        
+        try {
+          final deviceData = await _readJsonFileByName(folderId, deviceFile.name!);
+          if (deviceData['transactions'] != null) {
+            final transactions = List<Map<String, dynamic>>.from(deviceData['transactions']);
+            for (final tx in transactions) {
+              final uuid = tx['transaction_uuid'] as String?;
+              if (uuid != null) {
+                readTransactionUuids.add(uuid);
+                // إدراج المعاملة في قاعدة البيانات المحلية
+                await _insertTransactionFromSync(tx);
+              }
+            }
+          }
+        } catch (e) {
+          print('Error reading device file ${deviceFile.name}: $e');
+        }
+      }
+      
+      // 6. إرسال إيصالات للمعاملات المقروءة
+      if (readTransactionUuids.isNotEmpty) {
+        final otherDeviceIds = otherDevices
+            .where((f) => !f.name!.contains(deviceId))
+            .map((f) => f.name!.split('_')[0])
+            .toSet();
+        
+        for (final otherDeviceId in otherDeviceIds) {
+          await sendTransactionReceipts(readTransactionUuids, otherDeviceId);
+        }
+      }
+      
+      // 7. تحديث حالة المعاملات المقروءة بدلاً من حذفها
+      if (readTransactionUuids.isNotEmpty) {
+        await _markTransactionsAsReadFromSync(readTransactionUuids);
+      }
+      
+      return {
+        'success': true,
+        'uploaded_count': syncData['transactions'].length,
+        'downloaded_count': readTransactionUuids.length,
+        'timestamp': DateTime.now().toUtc().toIso8601String(),
+      };
+      
+    } catch (e) {
+      return {
+        'success': false,
+        'error': e.toString(),
+        'timestamp': DateTime.now().toUtc().toIso8601String(),
+      };
+    }
+  }
+
+  // إدراج معاملة من المزامنة في قاعدة البيانات المحلية
+  Future<void> _insertTransactionFromSync(Map<String, dynamic> txData) async {
+    final db = DatabaseService();
+    final transaction = DebtTransaction.fromMap(txData);
+    
+    // التحقق من وجود المعاملة محلياً
+    final existing = await db.database.then((db) => db.query(
+      'transactions',
+      where: 'transaction_uuid = ?',
+      whereArgs: [transaction.transactionUuid],
+    ));
+    
+    if (existing.isEmpty) {
+      // إدراج المعاملة الجديدة
+      await db.insertDebtTransaction(transaction);
+    }
+  }
+
+  // تحديث حالة المعاملات المقروءة بدلاً من حذفها
+  Future<void> _markTransactionsAsReadFromSync(List<String> transactionUuids) async {
+    if (transactionUuids.isEmpty) return;
+    
+    final db = DatabaseService();
+    final placeholders = List.filled(transactionUuids.length, '?').join(',');
+    
+    // تحديث حالة المعاملات المقروءة بدلاً من حذفها
+    final updatedCount = await db.database.then((db) => db.rawUpdate(
+      'UPDATE transactions SET is_read_by_others = 1 WHERE transaction_uuid IN ($placeholders)',
+      transactionUuids,
+    ));
+    
+    print('SYNC: Marked $updatedCount transactions as read from sync');
+  }
 }
 
 

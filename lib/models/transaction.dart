@@ -14,6 +14,7 @@ class DebtTransaction {
   final bool isCreatedByMe;
   final bool isUploaded;
   final String? transactionUuid;
+  final bool isReadByOthers;
 
   DebtTransaction({
     this.id,
@@ -30,6 +31,7 @@ class DebtTransaction {
     this.isCreatedByMe = true,
     this.isUploaded = false,
     this.transactionUuid,
+    this.isReadByOthers = false,
   })  : transactionDate = transactionDate ?? DateTime.now(),
         createdAt = createdAt ?? DateTime.now();
 
@@ -49,6 +51,7 @@ class DebtTransaction {
       'is_created_by_me': isCreatedByMe ? 1 : 0,
       'is_uploaded': isUploaded ? 1 : 0,
       'transaction_uuid': transactionUuid,
+      'is_read_by_others': isReadByOthers ? 1 : 0,
     };
   }
 
@@ -69,6 +72,7 @@ class DebtTransaction {
       isCreatedByMe: ((map['is_created_by_me'] as int?) ?? 1) == 1,
       isUploaded: ((map['is_uploaded'] as int?) ?? 0) == 1,
       transactionUuid: map['transaction_uuid'] as String?,
+      isReadByOthers: ((map['is_read_by_others'] as int?) ?? 0) == 1,
     );
   }
 
@@ -87,6 +91,7 @@ class DebtTransaction {
     bool? isCreatedByMe,
     bool? isUploaded,
     String? transactionUuid,
+    bool? isReadByOthers,
   }) {
     return DebtTransaction(
       id: id ?? this.id,
@@ -104,6 +109,7 @@ class DebtTransaction {
       isCreatedByMe: isCreatedByMe ?? this.isCreatedByMe,
       isUploaded: isUploaded ?? this.isUploaded,
       transactionUuid: transactionUuid ?? this.transactionUuid,
+      isReadByOthers: isReadByOthers ?? this.isReadByOthers,
     );
   }
 }
