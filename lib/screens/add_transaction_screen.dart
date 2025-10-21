@@ -19,6 +19,7 @@ import '../services/database_service.dart';
 import '../services/drive_service.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:flutter/services.dart' show rootBundle;
+import '../services/logging.dart';
 
 class AddTransactionScreen extends StatefulWidget {
   final Customer customer;
@@ -77,6 +78,11 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       final amount = double.parse(_amountController.text.replaceAll(',', ''));
       final amountChanged = _isDebt ? amount : -amount;
       final newBalance = widget.customer.currentTotalDebt + amountChanged;
+      AppLog.d('UI.AddTransaction: custId=' + widget.customer.id.toString() +
+          ', prevDebt=' + widget.customer.currentTotalDebt.toString() +
+          ', amount=' + amount.toString() + ', isDebt=' + _isDebt.toString() +
+          ', amountChanged=' + amountChanged.toString() +
+          ', newBalance=' + newBalance.toString());
       final uuid = await DriveService().generateTransactionUuid();
       final transaction = DebtTransaction(
         customerId: widget.customer.id!,

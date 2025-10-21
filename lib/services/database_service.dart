@@ -19,6 +19,7 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:convert';
+import 'logging.dart';
 
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
@@ -1208,6 +1209,10 @@ class DatabaseService {
   Future<int> insertTransaction(DebtTransaction transaction) async {
     final db = await database;
     try {
+      AppLog.d('DB.insertTransaction: customerId=' + transaction.customerId.toString() +
+          ', amountChanged=' + transaction.amountChanged.toString() +
+          ', newBalanceAfter=' + (transaction.newBalanceAfterTransaction ?? 0).toString() +
+          ', type=' + (transaction.transactionType ?? ''));
       return await db.insert(
           'transactions', transaction.toMap()); // افترض أن toMap جاهزة
     } catch (e) {
@@ -1253,6 +1258,10 @@ class DatabaseService {
     }
 
     final double delta = updated.amountChanged - oldTx.amountChanged;
+    AppLog.d('DB.updateManualTransaction: txId=' + updated.id.toString() +
+        ', oldAmount=' + oldTx.amountChanged.toString() +
+        ', newAmount=' + updated.amountChanged.toString() +
+        ', delta=' + delta.toString());
 
     // تحديث صف المعاملة
     try {
@@ -1273,8 +1282,12 @@ class DatabaseService {
     }
 
     // تعديل رصيد العميل الإجمالي
+    final double newCustomerDebt = customer.currentTotalDebt + delta;
+    AppLog.d('DB.updateManualTransaction: customerId=' + customer.id.toString() +
+        ', prevDebt=' + customer.currentTotalDebt.toString() +
+        ', newDebt=' + newCustomerDebt.toString());
     final updatedCustomer = customer.copyWith(
-      currentTotalDebt: customer.currentTotalDebt + delta,
+      currentTotalDebt: newCustomerDebt,
       lastModifiedAt: DateTime.now(),
     );
     await updateCustomer(updatedCustomer);
@@ -1295,6 +1308,7 @@ class DatabaseService {
         'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ?;',
         [customerId]);
     final double total = ((res.first['total'] as num?) ?? 0).toDouble();
+    AppLog.d('DB.recalculateAndApplyCustomerDebt: customerId=' + customerId.toString() + ', total=' + total.toString());
 
     final customer = await getCustomerById(customerId);
     if (customer != null) {

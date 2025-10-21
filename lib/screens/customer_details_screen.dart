@@ -19,6 +19,7 @@ import 'package:process/process.dart'; // For Process.start on Windows
 import 'package:audioplayers/audioplayers.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart';
+import '../services/logging.dart';
 
 class CustomerDetailsScreen extends StatefulWidget {
   final Customer customer;
@@ -726,12 +727,13 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                                 }
                               },
                               onEdit: (updated) async {
-                                final db = DatabaseService();
-                                await db.updateTransaction(updated);
-                                final newTotal = await db.recalculateAndApplyCustomerDebt(transaction.customerId);
-                                // حدث المزود والواجهة
-                                await context.read<AppProvider>().selectCustomer((await db.getCustomerById(transaction.customerId))!);
-                                await context.read<AppProvider>().loadCustomerTransactions(transaction.customerId);
+                                AppLog.d('UI.EditTransaction: txId=' + (updated.id?.toString() ?? 'null') +
+                                    ', oldAmount=' + transaction.amountChanged.toString() +
+                                    ', newAmount=' + updated.amountChanged.toString());
+                                // استخدم المزود لتحديث المعاملة وتحديث رصيد العميل وفق delta فقط
+                                await context.read<AppProvider>().updateTransaction(updated);
+                                final newTotal = context.read<AppProvider>().selectedCustomer?.currentTotalDebt ?? 0.0;
+                                AppLog.d('UI.EditTransaction: provider updated, new customer debt=' + newTotal.toString());
                                 if (mounted) {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(content: Text('تم تحديث المعاملة. الدين الحالي: ${formatCurrency(newTotal)}')),

@@ -5,6 +5,7 @@ import '../models/transaction.dart';
 import '../models/invoice.dart';
 import '../models/invoice_item.dart';
 import '../services/database_service.dart';
+import '../services/logging.dart';
 import '../services/drive_service.dart';
 import '../services/pdf_service.dart';
 import 'dart:io';
@@ -65,9 +66,11 @@ class AppProvider with ChangeNotifier {
   Future<void> initialize() async {
     _setLoading(true);
     try {
+      AppLog.d('APP INIT: isDriveSupported=${_drive.isSupported}');
       _isDriveSupported = _drive.isSupported;
       if (_isDriveSupported) {
         _isDriveSignedInSync = await _drive.isSignedIn();
+        AppLog.d('APP INIT: Drive signed in = ' + _isDriveSignedInSync.toString());
       }
       await _loadCustomers();
       await ensureAudioNotesDirectory();
@@ -84,12 +87,15 @@ class AppProvider with ChangeNotifier {
   // Customer operations
   Future<void> _loadCustomers() async {
     // استخدم قائمة سجل الديون: تظهر من لديهم دين أو لديهم معاملات
+    AppLog.d('LOAD CUSTOMERS: start');
     _customers = await _db.getCustomersForDebtRegister();
     _customers.sort((a, b) => a.name.compareTo(b.name));
     _applySearchFilter();
+    AppLog.d('LOAD CUSTOMERS: loaded customers count = ' + _customers.length.toString());
   }
 
   Future<void> addCustomer(Customer customer) async {
+    AppLog.d('ADD CUSTOMER: name=' + customer.name + ', openingDebt=' + customer.currentTotalDebt.toString());
     final id = await _db.insertCustomer(customer);
     final newCustomer = customer.copyWith(id: id);
     _customers.add(newCustomer);
@@ -128,6 +134,11 @@ class AppProvider with ChangeNotifier {
   }
 
   Future<void> addTransaction(DebtTransaction transaction) async {
+    AppLog.d('ADD TX: customerId=' + transaction.customerId.toString() +
+        ', amountChanged=' + transaction.amountChanged.toString() +
+        ', type=' + (transaction.transactionType ?? '') +
+        ', prevCustomerDebt=' +
+        (_customers.firstWhere((c) => c.id == transaction.customerId).currentTotalDebt).toString());
     final id = await _db.insertTransaction(transaction);
     final newTransaction = transaction.copyWith(id: id);
     _customerTransactions.insert(0, newTransaction);
@@ -139,6 +150,9 @@ class AppProvider with ChangeNotifier {
       currentTotalDebt: transaction.newBalanceAfterTransaction,
       lastModifiedAt: DateTime.now(),
     );
+    AppLog.d('ADD TX: newBalanceAfterTransaction=' +
+        (transaction.newBalanceAfterTransaction ?? 0).toString() +
+        ', will update customer currentTotalDebt to same');
     await updateCustomer(updatedCustomer);
 
     notifyListeners();
@@ -146,7 +160,12 @@ class AppProvider with ChangeNotifier {
 
   Future<void> updateTransaction(DebtTransaction transaction) async {
     // Only manual transactions (not linked to invoice) are supported here
+    AppLog.d('UPDATE TX (Provider): id=' + (transaction.id?.toString() ?? 'null') +
+        ', amountChanged=' + transaction.amountChanged.toString() +
+        ', type=' + (transaction.transactionType ?? '')); 
     final updatedCustomer = await _db.updateManualTransaction(transaction);
+    AppLog.d('UPDATE TX (Provider): customer ' + updatedCustomer.id.toString() +
+        ' new currentTotalDebt=' + updatedCustomer.currentTotalDebt.toString());
 
     // Update local customer list/state
     final customerIndex = _customers.indexWhere((c) => c.id == updatedCustomer.id);
@@ -183,6 +202,7 @@ class AppProvider with ChangeNotifier {
 
   // Customer selection
   Future<void> selectCustomer(Customer customer) async {
+    AppLog.d('SELECT CUSTOMER: id=' + (customer.id?.toString() ?? 'null') + ', name=' + customer.name + ', debt=' + customer.currentTotalDebt.toString());
     _selectedCustomer = customer;
     await loadCustomerTransactions(customer.id!);
   }
