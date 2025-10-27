@@ -29,41 +29,19 @@ import 'package:provider/provider.dart';
 import 'package:alnaser/providers/app_provider.dart';
 import 'package:alnaser/services/pdf_service.dart';
 import 'package:alnaser/services/printing_service_platform_io.dart';
-import 'package:get_storage/get_storage.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'dart:convert';
 import 'package:flutter/scheduler.dart';
 import '../services/pdf_header.dart';
 import '../models/invoice_adjustment.dart';
 // removed duplicate imports
 import '../services/drive_service.dart';
+import 'invoice_actions.dart';
 
 // Helper: format product ID - show raw value without zero-padding
 String formatProductId5(int? id) {
   if (id == null) return '';
   return id.toString();
-}
-
-// دالة تنسيق رقم الهاتف للصيغة الدولية
-String _normalizePhoneNumber(String phone) {
-  // إزالة كل شيء غير الأرقام أو +
-  String cleaned = phone.replaceAll(RegExp(r'[^0-9+]'), '');
-  
-  // إزالة علامة + إذا كانت موجودة
-  if (cleaned.startsWith('+')) {
-    cleaned = cleaned.substring(1);
-  }
-  
-  // إذا بدأ بصفر محلي، استبدله برمز الدولة العراقية
-  if (cleaned.startsWith('0')) {
-    cleaned = '964' + cleaned.substring(1);
-  }
-  
-  // إذا لم يبدأ برمز الدولة، أضف رمز العراق
-  if (!cleaned.startsWith('964')) {
-    cleaned = '964' + cleaned;
-  }
-  
-  return cleaned;
 }
 
 // تعريف EditableInvoiceItemRow موجود هنا (أو تأكد من وجوده قبل استخدامه في ListView)
@@ -89,24 +67,24 @@ class CreateInvoiceScreen extends StatefulWidget {
   State<CreateInvoiceScreen> createState() => _CreateInvoiceScreenState();
 }
 
-class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
-  final _formKey = GlobalKey<FormState>();
-  final _customerNameController = TextEditingController();
-  final _customerPhoneController = TextEditingController();
-  final _customerAddressController = TextEditingController();
-  final _installerNameController = TextEditingController();
+class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceActionsMixin {
+  final formKey = GlobalKey<FormState>();
+  final customerNameController = TextEditingController();
+  final customerPhoneController = TextEditingController();
+  final customerAddressController = TextEditingController();
+  final installerNameController = TextEditingController();
   final _productSearchController = TextEditingController();
   final _quantityController = TextEditingController();
   final FocusNode _quantityFocusNode = FocusNode(); // FocusNode لحقل الكمية
   final _itemsController = TextEditingController();
   final _totalAmountController = TextEditingController();
   double? _selectedPriceLevel;
-  DateTime _selectedDate = DateTime.now();
+  DateTime selectedDate = DateTime.now();
   bool _useLargeUnit = false;
-  String _paymentType = 'نقد';
-  final _paidAmountController = TextEditingController();
-  double _discount = 0.0;
-  final _discountController = TextEditingController();
+  String paymentType = 'نقد';
+  final paidAmountController = TextEditingController();
+  double discount = 0.0;
+  final discountController = TextEditingController();
   int _unitSelection = 0; // 0 لـ "قطعة"، 1 لـ "كرتون/باكيت"
 
   String formatNumber(num value, {bool forceDecimal = false}) {
@@ -117,26 +95,26 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   List<Product> _searchResults = [];
   Product? _selectedProduct;
-  List<InvoiceItem> _invoiceItems = [];
+  List<InvoiceItem> invoiceItems = [];
 
-  final DatabaseService _db = DatabaseService();
+  final DatabaseService db = DatabaseService();
   final TextEditingController _productIdController = TextEditingController();
   Product? _productIdSuggestion;
-  PrinterDevice? _selectedPrinter;
-  late final PrintingService _printingService;
-  Invoice? _invoiceToManage;
+  PrinterDevice? selectedPrinter;
+  late final PrintingService printingService;
+  Invoice? invoiceToManage;
 
   // إضافة متغيرات للحفظ التلقائي
-  final _storage = GetStorage();
-  bool _savedOrSuspended = false;
-  Timer? _debounceTimer;
-  Timer? _liveDebtTimer;
+  final storage = const FlutterSecureStorage();
+  bool savedOrSuspended = false;
+  Timer? debounceTimer;
+  Timer? liveDebtTimer;
   
   // متغير لتتبع التغييرات غير المحفوظة
-  bool _hasUnsavedChanges = false;
+  bool hasUnsavedChanges = false;
   
   // متغير لمنع الحفظ المزدوج
-  bool _isSaving = false;
+  bool isSaving = false;
   
   // دالة لإظهار Dialog الحفظ عند الرجوع
   Future<bool> _showSaveDialog() async {
@@ -166,7 +144,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   // دالة لاعتراض زر الرجوع
   Future<bool> _onWillPop() async {
     // إذا لم تكن في وضع تعديل أو لا توجد تغييرات غير محفوظة، اخرج مباشرة
-    if (_invoiceToManage == null || _isViewOnly || !_hasUnsavedChanges) {
+    if (invoiceToManage == null || isViewOnly || !hasUnsavedChanges) {
       return true;
     }
     
@@ -175,9 +153,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     
     if (shouldSave) {
       // حفظ الفاتورة
-      final savedInvoice = await _saveInvoice();
+      final savedInvoice = await saveInvoice();
       if (savedInvoice != null) {
-        // تم الحفظ بنجاح، _hasUnsavedChanges تم إعادة تعيينه في _saveInvoice
+        // تم الحفظ بنجاح، hasUnsavedChanges تم إعادة تعيينه في _saveInvoice
         return true; // اخرج
       } else {
         return false; // فشل الحفظ، ابق في الشاشة
@@ -185,15 +163,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     } else {
       // تجاهل التعديلات - إعادة تحميل البيانات الأصلية
       await _loadInvoiceItems();
-      _hasUnsavedChanges = false;
+      hasUnsavedChanges = false;
       return true; // اخرج
     }
   }
 
-  bool _isViewOnly = false;
+  bool isViewOnly = false;
 
   // تسوية الفاتورة - حالة الواجهة
-  bool _settlementPanelVisible = false; // عند اختيار "بند"
+  bool settlementPanelVisible = false; // عند اختيار "بند"
   bool _settlementIsDebit = true; // true = إضافة (debit), false = حذف (credit)
   final List<InvoiceItem> _settlementItems = [];
   String _settlementPaymentType = 'نقد';
@@ -215,9 +193,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   
   // جلب معلومات التسويات
   Future<void> _loadSettlementInfo() async {
-    if (_invoiceToManage?.id != null) {
+    if (invoiceToManage?.id != null) {
       try {
-        final adjustments = await _db.getInvoiceAdjustments(_invoiceToManage!.id!);
+        final adjustments = await db.getInvoiceAdjustments(invoiceToManage!.id!);
         setState(() {
           _invoiceAdjustments = adjustments;
           _totalSettlementAmount = adjustments.fold(0.0, (sum, adj) {
@@ -231,8 +209,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   }
 
   final FocusNode _searchFocusNode = FocusNode(); // FocusNode جديد لحقل البحث
-  bool _suppressSearch = false; // لمنع البحث التلقائي عند اختيار منتج
-  bool _quantityAutofocus = false; // للتحكم في autofocus لحقل الكمية
+  bool suppressSearch = false; // لمنع البحث التلقائي عند اختيار منتج
+  bool quantityAutofocus = false; // للتحكم في autofocus لحقل الكمية
 
   // أضف متغير نوع القائمة (يظل موجوداً ولكن بدون واجهة مستخدم لتغييره)
   String _selectedListType = 'مفرد';
@@ -240,15 +218,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   // 1. أضف المتغيرات أعلى الكلاس:
   List<Map<String, dynamic>> _currentUnitHierarchy = [];
-  List<String> _currentUnitOptions = ['قطعة'];
-  String _selectedUnitForItem = 'قطعة';
+  List<String> currentUnitOptions = ['قطعة'];
+  String selectedUnitForItem = 'قطعة';
   
   // متغير للتحكم في السعر المخصص
-  bool _isCustomPrice = false;
+  bool isCustomPrice = false;
 
   List<Product>? _allProductsForUnits;
 
-  late TextEditingController _loadingFeeController;
+  late TextEditingController loadingFeeController;
 
   List<LineItemFocusNodes> focusNodesList = [];
 
@@ -268,7 +246,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       return;
     }
     // بحث مباشر سريع
-    _db.getProductById(id).then((p) {
+    db.getProductById(id).then((p) {
       if (!mounted) return;
       setState(() {
         _productIdSuggestion = p;
@@ -285,7 +263,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('يرجى إدخال ID صحيح')));
       return;
     }
-    final product = await _db.getProductById(id);
+    final product = await db.getProductById(id);
     if (product == null) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لم يتم العثور على صنف بهذا المعرّف')));
@@ -330,19 +308,19 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   void initState() {
     super.initState();
     try {
-      _printingService = getPlatformPrintingService();
-      _invoiceToManage = widget.existingInvoice;
-      _isViewOnly = widget.isViewOnly;
+      printingService = getPlatformPrintingService();
+      invoiceToManage = widget.existingInvoice;
+      isViewOnly = widget.isViewOnly;
       // تفعيل وضع التسوية: افتح واجهة إدخال أصناف جديدة، لكن اربطها بالفاتورة الأساسية
       if (widget.settlementForInvoice != null) {
         // في وضع التسوية: اجعل الشاشة قابلة للإدخال، ولا تعدّل الأصناف الأصلية
-        _isViewOnly = false;
-        _invoiceToManage = widget.settlementForInvoice; // للربط ولأخذ العميل/التاريخ إن لزم
+        isViewOnly = false;
+        invoiceToManage = widget.settlementForInvoice; // للربط ولأخذ العميل/التاريخ إن لزم
         // نظف أي بيانات إدخال قديمة وابدأ بقائمة فارغة لتسوية جديدة
-        _invoiceItems.clear();
+        invoiceItems.clear();
         _totalAmountController.text = '0';
         // أضف صف فارغ كبداية
-        _invoiceItems.add(InvoiceItem(
+        invoiceItems.add(InvoiceItem(
           invoiceId: 0,
           productName: '',
           unit: '',
@@ -352,12 +330,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           uniqueId: 'placeholder_${DateTime.now().microsecondsSinceEpoch}',
         ));
       }
-      _loadingFeeController = TextEditingController();
+      loadingFeeController = TextEditingController();
       _loadAutoSavedData();
       _loadSettlementInfo(); // جلب معلومات التسويات
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         try {
-          _allProductsForUnits = await _db.getAllProducts();
+          _allProductsForUnits = await db.getAllProducts();
           setState(() {});
         } catch (e) {
           print('Error loading products: $e');
@@ -370,31 +348,31 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       });
 
       // إضافة استماع للتغيرات في الحقول
-      _customerNameController.addListener(_onFieldChanged);
-      _customerPhoneController.addListener(_onFieldChanged);
-      _customerAddressController.addListener(_onFieldChanged);
-      _installerNameController.addListener(_onFieldChanged);
-      _paidAmountController.addListener(_onFieldChanged);
-      _discountController.addListener(_onFieldChanged);
-      _discountController.addListener(_onDiscountChanged);
+      customerNameController.addListener(_onFieldChanged);
+      customerPhoneController.addListener(_onFieldChanged);
+      customerAddressController.addListener(_onFieldChanged);
+      installerNameController.addListener(_onFieldChanged);
+      paidAmountController.addListener(_onFieldChanged);
+      discountController.addListener(_onFieldChanged);
+      discountController.addListener(_onDiscountChanged);
 
-      if (_invoiceToManage != null) {
+      if (invoiceToManage != null) {
         print(
-            'CreateInvoiceScreen: Init with existing invoice: ${_invoiceToManage!.id}');
-        print('Invoice Status on Init: ${_invoiceToManage!.status}');
+            'CreateInvoiceScreen: Init with existing invoice: ${invoiceToManage!.id}');
+        print('Invoice Status on Init: ${invoiceToManage!.status}');
         print('Is View Only on Init: ${widget.isViewOnly}');
-        _customerNameController.text = _invoiceToManage!.customerName;
-        _customerPhoneController.text = _invoiceToManage!.customerPhone ?? '';
-        _customerAddressController.text =
-            _invoiceToManage!.customerAddress ?? '';
-        _installerNameController.text = _invoiceToManage!.installerName ?? '';
-        _selectedDate = _invoiceToManage!.invoiceDate;
-        _paymentType = _invoiceToManage!.paymentType;
-        _totalAmountController.text = _invoiceToManage!.totalAmount.toString();
-        _paidAmountController.text =
-            _invoiceToManage!.amountPaidOnInvoice.toString();
-        _discount = _invoiceToManage!.discount;
-        _discountController.text = _discount.toStringAsFixed(2);
+        customerNameController.text = invoiceToManage!.customerName;
+        customerPhoneController.text = invoiceToManage!.customerPhone ?? '';
+        customerAddressController.text =
+            invoiceToManage!.customerAddress ?? '';
+        installerNameController.text = invoiceToManage!.installerName ?? '';
+        selectedDate = invoiceToManage!.invoiceDate;
+        paymentType = invoiceToManage!.paymentType;
+        _totalAmountController.text = invoiceToManage!.totalAmount.toString();
+        paidAmountController.text =
+            invoiceToManage!.amountPaidOnInvoice.toString();
+        discount = invoiceToManage!.discount;
+        discountController.text = discount.toStringAsFixed(2);
         
 
         _loadInvoiceItems();
@@ -406,8 +384,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       _quantityFocusNode.addListener(_onFieldChanged);
       // إضافة مستمع لحقل البحث
       _productSearchController.addListener(() {
-        if (_suppressSearch) {
-          _suppressSearch = false;
+        if (suppressSearch) {
+          suppressSearch = false;
           return;
         }
         if (_productSearchController.text.isNotEmpty) {
@@ -423,8 +401,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     } catch (e) {
       print('Error in initState: $e');
     }
-    if (_invoiceItems.isEmpty) {
-      _invoiceItems.add(InvoiceItem(
+    if (invoiceItems.isEmpty) {
+      invoiceItems.add(InvoiceItem(
         invoiceId: 0,
         productName: '',
         unit: '',
@@ -437,31 +415,32 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   }
 
   // تحميل البيانات المحفوظة تلقائياً
-  void _loadAutoSavedData() {
+  Future<void> _loadAutoSavedData() async {
     try {
-      if (_isViewOnly || widget.existingInvoice != null) {
+      if (isViewOnly || widget.existingInvoice != null) {
         return;
       }
 
-      final data = _storage.read('temp_invoice_data');
-      if (data == null) return;
+      final tempData = await storage.read(key: 'temp_invoice_data');
+      if (tempData == null) return;
 
+      final data = jsonDecode(tempData);
       setState(() {
-        _customerNameController.text = data['customerName'] ?? '';
-        _customerPhoneController.text = data['customerPhone'] ?? '';
-        _customerAddressController.text = data['customerAddress'] ?? '';
-        _installerNameController.text = data['installerName'] ?? '';
+        customerNameController.text = data['customerName'] ?? '';
+        customerPhoneController.text = data['customerPhone'] ?? '';
+        customerAddressController.text = data['customerAddress'] ?? '';
+        installerNameController.text = data['installerName'] ?? '';
 
         if (data['selectedDate'] != null) {
-          _selectedDate = DateTime.parse(data['selectedDate']);
+          selectedDate = DateTime.parse(data['selectedDate']);
         }
 
-        _paymentType = data['paymentType'] ?? 'نقد';
-        _discount = data['discount'] ?? 0;
-        _discountController.text = _discount.toStringAsFixed(2);
-        _paidAmountController.text = data['paidAmount'] ?? '';
+        paymentType = data['paymentType'] ?? 'نقد';
+        discount = data['discount'] ?? 0;
+        discountController.text = discount.toStringAsFixed(2);
+        paidAmountController.text = data['paidAmount'] ?? '';
 
-        _invoiceItems = (data['invoiceItems'] as List<dynamic>).map((item) {
+        invoiceItems = (data['invoiceItems'] as List<dynamic>).map((item) {
           return InvoiceItem(
             invoiceId: 0,
             productName: item['productName'],
@@ -478,14 +457,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           );
         }).toList();
 
-        double itemsTotal = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-        final double loadingFee = double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
+        double itemsTotal = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+        final double loadingFee = double.tryParse(loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
         _totalAmountController.text = (itemsTotal + loadingFee).toStringAsFixed(2);
         
         // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً
-        if (_invoiceToManage != null && _paymentType == 'نقد' && !_isViewOnly) {
-          final newTotal = (itemsTotal + loadingFee) - _discount;
-          _paidAmountController.text = formatNumber(newTotal);
+        if (invoiceToManage != null && paymentType == 'نقد' && !isViewOnly) {
+          final newTotal = (itemsTotal + loadingFee) - discount;
+          paidAmountController.text = formatNumber(newTotal);
         }
       });
     } catch (e) {
@@ -494,22 +473,22 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   }
 
   // حفظ البيانات تلقائياً
-  void _autoSave() {
+  Future<void> _autoSave() async {
     try {
-      if (_savedOrSuspended || _isViewOnly || widget.existingInvoice != null) {
+      if (savedOrSuspended || isViewOnly || widget.existingInvoice != null) {
         return;
       }
 
       final data = {
-        'customerName': _customerNameController.text,
-        'customerPhone': _customerPhoneController.text,
-        'customerAddress': _customerAddressController.text,
-        'installerName': _installerNameController.text,
-        'selectedDate': _selectedDate.toIso8601String(),
-        'paymentType': _paymentType,
-        'discount': _discount,
-        'paidAmount': _paidAmountController.text,
-        'invoiceItems': _invoiceItems
+        'customerName': customerNameController.text,
+        'customerPhone': customerPhoneController.text,
+        'customerAddress': customerAddressController.text,
+        'installerName': installerNameController.text,
+        'selectedDate': selectedDate.toIso8601String(),
+        'paymentType': paymentType,
+        'discount': discount,
+        'paidAmount': paidAmountController.text,
+        'invoiceItems': invoiceItems
             .map((item) => {
                   'productName': item.productName,
                   'unit': item.unit,
@@ -526,7 +505,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             .toList(),
       };
 
-      _storage.write('temp_invoice_data', data);
+      await storage.write(key: 'temp_invoice_data', value: jsonEncode(data));
     } catch (e) {
       print('Error in autoSave: $e');
     }
@@ -536,15 +515,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   void _onFieldChanged() {
     try {
       // تحديد أن هناك تغييرات غير محفوظة
-      if (_invoiceToManage != null && !_isViewOnly) {
-        _hasUnsavedChanges = true;
+      if (invoiceToManage != null && !isViewOnly) {
+        hasUnsavedChanges = true;
       }
       
-      if (_debounceTimer?.isActive ?? false) {
-        _debounceTimer!.cancel();
+      if (debounceTimer?.isActive ?? false) {
+        debounceTimer!.cancel();
       }
 
-      _debounceTimer = Timer(const Duration(seconds: 1), _autoSave);
+      debounceTimer = Timer(const Duration(seconds: 1), _autoSave);
     } catch (e) {
       print('Error in onFieldChanged: $e');
     }
@@ -553,20 +532,20 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   // معالج تغيير الخصم
   void _onDiscountChanged() {
     try {
-      final discountText = _discountController.text.replaceAll(',', '');
+      final discountText = discountController.text.replaceAll(',', '');
       final newDiscount = double.tryParse(discountText) ?? 0.0;
-      _discount = newDiscount;
+      discount = newDiscount;
       
       // تحديد أن هناك تغييرات غير محفوظة
-      if (_invoiceToManage != null && !_isViewOnly) {
-        _hasUnsavedChanges = true;
+      if (invoiceToManage != null && !isViewOnly) {
+        hasUnsavedChanges = true;
       }
       
       // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً
-      if (_invoiceToManage != null && _paymentType == 'نقد' && !_isViewOnly) {
-        final currentTotalAmount = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-        final newTotal = currentTotalAmount - _discount;
-        _paidAmountController.text = formatNumber(newTotal);
+      if (invoiceToManage != null && paymentType == 'نقد' && !isViewOnly) {
+        final currentTotalAmount = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+        final newTotal = currentTotalAmount - discount;
+        paidAmountController.text = formatNumber(newTotal);
       }
       _scheduleLiveDebtSync();
     } catch (e) {
@@ -576,8 +555,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   Future<void> _loadInvoiceItems() async {
     try {
-      if (_invoiceToManage != null && _invoiceToManage!.id != null) {
-        final items = await _db.getInvoiceItems(_invoiceToManage!.id!);
+      if (invoiceToManage != null && invoiceToManage!.id != null) {
+        final items = await db.getInvoiceItems(invoiceToManage!.id!);
         // تهيئة الـ controllers لكل صنف
         for (var item in items) {
           item.initializeControllers();
@@ -588,9 +567,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           focusNodesList.add(LineItemFocusNodes());
         }
         setState(() {
-          _invoiceItems = items;
-          double itemsTotal = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-          final double loadingFee = double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
+          invoiceItems = items;
+          double itemsTotal = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+          final double loadingFee = double.tryParse(loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
           _totalAmountController.text = (itemsTotal + loadingFee).toStringAsFixed(2);
         });
         _scheduleLiveDebtSync();
@@ -609,38 +588,38 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   void dispose() {
     try {
       // إزالة المستمعين
-      _customerNameController.removeListener(_onFieldChanged);
-      _customerPhoneController.removeListener(_onFieldChanged);
-      _customerAddressController.removeListener(_onFieldChanged);
-      _installerNameController.removeListener(_onFieldChanged);
-      _paidAmountController.removeListener(_onFieldChanged);
-      _discountController.removeListener(_onFieldChanged);
-      _discountController.removeListener(_onDiscountChanged);
+      customerNameController.removeListener(_onFieldChanged);
+      customerPhoneController.removeListener(_onFieldChanged);
+      customerAddressController.removeListener(_onFieldChanged);
+      installerNameController.removeListener(_onFieldChanged);
+      paidAmountController.removeListener(_onFieldChanged);
+      discountController.removeListener(_onFieldChanged);
+      discountController.removeListener(_onDiscountChanged);
 
       // إلغاء المؤقت
-      _debounceTimer?.cancel();
+      debounceTimer?.cancel();
 
       // الحفظ النهائي عند إغلاق الشاشة
-      if (!_savedOrSuspended &&
+      if (!savedOrSuspended &&
           widget.existingInvoice == null &&
-          !_isViewOnly) {
+          !isViewOnly) {
         _autoSave();
       }
 
-      _customerNameController.dispose();
-      _customerPhoneController.dispose();
-      _customerAddressController.dispose();
-      _installerNameController.dispose();
+      customerNameController.dispose();
+      customerPhoneController.dispose();
+      customerAddressController.dispose();
+      installerNameController.dispose();
       _productSearchController.dispose();
       _quantityController.dispose();
       _itemsController.dispose();
       _totalAmountController.dispose();
-      _paidAmountController.dispose();
-      _discountController.dispose();
+      paidAmountController.dispose();
+      discountController.dispose();
       
       _quantityFocusNode.dispose(); // تنظيف FocusNode
       _searchFocusNode.dispose();
-      _loadingFeeController.dispose();
+      loadingFeeController.dispose();
       _productIdController.dispose();
       // --- تخلص من جميع FocusNodes الخاصة بالصفوف ---
       for (final node in focusNodesList) {
@@ -658,19 +637,19 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     try {
       final DateTime? picked = await showDatePicker(
         context: context,
-        initialDate: _selectedDate,
+        initialDate: selectedDate,
         firstDate: DateTime(2000),
         lastDate: DateTime(2100),
         locale: const Locale('ar', 'SA'),
       );
-      if (picked != null && picked != _selectedDate) {
+      if (picked != null && picked != selectedDate) {
         // تحديد أن هناك تغييرات غير محفوظة
-        if (_invoiceToManage != null && !_isViewOnly) {
-          _hasUnsavedChanges = true;
+        if (invoiceToManage != null && !isViewOnly) {
+          hasUnsavedChanges = true;
         }
         
         setState(() {
-          _selectedDate = picked;
+          selectedDate = picked;
           _autoSave(); // حفظ تلقائي عند تغيير التاريخ
         });
       }
@@ -696,7 +675,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       }
       // استخدام البحث الذكي المخصص لشاشة إنشاء الفاتورة
       // يدعم البحث عن الكلمات في ترتيب مختلف والكلمات الوسيطة
-      final results = await _db.searchProductsSmart(query);
+      final results = await db.searchProductsSmart(query);
       setState(() {
         _searchResults = results;
       });
@@ -711,13 +690,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   // دالة لتحديث المبلغ المسدد تلقائيًا إذا كان الدفع نقد
   void _updatePaidAmountIfCash() {
     try {
-      if (_paymentType == 'نقد') {
+      if (paymentType == 'نقد') {
         _guardDiscount();
-        final itemsTotal = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-        final double loadingFee = double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
+        final itemsTotal = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+        final double loadingFee = double.tryParse(loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
         final currentTotalAmount = itemsTotal + loadingFee;
-        final total = currentTotalAmount - _discount;
-        _paidAmountController.text =
+        final total = currentTotalAmount - discount;
+        paidAmountController.text =
             formatNumber(total.clamp(0, double.infinity));
       }
     } catch (e) {
@@ -728,24 +707,24 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   // دالة مركزية لحماية الخصم
   void _guardDiscount() {
     try {
-      final itemsTotal = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-      final double loadingFee = double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
+      final itemsTotal = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+      final double loadingFee = double.tryParse(loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
       final currentTotalAmount = itemsTotal + loadingFee;
       // الحد الأعلى للخصم هو أقل من نصف الإجمالي
       final maxDiscount = (currentTotalAmount / 2) - 1;
-      if (_discount > maxDiscount) {
-        _discount = maxDiscount > 0 ? maxDiscount : 0.0;
-        _discountController.text = formatNumber(_discount);
+      if (discount > maxDiscount) {
+        discount = maxDiscount > 0 ? maxDiscount : 0.0;
+        discountController.text = formatNumber(discount);
       }
-      if (_discount < 0) {
-        _discount = 0.0;
-        _discountController.text = formatNumber(0);
+      if (discount < 0) {
+        discount = 0.0;
+        discountController.text = formatNumber(0);
       }
       
       // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً عند تغيير الخصم
-      if (_invoiceToManage != null && _paymentType == 'نقد' && !_isViewOnly) {
-        final newTotal = currentTotalAmount - _discount;
-        _paidAmountController.text = formatNumber(newTotal);
+      if (invoiceToManage != null && paymentType == 'نقد' && !isViewOnly) {
+        final newTotal = currentTotalAmount - discount;
+        paidAmountController.text = formatNumber(newTotal);
       }
     } catch (e) {
       print('Error in guardDiscount: $e');
@@ -798,14 +777,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     // رجوع آمن
     return baseCost;
   }
+
   void _addInvoiceItem() {
     try {
       // تحديد أن هناك تغييرات غير محفوظة
-      if (_invoiceToManage != null && !_isViewOnly) {
-        _hasUnsavedChanges = true;
+      if (invoiceToManage != null && !isViewOnly) {
+        hasUnsavedChanges = true;
       }
       
-      if (_formKey.currentState!.validate() &&
+      if (formKey.currentState!.validate() &&
           _selectedProduct != null &&
           _selectedPriceLevel != null) {
         final double inputQuantity =
@@ -815,7 +795,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         double baseUnitsPerSelectedUnit = 1.0;
         // --- تعديل منطق التسعير التراكمي ---
         if (_selectedProduct!.unit == 'piece' &&
-            _selectedUnitForItem != 'قطعة') {
+            selectedUnitForItem != 'قطعة') {
           // إذا كان هناك تسلسل هرمي للوحدات
           if (_selectedProduct!.unitHierarchy != null &&
               _selectedProduct!.unitHierarchy!.isNotEmpty) {
@@ -829,7 +809,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 final quantity =
                     num.tryParse(hierarchy[i]['quantity'].toString()) ?? 1;
                 factors.add(quantity);
-                if (unitName == _selectedUnitForItem) {
+                if (unitName == selectedUnitForItem) {
                   break;
                 }
               }
@@ -841,14 +821,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               final selectedHierarchyUnit = _currentUnitHierarchy.firstWhere(
                 (element) =>
                     (element['unit_name'] ?? element['name']) ==
-                    _selectedUnitForItem,
+                    selectedUnitForItem,
                 orElse: () => {},
               );
               if (selectedHierarchyUnit.isNotEmpty) {
                 baseUnitsPerSelectedUnit = double.tryParse(
                         selectedHierarchyUnit['quantity'].toString()) ??
                     1.0;
-                if (_isCustomPrice) {
+                if (isCustomPrice) {
                   finalAppliedPrice = _selectedPriceLevel!;
                 } else {
                   finalAppliedPrice =
@@ -858,9 +838,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             }
           }
         } else if (_selectedProduct!.unit == 'meter' &&
-            _selectedUnitForItem == 'لفة') {
+            selectedUnitForItem == 'لفة') {
           baseUnitsPerSelectedUnit = _selectedProduct!.lengthPerUnit ?? 1.0;
-          if (_isCustomPrice) {
+          if (isCustomPrice) {
             finalAppliedPrice = _selectedPriceLevel!;
           } else {
             finalAppliedPrice = _selectedPriceLevel! * baseUnitsPerSelectedUnit;
@@ -874,16 +854,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         double? quantityIndividual;
         double? quantityLargeUnit;
         if ((_selectedProduct!.unit == 'piece' &&
-                _selectedUnitForItem == 'قطعة') ||
+                selectedUnitForItem == 'قطعة') ||
             (_selectedProduct!.unit == 'meter' &&
-                _selectedUnitForItem == 'متر')) {
+                selectedUnitForItem == 'متر')) {
           quantityIndividual = inputQuantity;
         } else {
           quantityLargeUnit = inputQuantity;
         }
         
         // حساب التكلفة الفعلية بناءً على نوع الوحدة المباعة
-        final actualCostPrice = _calculateActualCostPrice(_selectedProduct!, _selectedUnitForItem, inputQuantity);
+        final actualCostPrice = _calculateActualCostPrice(_selectedProduct!, selectedUnitForItem, inputQuantity);
         
         final newItem = InvoiceItem(
           invoiceId: 0,
@@ -896,18 +876,18 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           quantityLargeUnit: quantityLargeUnit,
           appliedPrice: finalAppliedPrice,
           itemTotal: finalItemTotal,
-          saleType: _selectedUnitForItem,
+          saleType: selectedUnitForItem,
           unitsInLargeUnit:
               baseUnitsPerSelectedUnit != 1.0 ? baseUnitsPerSelectedUnit : null,
         );
         setState(() {
-          final existingIndex = _invoiceItems.indexWhere((item) =>
+          final existingIndex = invoiceItems.indexWhere((item) =>
               item.productName == newItem.productName &&
               item.saleType == newItem.saleType &&
               item.unit == newItem.unit);
           if (existingIndex != -1) {
-            final existingItem = _invoiceItems[existingIndex];
-            _invoiceItems[existingIndex] = existingItem.copyWith(
+            final existingItem = invoiceItems[existingIndex];
+            invoiceItems[existingIndex] = existingItem.copyWith(
               quantityIndividual: (existingItem.quantityIndividual ?? 0) +
                   (newItem.quantityIndividual ?? 0),
               quantityLargeUnit: (existingItem.quantityLargeUnit ?? 0) +
@@ -918,38 +898,38 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
               unitsInLargeUnit: newItem.unitsInLargeUnit,
             );
           } else {
-            _invoiceItems.add(newItem);
+            invoiceItems.add(newItem);
           }
           _productSearchController.clear();
           _quantityController.clear();
           _selectedProduct = null;
           _selectedPriceLevel = null;
           _searchResults = [];
-          _selectedUnitForItem = 'قطعة';
-          _currentUnitOptions = ['قطعة'];
+          selectedUnitForItem = 'قطعة';
+          currentUnitOptions = ['قطعة'];
           _currentUnitHierarchy = [];
           _guardDiscount();
           _updatePaidAmountIfCash();
           
           // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً
-          if (_invoiceToManage != null && _paymentType == 'نقد' && !_isViewOnly) {
-            final newTotal = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal) - _discount;
-            _paidAmountController.text = formatNumber(newTotal);
+          if (invoiceToManage != null && paymentType == 'نقد' && !isViewOnly) {
+            final newTotal = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal) - discount;
+            paidAmountController.text = formatNumber(newTotal);
           }
           
           _autoSave();
-          if (_invoiceToManage != null &&
-              _invoiceToManage!.status == 'معلقة' &&
-              (_invoiceToManage?.isLocked ?? false)) {
+          if (invoiceToManage != null &&
+              invoiceToManage!.status == 'معلقة' &&
+              (invoiceToManage?.isLocked ?? false)) {
             autoSaveSuspendedInvoice();
           }
           // --- معالجة الصفوف الفارغة ---
           // احذف جميع الصفوف الفارغة (غير المكتملة)
-          _invoiceItems.removeWhere((item) => !_isInvoiceItemComplete(item));
+          invoiceItems.removeWhere((item) => !_isInvoiceItemComplete(item));
           // ثم أضف صف فارغ جديد إذا كان آخر صف مكتمل أو القائمة فارغة
-          if (_invoiceItems.isEmpty ||
-              _isInvoiceItemComplete(_invoiceItems.last)) {
-            _invoiceItems.add(InvoiceItem(
+          if (invoiceItems.isEmpty ||
+              _isInvoiceItemComplete(invoiceItems.last)) {
+            invoiceItems.add(InvoiceItem(
               invoiceId: 0,
               productName: '',
               unit: '',
@@ -973,8 +953,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   void _removeInvoiceItem(int index) {
     try {
-      if (index < 0 || index >= _invoiceItems.length) return;
-      _removeInvoiceItemByUid(_invoiceItems[index].uniqueId);
+      if (index < 0 || index >= invoiceItems.length) return;
+      _removeInvoiceItemByUid(invoiceItems[index].uniqueId);
     } catch (e) {
       print('Error removing invoice item: $e');
       if (mounted) {
@@ -988,32 +968,32 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   void _removeInvoiceItemByUid(String uid) {
     try {
       // تحديد أن هناك تغييرات غير محفوظة
-      if (_invoiceToManage != null && !_isViewOnly) {
-        _hasUnsavedChanges = true;
+      if (invoiceToManage != null && !isViewOnly) {
+        hasUnsavedChanges = true;
       }
       
       setState(() {
-        final index = _invoiceItems.indexWhere((it) => it.uniqueId == uid);
+        final index = invoiceItems.indexWhere((it) => it.uniqueId == uid);
         if (index == -1) return;
         if (index < focusNodesList.length) {
           focusNodesList[index].dispose();
           focusNodesList.removeAt(index);
         }
-        _invoiceItems.removeAt(index);
+        invoiceItems.removeAt(index);
         _guardDiscount();
         _updatePaidAmountIfCash();
         
         // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً
-        if (_invoiceToManage != null && _paymentType == 'نقد' && !_isViewOnly) {
-          final newTotal = _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal) - _discount;
-          _paidAmountController.text = formatNumber(newTotal);
+        if (invoiceToManage != null && paymentType == 'نقد' && !isViewOnly) {
+          final newTotal = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal) - discount;
+          paidAmountController.text = formatNumber(newTotal);
         }
         
         _recalculateTotals();
         _autoSave();
-        if (_invoiceToManage != null &&
-            _invoiceToManage!.status == 'معلقة' &&
-            (_invoiceToManage?.isLocked ?? false)) {
+        if (invoiceToManage != null &&
+            invoiceToManage!.status == 'معلقة' &&
+            (invoiceToManage?.isLocked ?? false)) {
           autoSaveSuspendedInvoice();
         }
       });
@@ -1028,1193 +1008,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     }
   }
 
-  Future<Invoice?> _saveInvoice({bool printAfterSave = false}) async {
-    // --- [تحقق 1: منع الحفظ المزدوج] ---
-    // إذا كانت عملية حفظ جارية بالفعل، توقف فورًا
-    if (_isSaving) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('جاري الحفظ بالفعل...'),
-        backgroundColor: Colors.orange,
-      ));
-      return null;
-    }
-    
-    if (!_formKey.currentState!.validate()) return null;
-    
-    setState(() {
-      _isSaving = true; // --- تفعيل قفل الحفظ
-    });
-
-    try {
-    // حفظ حالة "فاتورة جديدة" قبل أي عمليات أخرى
-    final bool isNewInvoice = _invoiceToManage == null;
-    
-      // --- [تحقق 2: شرط صارم لضمان سلامة التعديل] ---
-      if (!isNewInvoice && _invoiceToManage?.id == null) {
-        // هذا يجب ألا يحدث أبدًا، ولكنه صمام أمان مهم
-        throw Exception('خطأ فادح: محاولة تعديل فاتورة بدون معرّف (ID).');
-      }
-
-      // --- [تحقق 3: استخدام معاملة قاعدة بيانات لضمان "الكل أو لا شيء"] ---
-      final db = DatabaseService();
-      Invoice? savedInvoice;
-
-      // سيتم تنفيذ كل ما بداخل هذا القوس كوحدة واحدة
-      // إما أن تنجح جميعها، أو يتم التراجع عنها جميعها
-      await (await db.database).transaction((txn) async {
-        // --- البحث عن العميل أو إنشاؤه ---
-        Customer? customer;
-        if (_customerNameController.text.trim().isNotEmpty) {
-          // التطبيع: إزالة المسافات من الاسم والبحث عبر الدالة الجديدة
-          String? normalizedPhone;
-          if (_customerPhoneController.text.trim().isNotEmpty) {
-            normalizedPhone = _normalizePhoneNumber(_customerPhoneController.text.trim());
-          }
-          
-          // البحث عن العميل باستخدام المعاملة مباشرة لتجنب قفل قاعدة البيانات
-          final normalizedName = _customerNameController.text.trim().replaceAll(' ', '');
-          List<Map<String, dynamic>> customerMaps;
-          if (normalizedPhone != null && normalizedPhone.trim().isNotEmpty) {
-            customerMaps = await txn.rawQuery(
-              "SELECT * FROM customers WHERE REPLACE(name, ' ', '') = ? AND phone = ? LIMIT 1",
-              [normalizedName, normalizedPhone.trim()],
-            );
-          } else {
-            customerMaps = await txn.rawQuery(
-              "SELECT * FROM customers WHERE REPLACE(name, ' ', '') = ? LIMIT 1",
-              [normalizedName],
-            );
-          }
-          
-          if (customerMaps.isNotEmpty) {
-            customer = Customer.fromMap(customerMaps.first);
-          }
-          if (customer == null) {
-            // استخدام الرقم المحول من الأعلى
-            
-            customer = Customer(
-              id: null,
-              name: _customerNameController.text.trim(),
-              phone: normalizedPhone,
-              address: _customerAddressController.text.trim(),
-              createdAt: DateTime.now(),
-              lastModifiedAt: DateTime.now(),
-              currentTotalDebt: 0.0,
-            );
-            final insertedId = await txn.insert('customers', customer.toMap());
-            customer = customer.copyWith(id: insertedId);
-          }
-        }
-
-        // --- حساب الإجماليات ---
-        double currentTotalAmount =
-            _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-        // إضافة رسوم التحميل إلى المبلغ الإجمالي
-        final double loadingFee = double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
-        double totalAmount = (currentTotalAmount + loadingFee) - _discount;
-        
-        // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً
-        double paid = double.tryParse(_paidAmountController.text.replaceAll(',', '')) ?? 0.0;
-        if (_invoiceToManage != null && _paymentType == 'نقد') {
-          paid = totalAmount; // للفواتير النقدية المعدلة، المبلغ المدفوع = الإجمالي الجديد
-          _paidAmountController.text = formatNumber(paid);
-        }
-        
-        double debt = totalAmount - paid;
-        
-        print('=== معلومات الفاتورة ===');
-        print('نوع الدفع: $_paymentType');
-        print('إجمالي الفاتورة: $totalAmount');
-        print('المبلغ المدفوع: $paid');
-        print('المبلغ المتبقي (الدين): $debt');
-        print('اسم العميل: ${customer?.name}');
-        print('معرف العميل: ${customer?.id}');
-        print('الدين الحالي للعميل: ${customer?.currentTotalDebt}');
-        print('=== نهاية معلومات الفاتورة ===');
-
-        // تحقق من نسبة الخصم
-        final totalAmountForDiscount =
-            _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-        if (_discount >= totalAmountForDiscount) {
-          throw Exception('نسبة الخصم خاطئة! (الخصم: ${_discount.toStringAsFixed(2)} الإجمالي: ${totalAmountForDiscount.toStringAsFixed(2)})');
-        }
-
-        // تحديد الحالة الجديدة
-        String newStatus = 'محفوظة';
-        bool newIsLocked =
-            _invoiceToManage?.isLocked ?? false; // الحفاظ على حالة القفل الحالية
-
-        if (_invoiceToManage != null) {
-          if (_invoiceToManage!.status == 'معلقة') {
-            newStatus = 'محفوظة';
-            newIsLocked =
-                false;
-          }
-        } else {
-          // فواتير جديدة
-          newIsLocked = false;
-        }
-
-        // تحويل رقم الهاتف إلى الصيغة الدولية للفاتورة أيضاً
-        String? normalizedPhoneForInvoice;
-        if (_customerPhoneController.text.trim().isNotEmpty) {
-          normalizedPhoneForInvoice = _normalizePhoneNumber(_customerPhoneController.text.trim());
-        }
-        
-        // --- إنشاء أو تحديث كائن الفاتورة ---
-        Invoice invoice = Invoice(
-          id: _invoiceToManage?.id,
-          customerName: _customerNameController.text,
-          customerPhone: normalizedPhoneForInvoice,
-          customerAddress: _customerAddressController.text,
-          installerName: _installerNameController.text.isEmpty
-              ? null
-              : _installerNameController.text,
-          invoiceDate: _selectedDate,
-          paymentType: _paymentType,
-          totalAmount: totalAmount,
-          discount: _discount,
-          amountPaidOnInvoice: paid,
-          createdAt: _invoiceToManage?.createdAt ?? DateTime.now(),
-          lastModifiedAt: DateTime.now(),
-          customerId: customer?.id,
-          status: newStatus,
-          isLocked: false, // دائماً غير مقفلة بعد الحفظ العادي
-        );
-
-        // --- حفظ الفاتورة والأصناف ---
-        int invoiceId;
-        if (isNewInvoice) {
-          invoiceId = await txn.insert('invoices', invoice.toMap());
-          invoice = invoice.copyWith(id: invoiceId);
-        } else {
-          invoiceId = _invoiceToManage!.id!;
-          await txn.update('invoices', invoice.toMap(), where: 'id = ?', whereArgs: [invoiceId]);
-        }
-        
-        // حذف الأصناف القديمة وإدراج الجديدة باستخدام Batch Processing السريع
-        await txn.delete('invoice_items', where: 'invoice_id = ?', whereArgs: [invoiceId]);
-        
-        // جلب جميع المنتجات مرة واحدة فقط خارج الحلقة لتجنب التكرار
-        final products = await txn.rawQuery('SELECT * FROM products');
-        final productMap = <String, Map<String, dynamic>>{};
-        for (var productData in products) {
-          final productName = productData['name'] as String?;
-          if (productName != null) {
-            productMap[productName] = productData;
-          }
-        }
-        
-        // إنشاء كائن Batch لتنفيذ جميع العمليات مرة واحدة
-        final batch = txn.batch();
-        
-        for (var item in _invoiceItems) {
-          if (_isInvoiceItemComplete(item)) {
-            // البحث عن المنتج من الـ Map المحفوظ مسبقاً
-            final productData = productMap[item.productName];
-            Product matchedProduct;
-            
-            if (productData != null) {
-              matchedProduct = Product.fromMap(productData);
-            } else {
-              matchedProduct = Product(
-                name: '',
-                unit: '',
-                unitPrice: 0.0,
-                price1: 0.0,
-                createdAt: DateTime.now(),
-                lastModifiedAt: DateTime.now(),
-              );
-            }
-            
-            // حساب التكلفة الفعلية بناءً على نوع الوحدة المباعة
-            final actualCostPrice = _calculateActualCostPrice(matchedProduct, item.saleType ?? 'قطعة', item.quantityIndividual ?? item.quantityLargeUnit ?? 0);
-            
-            // إنشاء عنصر فاتورة مع التكلفة الفعلية المحسوبة
-            final invoiceItem = item.copyWith(
-              invoiceId: invoiceId,
-              actualCostPrice: actualCostPrice, // التكلفة الفعلية المحسوبة
-            );
-            
-            var itemMap = invoiceItem.toMap();
-            itemMap.remove('id'); // تأكد من إزالة الـ ID عند الإدراج
-            
-            // إضافة العملية للـ Batch بدلاً من التنفيذ المباشر
-            batch.insert('invoice_items', itemMap);
-          }
-        }
-        
-        // تنفيذ جميع العمليات (60+ عملية إدخال) مرة واحدة - سريع جداً!
-        await batch.commit(noResult: true);
-
-        // --- منطق تحديث الدين (الآن محمي بالكامل داخل المعاملة) ---
-        if (customer != null && _paymentType == 'دين') {
-          double debtChange = 0.0;
-          String transactionDescription = '';
-          
-          if (isNewInvoice) {
-            final newRemaining = totalAmount - paid;
-            debtChange = newRemaining;
-            transactionDescription = 'دين فاتورة جديدة رقم $invoiceId';
-          } else {
-            // تعديل فاتورة دين موجودة: نحسب الفرق في الدين
-            final oldInvoice = widget.existingInvoice!; // الحالة قبل التعديل
-            final oldRemaining = oldInvoice.totalAmount - oldInvoice.amountPaidOnInvoice;
-            final newRemaining = totalAmount - paid;
-            debtChange = newRemaining - oldRemaining; // التغيير الصافي في الدين
-            
-            if (debtChange.abs() > 0.01) {
-              transactionDescription = 'تعديل فاتورة دين رقم $invoiceId';
-            } else {
-              debtChange = 0.0;
-            }
-          }
-
-          if (debtChange != 0.0) {
-            final updatedCustomer = customer.copyWith(
-              currentTotalDebt: (customer.currentTotalDebt) + debtChange,
-              lastModifiedAt: DateTime.now(),
-            );
-            await txn.update('customers', {
-              'current_total_debt': updatedCustomer.currentTotalDebt,
-              'last_modified_at': DateTime.now().toIso8601String(),
-            }, where: 'id = ?', whereArgs: [customer.id]);
-
-            final txUuid = await DriveService().generateTransactionUuid();
-            await txn.insert('transactions', {
-              'customer_id': customer.id,
-              'transaction_date': DateTime.now().toIso8601String(),
-              'amount_changed': debtChange,
-              'new_balance_after_transaction': updatedCustomer.currentTotalDebt,
-              'transaction_type': isNewInvoice ? 'invoice_debt' : 'invoice_edit',
-              'description': transactionDescription,
-              'invoice_id': invoiceId,
-              'transaction_uuid': txUuid,
-              'created_at': DateTime.now().toIso8601String(),
-            });
-          }
-        }
-        
-        // إذا وصلت إلى هنا، فكل شيء نجح. احتفظ بالفاتورة المحفوظة لإعادتها.
-        final maps = await txn.query('invoices', where: 'id = ?', whereArgs: [invoiceId]);
-        savedInvoice = Invoice.fromMap(maps.first);
-      });
-
-      // --- بعد نجاح المعاملة، قم بتحديث الواجهة ---
-      _storage.remove('temp_invoice_data');
-      _savedOrSuspended = true;
-      _hasUnsavedChanges = false;
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(isNewInvoice ? 'تم حفظ الفاتورة بنجاح' : 'تم تعديل الفاتورة بنجاح'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        setState(() {
-          _invoiceToManage = savedInvoice;
-          _isViewOnly = true;
-        });
-        if (isNewInvoice) {
-          Navigator.of(context).popUntil((route) => route.isFirst);
-        }
-      }
-      
-      return savedInvoice;
-    } catch (e) {
-      print('خطأ فادح ومُحاط بمعاملة عند حفظ الفاتورة: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('فشل حفظ الفاتورة: $e'), backgroundColor: Colors.red),
-        );
-      }
-      return null;
-    } finally {
-      // --- تأكد من تحرير قفل الحفظ دائمًا، سواء نجحت العملية أو فشلت ---
-      if (mounted) {
-        setState(() {
-          _isSaving = false;
-        });
-      }
-    }
-  }
-  Future<pw.Document> _generateInvoicePdf() async {
-    try {
-      final pdf = pw.Document();
-      
-      // تحميل الإعدادات العامة
-      final appSettings = await SettingsManager.getAppSettings();
-      
-      // تحميل صورة اللوجو الجديدة من الأصول
-      final logoBytes = await rootBundle
-          .load('assets/icon/alnasser.jpg');
-      final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
-      final font =
-          pw.Font.ttf(await rootBundle.load('assets/fonts/Amiri-Regular.ttf'));
-      final alnaserFont = pw.Font.ttf(
-          await rootBundle.load('assets/fonts/PTBLDHAD.TTF'));
-
-      // دالة مساعدة لبناء سلسلة التحويل من InvoiceItem
-      String buildUnitConversionStringForPdf(
-          InvoiceItem item, Product? product) {
-        if (item.unit == 'meter') {
-          if (item.saleType == 'لفة' && item.unitsInLargeUnit != null) {
-            return item.unitsInLargeUnit!.toString();
-          } else {
-            return '';
-          }
-        }
-        if (item.saleType == 'قطعة' || item.saleType == 'متر') {
-          return '';
-        }
-        if (product == null ||
-            product.unitHierarchy == null ||
-            product.unitHierarchy!.isEmpty) {
-          return item.unitsInLargeUnit?.toString() ?? '';
-        }
-        try {
-          final List<dynamic> hierarchy =
-              json.decode(product.unitHierarchy!.replaceAll("'", '"'));
-          List<String> factors = [];
-          for (int i = 0; i < hierarchy.length; i++) {
-            final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
-            final quantity = hierarchy[i]['quantity'];
-            factors.add(quantity.toString());
-            if (unitName == item.saleType) {
-              break;
-            }
-          }
-          if (factors.isEmpty) {
-            return item.unitsInLargeUnit?.toString() ?? '';
-          }
-          return factors.join(' × ');
-        } catch (e) {
-          return item.unitsInLargeUnit?.toString() ?? '';
-        }
-      }
-
-      // جلب جميع المنتجات لمطابقة الهيكل الهرمي
-      final allProducts = await _db.getAllProducts();
-
-      // تصفية العناصر لإزالة الصفوف الفارغة قبل الطباعة
-      final filteredItems = _invoiceItems.where((item) => _isInvoiceItemComplete(item)).toList();
-
-      final itemsTotal =
-          filteredItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-      final discount = _discount;
-      // إضافة أجور التحميل ضمن مجاميع الفاتورة
-      final double loadingFee = double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
-      // جلب تسويات الفاتورة (إن وجدت) وحساب إجماليها
-      List<InvoiceAdjustment> adjs = [];
-      double settlementsTotal = 0.0;
-      if (_invoiceToManage != null && _invoiceToManage!.id != null) {
-        try {
-          adjs = await _db.getInvoiceAdjustments(_invoiceToManage!.id!);
-          settlementsTotal = adjs.fold(0.0, (sum, a) => sum + a.amountDelta);
-        } catch (_) {}
-      }
-      final bool hasAdjustments = adjs.isNotEmpty;
-      // تحديد تسويات البنود المضافة في نفس يوم الفاتورة لعرضها ضمن القائمة
-      final DateTime invoiceDateOnly = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
-      final List<InvoiceAdjustment> sameDayAddedItemAdjs = adjs.where((a) {
-        if (a.productId == null) return false;
-        if (a.type != 'debit') return false;
-        final d = DateTime(a.createdAt.year, a.createdAt.month, a.createdAt.day);
-        return d == invoiceDateOnly;
-      }).toList();
-      final List<InvoiceAdjustment> itemAdditionsForSection = adjs.where((a) => a.productId != null && a.type == 'debit' && !sameDayAddedItemAdjs.contains(a)).toList();
-      final List<InvoiceAdjustment> itemCreditsForSection = adjs.where((a) => a.productId != null && a.type == 'credit').toList();
-      final List<InvoiceAdjustment> amountOnlyAdjs = adjs.where((a) => a.productId == null).toList();
-      final bool showSettlementSections = itemAdditionsForSection.isNotEmpty || itemCreditsForSection.isNotEmpty || amountOnlyAdjs.isNotEmpty || sameDayAddedItemAdjs.isNotEmpty;
-      
-      print('=== DEBUG SETTLEMENT SECTIONS ===');
-      print('DEBUG: itemAdditionsForSection.length = ${itemAdditionsForSection.length}');
-      print('DEBUG: itemCreditsForSection.length = ${itemCreditsForSection.length}');
-      print('DEBUG: amountOnlyAdjs.length = ${amountOnlyAdjs.length}');
-      print('DEBUG: sameDayAddedItemAdjs.length = ${sameDayAddedItemAdjs.length}');
-      print('DEBUG: showSettlementSections = $showSettlementSections');
-      print('=== END DEBUG SETTLEMENT SECTIONS ===');
-      final bool includeSameDayOnlyCase = sameDayAddedItemAdjs.isNotEmpty && !showSettlementSections;
-
-      // حساب الإجماليات المعروضة بحسب الحالة الخاصة
-      final double sameDayAddsTotal = sameDayAddedItemAdjs.fold(0.0, (sum, a) {
-        // للتسويات البنود: احسب من price * quantity
-        final double price = a.price ?? 0.0;
-        final double quantity = a.quantity ?? 0.0;
-        return sum + (price * quantity);
-      });
-      final double itemsTotalForDisplay = includeSameDayOnlyCase ? (itemsTotal + sameDayAddsTotal) : itemsTotal;
-      final double settlementsTotalForDisplay = includeSameDayOnlyCase ? 0.0 : settlementsTotal;
-      // preDiscountTotal يشمل البنود + التسويات المعروضة + أجور التحميل
-      final double preDiscountTotal = (itemsTotalForDisplay + settlementsTotalForDisplay + loadingFee);
-      final double afterDiscount = ((preDiscountTotal - discount).clamp(0.0, double.infinity)).toDouble();
-      
-      // المبلغ المدفوع من الحقل
-      final double paid = double.tryParse(_paidAmountController.text.replaceAll(',', '')) ?? 0.0;
-      final isCash = _paymentType == 'نقد';
-      
-
-      // تحديد مبالغ التسويات النقدية/الدين لحساب المبلغ المدفوع المعروض
-      final double cashSettlements = showSettlementSections
-          ? [...adjs, ...sameDayAddedItemAdjs].where((a) => a.settlementPaymentType == 'نقد').fold(0.0, (sum, a) {
-              // للتسويات البنود: احسب من price * quantity
-              if (a.productId != null) {
-                final double price = a.price ?? 0.0;
-                final double quantity = a.quantity ?? 0.0;
-                return sum + (price * quantity);
-              } else {
-                // للتسويات المبلغ: استخدم amountDelta
-                return sum + a.amountDelta;
-              }
-            })
-          : 0.0;
-      final double debtSettlements = showSettlementSections
-          ? [...adjs, ...sameDayAddedItemAdjs].where((a) => a.settlementPaymentType == 'دين').fold(0.0, (sum, a) {
-              // للتسويات البنود: احسب من price * quantity
-              if (a.productId != null) {
-                final double price = a.price ?? 0.0;
-                final double quantity = a.quantity ?? 0.0;
-                return sum + (price * quantity);
-              } else {
-                // للتسويات المبلغ: استخدم amountDelta
-                return sum + a.amountDelta;
-              }
-            })
-          : 0.0;
-      
-      // تشخيص للمشكلة
-      print('=== DEBUG PDF SETTLEMENTS ===');
-      print('DEBUG PDF: paid = $paid');
-      print('DEBUG PDF: cashSettlements = $cashSettlements');
-      print('DEBUG PDF: debtSettlements = $debtSettlements');
-      print('DEBUG PDF: showSettlementSections = $showSettlementSections');
-      print('DEBUG PDF: adjs.length = ${adjs.length}');
-      for (int i = 0; i < adjs.length; i++) {
-        final adj = adjs[i];
-        print('DEBUG PDF: adj[$i] = {');
-        print('  productId: ${adj.productId}');
-        print('  productName: ${adj.productName}');
-        print('  type: ${adj.type}');
-        print('  amountDelta: ${adj.amountDelta}');
-        print('  settlementPaymentType: ${adj.settlementPaymentType}');
-        print('  price: ${adj.price}');
-        print('  quantity: ${adj.quantity}');
-        print('  createdAt: ${adj.createdAt}');
-        print('}');
-      }
-      print('=== END DEBUG PDF SETTLEMENTS ===');
-      
-      double displayedPaidForSettlementsCase;
-      if (isCash && !showSettlementSections) {
-        // للفواتير النقدية بدون تسويات: المبلغ المدفوع يجب أن يساوي الإجمالي دائماً
-        displayedPaidForSettlementsCase = afterDiscount;
-      } else {
-        // للفواتير بالدين أو الفواتير النقدية مع تسويات: إضافة التسويات النقدية إلى المبلغ المدفوع الأصلي
-        displayedPaidForSettlementsCase = paid + cashSettlements;
-      }
-
-      // حساب الديون
-      double previousDebt = 0.0;
-      double currentDebt = 0.0;
-      final customerName = _customerNameController.text.trim();
-      final customerPhone = _customerPhoneController.text.trim();
-      if (customerName.isNotEmpty) {
-        final customers = await _db.searchCustomers(customerName);
-        Customer? matchedCustomer;
-        if (customerPhone.isNotEmpty) {
-          matchedCustomer = customers
-                  .where(
-                    (c) =>
-                        c.name.trim() == customerName &&
-                        (c.phone ?? '').trim() == customerPhone,
-                  )
-                  .isNotEmpty
-              ? customers
-                  .where(
-                    (c) =>
-                        c.name.trim() == customerName &&
-                        (c.phone ?? '').trim() == customerPhone,
-                  )
-                  .first
-              : null;
-        } else {
-          matchedCustomer = customers
-                  .where(
-                    (c) => c.name.trim() == customerName,
-                  )
-                  .isNotEmpty
-              ? customers
-                  .where(
-                    (c) => c.name.trim() == customerName,
-                  )
-                  .first
-              : null;
-        }
-        if (matchedCustomer != null) {
-          previousDebt = matchedCustomer.currentTotalDebt;
-        }
-      }
-      
-      // حساب المبلغ المتبقي والدين الحالي
-      final double remainingForPdf;
-      if (isCash && !showSettlementSections) {
-        // للفواتير النقدية بدون تسويات: المبلغ المتبقي دائماً صفر
-        remainingForPdf = 0;
-      } else {
-        // للفواتير بالدين أو الفواتير النقدية مع تسويات: احسب المتبقي من الإجمالي ناقص المبلغ المدفوع (بما في ذلك التسويات النقدية)
-        remainingForPdf = afterDiscount - displayedPaidForSettlementsCase;
-      }
-      
-      // حساب الدين الحالي بناءً على التسويات
-      if (showSettlementSections) {
-        // إذا كانت هناك تسويات، احسب الدين بناءً على التسويات الدينية
-        currentDebt = previousDebt + debtSettlements;
-      } else {
-        // إذا لم تكن هناك تسويات، احسب الدين بناءً على نوع الدفع الأصلي
-      if (isCash) {
-        currentDebt = previousDebt;
-      } else {
-          currentDebt = previousDebt + remainingForPdf;
-        }
-      }
-
-      // للفواتير المحفوظة: إزالة "الدين السابق" من العرض
-      final bool isSavedInvoice = _invoiceToManage?.id != null;
-      final double previousDebtForPdf = 0.0; // إزالة عرض الدين السابق
-      // في حالة طباعة فاتورة محفوظة: لا نضيف المتبقي مرة أخرى حتى لا يتضاعف الدين.
-      // نطبع الدين الحالي كما هو مسجل في سجل الديون للعميل.
-      final double currentDebtForPdf = (_invoiceToManage != null && _invoiceToManage!.status == 'محفوظة')
-          ? previousDebt
-          : currentDebt;
-
-      int invoiceId;
-      if (_invoiceToManage != null && _invoiceToManage!.id != null) {
-        invoiceId = _invoiceToManage!.id!;
-      } else {
-        invoiceId = (await _db.getLastInvoiceId()) + 1;
-      }
-      
-      // دمج بنود التسوية المضافة بنفس اليوم داخل جدول العناصر الرئيسي عند كونها الحالة الوحيدة
-      final List<Map<String, dynamic>> combinedRows = [
-        // صفوف الفاتورة الأصلية
-        ...filteredItems.map((it) => {
-              'type': 'item',
-              'item': it,
-            }),
-        // صفوف التسوية المضافة بنفس اليوم (إن كانت الحالة الوحيدة)
-        if (includeSameDayOnlyCase)
-          ...sameDayAddedItemAdjs.map((a) => {
-                'type': 'adj',
-                'adj': a,
-              }),
-      ];
-      
-      const itemsPerPage = 19;
-      final totalPages = (combinedRows.length / itemsPerPage).ceil().clamp(1, double.infinity).toInt();
-      bool printedSummaryInLastPage = false;
-
-      for (var pageIndex = 0; pageIndex < totalPages; pageIndex++) {
-        final start = pageIndex * itemsPerPage;
-        final end = (start + itemsPerPage) > combinedRows.length
-            ? combinedRows.length
-            : start + itemsPerPage;
-        final pageRows = combinedRows.sublist(start, end);
-
-        final bool isLast = pageIndex == totalPages - 1;
-        final bool deferSummary = isLast && (pageRows.length >= 17) && showSettlementSections;
-
-        pdf.addPage(
-          pw.Page(
-            pageFormat: PdfPageFormat.a4,
-            margin: pw.EdgeInsets.only(top: 0, bottom: 2, left: 10, right: 10),
-            build: (pw.Context context) {
-              return pw.Directionality(
-                textDirection: pw.TextDirection.rtl,
-                child: pw.Stack(
-                  children: [
-                    pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.start,
-                      children: [
-                    // --- رأس الفاتورة مع اللوجو الجديد في الجهة اليمنى ---
-                    buildPdfHeader(font, alnaserFont, logoImage, appSettings: appSettings),
-                    pw.SizedBox(height: 4),
-                    // --- معلومات العميل والتاريخ ---
-                    pw.Row(
-                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                      children: [
-                        pw.Text('السيد: ${_customerNameController.text}',
-                            style: pw.TextStyle(font: font, fontSize: 12)),
-                        pw.Text(
-                            'العنوان: ${_customerAddressController.text.isNotEmpty ? _customerAddressController.text : ' ______'}',
-                            style: pw.TextStyle(font: font, fontSize: 11)),
-                        pw.Text('رقم الفاتورة: ${invoiceId}',
-                            style: pw.TextStyle(font: font, fontSize: 10)),
-                        pw.Text(
-                            'الوقت: ${_invoiceToManage?.createdAt?.hour.toString().padLeft(2, '0') ?? DateTime.now().hour.toString().padLeft(2, '0')}:${_invoiceToManage?.createdAt?.minute.toString().padLeft(2, '0') ?? DateTime.now().minute.toString().padLeft(2, '0')}',
-                            style: pw.TextStyle(font: font, fontSize: 11)),
-                        pw.Text(
-                          'التاريخ: ${_selectedDate.year}/${_selectedDate.month}/${_selectedDate.day}',
-                          style: pw.TextStyle(font: font, fontSize: 11),
-                        ),
-                      ],
-                    ),
-                    pw.Divider(height: 5, thickness: 0.5),
-
-                    // --- جدول العناصر ---
-                    pw.Table(
-                      border: pw.TableBorder.all(width: 0.2),
-                      columnWidths: {
-                        0: const pw.FixedColumnWidth(90), // المبلغ
-                        1: const pw.FixedColumnWidth(70), // السعر
-                        2: const pw.FixedColumnWidth(65), // عدد الوحدات (جديد)
-                        3: const pw.FixedColumnWidth(90), // العدد
-                        4: const pw.FlexColumnWidth(0.8), // التفاصيل
-                        5: const pw.FixedColumnWidth(45), // ID (خمسة محارف)
-                        6: const pw.FixedColumnWidth(20), // ت
-                      },
-                      defaultVerticalAlignment:
-                          pw.TableCellVerticalAlignment.middle,
-                      children: [
-                        pw.TableRow(
-                          decoration: const pw.BoxDecoration(),
-                          children: [
-                            _headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
-                            _headerCell('السعر', font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
-                            _headerCell('عدد الوحدات', font),
-                            _headerCell('العدد', font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
-                            _headerCell('التفاصيل ', font, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
-                            _headerCell('ID', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                            _headerCell('ت', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                          ],
-                        ),
-                        ...pageRows.asMap().entries.map((entry) {
-                          final index = entry.key + (pageIndex * itemsPerPage);
-                          final row = entry.value;
-                          if (row['type'] == 'item') {
-                            final item = row['item'] as InvoiceItem;
-                            final quantity = (item.quantityIndividual ?? item.quantityLargeUnit ?? 0.0);
-                          Product? product;
-                          try {
-                              product = allProducts.firstWhere((p) => p.name == item.productName);
-                          } catch (e) {
-                            product = null;
-                          }
-                          final idText = formatProductId5(product?.id);
-                          return pw.TableRow(
-                            children: [
-                                _dataCell(formatNumber(item.itemTotal, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
-                                _dataCell(formatNumber(item.appliedPrice, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
-                              _dataCell(
-                                buildUnitConversionStringForPdf(item, product),
-                                font,
-                              ),
-                                _dataCell('${formatNumber(quantity, forceDecimal: true)} ${item.saleType ?? ''}', font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
-                                _dataCell(item.productName, font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
-                              _dataCell(idText, font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                              _dataCell('${index + 1}', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                            ],
-                          );
-                          } else {
-                            final a = row['adj'] as InvoiceAdjustment;
-                            final double price = a.price ?? 0.0;
-                            final double qty = a.quantity ?? 0.0;
-                            final double total = a.amountDelta != 0.0 ? a.amountDelta : (price * qty);
-                            Product? product;
-                            try {
-                              product = allProducts.firstWhere((p) => p.id == a.productId);
-                            } catch (e) {
-                              product = null;
-                            }
-                            final idText = formatProductId5(product?.id);
-                            final unitConv = () {
-                              // بناء سلسلة التحويل للوحدة للتسوية
-                              try {
-                                if (product == null || product.unitHierarchy == null || product.unitHierarchy!.isEmpty) {
-                                  return (a.unitsInLargeUnit?.toString() ?? '');
-                                }
-                                final List<dynamic> hierarchy = json.decode(product.unitHierarchy!.replaceAll("'", '"'));
-                                List<String> factors = [];
-                                for (int i = 0; i < hierarchy.length; i++) {
-                                  final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
-                                  final quantity = hierarchy[i]['quantity'];
-                                  factors.add(quantity.toString());
-                                  if (unitName == a.saleType) {
-                                    break;
-                                  }
-                                }
-                                if (factors.isEmpty) {
-                                  return a.unitsInLargeUnit?.toString() ?? '';
-                                }
-                                return factors.join(' × ');
-                              } catch (_) {
-                                return a.unitsInLargeUnit?.toString() ?? '';
-                              }
-                            }();
-                            return pw.TableRow(
-                              children: [
-                                _dataCell(formatNumber(total, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
-                                _dataCell(formatNumber(price, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
-                                _dataCell(unitConv, font),
-                                _dataCell('${formatNumber(qty, forceDecimal: true)} ${a.saleType ?? ''}', font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
-                                _dataCell(a.productName ?? '-', font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
-                                _dataCell(idText, font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                                _dataCell('${index + 1}', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                              ],
-                            );
-                          }
-                        }).toList(),
-                      ],
-                    ),
-                    pw.Divider(height: 4, thickness: 0.4),
-
-                    // --- بنود تسوية مضافة في نفس اليوم (تظهر ضمن القائمة) ---
-                    if (sameDayAddedItemAdjs.isNotEmpty && !includeSameDayOnlyCase) ...[
-                      pw.SizedBox(height: 4),
-                      pw.Table(
-                        border: pw.TableBorder.all(width: 0.2),
-                        columnWidths: {
-                          0: const pw.FixedColumnWidth(90), // المبلغ
-                          1: const pw.FixedColumnWidth(70), // السعر
-                          2: const pw.FixedColumnWidth(65), // عدد الوحدات
-                          3: const pw.FixedColumnWidth(90), // العدد
-                          4: const pw.FlexColumnWidth(0.8), // التفاصيل
-                          5: const pw.FixedColumnWidth(45), // ID
-                          6: const pw.FixedColumnWidth(20), // ت
-                        },
-                        defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
-                        children: [
-                          pw.TableRow(children: [
-                            _headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
-                            _headerCell('السعر', font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
-                            _headerCell('عدد الوحدات', font),
-                            _headerCell('العدد', font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
-                            _headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
-                            _headerCell('ID', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                            _headerCell('ت', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                          ]),
-                          ...sameDayAddedItemAdjs.asMap().entries.map((entry) {
-                            final idx = entry.key;
-                            final a = entry.value;
-                            final qty = a.quantity ?? 0;
-                            final price = a.price ?? 0;
-                            final amount = price * qty;
-                            final idText = formatProductId5(a.productId);
-                            return pw.TableRow(children: [
-                              _dataCell(formatNumber(amount, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
-                              _dataCell(formatNumber(price, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
-                              _dataCell((a.unitsInLargeUnit != null && a.unitsInLargeUnit! > 0) ? a.unitsInLargeUnit!.toStringAsFixed(2) : '-', font),
-                              _dataCell(qty.toStringAsFixed(2), font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
-                              _dataCell(a.productName ?? '', font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
-                              _dataCell(idText, font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                              _dataCell('${idx + 1}', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                            ]);
-                          })
-                        ],
-                      ),
-                      pw.SizedBox(height: 6),
-                    ],
-
-                    // --- المجاميع والتسويات في الصفحة الأخيرة فقط (إلا إذا أُجّلت) ---
-                    if (isLast && !deferSummary) ...[
-                      // --- طباعة التسويات ---
-                      if (_invoiceToManage != null && _invoiceToManage!.id != null && (itemAdditionsForSection.isNotEmpty || itemCreditsForSection.isNotEmpty || amountOnlyAdjs.isNotEmpty)) ...[
-                        pw.SizedBox(height: 6),
-                        pw.Row(
-                          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                          children: [
-                            pw.Text('التعديلات', style: pw.TextStyle(font: font, fontSize: 13, fontWeight: pw.FontWeight.bold)),
-                            pw.Text('التاريخ والوقت: ${DateTime.now().year}/${DateTime.now().month.toString().padLeft(2, '0')}/${DateTime.now().day.toString().padLeft(2, '0')} ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}', style: pw.TextStyle(font: font, fontSize: 10)),
-                          ],
-                        ),
-                        pw.SizedBox(height: 4),
-                        // تسويات البنود (إضافة)
-                        if (itemAdditionsForSection.isNotEmpty) ...[
-                          pw.Text('تسوية البنود - إضافة', style: pw.TextStyle(font: font, fontSize: 12)),
-                          pw.SizedBox(height: 2),
-                          pw.Table(
-                            border: pw.TableBorder.all(width: 0.2),
-                            columnWidths: {
-                              0: const pw.FixedColumnWidth(90), // المبلغ
-                              1: const pw.FixedColumnWidth(70), // السعر
-                              2: const pw.FixedColumnWidth(65), // عدد الوحدات
-                              3: const pw.FixedColumnWidth(90), // العدد
-                              4: const pw.FlexColumnWidth(0.8), // التفاصيل
-                              5: const pw.FixedColumnWidth(45), // ID
-                              6: const pw.FixedColumnWidth(20), // ت
-                            },
-                            defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
-                            children: [
-                              pw.TableRow(children: [
-                                _headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
-                                _headerCell('السعر', font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
-                                _headerCell('عدد الوحدات', font),
-                                _headerCell('العدد', font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
-                                _headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
-                                _headerCell('ID', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                                _headerCell('ت', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                              ]),
-                              ...itemAdditionsForSection.toList().asMap().entries.map((entry) {
-                                final idx = entry.key;
-                                final a = entry.value;
-                                final qty = a.quantity ?? 0;
-                                final price = a.price ?? 0;
-                                final amount = price * qty;
-                                final idText = formatProductId5(a.productId);
-                                return pw.TableRow(children: [
-                                  _dataCell(formatNumber(amount, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
-                                  _dataCell(formatNumber(price, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
-                                  _dataCell((a.unitsInLargeUnit != null && a.unitsInLargeUnit! > 0) ? a.unitsInLargeUnit!.toStringAsFixed(2) : '-', font),
-                                  _dataCell(qty.toStringAsFixed(2), font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
-                                  _dataCell(a.productName ?? '', font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
-                                  _dataCell(idText, font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                                  _dataCell('${idx + 1}', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                                ]);
-                              })
-                            ],
-                          ),
-                          pw.SizedBox(height: 6),
-                        ],
-                        // تسويات البنود (إرجاع)
-                        if (itemCreditsForSection.isNotEmpty) ...[
-                          pw.Text('تسوية البنود - إرجاع', style: pw.TextStyle(font: font, fontSize: 12)),
-                          pw.SizedBox(height: 2),
-                          pw.Table(
-                            border: pw.TableBorder.all(width: 0.2),
-                            columnWidths: {
-                              0: const pw.FixedColumnWidth(90),
-                              1: const pw.FixedColumnWidth(70),
-                              2: const pw.FixedColumnWidth(65),
-                              3: const pw.FixedColumnWidth(90),
-                              4: const pw.FlexColumnWidth(0.8),
-                              5: const pw.FixedColumnWidth(45),
-                              6: const pw.FixedColumnWidth(20),
-                            },
-                            defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
-                            children: [
-                              pw.TableRow(children: [
-                                _headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
-                                _headerCell('السعر', font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
-                                _headerCell('عدد الوحدات', font),
-                                _headerCell('العدد', font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
-                                _headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
-                                _headerCell('ID', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                                _headerCell('ت', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                              ]),
-                              ...itemCreditsForSection.toList().asMap().entries.map((entry) {
-                                final idx = entry.key;
-                                final a = entry.value;
-                                final qty = a.quantity ?? 0;
-                                final price = a.price ?? 0;
-                                final amount = price * qty;
-                                final idText = formatProductId5(a.productId);
-                                return pw.TableRow(children: [
-                                  _dataCell(formatNumber(-amount, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
-                                  _dataCell(formatNumber(price, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemPriceColor)),
-                                  _dataCell((a.unitsInLargeUnit != null && a.unitsInLargeUnit! > 0) ? a.unitsInLargeUnit!.toStringAsFixed(2) : '-', font),
-                                  _dataCell(qty.toStringAsFixed(2), font, color: PdfColor.fromInt(appSettings.itemQuantityColor)),
-                                  _dataCell(a.productName ?? '', font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor)),
-                                  _dataCell(idText, font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                                  _dataCell('-', font, color: PdfColor.fromInt(appSettings.itemSerialColor)),
-                                ]);
-                              })
-                            ],
-                          ),
-                          pw.SizedBox(height: 6),
-                        ],
-                        // تسويات مبلغ فقط (معكوسة الأعمدة لتناسب اتجاه العربية)
-                        if (amountOnlyAdjs.isNotEmpty) ...[
-                          pw.Row(
-                            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                            children: [
-                              pw.Text('تعديل مبالغ', style: pw.TextStyle(font: font, fontSize: 12)),
-                              pw.Text('التاريخ والوقت: ${DateTime.now().year}/${DateTime.now().month.toString().padLeft(2, '0')}/${DateTime.now().day.toString().padLeft(2, '0')} ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}', style: pw.TextStyle(font: font, fontSize: 10)),
-                            ],
-                          ),
-                          pw.SizedBox(height: 2),
-                          pw.Table(
-                            border: pw.TableBorder.all(width: 0.2),
-                            columnWidths: {
-                              0: const pw.FlexColumnWidth(), // ملاحظة
-                              1: const pw.FixedColumnWidth(120), // النوع
-                              2: const pw.FixedColumnWidth(90), // المبلغ
-                            },
-                            defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
-                            children: [
-                              pw.TableRow(children: [
-                                _headerCell('ملاحظة', font),
-                                _headerCell('النوع', font),
-                                _headerCell('المبلغ', font),
-                              ]),
-                              ...amountOnlyAdjs.map((a) {
-                                final kind = a.type == 'debit' ? 'تسوية إضافة' : 'تسوية إرجاع';
-                                return pw.TableRow(children: [
-                                  _dataCell(a.note ?? '-', font, align: pw.TextAlign.right),
-                                  _dataCell(kind, font),
-                                  _dataCell(formatNumber(a.amountDelta, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)),
-                                ]);
-                              })
-                            ],
-                          ),
-                          pw.SizedBox(height: 10),
-                        ],
-                      ],
-                      // --- ملخص المجاميع ---
-                      pw.Column(
-                        crossAxisAlignment: pw.CrossAxisAlignment.end,
-                        children: [
-                          if (hasAdjustments && !includeSameDayOnlyCase) ...[
-                          pw.Row(
-                            mainAxisAlignment: pw.MainAxisAlignment.end,
-                            children: [
-                                _summaryRow('الإجمالي قبل التعديل:', itemsTotalForDisplay, font),
-                                pw.SizedBox(width: 10),
-                                _summaryRow('إجمالي التسويات:', settlementsTotalForDisplay, font),
-                                pw.SizedBox(width: 10),
-                                _summaryRow('الإجمالي قبل الخصم:', preDiscountTotal, font, color: PdfColor.fromInt(appSettings.totalBeforeDiscountColor)),
-                              pw.SizedBox(width: 10),
-                              _summaryRow('الخصم:', discount, font, color: PdfColor.fromInt(appSettings.discountColor)),
-                              ],
-                            ),
-                            pw.SizedBox(height: 4),
-                            pw.Row(
-                              mainAxisAlignment: pw.MainAxisAlignment.end,
-                              children: [
-                                _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font, color: PdfColor.fromInt(appSettings.totalAfterDiscountColor)),
-                              pw.SizedBox(width: 10),
-                                _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font, color: PdfColor.fromInt(appSettings.paidAmountColor)),
-                              ],
-                            ),
-                          ],
-                          if (!hasAdjustments || includeSameDayOnlyCase) pw.Row(
-                            mainAxisAlignment: pw.MainAxisAlignment.end,
-                            children: [
-                              _summaryRow('الإجمالي قبل الخصم:', itemsTotalForDisplay, font, color: PdfColor.fromInt(appSettings.totalBeforeDiscountColor)),
-                              pw.SizedBox(width: 10),
-                              _summaryRow('الخصم:', discount, font, color: PdfColor.fromInt(appSettings.discountColor)),
-                              pw.SizedBox(width: 10),
-                              _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font, color: PdfColor.fromInt(appSettings.totalAfterDiscountColor)),
-                              pw.SizedBox(width: 10),
-                              _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font, color: PdfColor.fromInt(appSettings.paidAmountColor)),
-                            ],
-                          ),
-                          pw.SizedBox(height: 4),
-                          // عند وجود تسويات عرضنا "إجمالي القائمة" في السطر الثاني أعلاه
-                          pw.SizedBox(height: 6),
-                          // إضافة المبلغ المتبقي والدين السابق والدين الحالي وأجور التحميل
-                          // عرض المتبقي دائماً في الملخص النهائي،
-                          // خصوصاً عند وجود تسويات بالدين حتى لو كانت الفاتورة نقد.
-                          if (true) ...[
-                            pw.Row(
-                              mainAxisAlignment: pw.MainAxisAlignment.end,
-                              children: [
-                                _summaryRow('المبلغ المتبقي:', remainingForPdf, font, color: PdfColor.fromInt(appSettings.remainingAmountColor)),
-                                pw.SizedBox(width: 10),
-                                _summaryRow('المبلغ المطلوب الحالي:', currentDebtForPdf, font, color: PdfColor.fromInt(appSettings.currentDebtColor)),
-                                pw.SizedBox(width: 10),
-                                _summaryRow('اجور التحميل:', 
-                                    double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0, font, color: PdfColor.fromInt(appSettings.loadingFeesColor)),
-                              ],
-                            ),
-                          ],
-                        ],
-                      ),
-                      pw.SizedBox(height: 6),
-                      pw.Align(
-                          child: pw.Text('تنويه: أي ملاحظات على تجهيز المواد تُقبل خلال 3 أيام من تاريخ الفاتورة فقط  وشكراً لتعاملكم معنا',
-                              style: pw.TextStyle(font: font, fontSize: 11, color: PdfColor.fromInt(appSettings.noticeColor)))),
-                    ],
-
-                    pw.Align(
-                      alignment: pw.Alignment.center,
-                      child: pw.Text(
-                        'صفحة ${pageIndex + 1} من $totalPages',
-                        style: pw.TextStyle(font: font, fontSize: 11),
-                      ),
-                    ),
-                  ],
-                    ),
-                    pw.Positioned(
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      child: pw.Container(
-                        alignment: pw.Alignment.topLeft,
-                        padding: const pw.EdgeInsets.only(top: 250, left: 0),
-                        child: pw.Transform.rotate(
-                          angle: 0.8,
-                          child: pw.Opacity(
-                            opacity: 0.11,
-                            child: pw.Text(
-                              'الناصر',
-                              style: pw.TextStyle(
-                                font: alnaserFont,
-                                fontSize: 220,
-                                color: PdfColors.grey400,
-                                fontWeight: pw.FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-                ),
-              );
-            },
-          ),
-        );
-        if (isLast && !deferSummary) { printedSummaryInLastPage = true; }
-      }
-      // إذا تم تأجيل الملخص بسبب ضيق الصفحة الأخيرة، اطبعه في صفحة مستقلة لضمان ظهوره
-      if (!printedSummaryInLastPage) {
-        pdf.addPage(
-          pw.Page(
-            pageFormat: PdfPageFormat.a4,
-            margin: pw.EdgeInsets.only(top: 10, bottom: 10, left: 10, right: 10),
-            build: (pw.Context context) {
-              return pw.Directionality(
-                textDirection: pw.TextDirection.rtl,
-                child: pw.Column(
-                  crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-                  children: [
-                    if (_invoiceToManage != null && _invoiceToManage!.id != null && (itemAdditionsForSection.isNotEmpty || itemCreditsForSection.isNotEmpty || amountOnlyAdjs.isNotEmpty)) ...[
-                      pw.Row(
-                        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                        children: [
-                          pw.Text('التعديلات', style: pw.TextStyle(font: font, fontSize: 13, fontWeight: pw.FontWeight.bold)),
-                          pw.Text('التاريخ والوقت: ${DateTime.now().year}/${DateTime.now().month.toString().padLeft(2, '0')}/${DateTime.now().day.toString().padLeft(2, '0')} ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}', style: pw.TextStyle(font: font, fontSize: 10)),
-                        ],
-                      ),
-                      pw.SizedBox(height: 6),
-                      if (itemAdditionsForSection.isNotEmpty) ...[
-                        pw.Text('تسوية البنود - إضافة', style: pw.TextStyle(font: font, fontSize: 12)),
-                        pw.SizedBox(height: 2),
-                        // لإيجاز الكود: إعادة استخدام نفس جداول البنود كما في الصفحة الأخيرة
-                        // نطبع فقط مبالغ وخانات أساسية لضمان المساحة
-                        pw.Table(
-                          border: pw.TableBorder.all(width: 0.2),
-                          columnWidths: { 0: const pw.FixedColumnWidth(90), 1: const pw.FixedColumnWidth(70), 2: const pw.FlexColumnWidth(1) },
-                          children: [
-                            pw.TableRow(children: [ _headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor)), _headerCell('السعر', font, color: PdfColor.fromInt(appSettings.itemPriceColor)), _headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor)) ]),
-                            ...itemAdditionsForSection.map((a) {
-                              final qty = a.quantity ?? 0; final price = a.price ?? 0; final amount = price * qty;
-                              return pw.TableRow(children: [ _dataCell(formatNumber(amount, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)), _dataCell(formatNumber(price, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemPriceColor)), _dataCell(a.productName ?? '', font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor)) ]);
-                            })
-                          ],
-                        ),
-                        pw.SizedBox(height: 6),
-                      ],
-                      if (itemCreditsForSection.isNotEmpty) ...[
-                        pw.Text('تسوية البنود - إرجاع', style: pw.TextStyle(font: font, fontSize: 12)),
-                        pw.SizedBox(height: 2),
-                        pw.Table(
-                          border: pw.TableBorder.all(width: 0.2),
-                          columnWidths: { 0: const pw.FixedColumnWidth(90), 1: const pw.FixedColumnWidth(70), 2: const pw.FlexColumnWidth(1) },
-                          children: [
-                            pw.TableRow(children: [ _headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor)), _headerCell('السعر', font, color: PdfColor.fromInt(appSettings.itemPriceColor)), _headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor)) ]),
-                            ...itemCreditsForSection.map((a) {
-                              final qty = a.quantity ?? 0; final price = a.price ?? 0; final amount = price * qty;
-                              return pw.TableRow(children: [ _dataCell(formatNumber(amount, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)), _dataCell(formatNumber(price, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemPriceColor)), _dataCell(a.productName ?? '', font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor)) ]);
-                            })
-                          ],
-                        ),
-                        pw.SizedBox(height: 6),
-                      ],
-                      if (amountOnlyAdjs.isNotEmpty) ...[
-                        pw.Table(
-                          border: pw.TableBorder.all(width: 0.2),
-                          columnWidths: { 0: const pw.FlexColumnWidth(1), 1: const pw.FixedColumnWidth(70), 2: const pw.FixedColumnWidth(90) },
-                          children: [
-                            pw.TableRow(children: [ _headerCell('ملاحظة', font), _headerCell('النوع', font), _headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor)) ]),
-                            ...amountOnlyAdjs.map((a) { final kind = a.type == 'debit' ? 'تسوية إضافة' : 'تسوية إرجاع'; return pw.TableRow(children: [ _dataCell(a.note ?? '-', font, align: pw.TextAlign.right), _dataCell(kind, font), _dataCell(formatNumber(a.amountDelta, forceDecimal: true), font, color: PdfColor.fromInt(appSettings.itemTotalColor)) ]); })
-                          ],
-                        ),
-                      ],
-                      pw.SizedBox(height: 10),
-                    ],
-                    // الملخص النهائي
-                    pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.end,
-                      children: [
-                        if (hasAdjustments && !includeSameDayOnlyCase) ...[
-                          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
-                            _summaryRow('الإجمالي قبل التعديل:', itemsTotalForDisplay, font), pw.SizedBox(width: 10), _summaryRow('إجمالي التسويات:', settlementsTotalForDisplay, font), pw.SizedBox(width: 10), _summaryRow('الإجمالي قبل الخصم:', preDiscountTotal, font, color: PdfColor.fromInt(appSettings.totalBeforeDiscountColor)), pw.SizedBox(width: 10), _summaryRow('الخصم:', discount, font, color: PdfColor.fromInt(appSettings.discountColor)),
-                          ]),
-                          pw.SizedBox(height: 4),
-                          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
-                            _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font, color: PdfColor.fromInt(appSettings.totalAfterDiscountColor)), pw.SizedBox(width: 10), _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font, color: PdfColor.fromInt(appSettings.paidAmountColor)),
-                          ]),
-                        ] else ...[
-                          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
-                            _summaryRow('الإجمالي قبل الخصم:', itemsTotalForDisplay, font, color: PdfColor.fromInt(appSettings.totalBeforeDiscountColor)), pw.SizedBox(width: 10), _summaryRow('الخصم:', discount, font, color: PdfColor.fromInt(appSettings.discountColor)), pw.SizedBox(width: 10), _summaryRow('الإجمالي بعد الخصم:', afterDiscount, font, color: PdfColor.fromInt(appSettings.totalAfterDiscountColor)), pw.SizedBox(width: 10), _summaryRow('المبلغ المدفوع:', displayedPaidForSettlementsCase, font, color: PdfColor.fromInt(appSettings.paidAmountColor)),
-                          ]),
-                        ],
-                        pw.SizedBox(height: 6),
-                        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
-                          _summaryRow('المبلغ المتبقي:', remainingForPdf, font, color: PdfColor.fromInt(appSettings.remainingAmountColor)), pw.SizedBox(width: 10), _summaryRow('المبلغ المطلوب الحالي:', currentDebtForPdf, font, color: PdfColor.fromInt(appSettings.currentDebtColor)), pw.SizedBox(width: 10), _summaryRow('اجور التحميل:', double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0, font, color: PdfColor.fromInt(appSettings.loadingFeesColor)),
-                        ]),
-                      ],
-                    ),
-                  ],
-                ),
-              );
-            },
-          ),
-        );
-      }
-      return pdf;
-    } catch (e) {
-      print('Error generating PDF: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('حدث خطأ أثناء إنشاء ملف PDF: $e')),
-        );
-      }
-      rethrow;
-    }
-  }
-
-  // دالة لخلايا الرأس
-  pw.Widget _headerCell(String text, pw.Font font, {PdfColor? color}) {
-    return pw.Padding(
-      padding: const pw.EdgeInsets.all(2),
-      child: pw.Text(text,
-          style: pw.TextStyle(
-              font: font, fontSize: 13, fontWeight: pw.FontWeight.bold, color: color ?? PdfColors.black),
-          textAlign: pw.TextAlign.center),
-    );
-  }
-
-  // دالة لخلايا البيانات
-  pw.Widget _dataCell(String text, pw.Font font,
-      {pw.TextAlign align = pw.TextAlign.center, PdfColor? color}) {
-    return pw.Padding(
-      padding: const pw.EdgeInsets.all(2),
-      child: pw.Text(text,
-          style: pw.TextStyle(
-              font: font, fontSize: 13, fontWeight: pw.FontWeight.bold, color: color ?? PdfColors.black),
-          textAlign: align),
-    );
-  }
-
-  // دالة لصفوف المجاميع
-  pw.Widget _summaryRow(String label, num value, pw.Font font, {PdfColor? color}) {
-    return pw.Padding(
-      padding: const pw.EdgeInsets.symmetric(vertical: 1),
-      child: pw.Row(
-        mainAxisSize: pw.MainAxisSize.min,
-        children: [
-          pw.Text(label, style: pw.TextStyle(font: font, fontSize: 11, color: color)),
-          pw.SizedBox(width: 5),
-          pw.Text(formatNumber(value, forceDecimal: true),
-              style: pw.TextStyle(
-                  font: font, fontSize: 13, fontWeight: pw.FontWeight.bold, color: color)),
-        ],
-      ),
-    );
-  }
 
   Future<String> _saveInvoicePdf(
       pw.Document pdf, String customerName, DateTime invoiceDate) async {
@@ -2261,122 +1054,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     return filePath;
   }
 
-  Future<void> _printInvoice() async {
-    try {
-      final pdf = await _generateInvoicePdf();
-      if (Platform.isWindows) {
-        final filePath = await _saveInvoicePdf(
-            pdf, _customerNameController.text, _selectedDate);
-        await Process.start('cmd', ['/c', 'start', '/min', '', filePath, '/p']);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('تم إرسال الفاتورة للطابعة مباشرة!')),
-          );
-        }
-        return;
-      }
-      if (Platform.isAndroid) {
-        if (_selectedPrinter == null) {
-          List<PrinterDevice> printers = [];
-          final bluetoothPrinters =
-              await _printingService.findBluetoothPrinters();
-          final systemPrinters = await _printingService.findSystemPrinters();
-          printers = [...bluetoothPrinters, ...systemPrinters];
-          if (printers.isEmpty) {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('لا توجد طابعات متاحة.')),
-              );
-            }
-            return;
-          }
-          final selected = await showDialog<PrinterDevice>(
-            context: context,
-            builder: (context) {
-              return AlertDialog(
-                title: const Text('اختر الطابعة'),
-                content: SizedBox(
-                  width: double.maxFinite,
-                  child: ListView.builder(
-                    shrinkWrap: true,
-                    itemCount: printers.length,
-                    itemBuilder: (context, index) {
-                      final printer = printers[index];
-                      return ListTile(
-                        title: Text(printer.name),
-                        subtitle: Text(printer.connectionType.name),
-                        onTap: () => Navigator.of(context).pop(printer),
-                      );
-                    },
-                  ),
-                ),
-              );
-            },
-          );
-          if (selected == null) return;
-          setState(() {
-            _selectedPrinter = selected;
-          });
-        }
-        if (_selectedPrinter != null) {
-          try {
-            await _printingService.printData(
-              await pdf.save(),
-              printerDevice: _selectedPrinter,
-              escPosCommands: null,
-            );
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                    content: Text(
-                        'تم إرسال الفاتورة إلى الطابعة: ${_selectedPrinter!.name}')),
-              );
-            }
-          } catch (e) {
-            print('Error during print: $e');
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                    content: Text('حدث خطأ أثناء الطباعة: ${e.toString()}')),
-              );
-            }
-          }
-        }
-        return;
-      }
-    } catch (e) {
-      print('Error printing invoice: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('حدث خطأ أثناء الطباعة: $e')),
-        );
-      }
-    }
-  }
-
-  Future<void> _shareInvoice() async {
-    try {
-      final pdf = await _generateInvoicePdf();
-      // استخدم مجلد مؤقت لضمان قدرة أنظمة المشاركة على الوصول للملف
-      final filePath = await _saveInvoicePdfToTemp(
-          pdf, _customerNameController.text, _selectedDate);
-      final fileName = p.basename(filePath);
-      await Share.shareXFiles([
-        XFile(
-          filePath,
-          mimeType: 'application/pdf',
-          name: fileName,
-        )
-      ], text: 'فاتورة ${_customerNameController.text}');
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('فشل مشاركة الفاتورة: $e')),
-        );
-      }
-    }
-  }
-
   Future<void> _printPickingList() async {
     try {
       // تحميل الخطوط والشعار كما في خدمة PDF
@@ -2391,11 +1068,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       final appSettings = await SettingsManager.getAppSettings();
 
       final doc = await InvoicePdfService.generatePickingListPdf(
-        invoiceItems: _invoiceItems,
-        allProducts: await _db.getAllProducts(),
-        customerName: _customerNameController.text,
-        invoiceId: _invoiceToManage?.id ?? 0,
-        selectedDate: _selectedDate,
+        invoiceItems: invoiceItems,
+        allProducts: await db.getAllProducts(),
+        customerName: customerNameController.text,
+        invoiceId: invoiceToManage?.id ?? 0,
+        selectedDate: selectedDate,
         font: font,
         alnaserFont: alnaserFont,
         logoImage: logoImage,
@@ -2403,7 +1080,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       );
 
       // احفظ ثم افتح للطباعة على ويندوز
-      final filePath = await _saveInvoicePdfToTemp(doc, _customerNameController.text, _selectedDate);
+      final filePath = await _saveInvoicePdfToTemp(doc, customerNameController.text, selectedDate);
       if (Platform.isWindows) {
         await Process.start('cmd', ['/c', 'start', '/min', '', filePath, '/p']);
         if (mounted) {
@@ -2421,7 +1098,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           mimeType: 'application/pdf',
           name: fileName,
         )
-      ], text: 'قائمة تجهيز ${_customerNameController.text}');
+      ], text: 'قائمة تجهيز ${customerNameController.text}');
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2433,7 +1110,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   // حوار خطوات التسوية: اختيار (إضافة/حذف) ثم (بند/مبلغ)
   Future<void> _openSettlementChoice() async {
-    if (_invoiceToManage == null) return;
+    if (invoiceToManage == null) return;
     // Dialog 1: إضافة / حذف
     String? op = await showDialog<String>(
       context: context,
@@ -2468,7 +1145,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     }
     // mode == item ⇒ افتح لوحة الأصناف أسفل الجدول
     setState(() {
-      _settlementPanelVisible = true;
+      settlementPanelVisible = true;
       _settlementItems.clear();
       _settleSelectedProduct = null;
       _settleSelectedSaleType = 'قطعة';
@@ -2477,14 +1154,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       _settleQtyCtrl.clear();
       _settlePriceCtrl.clear();
       _settleUnitCtrl.clear();
-      _settlementPaymentType = (_invoiceToManage?.paymentType == 'دين') ? 'دين' : 'نقد';
+      _settlementPaymentType = (invoiceToManage?.paymentType == 'دين') ? 'دين' : 'نقد';
     });
   }
 
   // دالة تفعيل وضع التعديل
   void _enableEditMode() {
     setState(() {
-      _isViewOnly = false;
+      isViewOnly = false;
     });
     
     // إظهار رسالة تأكيد
@@ -2500,7 +1177,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   // دالة إلغاء التعديل
   void _cancelEdit() {
     setState(() {
-      _isViewOnly = true;
+      isViewOnly = true;
     });
     
     // إعادة تحميل البيانات الأصلية
@@ -2518,7 +1195,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   // فحص إذا كانت التسويات الراجعة تتجاوز المبلغ المتبقي الفعلي
   Future<bool> _isRefundExceedingRemaining(double newRefundAmount) async {
-    if (_invoiceToManage == null) return false;
+    if (invoiceToManage == null) return false;
     
     // حساب المبلغ المتبقي الحالي
     final remainingAmount = await _calculateRemainingAmount();
@@ -2532,15 +1209,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   // حساب المبلغ المتبقي بعد التسويات
   Future<double> _calculateRemainingAmount() async {
-    if (_invoiceToManage == null) return 0.0;
+    if (invoiceToManage == null) return 0.0;
     
     // حساب إجمالي الفاتورة
-    final itemsTotal = _invoiceToManage!.totalAmount;
-    final discount = _invoiceToManage!.discount;
+    final itemsTotal = invoiceToManage!.totalAmount;
+    final discount = invoiceToManage!.discount;
     final afterDiscount = itemsTotal - discount;
     
     // حساب التسويات
-    final adjustments = await _db.getInvoiceAdjustments(_invoiceToManage!.id!);
+    final adjustments = await db.getInvoiceAdjustments(invoiceToManage!.id!);
     final cashSettlements = adjustments
         .where((adj) => adj.settlementPaymentType == 'نقد')
         .fold<double>(0.0, (sum, adj) => sum + adj.amountDelta);
@@ -2550,12 +1227,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     
     // حساب المبلغ المدفوع المعروض
     final double displayedPaid;
-    if (_invoiceToManage!.paymentType == 'نقد' && adjustments.isNotEmpty) {
+    if (invoiceToManage!.paymentType == 'نقد' && adjustments.isNotEmpty) {
       // للفواتير النقدية مع تسويات: المبلغ المدفوع = المبلغ الأصلي + التسويات النقدية فقط
-      displayedPaid = _invoiceToManage!.amountPaidOnInvoice + cashSettlements;
+      displayedPaid = invoiceToManage!.amountPaidOnInvoice + cashSettlements;
     } else {
       // للفواتير بالدين أو الفواتير النقدية بدون تسويات
-      displayedPaid = _invoiceToManage!.amountPaidOnInvoice + cashSettlements;
+      displayedPaid = invoiceToManage!.amountPaidOnInvoice + cashSettlements;
     }
     
     // حساب المبلغ المتبقي
@@ -2567,7 +1244,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     final TextEditingController noteCtrl = TextEditingController();
     // الإرجاع/الحذف لا يملك خيار (دين/نقد) ويجب أن يؤثر على الدين تلقائياً
     String paymentKind = _settlementIsDebit
-        ? ((_invoiceToManage?.paymentType == 'دين') ? 'دين' : 'نقد')
+        ? ((invoiceToManage?.paymentType == 'دين') ? 'دين' : 'نقد')
         : 'دين';
     final bool? ok = await showDialog<bool>(
       context: context,
@@ -2606,7 +1283,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         ],
       ),
     );
-    if (ok != true || _invoiceToManage == null) return;
+    if (ok != true || invoiceToManage == null) return;
     final v = double.tryParse(amountCtrl.text.trim());
     if (v == null || v <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أدخل مبلغاً صحيحاً')));
@@ -2631,8 +1308,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       }
     }
     
-    await _db.insertInvoiceAdjustment(InvoiceAdjustment(
-      invoiceId: _invoiceToManage!.id!,
+    await db.insertInvoiceAdjustment(InvoiceAdjustment(
+      invoiceId: invoiceToManage!.id!,
       type: _settlementIsDebit ? 'debit' : 'credit',
       amountDelta: delta,
       note: noteCtrl.text.trim().isEmpty ? null : noteCtrl.text.trim(),
@@ -2676,7 +1353,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 Text(_settlementIsDebit ? 'تسوية: إضافة بنود' : 'تسوية: حذف (راجع) بنود', style: const TextStyle(fontWeight: FontWeight.bold)),
                 const Spacer(),
                 TextButton.icon(
-                  onPressed: () => setState(() => _settlementPanelVisible = false),
+                  onPressed: () => setState(() => settlementPanelVisible = false),
                   icon: const Icon(Icons.close),
                   label: const Text('إخفاء'),
                 ),
@@ -2771,7 +1448,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 onSubmitted: (val) async {
                                   final id = int.tryParse(val.trim());
                                   if (id == null) return;
-                                  final p = await _db.getProductById(id);
+                                  final p = await db.getProductById(id);
                                   if (p != null) {
                                     _applySettlementProductSelection(p);
                                   }
@@ -2781,7 +1458,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             onSelected: (String selection) {
                               try {
                                 // البحث عن المنتج المحدد وتطبيق التعبئة التلقائية
-                                _db.searchProductsSmart(selection).then((products) {
+                                db.searchProductsSmart(selection).then((products) {
                                   if (products.isNotEmpty) {
                                     _applySettlementProductSelection(products.first);
                                   }
@@ -2821,7 +1498,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             onSelected: (String selection) {
                               try {
                                 // البحث عن المنتج المحدد وتطبيق التعبئة التلقائية
-                                _db.searchProductsSmart(selection).then((products) {
+                                db.searchProductsSmart(selection).then((products) {
                                   if (products.isNotEmpty) {
                                     _applySettlementProductSelection(products.first);
                                   }
@@ -2942,7 +1619,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             Row(
               children: [
                 ElevatedButton.icon(
-                  onPressed: _isSaving ? null : _saveSettlementItems,
+                  onPressed: isSaving ? null : _saveSettlementItems,
                   icon: const Icon(Icons.save),
                   label: const Text('حفظ بنود التسوية'),
                 ),
@@ -3084,7 +1761,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   }
 
   Future<void> _saveSettlementItems() async {
-    if (_invoiceToManage == null || _settlementItems.isEmpty) return;
+    if (invoiceToManage == null || _settlementItems.isEmpty) return;
     
     // فحص إذا كانت التسويات الراجعة تتجاوز المبلغ المتبقي الفعلي
     if (!_settlementIsDebit) {
@@ -3116,8 +1793,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       print('DEBUG: itemTotal = ${it.itemTotal}');
       print('=== END DEBUG SAVING SETTLEMENT ITEM ===');
       
-      await _db.insertInvoiceAdjustment(InvoiceAdjustment(
-        invoiceId: _invoiceToManage!.id!,
+      await db.insertInvoiceAdjustment(InvoiceAdjustment(
+        invoiceId: invoiceToManage!.id!,
         type: _settlementIsDebit ? 'debit' : 'credit',
         amountDelta: delta,
         productId: it.productId,
@@ -3133,7 +1810,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     }
     if (mounted) {
       setState(() {
-        _settlementPanelVisible = false;
+        settlementPanelVisible = false;
         _settlementItems.clear();
         _settleSelectedProduct = null;
         _settleSelectedSaleType = 'قطعة';
@@ -3173,7 +1850,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       if (widget.settlementForInvoice == null) return;
       final baseInvoice = widget.settlementForInvoice!;
       // صفّ البيانات الفارغة وأحسب الإجمالي
-      final settlementItems = _invoiceItems.where((it) => _isInvoiceItemComplete(it)).toList();
+      final settlementItems = invoiceItems.where((it) => _isInvoiceItemComplete(it)).toList();
       if (settlementItems.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أضف بنوداً للتسوية أولاً')));
         return;
@@ -3186,10 +1863,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         // البحث عن المنتج لتعويض productId
         Product? prod;
         try {
-          final all = await _db.getAllProducts();
+          final all = await db.getAllProducts();
           prod = all.firstWhere((p) => p.name == item.productName);
         } catch (_) {}
-        await _db.insertInvoiceAdjustment(
+        await db.insertInvoiceAdjustment(
           InvoiceAdjustment(
             invoiceId: baseInvoice.id!,
             type: 'debit',
@@ -3239,39 +1916,40 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     }
   }
 
-  void _performReset() {
+  Future<void> _performReset() async {
     try {
       setState(() {
-        _customerNameController.clear();
-        _customerPhoneController.clear();
-        _customerAddressController.clear();
-        _installerNameController.clear();
+        customerNameController.clear();
+        customerPhoneController.clear();
+        customerAddressController.clear();
+        installerNameController.clear();
         _productSearchController.clear();
         _quantityController.clear();
-        _paidAmountController.clear();
-        _discountController.clear();
-        _discount = 0.0;
+        paidAmountController.clear();
+        discountController.clear();
+        discount = 0.0;
         _selectedPriceLevel = null;
         _selectedProduct = null;
         _useLargeUnit = false;
-        _paymentType = 'نقد';
-        _selectedDate = DateTime.now();
-        _invoiceItems.clear(); // حذف جميع الأصناف فورًا
+        paymentType = 'نقد';
+        selectedDate = DateTime.now();
+        invoiceItems.clear(); // حذف جميع الأصناف فورًا
         for (final node in focusNodesList) {
           node.dispose();
         }
         focusNodesList.clear();
         _searchResults.clear();
         _totalAmountController.text = '0';
-        _savedOrSuspended = false;
-        _storage.remove('temp_invoice_data');
+        savedOrSuspended = false;
       });
+      
+      await storage.delete(key: 'temp_invoice_data');
 
       // بعد ثانية واحدة أضف عنصر فارغ جديد
       Future.delayed(const Duration(seconds: 1), () {
         if (mounted) {
           setState(() {
-            _invoiceItems.add(InvoiceItem(
+            invoiceItems.add(InvoiceItem(
               invoiceId: 0,
               productName: '',
               unit: '',
@@ -3300,23 +1978,23 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   Future<void> _saveReturnAmount(double value) async {
     try {
-      if (_invoiceToManage == null || _invoiceToManage!.isLocked) return;
+      if (invoiceToManage == null || invoiceToManage!.isLocked) return;
       // تحديث الفاتورة في قاعدة البيانات
       final updatedInvoice =
-          _invoiceToManage!.copyWith(isLocked: true);
-      await _db.updateInvoice(updatedInvoice);
+          invoiceToManage!.copyWith(isLocked: true);
+      await db.updateInvoice(updatedInvoice);
 
       // إزالة منطق خصم الراجع من رصيد المؤسس
       if (updatedInvoice.installerName != null &&
           updatedInvoice.installerName!.isNotEmpty) {
         final installer =
-            await _db.getInstallerByName(updatedInvoice.installerName!);
+            await db.getInstallerByName(updatedInvoice.installerName!);
         if (installer != null) {
           final newTotal =
               (installer.totalBilledAmount - value).clamp(0.0, double.infinity);
           final updatedInstaller =
               installer.copyWith(totalBilledAmount: newTotal);
-          await _db.updateInstaller(updatedInstaller);
+          await db.updateInstaller(updatedInstaller);
         }
       }
 
@@ -3324,10 +2002,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
       // جلب أحدث نسخة من الفاتورة بعد الحفظ
       final updatedInvoiceFromDb =
-          await _db.getInvoiceById(_invoiceToManage!.id!);
+          await db.getInvoiceById(invoiceToManage!.id!);
       setState(() {
-        _invoiceToManage = updatedInvoiceFromDb;
-        _isViewOnly = true; // تفعيل وضع العرض فقط
+        invoiceToManage = updatedInvoiceFromDb;
+        isViewOnly = true; // تفعيل وضع العرض فقط
       });
 
       if (mounted) {
@@ -3350,20 +2028,20 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   // دالة الحفظ التلقائي للفواتير المعلقة
   Future<void> autoSaveSuspendedInvoice() async {
     try {
-      if (_invoiceToManage == null ||
-          _invoiceToManage!.status != 'معلقة' ||
-          (_invoiceToManage?.isLocked ?? false)) return;
+      if (invoiceToManage == null ||
+          invoiceToManage!.status != 'معلقة' ||
+          (invoiceToManage?.isLocked ?? false)) return;
       Customer? customer;
-      if (_customerNameController.text.trim().isNotEmpty) {
-        final customers = await _db.getAllCustomers();
+      if (customerNameController.text.trim().isNotEmpty) {
+        final customers = await db.getAllCustomers();
         try {
           customer = customers.firstWhere(
             (c) =>
-                c.name.trim() == _customerNameController.text.trim() &&
+                c.name.trim() == customerNameController.text.trim() &&
                 (c.phone == null ||
                     c.phone!.isEmpty ||
-                    _customerPhoneController.text.trim().isEmpty ||
-                    c.phone == _customerPhoneController.text.trim()),
+                    customerPhoneController.text.trim().isEmpty ||
+                    c.phone == customerPhoneController.text.trim()),
           );
         } catch (e) {
           customer = null;
@@ -3371,39 +2049,39 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         // لا تنشئ عميل جديد هنا، فقط استخدم الموجود إن وجد
       }
       double currentTotalAmount =
-          _invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-      double paid = double.tryParse(_paidAmountController.text.replaceAll(',', '')) ?? 0.0;
-      double totalAmount = currentTotalAmount - _discount;
-      Invoice invoice = _invoiceToManage!.copyWith(
-        customerName: _customerNameController.text,
-        customerPhone: _customerPhoneController.text,
-        customerAddress: _customerAddressController.text,
-        installerName: _installerNameController.text.isEmpty
+          invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+      double paid = double.tryParse(paidAmountController.text.replaceAll(',', '')) ?? 0.0;
+      double totalAmount = currentTotalAmount - discount;
+      Invoice invoice = invoiceToManage!.copyWith(
+        customerName: customerNameController.text,
+        customerPhone: customerPhoneController.text,
+        customerAddress: customerAddressController.text,
+        installerName: installerNameController.text.isEmpty
             ? null
-            : _installerNameController.text,
-        invoiceDate: _selectedDate,
-        paymentType: _paymentType,
+            : installerNameController.text,
+        invoiceDate: selectedDate,
+        paymentType: paymentType,
         totalAmount: totalAmount,
-        discount: _discount,
+        discount: discount,
         amountPaidOnInvoice: paid,
         lastModifiedAt: DateTime.now(),
         customerId: customer?.id,
         // status: 'معلقة',
         isLocked: false,
       );
-      int invoiceId = _invoiceToManage!.id!;
+      int invoiceId = invoiceToManage!.id!;
       // حذف جميع أصناف الفاتورة القديمة وإضافة الجديدة
-      final oldItems = await _db.getInvoiceItems(invoiceId);
+      final oldItems = await db.getInvoiceItems(invoiceId);
       for (var oldItem in oldItems) {
-        await _db.deleteInvoiceItem(oldItem.id!);
+        await db.deleteInvoiceItem(oldItem.id!);
       }
-      for (var item in _invoiceItems) {
+      for (var item in invoiceItems) {
         item.invoiceId = invoiceId;
-        await _db.insertInvoiceItem(item);
+        await db.insertInvoiceItem(item);
       }
       await context.read<AppProvider>().updateInvoice(invoice);
       setState(() {
-        _invoiceToManage = invoice;
+        invoiceToManage = invoice;
       });
     } catch (e) {
       print('Auto-save suspended invoice error: $e');
@@ -3416,10 +2094,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         _selectedProduct = product;
         _quantityController.clear();
         _currentUnitHierarchy = [];
-        _currentUnitOptions = [];
+        currentUnitOptions = [];
         if (product.unit == 'piece') {
-          _currentUnitOptions.add('قطعة');
-          _selectedUnitForItem = 'قطعة';
+          currentUnitOptions.add('قطعة');
+          selectedUnitForItem = 'قطعة';
           if (product.unitHierarchy != null &&
               product.unitHierarchy!.isNotEmpty) {
             try {
@@ -3427,12 +2105,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   json.decode(product.unitHierarchy!.replaceAll("'", '"'));
               _currentUnitHierarchy =
                   parsed.map((e) => Map<String, dynamic>.from(e)).toList();
-              _currentUnitOptions.addAll(_currentUnitHierarchy
+              currentUnitOptions.addAll(_currentUnitHierarchy
                   .map((e) => (e['unit_name'] ?? e['name'] ?? '').toString()));
               print(
                   'DEBUG: product.unitHierarchy = \u001b[32m${product.unitHierarchy}\u001b[0m');
               print(
-                  'DEBUG: _currentUnitOptions = \u001b[36m$_currentUnitOptions\u001b[0m');
+                  'DEBUG: currentUnitOptions = \u001b[36m$currentUnitOptions\u001b[0m');
               print(
                   'DEBUG: _currentUnitHierarchy = \u001b[35m$_currentUnitHierarchy\u001b[0m');
             } catch (e) {
@@ -3440,14 +2118,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             }
           }
         } else if (product.unit == 'meter') {
-          _currentUnitOptions = ['متر'];
-          _selectedUnitForItem = 'متر';
+          currentUnitOptions = ['متر'];
+          selectedUnitForItem = 'متر';
           if (product.lengthPerUnit != null && product.lengthPerUnit! > 0) {
-            _currentUnitOptions.add('لفة');
+            currentUnitOptions.add('لفة');
           }
         } else {
-          _currentUnitOptions.add(product.unit);
-          _selectedUnitForItem = product.unit;
+          currentUnitOptions.add(product.unit);
+          selectedUnitForItem = product.unit;
         }
         double? newPriceLevel;
         switch (_selectedListType) {
@@ -3492,10 +2170,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             _selectedPriceLevel = null;
           }
         }
-        _suppressSearch = true;
+        suppressSearch = true;
         _productSearchController.text = product.name;
         _searchResults = [];
-        _quantityAutofocus = true;
+        quantityAutofocus = true;
       });
     } catch (e) {
       print('Error selecting product: $e');
@@ -3560,13 +2238,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   }
 
   void _recalculateTotals() {
-    double itemsTotal = _invoiceItems.fold(0, (sum, item) => sum + item.itemTotal);
+    double itemsTotal = invoiceItems.fold(0, (sum, item) => sum + item.itemTotal);
     // إضافة رسوم التحميل إلى الإجمالي المعروض
-    final double loadingFee = double.tryParse(_loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
+    final double loadingFee = double.tryParse(loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
     double total = itemsTotal + loadingFee;
     _totalAmountController.text = formatNumber(total);
-    if (_paymentType == 'نقد') {
-      _paidAmountController.text = formatNumber(total - _discount);
+    if (paymentType == 'نقد') {
+      paidAmountController.text = formatNumber(total - discount);
     }
     setState(() {});
     _scheduleLiveDebtSync();
@@ -3575,17 +2253,17 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   Future<void> _syncLiveDebt() async {
     try {
       // متاح فقط للفواتير الموجودة ولها عميل
-      if (_invoiceToManage == null || _invoiceToManage!.id == null) return;
-      final int invoiceId = _invoiceToManage!.id!;
-      int? customerId = _invoiceToManage!.customerId;
+      if (invoiceToManage == null || invoiceToManage!.id == null) return;
+      final int invoiceId = invoiceToManage!.id!;
+      int? customerId = invoiceToManage!.customerId;
       if (customerId == null) {
         // حاول إيجاد العميل بالاسم/الهاتف إذا لم يكن مرتبطاً
-        if (_customerNameController.text.trim().isEmpty) return;
-        final customer = await _db.findCustomerByNormalizedName(
-          _customerNameController.text.trim(),
-          phone: _customerPhoneController.text.trim().isEmpty
+        if (customerNameController.text.trim().isEmpty) return;
+        final customer = await db.findCustomerByNormalizedName(
+          customerNameController.text.trim(),
+          phone: customerPhoneController.text.trim().isEmpty
               ? null
-              : _customerPhoneController.text.trim(),
+              : customerPhoneController.text.trim(),
         );
         if (customer == null || customer.id == null) return;
         customerId = customer.id;
@@ -3593,7 +2271,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       final int resolvedCustomerId = customerId!;
 
       double newContribution = 0.0;
-      if (_paymentType == 'دين') {
+      if (paymentType == 'دين') {
         // استخدم دالة المتبقي الحالية التي تأخذ بعين الاعتبار التسويات النقدية
         final remaining = await _calculateRemainingAmount();
         newContribution = remaining.clamp(0.0, double.infinity);
@@ -3601,7 +2279,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         newContribution = 0.0;
       }
 
-      await _db.setInvoiceDebtContribution(
+      await db.setInvoiceDebtContribution(
         invoiceId: invoiceId,
         customerId: resolvedCustomerId,
         newContribution: newContribution,
@@ -3615,8 +2293,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   void _scheduleLiveDebtSync() {
     try {
-      _liveDebtTimer?.cancel();
-      _liveDebtTimer = Timer(const Duration(milliseconds: 500), _syncLiveDebt);
+      liveDebtTimer?.cancel();
+      liveDebtTimer = Timer(const Duration(milliseconds: 500), _syncLiveDebt);
     } catch (e) {
       print('schedule live sync error: $e');
     }
@@ -3624,15 +2302,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
 
   Future<void> _persistPaymentTypeLightweight() async {
     try {
-      if (_invoiceToManage == null || _invoiceToManage!.id == null) return;
-      final paid = double.tryParse(_paidAmountController.text.replaceAll(',', '')) ?? 0.0;
+      if (invoiceToManage == null || invoiceToManage!.id == null) return;
+      final paid = double.tryParse(paidAmountController.text.replaceAll(',', '')) ?? 0.0;
       // لا نعدّل البنود هنا؛ فقط نحفظ نوع الدفع والمبلغ المسدد والتاريخ
-      final updated = _invoiceToManage!.copyWith(
-        paymentType: _paymentType,
+      final updated = invoiceToManage!.copyWith(
+        paymentType: paymentType,
         amountPaidOnInvoice: paid,
         lastModifiedAt: DateTime.now(),
       );
-      await _db.updateInvoice(updated);
+      await db.updateInvoice(updated);
     } catch (e) {
       print('light persist payment type error: $e');
     }
@@ -3649,7 +2327,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     final Color errorColor = Colors.red[700]!;
 
     // استخدم القائمة الكاملة دائمًا لعرض جميع الصفوف بما في ذلك الصف الفارغ الجديد
-    final displayedItems = _invoiceItems;
+    final displayedItems = invoiceItems;
 
     return WillPopScope(
       onWillPop: _onWillPop,
@@ -3755,8 +2433,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
       ),
       child: Scaffold(
         appBar: AppBar(
-          title: Text(_invoiceToManage != null 
-              ? (_isViewOnly ? 'عرض فاتورة' : 'تعديل فاتورة')
+          title: Text(invoiceToManage != null 
+              ? (isViewOnly ? 'عرض فاتورة' : 'تعديل فاتورة')
               : 'إنشاء فاتورة'),
           centerTitle: true,
           actions: [
@@ -3764,8 +2442,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             IconButton(
               icon: const Icon(Icons.receipt),
               tooltip: 'فاتورة جديدة',
-              onPressed: _invoiceItems.isNotEmpty ||
-                      _customerNameController.text.isNotEmpty
+              onPressed: invoiceItems.isNotEmpty ||
+                      customerNameController.text.isNotEmpty
                   ? _resetInvoice
                   : null,
             ),
@@ -3773,29 +2451,29 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             IconButton(
               icon: const Icon(Icons.print),
               tooltip: 'طباعة الفاتورة',
-              onPressed: (_invoiceItems.isEmpty || _isSaving) ? null : _printInvoice,
+              onPressed: (invoiceItems.isEmpty || isSaving) ? null : printInvoice,
             ),
             IconButton(
               icon: const Icon(Icons.print_disabled),
               tooltip: 'طباعة تجهيز (بدون أسعار)',
-              onPressed: (_invoiceItems.isEmpty || _isSaving) ? null : _printPickingList,
+              onPressed: (invoiceItems.isEmpty || isSaving) ? null : _printPickingList,
             ),
             // زر المشاركة الجديد
             IconButton(
               icon: const Icon(Icons.share),
               tooltip: 'مشاركة الفاتورة PDF',
-              onPressed: (_invoiceItems.isEmpty || _isSaving) ? null : _shareInvoice,
+              onPressed: (invoiceItems.isEmpty || isSaving) ? null : shareInvoice,
             ),
-            if (_invoiceToManage != null && _isViewOnly) ...[
+            if (invoiceToManage != null && isViewOnly) ...[
               IconButton(
                 icon: const Icon(Icons.edit),
                 tooltip: 'تعديل الفاتورة',
-                onPressed: _isSaving ? null : _enableEditMode,
+                onPressed: isSaving ? null : _enableEditMode,
               ),
               IconButton(
                 icon: const Icon(Icons.playlist_add),
                 tooltip: 'تسوية الفاتورة - تحت التطوير',
-                onPressed: _isSaving ? null : () {
+                onPressed: isSaving ? null : () {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
                       content: Text('هذه الميزة تحت التطوير حالياً'),
@@ -3806,16 +2484,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 },
               ),
             ],
-            if (_invoiceToManage != null && !_isViewOnly) ...[
+            if (invoiceToManage != null && !isViewOnly) ...[
               IconButton(
                 icon: const Icon(Icons.save),
                 tooltip: 'حفظ التعديلات',
-                onPressed: _isSaving ? null : _saveInvoice,
+                onPressed: isSaving ? null : saveInvoice,
               ),
               IconButton(
                 icon: const Icon(Icons.cancel),
                 tooltip: 'إلغاء التعديل',
-                onPressed: _isSaving ? null : _cancelEdit,
+                onPressed: isSaving ? null : _cancelEdit,
               ),
             ],
           ],
@@ -3823,13 +2501,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
         body: Padding(
           padding: const EdgeInsets.all(16.0),
           child: Form(
-            key: _formKey,
+            key: formKey,
             child: ListView(
               children: <Widget>[
                 ListTile(
                   title: const Text('تاريخ الفاتورة'),
                   subtitle: Text(
-                    '${_selectedDate.year}/${_selectedDate.month}/${_selectedDate.day}',
+                    '${selectedDate.year}/${selectedDate.month}/${selectedDate.day}',
                   ),
                   trailing: const Icon(Icons.calendar_today),
                   onTap: () => _selectDate(context),
@@ -3840,9 +2518,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   children: [
                     Expanded(
                       flex: 3,
-                      child: _isViewOnly
+                      child: isViewOnly
                           ? TextFormField(
-                              controller: _customerNameController,
+                              controller: customerNameController,
                               decoration: const InputDecoration(
                                   labelText: 'اسم العميل'),
                               validator: (value) {
@@ -3859,7 +2537,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 if (textEditingValue.text == '') {
                                   return const Iterable<String>.empty();
                                 }
-                                final customers = await _db
+                                final customers = await db
                                     .searchCustomers(textEditingValue.text);
                                 return customers.map((c) => c.name).toSet();
                               },
@@ -3869,9 +2547,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 WidgetsBinding.instance
                                     .addPostFrameCallback((_) {
                                   if (controller.text !=
-                                      _customerNameController.text) {
+                                      customerNameController.text) {
                                     controller.text =
-                                        _customerNameController.text;
+                                        customerNameController.text;
                                     controller.selection =
                                         TextSelection.fromPosition(
                                       TextPosition(
@@ -3891,18 +2569,18 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                     return null;
                                   },
                                   onChanged: (val) {
-                                    _customerNameController.text = val;
+                                    customerNameController.text = val;
                                     _onFieldChanged();
-                                    if (_invoiceToManage != null &&
-                                        _invoiceToManage!.status == 'معلقة' &&
-                                        (_invoiceToManage?.isLocked ?? false)) {
+                                    if (invoiceToManage != null &&
+                                        invoiceToManage!.status == 'معلقة' &&
+                                        (invoiceToManage?.isLocked ?? false)) {
                                       autoSaveSuspendedInvoice();
                                     }
                                   },
                                 );
                               },
                               onSelected: (String selection) {
-                                _customerNameController.text = selection;
+                                customerNameController.text = selection;
                                 _onFieldChanged();
                               },
                             ),
@@ -3911,11 +2589,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     Expanded(
                       flex: 2,
                       child: TextFormField(
-                        controller: _customerPhoneController,
+                        controller: customerPhoneController,
                         decoration: const InputDecoration(
                             labelText: 'رقم الجوال (اختياري)'),
                         keyboardType: TextInputType.phone,
-                        enabled: !_isViewOnly,
+                        enabled: !isViewOnly,
                       ),
                     ),
                   ],
@@ -3927,26 +2605,26 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     Expanded(
                       flex: 3,
                       child: TextFormField(
-                        controller: _customerAddressController,
+                        controller: customerAddressController,
                         decoration: const InputDecoration(
                             labelText: 'العنوان (اختياري)'),
-                        enabled: !_isViewOnly,
+                        enabled: !isViewOnly,
                       ),
                     ),
                     const SizedBox(width: 8.0),
                     Expanded(
                       flex: 2,
                       child: TextFormField(
-                        controller: _installerNameController,
+                        controller: installerNameController,
                         decoration: const InputDecoration(
                             labelText: 'اسم المؤسس/الفني (اختياري)'),
-                        enabled: !_isViewOnly,
+                        enabled: !isViewOnly,
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 24.0),
-                if (!_isViewOnly) ...[
+                if (!isViewOnly) ...[
                   const Text(
                     'إضافة أصناف للفاتورة',
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -3968,9 +2646,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 labelText: 'ID الصنف (إضافة مباشرة بالمعرّف)',
                                 hintText: 'اكتب ID المنتج ثم Enter',
                               ),
-                              enabled: !_isViewOnly,
-                              onFieldSubmitted: _isViewOnly ? null : _handleSubmitProductId,
-                              onChanged: _isViewOnly ? null : _handleChangeProductId,
+                              enabled: !isViewOnly,
+                              onFieldSubmitted: isViewOnly ? null : _handleSubmitProductId,
+                              onChanged: isViewOnly ? null : _handleChangeProductId,
                             ),
                             if (_productIdSuggestion != null)
                               Container(
@@ -4014,7 +2692,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             hintText: 'مثال: اكتب "كوب فنار" لإيجاد "كوب واحد سيه فنار"',
                             suffixIcon: IconButton(
                               icon: const Icon(Icons.clear),
-                              onPressed: _isViewOnly
+                              onPressed: isViewOnly
                                   ? null
                                   : () {
                                       _productSearchController.clear();
@@ -4029,7 +2707,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                     },
                             ),
                           ),
-                          onChanged: _isViewOnly ? null : _searchProducts,
+                          onChanged: isViewOnly ? null : _searchProducts,
                         ),
                       ),
                     ],
@@ -4047,7 +2725,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           final product = _searchResults[index];
                           return ListTile(
                             title: Text(product.name),
-                            onTap: _isViewOnly
+                            onTap: isViewOnly
                                 ? null
                                 : () {
                                     FocusScope.of(context).unfocus();
@@ -4092,7 +2770,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     Text('الصنف المحدد: ${_selectedProduct!.name}'),
                     const SizedBox(height: 8.0),
                     if ((_selectedProduct != null &&
-                            _currentUnitOptions.length > 1) ||
+                            currentUnitOptions.length > 1) ||
                         (_selectedProduct!.unit == 'meter' &&
                             _selectedProduct!.lengthPerUnit != null))
                       Padding(
@@ -4111,23 +2789,23 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                               child: Row(
                                 mainAxisAlignment:
                                     MainAxisAlignment.spaceEvenly,
-                                children: _currentUnitOptions.map((unitName) {
+                                children: currentUnitOptions.map((unitName) {
                                   return ChoiceChip(
                                     label: Text(
                                       unitName,
                                       style: TextStyle(
-                                        color: _selectedUnitForItem == unitName
+                                        color: selectedUnitForItem == unitName
                                             ? Colors.white
                                             : Colors.black,
                                       ),
                                     ),
-                                    selected: _selectedUnitForItem == unitName,
-                                    onSelected: _isViewOnly
+                                    selected: selectedUnitForItem == unitName,
+                                    onSelected: isViewOnly
                                         ? null
                                         : (selected) {
                                             if (selected) {
                                               setState(() {
-                                                _selectedUnitForItem = unitName;
+                                                selectedUnitForItem = unitName;
                                                 _quantityController.clear();
                                               });
                                             }
@@ -4157,9 +2835,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             focusNode: focusNodesList.length > 0
                                 ? focusNodesList[0].quantity
                                 : null,
-                            autofocus: _quantityAutofocus, // ربط autofocus
+                            autofocus: quantityAutofocus, // ربط autofocus
                             decoration: InputDecoration(
-                              labelText: 'الكمية (${_selectedUnitForItem})',
+                              labelText: 'الكمية (${selectedUnitForItem})',
                             ),
                             keyboardType: const TextInputType.numberWithOptions(
                                 decimal: true),
@@ -4176,7 +2854,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                               }
                               return null;
                             },
-                            enabled: !_isViewOnly,
+                            enabled: !isViewOnly,
                           ),
                         ),
                         const SizedBox(width: 8.0),
@@ -4261,7 +2939,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 ),
                                 value: dropdownValue,
                                 items: priceItems,
-                                onChanged: _isViewOnly
+                                onChanged: isViewOnly
                                     ? null
                                     : (value) async {
                                         if (value == -1) {
@@ -4369,7 +3047,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                 .map((type) => DropdownMenuItem(
                                     value: type, child: Text(type)))
                                 .toList(),
-                            onChanged: _isViewOnly
+                            onChanged: isViewOnly
                                 ? null
                                 : (value) async {
                                     if (value != null) {
@@ -4418,7 +3096,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                                       // بعد تحديث القائمة أو جلب الأصناف من قاعدة البيانات
                                       print(
                                           '--- العناصر الحالية بعد اختيار نوع القائمة ---');
-                                      for (var item in _invoiceItems) {
+                                      for (var item in invoiceItems) {
                                         print('--- صنف ---');
                                         print('المنتج:  ${item.productName}');
                                         print(
@@ -4437,13 +3115,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     ),
                     const SizedBox(height: 8.0),
                     ElevatedButton(
-                      onPressed: _isViewOnly ? null : _addInvoiceItem,
+                      onPressed: isViewOnly ? null : _addInvoiceItem,
                       child: const Text('إضافة الصنف للفاتورة'),
                     ),
                   ],
                 ],
                 const SizedBox(height: 24.0),
-                if (_settlementPanelVisible) _buildSettlementPanel(),
+                if (settlementPanelVisible) _buildSettlementPanel(),
                 const Text(
                   'أصناف الفاتورة',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -4512,9 +3190,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 ListView.builder(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
-                  itemCount: _invoiceItems.length,
+                  itemCount: invoiceItems.length,
                   itemBuilder: (context, index) {
-                    final item = _invoiceItems[index];
+                    final item = invoiceItems[index];
                     while (focusNodesList.length <= index) {
                       focusNodesList.add(LineItemFocusNodes());
                     }
@@ -4523,28 +3201,28 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       item: item,
                       index: index,
                       allProducts: _allProductsForUnits ?? [],
-                      isViewOnly: _isViewOnly,
+                      isViewOnly: isViewOnly,
                       isPlaceholder: item.productName.isEmpty,
-                      databaseService: _db, // إضافة DatabaseService للبحث الذكي
-                    currentCustomerName: _customerNameController.text.trim(),
-                    currentCustomerPhone: _customerPhoneController.text.trim().isEmpty ? null : _customerPhoneController.text.trim(),
+                      databaseService: db, // إضافة DatabaseService للبحث الذكي
+                    currentCustomerName: customerNameController.text.trim(),
+                    currentCustomerPhone: customerPhoneController.text.trim().isEmpty ? null : customerPhoneController.text.trim(),
                       onItemUpdated: (updatedItem) {
                         // تحديد أن هناك تغييرات غير محفوظة
-                        if (_invoiceToManage != null && !_isViewOnly) {
-                          _hasUnsavedChanges = true;
+                        if (invoiceToManage != null && !isViewOnly) {
+                          hasUnsavedChanges = true;
                         }
                         
                         setState(() {
-                          final i = _invoiceItems.indexWhere(
+                          final i = invoiceItems.indexWhere(
                               (it) => it.uniqueId == updatedItem.uniqueId);
                           if (i != -1) {
-                            _invoiceItems[i] = updatedItem;
+                            invoiceItems[i] = updatedItem;
                           }
                           _recalculateTotals();
-                          final lastIndex = _invoiceItems.length - 1;
+                          final lastIndex = invoiceItems.length - 1;
                           if (i == lastIndex &&
                               _isInvoiceItemComplete(updatedItem)) {
-                            _invoiceItems.add(InvoiceItem(
+                            invoiceItems.add(InvoiceItem(
                                 invoiceId: 0,
                                 productName: '',
                                 unit: '',
@@ -4569,11 +3247,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                 const SizedBox(height: 24.0),
                 Builder(
                   builder: (context) {
-                    final totalBeforeDiscount = _invoiceItems.fold(
+                    final totalBeforeDiscount = invoiceItems.fold(
                         0.0, (sum, item) => sum + item.itemTotal);
-                    final total = totalBeforeDiscount - _discount;
+                    final total = totalBeforeDiscount - discount;
                     double enteredPaidAmount =
-                        double.tryParse(_paidAmountController.text.replaceAll(',', '')) ?? 0;
+                        double.tryParse(paidAmountController.text.replaceAll(',', '')) ?? 0;
                     double displayedPaidAmount = enteredPaidAmount;
                     double displayedRemainingAmount = total - enteredPaidAmount;
                     final double totalAfterAdjustments =
@@ -4607,7 +3285,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                           }
                         });
 
-                    if (_paymentType == 'نقد') {
+                    if (paymentType == 'نقد') {
                       // للفواتير النقدية: المبلغ المدفوع يجب أن يساوي الإجمالي كاملاً
                       displayedPaidAmount = totalAfterAdjustments;
                       displayedRemainingAmount = 0;
@@ -4648,7 +3326,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             Text(
                                 'المتبقي:         ${formatNumber(displayedRemainingAmount, forceDecimal: true)} دينار',
                                 style: const TextStyle(color: Colors.red)),
-                            if (_paymentType == 'دين' || debtSettlements != 0)
+                            if (paymentType == 'دين' || debtSettlements != 0)
                               Padding(
                                 padding: const EdgeInsets.only(top: 8.0),
                                 child: Text(
@@ -4793,16 +3471,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     );
                   },
                 ),
-                if (_isViewOnly)
+                if (isViewOnly)
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       Text(
-                        'نوع الدفع: ${_invoiceToManage?.paymentType ?? 'غير محدد'}',
+                        'نوع الدفع: ${invoiceToManage?.paymentType ?? 'غير محدد'}',
                         style: const TextStyle(
                             fontSize: 18, fontWeight: FontWeight.bold),
                       ),
-                      if (_invoiceToManage?.paymentType == 'دين' &&
+                      if (invoiceToManage?.paymentType == 'دين' &&
                           widget.relatedDebtTransaction != null)
                         Padding(
                           padding: const EdgeInsets.only(top: 8.0),
@@ -4819,26 +3497,26 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                     children: [
                       Radio<String>(
                         value: 'نقد',
-                        groupValue: _paymentType,
-                        onChanged: _isViewOnly
+                        groupValue: paymentType,
+                        onChanged: isViewOnly
                             ? null
                             : (value) {
                                 // تحديد أن هناك تغييرات غير محفوظة
-                                if (_invoiceToManage != null && !_isViewOnly) {
-                                  _hasUnsavedChanges = true;
+                                if (invoiceToManage != null && !isViewOnly) {
+                                  hasUnsavedChanges = true;
                                 }
                                 
                                 setState(() {
-                                  _paymentType = value!;
+                                  paymentType = value!;
                                   _guardDiscount();
                                   _updatePaidAmountIfCash();
                                   _autoSave();
                                 });
                 _scheduleLiveDebtSync();
                 _persistPaymentTypeLightweight();
-                                if (_invoiceToManage != null &&
-                                    _invoiceToManage!.status == 'معلقة' &&
-                                    (_invoiceToManage?.isLocked ?? false)) {
+                                if (invoiceToManage != null &&
+                                    invoiceToManage!.status == 'معلقة' &&
+                                    (invoiceToManage?.isLocked ?? false)) {
                                   autoSaveSuspendedInvoice();
                                 }
                               },
@@ -4847,25 +3525,25 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       const SizedBox(width: 24),
                       Radio<String>(
                         value: 'دين',
-                        groupValue: _paymentType,
-                        onChanged: _isViewOnly
+                        groupValue: paymentType,
+                        onChanged: isViewOnly
                             ? null
                             : (value) {
                                 // تحديد أن هناك تغييرات غير محفوظة
-                                if (_invoiceToManage != null && !_isViewOnly) {
-                                  _hasUnsavedChanges = true;
+                                if (invoiceToManage != null && !isViewOnly) {
+                                  hasUnsavedChanges = true;
                                 }
                                 
                                 setState(() {
-                                  _paymentType = value!;
-                                  _paidAmountController.text = formatNumber(0);
+                                  paymentType = value!;
+                                  paidAmountController.text = formatNumber(0);
                                   _autoSave();
                                 });
                 _scheduleLiveDebtSync();
                 _persistPaymentTypeLightweight();
-                                if (_invoiceToManage != null &&
-                                    _invoiceToManage!.status == 'معلقة' &&
-                                    (_invoiceToManage?.isLocked ?? false)) {
+                                if (invoiceToManage != null &&
+                                    invoiceToManage!.status == 'معلقة' &&
+                                    (invoiceToManage?.isLocked ?? false)) {
                                   autoSaveSuspendedInvoice();
                                 }
                               },
@@ -4873,25 +3551,25 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                       const Text('دين'),
                     ],
                   ),
-                  if (_paymentType == 'دين') ...[
+                  if (paymentType == 'دين') ...[
                     const SizedBox(height: 8),
                     TextFormField(
-                      controller: _paidAmountController,
+                      controller: paidAmountController,
                       decoration: const InputDecoration(
                           labelText: 'المبلغ المسدد (اختياري)'),
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
                       inputFormatters: [
                         ThousandSeparatorDecimalInputFormatter(),
                       ],
-                      enabled: !_isViewOnly && _paymentType == 'دين',
+                      enabled: !isViewOnly && paymentType == 'دين',
                       onChanged: (value) {
                         setState(() {
                           double enteredPaid = double.tryParse(value.replaceAll(',', '')) ?? 0.0;
-                          final total = _invoiceItems.fold(
+                          final total = invoiceItems.fold(
                                   0.0, (sum, item) => sum + item.itemTotal) -
-                              _discount;
+                              discount;
                           if (enteredPaid >= total) {
-                            _paidAmountController.text = formatNumber(0);
+                            paidAmountController.text = formatNumber(0);
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(
                                   content: Text(
@@ -4899,9 +3577,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                             );
                           }
                         });
-                        if (_invoiceToManage != null &&
-                            _invoiceToManage!.status == 'معلقة' &&
-                            (_invoiceToManage?.isLocked ?? false)) {
+                        if (invoiceToManage != null &&
+                            invoiceToManage!.status == 'معلقة' &&
+                            (invoiceToManage?.isLocked ?? false)) {
                           autoSaveSuspendedInvoice();
                         }
                       },
@@ -4917,50 +3595,50 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   inputFormatters: [
                     ThousandSeparatorDecimalInputFormatter(),
                   ],
-                  onChanged: _isViewOnly
+                  onChanged: isViewOnly
                       ? null
                       : (val) {
                           setState(() {
                             double enteredDiscount =
                                 double.tryParse(val.replaceAll(',', '')) ?? 0.0;
-                            _discount = enteredDiscount;
+                            discount = enteredDiscount;
                             _guardDiscount();
                             _updatePaidAmountIfCash();
                           });
-                          if (_invoiceToManage != null &&
-                              _invoiceToManage!.status == 'معلقة' &&
-                              (_invoiceToManage?.isLocked ?? false)) {
+                          if (invoiceToManage != null &&
+                              invoiceToManage!.status == 'معلقة' &&
+                              (invoiceToManage?.isLocked ?? false)) {
                             autoSaveSuspendedInvoice();
                           }
                         },
-                  initialValue: _discount > 0 ? formatNumber(_discount) : '',
-                  enabled: !_isViewOnly,
+                  initialValue: discount > 0 ? formatNumber(discount) : '',
+                  enabled: !isViewOnly,
                 ),
                 const SizedBox(height: 24.0),
                 // في وضع التسوية أيضاً نحتاج زر حفظ لكن يختلف المنطق
-                if (!_isViewOnly)
+                if (!isViewOnly)
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceAround,
                     children: [
                       if (widget.settlementForInvoice == null)
                         ElevatedButton.icon(
-                          onPressed: _isSaving ? null : _saveInvoice,
+                          onPressed: isSaving ? null : saveInvoice,
                           icon: const Icon(Icons.save),
                           label: const Text('حفظ الفاتورة'),
                         )
                       else
                         ElevatedButton.icon(
-                          onPressed: _isSaving ? null : _saveSettlement,
+                          onPressed: isSaving ? null : _saveSettlement,
                           icon: const Icon(Icons.save_as),
                           label: const Text('حفظ التسوية'),
                         ),
                     ],
                   ),
                 // إضافة حقل أجور التحميل فقط إذا لم يكن العرض فقط أو الفاتورة مقفلة
-                if (!_isViewOnly && !(_invoiceToManage?.isLocked ?? false)) ...[
+                if (!isViewOnly && !(invoiceToManage?.isLocked ?? false)) ...[
                   const SizedBox(height: 16.0),
                   TextFormField(
-                    controller: _loadingFeeController,
+                    controller: loadingFeeController,
                     decoration: const InputDecoration(
                       labelText: 'أجور التحميل (اختياري)',
                       hintText: 'أدخل مبلغ أجور التحميل إذا وجد',
@@ -4982,7 +3660,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
   }
 
   Future<bool> _showAddAdjustmentDialog() async {
-    if (_invoiceToManage == null) return false;
+    if (invoiceToManage == null) return false;
     String type = 'debit';
     bool byItem = true;
     final TextEditingController productCtrl = TextEditingController();
@@ -4996,7 +3674,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
     Future<void> fetchSuggestions(String q) async {
       productSuggestions = q.trim().isEmpty
           ? []
-          : (await _db.searchProductsSmart(q.trim())).take(10).toList();
+          : (await db.searchProductsSmart(q.trim())).take(10).toList();
       if (mounted) setState(() {});
     }
 
@@ -5153,9 +3831,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
                   }
                   if (type == 'credit') delta = -delta.abs(); else delta = delta.abs();
 
-                  await _db.insertInvoiceAdjustment(
+                  await db.insertInvoiceAdjustment(
                     InvoiceAdjustment(
-                      invoiceId: _invoiceToManage!.id!,
+                      invoiceId: invoiceToManage!.id!,
                       type: type,
                       amountDelta: delta,
                       productId: productId,
