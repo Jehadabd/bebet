@@ -31,7 +31,7 @@ class AddTransactionScreen extends StatefulWidget {
   @override
   State<AddTransactionScreen> createState() => _AddTransactionScreenState();
 }
-print('(customer.currentTotalDebt)');
+
 class _AddTransactionScreenState extends State<AddTransactionScreen> {
   final _formKey = GlobalKey<FormState>();
   final _amountController = TextEditingController();
