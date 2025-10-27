@@ -1192,23 +1192,40 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
           await txn.update('invoices', invoice.toMap(), where: 'id = ?', whereArgs: [invoiceId]);
         }
         
-        // حذف الأصناف القديمة وإدراج الجديدة
+        // حذف الأصناف القديمة وإدراج الجديدة باستخدام Batch Processing السريع
         await txn.delete('invoice_items', where: 'invoice_id = ?', whereArgs: [invoiceId]);
+        
+        // جلب جميع المنتجات مرة واحدة فقط خارج الحلقة لتجنب التكرار
+        final products = await txn.rawQuery('SELECT * FROM products');
+        final productMap = <String, Map<String, dynamic>>{};
+        for (var productData in products) {
+          final productName = productData['name'] as String?;
+          if (productName != null) {
+            productMap[productName] = productData;
+          }
+        }
+        
+        // إنشاء كائن Batch لتنفيذ جميع العمليات مرة واحدة
+        final batch = txn.batch();
+        
         for (var item in _invoiceItems) {
           if (_isInvoiceItemComplete(item)) {
-            // البحث عن المنتج لجلب التكلفة الفعلية
-            final products = await _db.getAllProducts();
-            final matchedProduct = products.firstWhere(
-              (p) => p.name == item.productName,
-              orElse: () => Product(
+            // البحث عن المنتج من الـ Map المحفوظ مسبقاً
+            final productData = productMap[item.productName];
+            Product matchedProduct;
+            
+            if (productData != null) {
+              matchedProduct = Product.fromMap(productData);
+            } else {
+              matchedProduct = Product(
                 name: '',
                 unit: '',
                 unitPrice: 0.0,
                 price1: 0.0,
                 createdAt: DateTime.now(),
                 lastModifiedAt: DateTime.now(),
-              ),
-            );
+              );
+            }
             
             // حساب التكلفة الفعلية بناءً على نوع الوحدة المباعة
             final actualCostPrice = _calculateActualCostPrice(matchedProduct, item.saleType ?? 'قطعة', item.quantityIndividual ?? item.quantityLargeUnit ?? 0);
@@ -1221,9 +1238,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> {
             
             var itemMap = invoiceItem.toMap();
             itemMap.remove('id'); // تأكد من إزالة الـ ID عند الإدراج
-            await txn.insert('invoice_items', itemMap);
+            
+            // إضافة العملية للـ Batch بدلاً من التنفيذ المباشر
+            batch.insert('invoice_items', itemMap);
           }
         }
+        
+        // تنفيذ جميع العمليات (60+ عملية إدخال) مرة واحدة - سريع جداً!
+        await batch.commit(noResult: true);
 
         // --- منطق تحديث الدين (الآن محمي بالكامل داخل المعاملة) ---
         if (customer != null && _paymentType == 'دين') {

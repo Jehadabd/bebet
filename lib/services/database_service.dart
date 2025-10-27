@@ -310,8 +310,8 @@ class DatabaseService {
     final newPath = join(dir.path, 'debt_book.db');
     final oldPath = join(await getDatabasesPath(), 'debt_book.db');
 
-    print('DEBUG DB: New database path: $newPath');
-    print('DEBUG DB: Old database path: $oldPath');
+    // print('DEBUG DB: New database path: $newPath');
+    // print('DEBUG DB: Old database path: $oldPath');
 
     final oldFile = File(oldPath);
     final newFile = File(newPath);
@@ -323,12 +323,43 @@ class DatabaseService {
     // إنشاء مجلد الملفات الصوتية
     await ensureAudioNotesDirectory();
     
-    return await openDatabase(
+    final db = await openDatabase(
       newPath,
       version: _databaseVersion, // رفع رقم النسخة لتفعيل الترقية وإضافة عمود unique_id
       onCreate: _createDatabase,
       onUpgrade: _onUpgrade,
     );
+    
+    // إصلاح قاعدة البيانات بعد الفتح مباشرة
+    await repairDatabase(db);
+    
+    return db;
+  }
+
+  // دالة لمحاولة فحص وإصلاح قاعدة البيانات
+  Future<void> repairDatabase(Database db) async {
+    try {
+      // فحص سلامة قاعدة البيانات
+      final List<Map<String, dynamic>> check = await db.rawQuery('PRAGMA integrity_check;');
+      
+      if (check.isNotEmpty && check.first['integrity_check'] != 'ok') {
+        print('⚠️ Database integrity issue detected. Attempting repair...');
+        // إعادة بناء الفهارس قد يصلح بعض المشاكل
+        await db.rawQuery('REINDEX;');
+        print('✅ Database repair completed successfully.');
+
+        // إعادة فحص السلامة بعد الإصلاح
+        final List<Map<String, dynamic>> afterCheck = await db.rawQuery('PRAGMA integrity_check;');
+        if (afterCheck.isNotEmpty && afterCheck.first['integrity_check'] == 'ok') {
+          print('✅ Database integrity restored.');
+        } else {
+          print('⚠️ Database still has integrity issues after repair.');
+        }
+      }
+      // لا نطبع رسالة إذا كانت قاعدة البيانات سليمة لتجنب الإزعاج
+    } catch (e) {
+      print('❌ Error during database repair: $e');
+    }
   }
 
   // إرجاع مسار ملف قاعدة البيانات الحالي
