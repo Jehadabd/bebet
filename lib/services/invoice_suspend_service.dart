@@ -199,7 +199,10 @@ class InvoiceSuspendService {
     }
     double currentTotalAmount =
         invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-    double paid = double.tryParse(paidAmountController.text) ?? 0.0;
+    // احرص على إزالة فواصل الآلاف قبل تحويل النص إلى رقم لتفادي فشل التحويل
+    double paid =
+        double.tryParse(paidAmountController.text.replaceAll(',', '')) ??
+            0.0;
     double totalAmount = currentTotalAmount - discount;
     Invoice invoice = invoiceToManage.copyWith(
       customerName: customerNameController.text,

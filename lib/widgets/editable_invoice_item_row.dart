@@ -6,6 +6,7 @@ import 'formatters.dart';
 import '../models/product.dart';
 import 'dart:convert';
 import 'package:intl/intl.dart';
+import 'safe_autocomplete.dart';
 
 class EditableInvoiceItemRow extends StatefulWidget {
   final InvoiceItem item;
@@ -286,7 +287,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                     : Builder(
                         builder: (context) {
                           TextEditingController? detailsController;
-                          return Autocomplete<String>(
+                          return SafeAutocomplete<String>(
                             initialValue:
                                 TextEditingValue(text: widget.item.productName),
                             optionsBuilder:

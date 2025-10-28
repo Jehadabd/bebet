@@ -23,7 +23,7 @@ import 'dart:convert';
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
   static Database? _database;
-  static const int _databaseVersion = 6;
+  static const int _databaseVersion = 30;
 
   factory DatabaseService() => _instance;
 
@@ -541,7 +541,7 @@ class DatabaseService {
         customer_id INTEGER NOT NULL,
         transaction_date TEXT NOT NULL,
         amount_changed REAL NOT NULL,
-        new_balance_after_transaction REAL NOT NULL,
+        new_balance_after_transaction REAL DEFAULT 0.0,
         transaction_note TEXT,
         transaction_type TEXT,
         description TEXT,
@@ -933,7 +933,7 @@ class DatabaseService {
     }
 
     // إضافة عمود is_read_by_others للجدول transactions
-    if (oldVersion < 6) {
+    if (oldVersion < 26) {
       try {
         await db.execute('ALTER TABLE transactions ADD COLUMN is_read_by_others INTEGER DEFAULT 0;');
         print('DEBUG DB: is_read_by_others column added successfully to transactions table.');
@@ -994,13 +994,51 @@ class DatabaseService {
     } catch (e) {
       print('DEBUG DB: ensuring invoice_logs failed: $e');
     }
-    if (oldVersion < 2) {
+    if (oldVersion < 27) {
       // إضافة عمود actual_cost_price إلى جدول invoice_items
       try {
         await db.execute('ALTER TABLE invoice_items ADD COLUMN actual_cost_price REAL');
         print('تم إضافة عمود actual_cost_price بنجاح');
       } catch (e) {
         print('العمود موجود بالفعل أو حدث خطأ: $e');
+      }
+    }
+    
+    // إضافة عمود balance_before_transaction إلى جدول transactions
+    if (oldVersion < 30) {
+      try {
+        await db.execute('ALTER TABLE transactions ADD COLUMN balance_before_transaction REAL');
+        print('تم إضافة عمود balance_before_transaction بنجاح');
+        
+        // تحديث قيم الرصيد قبل المعاملة لجميع المعاملات الموجودة
+        final List<Map<String, dynamic>> customers = await db.query('customers');
+        for (final customer in customers) {
+          final int customerId = customer['id'];
+          // جلب جميع معاملات العميل مرتبة حسب التاريخ
+          final List<Map<String, dynamic>> transactions = await db.query(
+            'transactions',
+            where: 'customer_id = ?',
+            whereArgs: [customerId],
+            orderBy: 'transaction_date ASC, id ASC'
+          );
+          
+          double runningBalance = 0.0;
+          for (int i = 0; i < transactions.length; i++) {
+            final int transactionId = transactions[i]['id'];
+            // تحديث الرصيد قبل المعاملة
+            await db.update(
+              'transactions',
+              {'balance_before_transaction': runningBalance},
+              where: 'id = ?',
+              whereArgs: [transactionId]
+            );
+            // تحديث الرصيد الجاري للمعاملة التالية
+            runningBalance += (transactions[i]['amount_changed'] as num).toDouble();
+          }
+        }
+        print('تم تحديث قيم الرصيد قبل المعاملة لجميع المعاملات بنجاح');
+      } catch (e) {
+        print('خطأ في إضافة أو تحديث عمود balance_before_transaction: $e');
       }
     }
   }
@@ -1259,7 +1297,7 @@ class DatabaseService {
     }
   }
 
-  /// تحديث معاملة يدوية وتعديل إجمالي دين العميل وفق الفرق
+  /// تحديث معاملة يدوية وإعادة حساب إجمالي دين العميل من جميع المعاملات
   /// يعيد العميل بعد التحديث لعكس الرصيد الجديد في الواجهة
   Future<Customer> updateManualTransaction(DebtTransaction updated) async {
     final db = await database;
@@ -1267,55 +1305,203 @@ class DatabaseService {
       throw Exception('لا يمكن تعديل معاملة بدون معرّف');
     }
 
-    // قراءة المعاملة القديمة للتعرّف على الفرق
-    final oldTx = await getTransactionById(updated.id!);
-    if (oldTx == null) {
-      throw Exception('لم يتم العثور على المعاملة المراد تعديلها');
-    }
-    if (oldTx.invoiceId != null) {
-      // للحفاظ على سلامة الفواتير، لا نسمح بتعديل معاملات مرتبطة بفاتورة من هنا
-      throw Exception('لا يمكن تعديل معاملة مرتبطة بفاتورة من هنا');
-    }
-
-    // جلب العميل
-    final customer = await getCustomerById(oldTx.customerId);
-    if (customer == null) {
-      throw Exception('العميل غير موجود');
-    }
-
-    final double delta = updated.amountChanged - oldTx.amountChanged;
-
-    // تحديث صف المعاملة
     try {
-      await db.update(
+      // قراءة المعاملة القديمة للتعرّف على الفرق
+      final oldTx = await getTransactionById(updated.id!);
+      if (oldTx == null) {
+        throw Exception('لم يتم العثور على المعاملة المراد تعديلها');
+      }
+      if (oldTx.invoiceId != null) {
+        // للحفاظ على سلامة الفواتير، لا نسمح بتعديل معاملات مرتبطة بفاتورة من هنا
+        throw Exception('لا يمكن تعديل معاملة مرتبطة بفاتورة من هنا');
+      }
+
+      // جلب العميل
+      final customer = await getCustomerById(oldTx.customerId);
+      if (customer == null) {
+        throw Exception('العميل غير موجود');
+      }
+
+      // الحصول على المعاملات السابقة لهذه المعاملة لتحديد الرصيد قبلها
+      final transactions = await getCustomerTransactions(
+        oldTx.customerId, 
+        orderBy: 'transaction_date ASC, id ASC'
+      );
+      
+      // البحث عن المعاملة الحالية في القائمة
+      int currentIndex = transactions.indexWhere((t) => t.id == oldTx.id);
+      if (currentIndex == -1) {
+        throw Exception('لم يتم العثور على المعاملة في قائمة معاملات العميل');
+      }
+      
+      // حساب الرصيد قبل المعاملة
+      double balanceBeforeTransaction = 0.0;
+      if (currentIndex > 0) {
+        balanceBeforeTransaction = transactions[currentIndex - 1].newBalanceAfterTransaction ?? 0.0;
+      }
+      
+      // حدد نوع المعاملة بناءً على الإشارة
+      final String newType = updated.amountChanged >= 0
+          ? 'manual_debt'
+          : 'manual_payment';
+          
+      // حساب الرصيد الجديد بعد المعاملة بناءً على الرصيد قبلها
+      final double newBalanceAfter = balanceBeforeTransaction + updated.amountChanged;
+      
+      // تحديث المعاملة بالبيانات الجديدة
+      int updatedRows = await db.update(
         'transactions',
         {
           'amount_changed': updated.amountChanged,
           'transaction_note': updated.transactionNote,
           'transaction_date': updated.transactionDate.toIso8601String(),
-          // تكييف الرصيد بعد المعاملة بناءً على القديم + الفرق إن توفر، وإلا استخدم رصيد العميل الحالي بعد التعديل
-          'new_balance_after_transaction': (oldTx.newBalanceAfterTransaction ?? customer.currentTotalDebt) + delta,
+          'transaction_type': newType,
+          'new_balance_after_transaction': newBalanceAfter,
+          'balance_before_transaction': balanceBeforeTransaction,
         },
         where: 'id = ?',
         whereArgs: [updated.id],
       );
+      
+      if (updatedRows == 0) {
+        throw Exception('فشل في تحديث المعاملة، لم يتم تحديث أي صفوف');
+      }
+      
+      // تحديث أرصدة المعاملات اللاحقة
+      if (currentIndex < transactions.length - 1) {
+        double runningBalance = newBalanceAfter;
+        for (int i = currentIndex + 1; i < transactions.length; i++) {
+          // تحديث الرصيد قبل المعاملة والرصيد بعد المعاملة في عملية واحدة
+          double newBalance = runningBalance + transactions[i].amountChanged;
+          int updatedSubRows = await db.update(
+            'transactions',
+            {
+              'balance_before_transaction': runningBalance,
+              'new_balance_after_transaction': newBalance,
+            },
+            where: 'id = ?',
+            whereArgs: [transactions[i].id],
+          );
+          
+          if (updatedSubRows == 0) {
+            print('تحذير: فشل في تحديث المعاملة التالية بمعرف ${transactions[i].id}');
+          }
+          
+          // تحديث الرصيد الجاري للمعاملة التالية
+          runningBalance = newBalance;
+        }
+      }
+      
+      // إعادة حساب الرصيد الإجمالي من جميع المعاملات وتحديث رصيد العميل
+      await recalculateAndApplyCustomerDebt(oldTx.customerId);
+
+      // جلب العميل المحدث
+      final updatedCustomer = await getCustomerById(oldTx.customerId);
+      if (updatedCustomer == null) {
+        throw Exception('فشل في تحديث بيانات العميل');
+      }
+
+      return updatedCustomer;
     } catch (e) {
+      print('خطأ في تحديث المعاملة: ${e.toString()}');
       throw Exception(_handleDatabaseError(e));
     }
-
-    // تعديل رصيد العميل الإجمالي
-    final updatedCustomer = customer.copyWith(
-      currentTotalDebt: customer.currentTotalDebt + delta,
-      lastModifiedAt: DateTime.now(),
-    );
-    await updateCustomer(updatedCustomer);
-
-    return updatedCustomer;
   }
 
   /// توافق واجهة: تحديث معاملة (حاليًا للمعاملات اليدوية فقط)
   Future<Customer> updateTransaction(DebtTransaction updated) async {
     return updateManualTransaction(updated);
+  }
+
+  /// تحويل نوع المعاملة من إضافة دين إلى تسديد دين أو العكس
+  Future<Customer> convertTransactionType(int transactionId) async {
+    final db = await database;
+    
+    try {
+      // قراءة المعاملة الحالية
+      final transaction = await getTransactionById(transactionId);
+      if (transaction == null) {
+        throw Exception('لم يتم العثور على المعاملة المراد تحويلها');
+      }
+      
+      if (transaction.invoiceId != null) {
+        // لا نسمح بتحويل معاملات مرتبطة بفاتورة
+        throw Exception('لا يمكن تحويل نوع معاملة مرتبطة بفاتورة');
+      }
+      
+      // الحصول على المعاملات مرتبة حسب التاريخ
+      final transactions = await getCustomerTransactions(
+        transaction.customerId, 
+        orderBy: 'transaction_date ASC, id ASC'
+      );
+      
+      // البحث عن المعاملة الحالية في القائمة
+      int currentIndex = transactions.indexWhere((t) => t.id == transactionId);
+      if (currentIndex == -1) {
+        throw Exception('لم يتم العثور على المعاملة في قائمة معاملات العميل');
+      }
+      
+      // حساب الرصيد قبل المعاملة
+      double balanceBeforeTransaction = 0.0;
+      if (currentIndex > 0) {
+        balanceBeforeTransaction = transactions[currentIndex - 1].newBalanceAfterTransaction ?? 0.0;
+      }
+      
+      // تحويل المبلغ من موجب إلى سالب أو العكس
+      final double newAmount = -transaction.amountChanged;
+      
+      // تحديد نوع المعاملة الجديد بناءً على الإشارة
+      final String newType = newAmount >= 0 ? 'manual_debt' : 'manual_payment';
+      
+      // حساب الرصيد الجديد بعد المعاملة بناءً على الرصيد قبلها
+      final double newBalanceAfter = balanceBeforeTransaction + newAmount;
+      
+      // تحديث المعاملة بالمبلغ والنوع الجديد
+      await db.update(
+        'transactions',
+        {
+          'amount_changed': newAmount,
+          'transaction_type': newType,
+          'new_balance_after_transaction': newBalanceAfter,
+          'balance_before_transaction': balanceBeforeTransaction,
+        },
+        where: 'id = ?',
+        whereArgs: [transactionId],
+      );
+      
+      // تحديث أرصدة المعاملات اللاحقة
+      if (currentIndex < transactions.length - 1) {
+        double runningBalance = newBalanceAfter;
+        for (int i = currentIndex + 1; i < transactions.length; i++) {
+          // تحديث الرصيد قبل المعاملة للمعاملة الحالية
+          await db.update(
+            'transactions',
+            {
+              'balance_before_transaction': runningBalance,
+              'new_balance_after_transaction': runningBalance + transactions[i].amountChanged,
+            },
+            where: 'id = ?',
+            whereArgs: [transactions[i].id],
+          );
+          
+          // تحديث الرصيد الجاري للمعاملة التالية
+          runningBalance += transactions[i].amountChanged;
+        }
+      }
+      
+      // إعادة حساب الرصيد الإجمالي من جميع المعاملات وتحديث رصيد العميل
+      await recalculateAndApplyCustomerDebt(transaction.customerId);
+      
+      // جلب العميل المحدث
+      final updatedCustomer = await getCustomerById(transaction.customerId);
+      if (updatedCustomer == null) {
+        throw Exception('فشل في تحديث بيانات العميل');
+      }
+      
+      return updatedCustomer;
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
   }
 
   /// إعادة احتساب مجموع دين العميل من جميع المعاملات وتطبيقه على سجل العميل
@@ -1336,6 +1522,50 @@ class DatabaseService {
       await updateCustomer(updated);
     }
     return total;
+  }
+
+  /// إعادة حساب الرصيد بعد كل معاملة بناءً على الترتيب الزمني
+  Future<void> _recalculateTransactionBalances(int customerId) async {
+    final db = await database;
+    
+    // جلب جميع معاملات العميل مرتبة حسب التاريخ
+    final transactions = await getCustomerTransactions(customerId, orderBy: 'transaction_date ASC, id ASC');
+    
+    double runningBalance = 0.0;
+    
+    // تحديث الرصيد بعد كل معاملة
+    for (final transaction in transactions) {
+      runningBalance += transaction.amountChanged;
+      
+      await db.update(
+        'transactions',
+        {'new_balance_after_transaction': runningBalance},
+        where: 'id = ?',
+        whereArgs: [transaction.id],
+      );
+    }
+  }
+
+  /// إعادة حساب جميع أرصدة المعاملات لجميع العملاء (دالة مساعدة لإصلاح البيانات)
+  Future<void> recalculateAllTransactionBalances() async {
+    final db = await database;
+    
+    // جلب جميع العملاء
+    final customers = await getAllCustomers();
+    
+    for (final customer in customers) {
+      if (customer.id != null) {
+        await _recalculateTransactionBalances(customer.id!);
+        await recalculateAndApplyCustomerDebt(customer.id!);
+      }
+    }
+  }
+
+  /// دالة مساعدة لإصلاح جميع البيانات بعد تحديث قاعدة البيانات
+  Future<void> fixAllTransactionBalances() async {
+    print('بدء إصلاح جميع أرصدة المعاملات...');
+    await recalculateAllTransactionBalances();
+    print('تم إصلاح جميع أرصدة المعاملات بنجاح!');
   }
 
   Future<List<DebtTransaction>> getCustomerTransactions(int customerId,

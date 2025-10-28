@@ -36,13 +36,23 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
   AudioPlayer? _audioPlayer;
   String? _currentlyPlayingPath;
   bool _isPlaying = false;
+  bool _isLoading = false;
 
   @override
   void initState() {
     super.initState();
     // This is good practice for initial data loading from a provider
-    Future.microtask(
-        () => context.read<AppProvider>().selectCustomer(widget.customer));
+    Future.microtask(() async {
+      await context.read<AppProvider>().selectCustomer(widget.customer);
+      await _loadTransactions();
+    });
+  }
+  
+  Future<void> _loadTransactions() async {
+    if (!mounted) return;
+    if (widget.customer.id != null) {
+      await context.read<AppProvider>().loadCustomerTransactions(widget.customer.id!);
+    }
   }
 
   @override
@@ -726,16 +736,79 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                                 }
                               },
                               onEdit: (updated) async {
-                                final db = DatabaseService();
-                                await db.updateTransaction(updated);
-                                final newTotal = await db.recalculateAndApplyCustomerDebt(transaction.customerId);
-                                // حدث المزود والواجهة
-                                await context.read<AppProvider>().selectCustomer((await db.getCustomerById(transaction.customerId))!);
-                                await context.read<AppProvider>().loadCustomerTransactions(transaction.customerId);
-                                if (mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(content: Text('تم تحديث المعاملة. الدين الحالي: ${formatCurrency(newTotal)}')),
-                                  );
+                                try {
+                                  final db = DatabaseService();
+                                  final updatedCustomer = await db.updateTransaction(updated);
+                                  
+                                  // تحديث البيانات بعد التعديل
+                                  setState(() {
+                                    _isLoading = true;
+                                  });
+                                  await _loadTransactions();
+                                  setState(() {
+                                    _isLoading = false;
+                                  });
+                                  
+                                  // تحديث المزود والواجهة بالبيانات المحدثة
+                                  if (updatedCustomer != null) {
+                                    await context.read<AppProvider>().selectCustomer(updatedCustomer);
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text('تم تحديث المعاملة. الدين الحالي: ${formatCurrency(updatedCustomer.currentTotalDebt ?? 0.0)}')),
+                                      );
+                                    }
+                                  }
+                                } catch (e) {
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text('حدث خطأ: ${e.toString()}'),
+                                        backgroundColor: Theme.of(context).colorScheme.error,
+                                      ),
+                                    );
+                                  }
+                                }
+                              },
+                              onConvertType: (transactionId) async {
+                                try {
+                                  final db = DatabaseService();
+                                  final updatedCustomer = await db.convertTransactionType(transactionId);
+                                  // تحديث البيانات بعد التحويل
+                                  setState(() {
+                                    _isLoading = true;
+                                  });
+                                  await _loadTransactions();
+                                  setState(() {
+                                    _isLoading = false;
+                                  });
+                                  
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text('تم تحويل نوع المعاملة بنجاح'),
+                                        backgroundColor: Theme.of(context).colorScheme.tertiary,
+                                      ),
+                                    );
+                                  }
+                                  
+                                  // حدث المزود والواجهة بالبيانات المحدثة
+                                  if (updatedCustomer != null) {
+                                    await context.read<AppProvider>().selectCustomer(updatedCustomer);
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text('تم تحديث المعاملة. الدين الحالي: ${formatCurrency(updatedCustomer.currentTotalDebt ?? 0.0)}')),
+                                      );
+                                    }
+                                  }
+                                } catch (e) {
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text('حدث خطأ: ${e.toString()}'),
+                                        backgroundColor: Theme.of(context).colorScheme.error,
+                                      ),
+                                    );
+                                  }
                                 }
                               },
                             );
@@ -925,6 +998,8 @@ class TransactionListTile extends StatelessWidget {
   
   // Callbacks for edit and refresh after change
   final Future<void> Function(DebtTransaction updated)? onEdit;
+  // Callback for converting transaction type
+  final Future<void> Function(int transactionId)? onConvertType;
 
   const TransactionListTile({
     super.key,
@@ -934,6 +1009,7 @@ class TransactionListTile extends StatelessWidget {
     required this.onPlayStop,
     required this.audioPath,
     this.onEdit,
+    this.onConvertType,
   });
 
   // Helper to format numbers with thousand separators
@@ -975,7 +1051,12 @@ class TransactionListTile extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'الرصيد بعد المعاملة: ${_formatCurrency(transaction.newBalanceAfterTransaction ?? 0.0)} دينار', // Formatted balance
+              'الرصيد قبل المعاملة: ${_formatCurrency(transaction.balanceBeforeTransaction ?? 0.0)} دينار', // Formatted balance before
+              style:
+                  Theme.of(context).textTheme.bodyMedium, // Themed text style
+            ),
+            Text(
+              'الرصيد بعد المعاملة: ${_formatCurrency(transaction.newBalanceAfterTransaction ?? 0.0)} دينار', // Formatted balance after
               style:
                   Theme.of(context).textTheme.bodyMedium, // Themed text style
             ),
@@ -1032,6 +1113,43 @@ class TransactionListTile extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
+              // زر تحويل نوع المعاملة (إضافة دين <-> تسديد دين)
+              if (!isInvoiceRelated && onConvertType != null)
+                IconButton(
+                  icon: const Icon(Icons.swap_horiz, size: 18),
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  tooltip: isDebt ? 'تحويل إلى تسديد دين' : 'تحويل إلى إضافة دين',
+                  onPressed: () async {
+                    // تأكيد قبل التحويل
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('تأكيد تحويل نوع المعاملة'),
+                        content: Text(
+                          isDebt 
+                              ? 'هل تريد تحويل هذه المعاملة من إضافة دين إلى تسديد دين؟'
+                              : 'هل تريد تحويل هذه المعاملة من تسديد دين إلى إضافة دين؟'
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.of(context).pop(false),
+                            child: const Text('إلغاء'),
+                          ),
+                          TextButton(
+                            onPressed: () => Navigator.of(context).pop(true),
+                            child: const Text('تأكيد'),
+                          ),
+                        ],
+                      ),
+                    ) ?? false;
+                    
+                    if (confirmed && transaction.id != null) {
+                      await onConvertType!(transaction.id!);
+                    }
+                  },
+                ),
               IconButton(
                 icon: const Icon(Icons.edit, size: 18),
                 visualDensity: VisualDensity.compact,
@@ -1043,57 +1161,121 @@ class TransactionListTile extends StatelessWidget {
                 final amountController = TextEditingController(text: transaction.amountChanged.toStringAsFixed(2));
                 final noteController = TextEditingController(text: transaction.transactionNote ?? '');
                 DateTime selectedDate = transaction.transactionDate ?? DateTime.now();
-                final ok = await showDialog<bool>(
+                final result = await showDialog<Map<String, dynamic>>(
                   context: context,
                   builder: (context) {
-                    return AlertDialog(
-                      title: const Text('تعديل المعاملة'),
-                      content: SingleChildScrollView(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            TextField(
-                              controller: amountController,
-                              decoration: const InputDecoration(labelText: 'المبلغ (موجب لإضافة دين، سالب لتسديد)'),
-                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    bool isDebt = transaction.amountChanged >= 0;
+                    amountController.text = transaction.amountChanged.abs().toString();
+                    double previewBalance = (transaction.newBalanceAfterTransaction ?? 0);
+
+                    void computePreview() {
+                      final entered = double.tryParse(amountController.text.trim()) ?? transaction.amountChanged.abs();
+                      final signed = isDebt ? entered : -entered;
+                      final delta = signed - transaction.amountChanged;
+                      previewBalance = (transaction.newBalanceAfterTransaction ?? 0) + delta;
+                    }
+
+                    computePreview();
+
+                    return StatefulBuilder(
+                      builder: (ctx, setState) {
+                        return AlertDialog(
+                          title: const Text('تعديل المعاملة'),
+                          content: SingleChildScrollView(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                // نوع العملية: إضافة دين أو تسديد دين
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: ChoiceChip(
+                                        selected: isDebt,
+                                        label: const Text('إضافة دين'),
+                                        onSelected: (v) {
+                                          setState(() {
+                                            isDebt = true;
+                                            computePreview();
+                                          });
+                                        },
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: ChoiceChip(
+                                        selected: !isDebt,
+                                        label: const Text('تسديد دين'),
+                                        onSelected: (v) {
+                                          setState(() {
+                                            isDebt = false;
+                                            computePreview();
+                                          });
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 12),
+                                TextField(
+                                  controller: amountController,
+                                  decoration: const InputDecoration(labelText: 'المبلغ'),
+                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  onChanged: (_) => setState(() => computePreview()),
+                                ),
+                                const SizedBox(height: 8),
+                                Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    'الرصيد المتوقع بعد الحفظ: ${_formatCurrency(previewBalance)}',
+                                    style: Theme.of(context).textTheme.bodyMedium,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                TextField(
+                                  controller: noteController,
+                                  decoration: const InputDecoration(labelText: 'ملاحظة'),
+                                ),
+                                const SizedBox(height: 8),
+                                TextButton.icon(
+                                  onPressed: () async {
+                                    final picked = await showDatePicker(
+                                      context: context,
+                                      initialDate: selectedDate,
+                                      firstDate: DateTime(2000),
+                                      lastDate: DateTime(2100),
+                                    );
+                                    if (picked != null) {
+                                      setState(() {
+                                        selectedDate = picked;
+                                      });
+                                    }
+                                  },
+                                  icon: const Icon(Icons.calendar_today),
+                                  label: Text('التاريخ: ${_formatDate(selectedDate)}'),
+                                ),
+                              ],
                             ),
-                            const SizedBox(height: 8),
-                            TextField(
-                              controller: noteController,
-                              decoration: const InputDecoration(labelText: 'ملاحظة'),
-                            ),
-                            const SizedBox(height: 8),
-                            TextButton.icon(
-                              onPressed: () async {
-                                final picked = await showDatePicker(
-                                  context: context,
-                                  initialDate: selectedDate,
-                                  firstDate: DateTime(2000),
-                                  lastDate: DateTime(2100),
-                                );
-                                if (picked != null) {
-                                  selectedDate = picked;
-                                }
-                              },
-                              icon: const Icon(Icons.calendar_today),
-                              label: Text('التاريخ: ${_formatDate(selectedDate)}'),
-                            ),
+                          ),
+                          actions: [
+                            TextButton(onPressed: () => Navigator.pop(context, {'ok': false}), child: const Text('إلغاء')),
+                            TextButton(onPressed: () => Navigator.pop(context, {'ok': true, 'isDebt': isDebt}), child: const Text('حفظ')),
                           ],
-                        ),
-                      ),
-                      actions: [
-                        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
-                        TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('حفظ')),
-                      ],
+                        );
+                      },
                     );
                   },
                 );
-                if (ok == true) {
-                  final newAmount = double.tryParse(amountController.text.trim()) ?? transaction.amountChanged;
+                if (result != null && (result['ok'] == true)) {
+                  final bool isDebtSelected = result['isDebt'] as bool? ?? (transaction.amountChanged >= 0);
+                  final entered = double.tryParse(amountController.text.trim()) ?? transaction.amountChanged.abs();
+                  final newAmount = (amountController.text.trim().isEmpty)
+                      ? transaction.amountChanged
+                      : (isDebtSelected ? entered : -entered);
                   final updated = transaction.copyWith(
                     amountChanged: newAmount,
                     transactionNote: noteController.text.trim().isEmpty ? null : noteController.text.trim(),
                     transactionDate: selectedDate,
+                    transactionType: (newAmount >= 0) ? 'manual_debt' : 'manual_payment',
                   );
                   await onEdit!(updated);
                 }

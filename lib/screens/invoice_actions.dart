@@ -1,17 +1,7 @@
 // lib/screens/invoice_actions.dart
 import 'dart:convert';
 import 'dart:io';
-import 'package:alnaser/models/app_settings.dart';
-import 'package:alnaser/models/customer.dart';
-import 'package:alnaser/models/invoice.dart';
-import 'package:alnaser/models/invoice_adjustment.dart';
-import 'package:alnaser/models/invoice_item.dart';
-import 'package:alnaser/models/printer_device.dart';
-import 'package:alnaser/models/product.dart';
-import 'package:alnaser/services/database_service.dart';
-import 'package:alnaser/services/drive_service.dart';
-import 'package:alnaser/services/pdf_header.dart';
-import 'package:alnaser/services/settings_manager.dart';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -19,73 +9,78 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart' as pp;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:printing/printing.dart';
-import 'package:alnaser/services/database_service.dart';
-import 'package:alnaser/services/printing_service.dart';
-import 'package:alnaser/models/invoice.dart';
-import 'package:alnaser/models/invoice_item.dart';
-import 'package:alnaser/models/customer.dart';
-import 'package:alnaser/models/product.dart';
-import 'package:alnaser/models/invoice_adjustment.dart';
-import 'package:alnaser/models/printer_device.dart';
-import 'package:alnaser/services/settings_manager.dart';
-import 'package:alnaser/services/pdf_service.dart';
-import 'package:alnaser/services/pdf_header.dart';
-import 'package:alnaser/services/drive_service.dart';
-import 'dart:io';
-import 'dart:typed_data';
+
+import '../models/app_settings.dart';
+import '../models/customer.dart';
+import '../models/invoice.dart';
+import '../models/invoice_adjustment.dart';
+import '../models/invoice_item.dart';
+import '../models/printer_device.dart';
+import '../models/product.dart';
+import '../services/database_service.dart';
+import '../services/drive_service.dart';
+import '../services/pdf_header.dart';
+import '../services/pdf_service.dart';
+import '../services/printing_service.dart';
+import '../services/settings_manager.dart';
 import 'create_invoice_screen.dart';
 
-mixin InvoiceActionsMixin on State<CreateInvoiceScreen> {
-  // المتغيرات المطلوبة من الكلاس الأصلي
-  bool get isSaving => (this as dynamic).isSaving;
-  set isSaving(bool value) => (this as dynamic).isSaving = value;
+/// واجهة تحدد المتغيرات المطلوبة للتعامل مع الفواتير
+abstract class InvoiceActionsInterface {
+  bool get isSaving;
+  set isSaving(bool value);
   
-  GlobalKey<FormState> get formKey => (this as dynamic).formKey;
+  GlobalKey<FormState> get formKey;
   
-  Invoice? get invoiceToManage => (this as dynamic).invoiceToManage;
-  set invoiceToManage(Invoice? value) => (this as dynamic).invoiceToManage = value;
+  Invoice? get invoiceToManage;
+  set invoiceToManage(Invoice? value);
   
-  TextEditingController get customerNameController => (this as dynamic).customerNameController;
-  TextEditingController get customerPhoneController => (this as dynamic).customerPhoneController;
-  TextEditingController get customerAddressController => (this as dynamic).customerAddressController;
-  TextEditingController get installerNameController => (this as dynamic).installerNameController;
-  TextEditingController get paidAmountController => (this as dynamic).paidAmountController;
-  TextEditingController get loadingFeeController => (this as dynamic).loadingFeeController;
+  TextEditingController get customerNameController;
+  TextEditingController get customerPhoneController;
+  TextEditingController get customerAddressController;
+  TextEditingController get installerNameController;
+  TextEditingController get paidAmountController;
+  TextEditingController get loadingFeeController;
   
-  List<InvoiceItem> get invoiceItems => (this as dynamic).invoiceItems;
+  List<InvoiceItem> get invoiceItems;
   
-  double get discount => (this as dynamic).discount;
-  set discount(double value) => (this as dynamic).discount = value;
+  double get discount;
+  set discount(double value);
   
-  String get paymentType => (this as dynamic).paymentType;
-  set paymentType(String value) => (this as dynamic).paymentType = value;
+  String get paymentType;
+  set paymentType(String value);
   
-  DateTime get selectedDate => (this as dynamic).selectedDate;
-  set selectedDate(DateTime value) => (this as dynamic).selectedDate = value;
+  DateTime get selectedDate;
+  set selectedDate(DateTime value);
   
-  DatabaseService get db => (this as dynamic).db;
+  DatabaseService get db;
   
-  bool get isViewOnly => (this as dynamic).isViewOnly;
-  set isViewOnly(bool value) => (this as dynamic).isViewOnly = value;
+  bool get isViewOnly;
+  set isViewOnly(bool value);
   
-  bool get savedOrSuspended => (this as dynamic).savedOrSuspended;
-  set savedOrSuspended(bool value) => (this as dynamic).savedOrSuspended = value;
+  bool get savedOrSuspended;
+  set savedOrSuspended(bool value);
   
-  bool get hasUnsavedChanges => (this as dynamic).hasUnsavedChanges;
-  set hasUnsavedChanges(bool value) => (this as dynamic).hasUnsavedChanges = value;
+  bool get hasUnsavedChanges;
+  set hasUnsavedChanges(bool value);
   
-  PrinterDevice? get selectedPrinter => (this as dynamic).selectedPrinter;
-  set selectedPrinter(PrinterDevice? value) => (this as dynamic).selectedPrinter = value;
+  PrinterDevice? get selectedPrinter;
+  set selectedPrinter(PrinterDevice? value);
   
-  PrintingService get printingService => (this as dynamic).printingService;
+  PrintingService get printingService;
   
-  FlutterSecureStorage get storage => (this as dynamic).storage;
+  FlutterSecureStorage get storage;
+}
+
+/// Mixin للتعامل مع عمليات الفواتير
+mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceActionsInterface {
 // الدوال المساعدة التي تم نقلها
   String formatNumber(num value, {bool forceDecimal = false}) {
-    return NumberFormat('#,##0.##', 'en_US').format(value);
+    final formatter = NumberFormat('#,##0.##', 'en_US');
+    return formatter.format(value);
   }
 
   String _normalizePhoneNumber(String phone) {

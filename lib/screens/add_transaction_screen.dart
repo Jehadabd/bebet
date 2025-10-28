@@ -480,6 +480,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                   ThousandSeparatorInputFormatter(),
                   LengthLimitingTextInputFormatter(15),
                 ],
+                onChanged: (_) => setState(() {}),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
                     return 'الرجاء إدخال المبلغ';
@@ -502,6 +503,56 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                   return null;
                 },
               ),
+              const SizedBox(height: 16.0),
+              // معاينة الرصيد بعد الحفظ
+              Builder(builder: (ctx) {
+                final entered = double.tryParse(_amountController.text.replaceAll(',', '')) ?? 0.0;
+                final signed = _isDebt ? entered : -entered;
+                final newBalance = widget.customer.currentTotalDebt + signed;
+                final color = newBalance > widget.customer.currentTotalDebt
+                    ? Theme.of(ctx).colorScheme.error
+                    : Theme.of(ctx).colorScheme.tertiary;
+                return Card(
+                  elevation: 0,
+                  color: Theme.of(ctx).colorScheme.surfaceVariant,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('المعاينة', style: Theme.of(ctx).textTheme.titleSmall),
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text('الرصيد الحالي', style: Theme.of(ctx).textTheme.bodyMedium),
+                            Text(formatCurrency(widget.customer.currentTotalDebt), style: Theme.of(ctx).textTheme.bodyMedium),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(_isDebt ? 'إضافة' : 'تسديد', style: Theme.of(ctx).textTheme.bodyMedium),
+                            Text(formatCurrency(signed.abs()), style: Theme.of(ctx).textTheme.bodyMedium),
+                          ],
+                        ),
+                        const Divider(height: 20),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text('الرصيد الجديد بعد الحفظ', style: Theme.of(ctx).textTheme.bodyLarge),
+                            Text(
+                              formatCurrency(newBalance),
+                              style: Theme.of(ctx).textTheme.bodyLarge?.copyWith(color: color, fontWeight: FontWeight.bold),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }),
               const SizedBox(height: 20.0), // Increased spacing
               TextFormField(
                 controller: _noteController,

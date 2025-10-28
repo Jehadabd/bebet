@@ -4,6 +4,7 @@ class DebtTransaction {
   final int customerId;
   final DateTime transactionDate;
   final double amountChanged;
+  final double? balanceBeforeTransaction;
   final double? newBalanceAfterTransaction;
   final String? transactionNote;
   final String transactionType;
@@ -21,6 +22,7 @@ class DebtTransaction {
     required this.customerId,
     DateTime? transactionDate,
     required this.amountChanged,
+    this.balanceBeforeTransaction,
     this.newBalanceAfterTransaction,
     this.transactionNote,
     required this.transactionType,
@@ -41,6 +43,7 @@ class DebtTransaction {
       'customer_id': customerId,
       'transaction_date': transactionDate.toIso8601String(),
       'amount_changed': amountChanged,
+      'balance_before_transaction': balanceBeforeTransaction,
       'new_balance_after_transaction': newBalanceAfterTransaction,
       'transaction_note': transactionNote,
       'transaction_type': transactionType,
@@ -61,6 +64,8 @@ class DebtTransaction {
       customerId: map['customer_id'] as int,
       transactionDate: DateTime.parse(map['transaction_date'] as String),
       amountChanged: (map['amount_changed'] as num).toDouble(),
+      balanceBeforeTransaction: 
+          (map['balance_before_transaction'] as num?)?.toDouble(),
       newBalanceAfterTransaction:
           (map['new_balance_after_transaction'] as num?)?.toDouble(),
       transactionNote: map['transaction_note'] as String?,
@@ -81,6 +86,7 @@ class DebtTransaction {
     int? customerId,
     DateTime? transactionDate,
     double? amountChanged,
+    double? balanceBeforeTransaction,
     double? newBalanceAfterTransaction,
     String? transactionNote,
     String? transactionType,
@@ -98,6 +104,7 @@ class DebtTransaction {
       customerId: customerId ?? this.customerId,
       transactionDate: transactionDate ?? this.transactionDate,
       amountChanged: amountChanged ?? this.amountChanged,
+      balanceBeforeTransaction: balanceBeforeTransaction ?? this.balanceBeforeTransaction,
       newBalanceAfterTransaction:
           newBalanceAfterTransaction ?? this.newBalanceAfterTransaction,
       transactionNote: transactionNote ?? this.transactionNote,

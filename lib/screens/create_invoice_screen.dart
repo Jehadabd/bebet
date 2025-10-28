@@ -5,6 +5,7 @@ import '../models/product.dart';
 import '../services/database_service.dart';
 import '../models/invoice_item.dart';
 import '../models/invoice.dart';
+
 import 'package:pdf/widgets.dart' as pw;
 import 'package:pdf/pdf.dart';
 import 'package:printing/printing.dart';
@@ -3093,20 +3094,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                                           }
                                         }
                                       });
-                                      // بعد تحديث القائمة أو جلب الأصناف من قاعدة البيانات
-                                      print(
-                                          '--- العناصر الحالية بعد اختيار نوع القائمة ---');
-                                      for (var item in invoiceItems) {
-                                        print('--- صنف ---');
-                                        print('المنتج:  ${item.productName}');
-                                        print(
-                                            'الكمية:  ${(item.quantityIndividual ?? item.quantityLargeUnit ?? 0)}');
-                                        print('نوع البيع:  ${item.saleType}');
-                                        print('السعر:  ${item.appliedPrice}');
-                                        print('المبلغ:  ${item.itemTotal}');
-                                        print(
-                                            'التفاصيل:  ${item.productName != null ? item.productName : ''}');
-                                      }
                                     }
                                   },
                           ),

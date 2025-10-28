@@ -4,6 +4,7 @@ import '../models/product.dart';
 import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'formatters.dart';
+import 'safe_autocomplete.dart';
 
 class InvoiceItem {
   String? productName;
@@ -242,7 +243,7 @@ class _InvoiceItemsTableState extends State<InvoiceItemsTable> {
                       DataCell(SizedBox(width: 28)),
                       DataCell(const SizedBox(width: 32)),
                       DataCell(
-                        Autocomplete<String>(
+                        SafeAutocomplete<String>(
                           optionsBuilder: (textEditingValue) {
                             if (textEditingValue.text == '') {
                               return const Iterable<String>.empty();

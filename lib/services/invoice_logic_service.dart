@@ -203,7 +203,10 @@ class InvoiceLogicService {
       }
       double currentTotalAmount =
           invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-      double paid = double.tryParse(paidAmountController.text) ?? 0.0;
+      // إزالة فواصل الآلاف قبل تحويل النص إلى رقم لضمان دقة الحساب
+      double paid =
+          double.tryParse(paidAmountController.text.replaceAll(',', '')) ??
+              0.0;
       double debt = (currentTotalAmount - discount) - paid;
       double totalAmount = currentTotalAmount - discount;
       // تحقق من نسبة الخصم
@@ -341,7 +344,10 @@ class InvoiceLogicService {
     }
     double currentTotalAmount =
         invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-    double paid = double.tryParse(paidAmountController.text) ?? 0.0;
+    // إزالة فواصل الآلاف قبل التحويل
+    double paid =
+        double.tryParse(paidAmountController.text.replaceAll(',', '')) ??
+            0.0;
     double totalAmount = currentTotalAmount - discount;
     Invoice invoice = invoiceToManage.copyWith(
       customerName: customerNameController.text,
