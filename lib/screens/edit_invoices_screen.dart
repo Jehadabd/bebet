@@ -515,6 +515,11 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
       // تحميل الإعدادات العامة
       final appSettings = await SettingsManager.getAppSettings();
 
+      // احتساب أجور التحميل من الفرق بين إجمالي الفاتورة ومجموع البنود
+      final double itemsTotal =
+          items.fold(0.0, (sum, item) => sum + item.itemTotal);
+      final double loadingFee = (invoice.totalAmount - itemsTotal);
+
       final doc = await InvoicePdfService.generateInvoicePdf(
         invoiceItems: items,
         allProducts: products,
@@ -523,6 +528,7 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
         invoiceId: invoice.id ?? 0,
         selectedDate: invoice.invoiceDate,
         discount: invoice.discount,
+        loadingFee: loadingFee,
         paid: invoice.amountPaidOnInvoice,
         paymentType: invoice.paymentType,
         invoiceToManage: invoice,

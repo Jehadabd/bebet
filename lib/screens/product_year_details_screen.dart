@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
 import 'product_month_details_screen.dart';
+import 'package:intl/intl.dart';
 
 class ProductYearDetailsScreen extends StatefulWidget {
   final Product product;
@@ -24,6 +25,8 @@ class _ProductYearDetailsScreenState extends State<ProductYearDetailsScreen> {
   Map<int, double> _monthlySales = {};
   Map<int, double> _monthlyProfit = {};
   bool _isLoading = true;
+  late final NumberFormat _nf = NumberFormat('#,##0', 'en_US');
+  String _fmt(num v) => _nf.format(v);
 
   @override
   void initState() {
@@ -217,7 +220,7 @@ class _ProductYearDetailsScreenState extends State<ProductYearDetailsScreen> {
                         const SizedBox(height: 4),
                         Text(
                           hasSales
-                              ? '${quantity.toStringAsFixed(2)} ${widget.product.unit}'
+                              ? '${_fmt(quantity)} ${widget.product.unit}'
                               : 'لا توجد مبيعات',
                           style: TextStyle(
                             fontSize: 14,
@@ -238,7 +241,7 @@ class _ProductYearDetailsScreenState extends State<ProductYearDetailsScreen> {
                         icon: Icons.shopping_cart,
                         title: 'الكمية المباعة',
                         value:
-                            '${quantity.toStringAsFixed(2)} ${widget.product.unit}',
+                            '${_fmt(quantity)} ${widget.product.unit}',
                         color: const Color(0xFF2196F3),
                       ),
                     ),
@@ -247,7 +250,7 @@ class _ProductYearDetailsScreenState extends State<ProductYearDetailsScreen> {
                       child: _buildInfoItem(
                         icon: Icons.trending_up,
                         title: 'الربح',
-                        value: '${profit.toStringAsFixed(2)} د.ع',
+                        value: '${_fmt(profit)} د.ع',
                         color: const Color(0xFF4CAF50),
                       ),
                     ),

@@ -44,11 +44,10 @@ class _InventoryScreenState extends State<InventoryScreen> {
     }
   }
 
-  // Helper to format currency consistently
-  String formatCurrency(num value) {
-    return NumberFormat('0.00', 'ar_IQ').format(
-        value); // Always two decimal places, with Iraqi Dinar symbol or relevant
+ String formatCurrency(num value) {
+    return NumberFormat('#,##0', 'en_US').format(value);
   }
+
   // If you prefer just the number without symbol, use 'en_US' locale
   // String formatNumberTwoDecimals(num value) {
   //   return NumberFormat('0.00', 'en_US').format(value);

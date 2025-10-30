@@ -23,6 +23,7 @@ class InvoicePdfService {
     required int invoiceId,
     required DateTime selectedDate,
     required double discount,
+    required double loadingFee,
     required double paid,
     required String paymentType,
     required Invoice? invoiceToManage,
@@ -183,7 +184,9 @@ class InvoicePdfService {
                         pw.Row(
                           mainAxisAlignment: pw.MainAxisAlignment.end,
                           children: [
-                            summaryRow('الاجمالي قبل الخصم:', currentTotalAmount(invoiceItems), font, fontSettings: appSettings.fontSettings.totalBeforeDiscount),
+                            summaryRow('الاجمالي قبل الخصم:', currentTotalAmount(invoiceItems) + loadingFee, font, fontSettings: appSettings.fontSettings.totalBeforeDiscount),
+                            pw.SizedBox(width: 10),
+                            summaryRow('أجور التحميل:', loadingFee, font, color: PdfColor.fromInt(appSettings.loadingFeesColor), fontSettings: appSettings.fontSettings.shippingFees),
                             pw.SizedBox(width: 10),
                             summaryRow('الخصم:', discount, font, fontSettings: appSettings.fontSettings.discount),
                             pw.SizedBox(width: 10),
@@ -201,7 +204,7 @@ class InvoicePdfService {
                               pw.SizedBox(width: 10),
                               summaryRow('الدين السابق:', previousDebt, font, fontSettings: appSettings.fontSettings.previousDebt),
                               pw.SizedBox(width: 10),
-                              summaryRow('الدين الحالي:', currentDebt, font, fontSettings: appSettings.fontSettings.currentRequiredAmount),
+                              summaryRow('المبلغ المطلوب الحالي:', currentDebt, font, fontSettings: appSettings.fontSettings.currentRequiredAmount),
                             ],
                           ),
                         ],

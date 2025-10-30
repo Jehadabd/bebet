@@ -168,6 +168,7 @@ class InvoiceLogicService {
     required String paymentType,
     required double discount,
     required TextEditingController paidAmountController,
+    required TextEditingController loadingFeeController,
     required List<InvoiceItem> invoiceItems,
     required Invoice? invoiceToManage,
     required DatabaseService db,
@@ -207,8 +208,11 @@ class InvoiceLogicService {
       double paid =
           double.tryParse(paidAmountController.text.replaceAll(',', '')) ??
               0.0;
-      double debt = (currentTotalAmount - discount) - paid;
-      double totalAmount = currentTotalAmount - discount;
+      final double loadingFee =
+          double.tryParse(loadingFeeController.text.replaceAll(',', '')) ??
+              0.0;
+      double debt = ((currentTotalAmount + loadingFee) - discount) - paid;
+      double totalAmount = (currentTotalAmount + loadingFee) - discount;
       // تحقق من نسبة الخصم
       final totalAmountForDiscount =
           invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
@@ -239,6 +243,7 @@ class InvoiceLogicService {
         totalAmount: totalAmount,
         discount: discount,
         amountPaidOnInvoice: paid,
+        loadingFee: loadingFee,
         createdAt: invoiceToManage?.createdAt ?? DateTime.now(),
         lastModifiedAt: DateTime.now(),
         customerId: customer?.id,
@@ -321,6 +326,7 @@ class InvoiceLogicService {
     required double discount,
     required TextEditingController paidAmountController,
     required TextEditingController returnAmountController,
+    required TextEditingController loadingFeeController,
     required DatabaseService db,
   }) async {
     if (invoiceToManage == null ||
@@ -348,7 +354,10 @@ class InvoiceLogicService {
     double paid =
         double.tryParse(paidAmountController.text.replaceAll(',', '')) ??
             0.0;
-    double totalAmount = currentTotalAmount - discount;
+    final double loadingFee =
+        double.tryParse(loadingFeeController.text.replaceAll(',', '')) ??
+            0.0;
+    double totalAmount = (currentTotalAmount + loadingFee) - discount;
     Invoice invoice = invoiceToManage.copyWith(
       customerName: customerNameController.text,
       customerPhone: customerPhoneController.text,
@@ -361,6 +370,7 @@ class InvoiceLogicService {
       totalAmount: totalAmount,
       discount: discount,
       amountPaidOnInvoice: paid,
+      loadingFee: loadingFee,
       lastModifiedAt: DateTime.now(),
       customerId: customer?.id,
       returnAmount: returnAmountController.text.isNotEmpty

@@ -6,6 +6,7 @@ import '../models/transaction.dart';
 import '../services/database_service.dart';
 import 'invoice_details_screen.dart';
 import '../services/database_service.dart' show InvoiceWithProductData;
+import 'package:intl/intl.dart';
 
 class PersonMonthDetailsScreen extends StatefulWidget {
   final Customer customer;
@@ -31,7 +32,8 @@ class _PersonMonthDetailsScreenState extends State<PersonMonthDetailsScreen> {
   double _monthProfit = 0.0;
   double _monthSales = 0.0;
   bool _isLoading = true;
-
+ late final NumberFormat _nf = NumberFormat('#,##0', 'en_US');
+  String _fmt(num v) => _nf.format(v);
   @override
   void initState() {
     super.initState();
@@ -198,7 +200,7 @@ class _PersonMonthDetailsScreenState extends State<PersonMonthDetailsScreen> {
                                           ),
                                           const SizedBox(height: 4),
                                           Text(
-                                            'إجمالي المبيعات: ${_monthSales.toStringAsFixed(2)} د.ع',
+                                            'إجمالي المبيعات: ${_fmt(_monthSales)} د.ع',
                                             style: TextStyle(
                                               fontSize: 14,
                                               color: Colors.grey[600],
@@ -206,7 +208,7 @@ class _PersonMonthDetailsScreenState extends State<PersonMonthDetailsScreen> {
                                           ),
                                           const SizedBox(height: 4),
                                           Text(
-                                            'إجمالي الربح: ${_monthProfit.toStringAsFixed(2)} د.ع',
+                                            'إجمالي الربح: ${_fmt(_monthProfit)} د.ع',
                                             style: const TextStyle(
                                               fontSize: 14,
                                               color: Color(0xFF4CAF50),
@@ -324,7 +326,7 @@ class _PersonMonthDetailsScreenState extends State<PersonMonthDetailsScreen> {
                     child: _buildInvoiceInfo(
                       icon: Icons.trending_up,
                       title: 'الربح',
-                      value: '${invoiceData.profit.toStringAsFixed(2)} د.ع',
+                      value: '${_fmt(invoiceData.profit)} د.ع',
                       color: const Color(0xFF4CAF50),
                     ),
                   ),
@@ -346,7 +348,7 @@ class _PersonMonthDetailsScreenState extends State<PersonMonthDetailsScreen> {
                     child: _buildInvoiceInfo(
                       icon: Icons.attach_money,
                       title: 'المجموع',
-                      value: '${invoice.totalAmount.toStringAsFixed(2)} د.ع',
+                      value: '${_fmt(invoice.totalAmount)} د.ع',
                       color: const Color(0xFF4CAF50),
                     ),
                   ),
@@ -356,7 +358,7 @@ class _PersonMonthDetailsScreenState extends State<PersonMonthDetailsScreen> {
                       icon: Icons.payment,
                       title: 'المدفوع',
                       value:
-                          '${invoice.amountPaidOnInvoice.toStringAsFixed(2)} د.ع',
+                          '${_fmt(invoice.amountPaidOnInvoice)} د.ع',
                       color: const Color(0xFFFF9800),
                     ),
                   ),
@@ -371,7 +373,7 @@ class _PersonMonthDetailsScreenState extends State<PersonMonthDetailsScreen> {
                         icon: Icons.account_balance_wallet,
                         title: 'المتبقي',
                         value:
-                            '${(invoice.totalAmount - invoice.amountPaidOnInvoice).toStringAsFixed(2)} د.ع',
+                            '${_fmt(invoice.totalAmount - invoice.amountPaidOnInvoice)} د.ع',
                         color: const Color(0xFFF44336),
                       ),
                     ),
@@ -443,7 +445,7 @@ class _PersonMonthDetailsScreenState extends State<PersonMonthDetailsScreen> {
                     icon: isPositive ? Icons.add : Icons.remove,
                     title: 'المبلغ',
                     value:
-                        '${transaction.amountChanged.abs().toStringAsFixed(2)} د.ع',
+                        '${_fmt(transaction.amountChanged.abs())} د.ع',
                     color: isPositive
                         ? const Color(0xFF4CAF50)
                         : const Color(0xFFF44336),
@@ -456,7 +458,7 @@ class _PersonMonthDetailsScreenState extends State<PersonMonthDetailsScreen> {
                       icon: Icons.account_balance,
                       title: 'الرصيد الجديد',
                       value:
-                          '${transaction.newBalanceAfterTransaction!.toStringAsFixed(2)} د.ع',
+                          '${_fmt(transaction.newBalanceAfterTransaction!)} د.ع',
                       color: const Color(0xFF2196F3),
                     ),
                   ),

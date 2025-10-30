@@ -5,6 +5,7 @@ import '../models/invoice.dart';
 import '../services/database_service.dart';
 import 'invoice_details_screen.dart';
 import '../services/database_service.dart' show InvoiceWithProductData;
+import 'package:intl/intl.dart';
 
 class ProductMonthDetailsScreen extends StatefulWidget {
   final Product product;
@@ -30,6 +31,8 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
   double _monthQuantity = 0.0;
   double _monthSellingPrice = 0.0; // إضافة متغير لحساب إجمالي سعر البيع
   bool _isLoading = true;
+   late final NumberFormat _nf = NumberFormat('#,##0', 'en_US');
+  String _fmt(num v) => _nf.format(v);
 
   @override
   void initState() {
@@ -221,7 +224,7 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                                           ),
                                           const SizedBox(height: 4),
                                           Text(
-                                            'الكمية المباعة: ${_monthQuantity.toStringAsFixed(2)} ${widget.product.unit}',
+                                            'الكمية المباعة: ${_fmt(_monthQuantity)} ${widget.product.unit}',
                                             style: TextStyle(
                                               fontSize: 14,
                                               color: Colors.grey[600],
@@ -229,7 +232,7 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                                           ),
                                           const SizedBox(height: 4),
                                           Text(
-                                            'الربح من الوحدة: ${(_monthQuantity > 0 ? _calculateProfitPerUnit().toStringAsFixed(2) : '0.00')} د.ع',
+                                            'الربح من الوحدة: ${_fmt(_calculateProfitPerUnit())} د.ع',
                                             style: const TextStyle(
                                               fontSize: 14,
                                               color: Color(0xFF4CAF50),
@@ -238,7 +241,7 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                                           ),
                                           const SizedBox(height: 4),
                                           Text(
-                                            'إجمالي الربح: ${_monthProfit.toStringAsFixed(2)} د.ع',
+                                            'إجمالي الربح: ${_fmt(_monthProfit)} د.ع',
                                             style: TextStyle(
                                               fontSize: 12,
                                               color: Colors.grey[600],
@@ -266,7 +269,7 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                                             child: _buildDetailInfo(
                                               title: 'تكلفة الوحدة',
                                               value: widget.product.costPrice != null
-                                                  ? '${widget.product.costPrice!.toStringAsFixed(2)} د.ع'
+                                                  ? '${_fmt(widget.product.costPrice!)} د.ع'
                                                   : 'غير محدد',
                                               color: const Color(0xFFF44336),
                                             ),
@@ -276,7 +279,7 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                                             child: _buildDetailInfo(
                                               title: 'متوسط سعر البيع',
                                               value: _monthQuantity > 0
-                                                  ? '${(_monthSellingPrice / _monthQuantity).toStringAsFixed(2)} د.ع'
+                                                  ? '${_fmt(_monthSellingPrice / _monthQuantity)} د.ع'
                                                   : 'غير محدد',
                                               color: const Color(0xFFFF9800),
                                             ),
@@ -290,7 +293,7 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                                             child: _buildDetailInfo(
                                               title: 'الربح من الوحدة',
                                               value: _monthQuantity > 0
-                                                  ? '${_calculateProfitPerUnit().toStringAsFixed(2)} د.ع'
+                                                  ? '${_fmt(_calculateProfitPerUnit())} د.ع'
                                                   : 'غير محدد',
                                               color: const Color(0xFF4CAF50),
                                             ),
@@ -409,15 +412,15 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                         Expanded(
                           child: _buildDetailInfo(
                             title: 'الكمية المباعة',
-                            value: '${invoiceData.quantitySold.toStringAsFixed(2)} ${widget.product.unit}',
+                            value: '${_fmt(invoiceData.quantitySold)} ${widget.product.unit}',
                             color: const Color(0xFF2196F3),
                           ),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: _buildDetailInfo(
-                            title: 'تكلفة الوحدة (حسب هذه الفاتورة)',
-                            value: '${invoiceData.unitCostAtSale.toStringAsFixed(2)} د.ع',
+                            title: 'تكلفة الوحدة',
+                            value: '${_fmt(invoiceData.unitCostAtSale)} د.ع',
                             color: const Color(0xFFF44336),
                           ),
                         ),
@@ -428,8 +431,8 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                       children: [
                         Expanded(
                           child: _buildDetailInfo(
-                            title: 'سعر البيع للوحدة (حسب هذه الفاتورة)',
-                            value: '${invoiceData.sellingPrice?.toStringAsFixed(2) ?? 'غير محدد'} د.ع',
+                            title: 'سعر البيع للوحدة',
+                            value: '${invoiceData.sellingPrice != null ? _fmt(invoiceData.sellingPrice!) : 'غير محدد'} د.ع',
                             color: const Color(0xFFFF9800),
                           ),
                         ),
@@ -437,7 +440,7 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                         Expanded(
                           child: _buildDetailInfo(
                             title: 'الربح من الفاتورة',
-                            value: '${invoiceData.profit >= 0 ? invoiceData.profit.toStringAsFixed(2) : (-invoiceData.profit).toStringAsFixed(2)} د.ع',
+                            value: '${_fmt(invoiceData.profit)} د.ع',
                             color: const Color(0xFF4CAF50),
                           ),
                         ),
@@ -449,9 +452,7 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                         Expanded(
                           child: _buildDetailInfo(
                             title: 'الربح من الوحدة',
-                            value: invoiceData.quantitySold > 0
-                                ? '${_calculateInvoiceProfitPerUnit(invoiceData.profit, invoiceData.quantitySold).toStringAsFixed(2)} د.ع'
-                                : 'غير محدد',
+                            value: '${_fmt(_calculateInvoiceProfitPerUnit(invoiceData.profit, invoiceData.quantitySold))} د.ع',
                             color: const Color(0xFF4CAF50),
                           ),
                         ),
@@ -459,8 +460,8 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                         Expanded(
                           child: _buildDetailInfo(
                             title: 'نسبة الربح',
-                            value: invoiceData.unitCostAtSale > 0 && invoiceData.quantitySold > 0
-                                ? '${(((invoiceData.sellingPrice - invoiceData.unitCostAtSale) / invoiceData.unitCostAtSale) * 100).toStringAsFixed(1)}%'
+                            value: invoiceData.unitCostAtSale > 0
+                                ? '${((invoiceData.profit / (invoiceData.unitCostAtSale * invoiceData.quantitySold)) * 100).toStringAsFixed(1)}%'
                                 : 'غير محدد',
                             color: const Color(0xFF9C27B0),
                           ),

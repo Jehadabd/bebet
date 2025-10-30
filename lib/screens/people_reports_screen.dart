@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/database_service.dart';
 import '../models/customer.dart';
 import 'person_details_screen.dart';
+import 'package:intl/intl.dart';
 
 class PeopleReportsScreen extends StatefulWidget {
   const PeopleReportsScreen({super.key});
@@ -17,6 +18,8 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
   List<PersonReportData> _filteredPeople = [];
   bool _isLoading = true;
   final TextEditingController _searchController = TextEditingController();
+  late final NumberFormat _nf = NumberFormat('#,##0', 'en_US');
+  String _fmt(num v) => _nf.format(v);
 
   @override
   void initState() {
@@ -270,7 +273,7 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
                       icon: Icons.trending_up,
                       title: 'الربح',
                       value:
-                          '${person.totalProfit >= 0 ? person.totalProfit.toStringAsFixed(2) : (-person.totalProfit).toStringAsFixed(2)} د.ع',
+                          '${person.totalProfit >= 0 ? _fmt(person.totalProfit) : _fmt(-person.totalProfit)} د.ع',
                       color: const Color(0xFF4CAF50),
                     ),
                   ),
@@ -279,7 +282,7 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
                     child: _buildInfoItem(
                       icon: Icons.shopping_cart,
                       title: 'المبيعات',
-                      value: '${person.totalSales.toStringAsFixed(2)} د.ع',
+                      value: '${_fmt(person.totalSales)} د.ع',
                       color: const Color(0xFF2196F3),
                     ),
                   ),

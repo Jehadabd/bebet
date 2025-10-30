@@ -81,6 +81,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       final transaction = DebtTransaction(
         customerId: widget.customer.id!,
         amountChanged: amountChanged,
+        balanceBeforeTransaction: widget.customer.currentTotalDebt, // تعيين الرصيد قبل المعاملة
         newBalanceAfterTransaction: newBalance,
         transactionNote:
             _noteController.text.isEmpty ? null : _noteController.text,

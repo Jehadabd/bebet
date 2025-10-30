@@ -358,10 +358,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
       discountController.addListener(_onDiscountChanged);
 
       if (invoiceToManage != null) {
-        print(
-            'CreateInvoiceScreen: Init with existing invoice: ${invoiceToManage!.id}');
-        print('Invoice Status on Init: ${invoiceToManage!.status}');
-        print('Is View Only on Init: ${widget.isViewOnly}');
         customerNameController.text = invoiceToManage!.customerName;
         customerPhoneController.text = invoiceToManage!.customerPhone ?? '';
         customerAddressController.text =
@@ -374,11 +370,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
             invoiceToManage!.amountPaidOnInvoice.toString();
         discount = invoiceToManage!.discount;
         discountController.text = discount.toStringAsFixed(2);
+        // تهيئة قيمة أجور التحميل من الفاتورة الحالية
+        try {
+          loadingFeeController.text = formatNumber(invoiceToManage!.loadingFee);
+        } catch (_) {
+          loadingFeeController.text = invoiceToManage!.loadingFee.toString();
+        }
         
 
         _loadInvoiceItems();
       } else {
-        print('CreateInvoiceScreen: Init with new invoice');
         _totalAmountController.text = '0';
       }
       // تهيئة FocusNode
@@ -2051,8 +2052,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
       }
       double currentTotalAmount =
           invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-      double paid = double.tryParse(paidAmountController.text.replaceAll(',', '')) ?? 0.0;
-      double totalAmount = currentTotalAmount - discount;
+      // تضمين أجور التحميل في الإجمالي الفعلي عند الحفظ/التعديل
+      final double loadingFee =
+          double.tryParse(loadingFeeController.text.replaceAll(',', '')) ??
+              0.0;
+      double paid =
+          double.tryParse(paidAmountController.text.replaceAll(',', '')) ??
+              0.0;
+      double totalAmount = (currentTotalAmount + loadingFee) - discount;
       Invoice invoice = invoiceToManage!.copyWith(
         customerName: customerNameController.text,
         customerPhone: customerPhoneController.text,
@@ -2065,6 +2072,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         totalAmount: totalAmount,
         discount: discount,
         amountPaidOnInvoice: paid,
+        loadingFee: loadingFee,
         lastModifiedAt: DateTime.now(),
         customerId: customer?.id,
         // status: 'معلقة',

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
 import 'product_year_details_screen.dart';
+import 'package:intl/intl.dart';
 
 class ProductDetailsScreen extends StatefulWidget {
   final Product product;
@@ -22,6 +23,8 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
   Map<int, double> _yearlyProfit = {};
   bool _isLoading = true;
   double _averageSellingPrice = 0.0;
+   late final NumberFormat _nf = NumberFormat('#,##0', 'en_US');
+  String _fmt(num v) => _nf.format(v);
 
   @override
   void initState() {
@@ -196,7 +199,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                 child: _buildHeaderInfo(
                   icon: Icons.attach_money,
                   title: 'متوسط سعر البيع',
-                  value: '${_averageSellingPrice.toStringAsFixed(2)} د.ع',
+                  value: '${_fmt(_averageSellingPrice)} د.ع',
                   color: const Color(0xFFFF9800),
                 ),
               ),
@@ -206,7 +209,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                   icon: Icons.price_change,
                   title: 'التكلفة',
                   value: widget.product.costPrice != null
-                      ? '${widget.product.costPrice!.toStringAsFixed(2)} د.ع'
+                      ? '${_fmt(widget.product.costPrice!)} د.ع'
                       : 'غير محدد',
                   color: const Color(0xFFF44336),
                 ),
@@ -254,7 +257,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
     }
     
     if (totalQuantity > 0) {
-      return '${(totalProfit / totalQuantity).toStringAsFixed(2)} د.ع';
+      return '${_fmt(totalProfit / totalQuantity)} د.ع';
     }
     
     return 'غير محدد';
@@ -375,7 +378,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'كمية مباعة: ${quantity.toStringAsFixed(2)} ${widget.product.unit}',
+                          'كمية مباعة: ${_fmt(quantity)} ${widget.product.unit}',
                           style: TextStyle(
                             fontSize: 14,
                             color: Colors.grey[600],
@@ -383,7 +386,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'الربح: ${profit.toStringAsFixed(2)} د.ع',
+                          'الربح: ${_fmt(profit)} د.ع',
                           style: const TextStyle(
                             fontSize: 14,
                             color: Color(0xFF4CAF50),

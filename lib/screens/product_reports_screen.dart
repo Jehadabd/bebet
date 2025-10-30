@@ -5,6 +5,7 @@ import '../models/product.dart';
 import '../models/invoice_item.dart';
 import 'product_details_screen.dart';
 import 'product_hierarchy_details_screen.dart';
+import 'package:intl/intl.dart';
 
 class ProductReportsScreen extends StatefulWidget {
   const ProductReportsScreen({super.key});
@@ -19,6 +20,9 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
   List<ProductReportData> _filteredProducts = [];
   bool _isLoading = true;
   final TextEditingController _searchController = TextEditingController();
+
+  late final NumberFormat _nf = NumberFormat('#,##0', 'en_US');
+  String _fmt(num v) => _nf.format(v);
 
   @override
   void initState() {
@@ -255,7 +259,7 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'الكمية المباعة: ${product.totalQuantitySold}',
+                          'الكمية المباعة: ${_fmt(product.totalQuantitySold)}',
                           style: TextStyle(
                             fontSize: 14,
                             color: Colors.grey[600],
@@ -274,7 +278,7 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
                       icon: Icons.trending_up,
                       title: 'الربح',
                       value:
-                          '${product.totalProfit >= 0 ? product.totalProfit.toStringAsFixed(2) : (-product.totalProfit).toStringAsFixed(2)} د.ع',
+                          '${product.totalProfit >= 0 ? _fmt(product.totalProfit) : _fmt(-product.totalProfit)} د.ع',
                       color: const Color(0xFF4CAF50),
                     ),
                   ),
@@ -283,7 +287,7 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
                     child: _buildInfoItem(
                       icon: Icons.shopping_cart,
                       title: 'المبيعات',
-                      value: '${product.totalSales.toStringAsFixed(2)} د.ع',
+                      value: '${_fmt(product.totalSales)} د.ع',
                       color: const Color(0xFF2196F3),
                     ),
                   ),
@@ -318,7 +322,7 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
                     child: _buildInfoItem(
                       icon: Icons.price_change,
                       title: 'التكلفة الإجمالية',
-                      value: '${product.totalCost.toStringAsFixed(2)} د.ع',
+                      value: '${_fmt(product.totalCost)} د.ع',
                       color: const Color(0xFFF44336),
                     ),
                   ),
@@ -327,7 +331,7 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
                     child: _buildInfoItem(
                       icon: Icons.attach_money,
                       title: 'متوسط سعر البيع',
-                      value: '${product.averageSellingPrice.toStringAsFixed(2)} د.ع',
+                      value: '${_fmt(product.averageSellingPrice)} د.ع',
                       color: const Color(0xFFFF9800),
                     ),
                   ),

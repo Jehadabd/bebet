@@ -103,6 +103,7 @@ class InvoiceSuspendService {
     required DatabaseService db,
     required TextEditingController returnAmountController,
     required GetStorage storage,
+    required TextEditingController loadingFeeController,
   }) async {
     if (!formKey.currentState!.validate()) return null;
     for (int i = invoiceItems.length - 1; i >= 0; i--) {
@@ -120,7 +121,10 @@ class InvoiceSuspendService {
     }
     double currentTotalAmount =
         invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-    double totalAmount = currentTotalAmount - discount;
+    final double loadingFee =
+        double.tryParse(loadingFeeController.text.replaceAll(',', '')) ??
+            0.0;
+    double totalAmount = (currentTotalAmount + loadingFee) - discount;
     double paid = double.tryParse(paidAmountController.text.trim()) ?? 0.0;
     final invoice = Invoice(
       id: invoiceToManage?.id,
@@ -133,6 +137,7 @@ class InvoiceSuspendService {
       totalAmount: totalAmount,
       discount: discount,
       amountPaidOnInvoice: paid,
+      loadingFee: loadingFee,
       createdAt: invoiceToManage?.createdAt ?? DateTime.now(),
       lastModifiedAt: DateTime.now(),
       customerId: customerId,

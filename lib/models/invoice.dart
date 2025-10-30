@@ -11,6 +11,7 @@ class Invoice {
   double totalAmount;
   double discount;
   double amountPaidOnInvoice;
+  double loadingFee;
   DateTime createdAt;
   DateTime lastModifiedAt;
   int? customerId;
@@ -29,6 +30,7 @@ class Invoice {
     required this.totalAmount,
     this.discount = 0.0,
     this.amountPaidOnInvoice = 0.0,
+    this.loadingFee = 0.0,
     required this.createdAt,
     required this.lastModifiedAt,
     this.customerId,
@@ -50,6 +52,7 @@ class Invoice {
       'total_amount': totalAmount,
       'discount': discount,
       'amount_paid_on_invoice': amountPaidOnInvoice,
+      'loading_fee': loadingFee,
       'created_at': createdAt.toIso8601String(),
       'last_modified_at': lastModifiedAt.toIso8601String(),
       'customer_id': customerId,
@@ -72,6 +75,7 @@ class Invoice {
       totalAmount: map['total_amount'] as double,
       discount: map['discount'] as double? ?? 0.0,
       amountPaidOnInvoice: map['amount_paid_on_invoice'] as double? ?? 0.0,
+      loadingFee: (map['loading_fee'] as num?)?.toDouble() ?? 0.0,
       createdAt: DateTime.parse(map['created_at']),
       lastModifiedAt: DateTime.parse(map['last_modified_at']),
       customerId: map['customer_id'] as int?,
@@ -93,6 +97,7 @@ class Invoice {
     double? totalAmount,
     double? discount,
     double? amountPaidOnInvoice,
+    double? loadingFee,
     DateTime? createdAt,
     DateTime? lastModifiedAt,
     int? customerId,
@@ -111,6 +116,7 @@ class Invoice {
       totalAmount: totalAmount ?? this.totalAmount,
       discount: discount ?? this.discount,
       amountPaidOnInvoice: amountPaidOnInvoice ?? this.amountPaidOnInvoice,
+      loadingFee: loadingFee ?? this.loadingFee,
       createdAt: createdAt ?? this.createdAt,
       lastModifiedAt: lastModifiedAt ?? this.lastModifiedAt,
       customerId: customerId ?? this.customerId,

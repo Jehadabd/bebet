@@ -4,6 +4,7 @@ import '../models/customer.dart';
 import '../services/database_service.dart';
 import 'person_year_details_screen.dart';
 import '../services/database_service.dart' show PersonYearData;
+import 'package:intl/intl.dart';
 
 class PersonDetailsScreen extends StatefulWidget {
   final Customer customer;
@@ -21,6 +22,8 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
   final DatabaseService _databaseService = DatabaseService();
   Map<int, PersonYearData> _yearlyData = {};
   bool _isLoading = true;
+   late final NumberFormat _nf = NumberFormat('#,##0', 'en_US');
+  String _fmt(num v) => _nf.format(v);
 
   @override
   void initState() {
@@ -195,7 +198,7 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
                   icon: Icons.trending_up,
                   title: 'الربح',
                   value:
-                      '${_calculateTotalProfit() >= 0 ? _calculateTotalProfit().toStringAsFixed(2) : (-_calculateTotalProfit()).toStringAsFixed(2)} د.ع',
+                      '${_calculateTotalProfit() >= 0 ? _fmt(_calculateTotalProfit()) : _fmt(-_calculateTotalProfit())} د.ع',
                   color: const Color(0xFF4CAF50),
                 ),
               ),
@@ -204,7 +207,7 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
                 child: _buildHeaderInfo(
                   icon: Icons.shopping_cart,
                   title: 'المبيعات',
-                  value: '${_calculateTotalSales().toStringAsFixed(2)} د.ع',
+                  value: '${_fmt(_calculateTotalSales())} د.ع',
                   color: const Color(0xFF2196F3),
                 ),
               ),

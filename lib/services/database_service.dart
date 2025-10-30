@@ -23,11 +23,99 @@ import 'dart:convert';
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
   static Database? _database;
-  static const int _databaseVersion = 30;
+  static const int _databaseVersion = 31;
+  // تحكم بالطباعات التشخيصية من مصدر واحد
+  static const bool _verboseLogs = false;
 
   factory DatabaseService() => _instance;
 
   DatabaseService._internal();
+
+  /// التحقق من سلامة قاعدة البيانات وإصلاحها إذا لزم الأمر
+  Future<bool> checkAndRepairDatabaseIntegrity() async {
+    if (!_verboseLogs) return true; // لا تطبع شيء في الوضع العادي
+    try {
+      final db = await database;
+      
+      // نسخ قاعدة البيانات احتياطياً (استخدم مجلد الدعم وتأكد من وجوده)
+      try {
+        final supportDir = await getApplicationSupportDirectory();
+        final backupDir = Directory(join(
+          supportDir.path,
+          '.dart_tool',
+          'sqflite_common_ffi',
+          'databases',
+        ));
+        if (!await backupDir.exists()) {
+          await backupDir.create(recursive: true);
+        }
+        final sourcePath = await getDatabaseFilePath();
+        final backupPath = join(backupDir.path, 'debt_book_backup.db');
+        final sourceFile = File(sourcePath);
+        if (await sourceFile.exists()) {
+          await sourceFile.copy(backupPath);
+          print('تم إنشاء نسخة احتياطية: $backupPath');
+        } else {
+          print('تحذير: ملف قاعدة البيانات غير موجود للنسخ الاحتياطي: $sourcePath');
+        }
+      } catch (e) {
+        print('تحذير أثناء إنشاء النسخة الاحتياطية: $e');
+      }
+
+      // التحقق من سلامة قاعدة البيانات
+      final integrityCheck = await db.rawQuery('PRAGMA integrity_check;');
+      final isIntact = integrityCheck.first.values.first == 'ok';
+      
+      if (!isIntact) {
+        print('تم اكتشاف مشاكل في سلامة قاعدة البيانات');
+        
+        // محاولة إصلاح قاعدة البيانات
+        await db.execute('VACUUM;');
+        print('تم تنفيذ عملية VACUUM');
+        
+        // إعادة بناء جداول FTS
+        await rebuildFTSIndex();
+        print('تم إعادة بناء فهرس FTS');
+        
+        return false;
+      }
+      
+      print('قاعدة البيانات سليمة');
+      return true;
+    } catch (e) {
+      print('خطأ أثناء فحص سلامة قاعدة البيانات: $e');
+      return false;
+    }
+  }
+
+  /// استعادة قاعدة البيانات من النسخة الاحتياطية
+  Future<bool> restoreFromBackup() async {
+    try {
+      final dbPath = await getDatabasesPath();
+      final backupPath = join(dbPath, 'debt_book_backup.db');
+      final currentDbPath = join(dbPath, 'debt_book.db');
+      
+      if (!File(backupPath).existsSync()) {
+        print('لا توجد نسخة احتياطية متوفرة');
+        return false;
+      }
+      
+      // إغلاق الاتصال الحالي بقاعدة البيانات
+      if (_database != null) {
+        await _database!.close();
+        _database = null;
+      }
+      
+      // نسخ النسخة الاحتياطية
+      File(backupPath).copySync(currentDbPath);
+      print('تم استعادة قاعدة البيانات من النسخة الاحتياطية');
+      
+      return true;
+    } catch (e) {
+      print('خطأ أثناء استعادة النسخة الاحتياطية: $e');
+      return false;
+    }
+  }
 
   String _handleDatabaseError(dynamic e) {
     String errorMessage = 'حدث خطأ غير معروف في قاعدة البيانات.';
@@ -110,7 +198,24 @@ class DatabaseService {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDatabase();
+    
+    try {
+      _database = await _initDatabase();
+      
+      // التحقق من سلامة قاعدة البيانات عند كل تهيئة
+      final isIntact = await checkAndRepairDatabaseIntegrity();
+      if (!isIntact) {
+        print('تم اكتشاف وإصلاح مشاكل في قاعدة البيانات');
+      }
+    } catch (e) {
+      print('خطأ أثناء تهيئة قاعدة البيانات: $e');
+      // محاولة استعادة من النسخة الاحتياطية إذا فشلت التهيئة
+      final restored = await restoreFromBackup();
+      if (restored) {
+        _database = await _initDatabase();
+      }
+    }
+    
     // Ensure critical tables exist for older DBs
     try {
       await _database!.execute('''
@@ -196,12 +301,22 @@ class DatabaseService {
     try {
       final invoiceItemsInfo =
           await _database!.rawQuery('PRAGMA table_info(invoice_items);');
+      bool hasProductId = invoiceItemsInfo.any((c) => c['name'] == 'product_id');
       bool hasActualCostPrice =
           invoiceItemsInfo.any((c) => c['name'] == 'actual_cost_price');
       bool hasSaleType = invoiceItemsInfo.any((c) => c['name'] == 'sale_type');
       bool hasUnitsInLargeUnit =
           invoiceItemsInfo.any((c) => c['name'] == 'units_in_large_unit');
       bool hasUniqueId = invoiceItemsInfo.any((c) => c['name'] == 'unique_id');
+      if (!hasProductId) {
+        try {
+          await _database!
+              .execute('ALTER TABLE invoice_items ADD COLUMN product_id INTEGER');
+          print('DEBUG DB: product_id column added successfully to invoice_items table.');
+        } catch (e) {
+          print("DEBUG DB Error: Failed to add column 'product_id' to invoice_items table or it already exists: $e");
+        }
+      }
 
       if (!hasActualCostPrice) {
         try {
@@ -293,8 +408,8 @@ class DatabaseService {
         await rebuildFTSIndex();
       }
 
-      // اختبار البحث الذكي
-      if (productCount > 0) {
+      // اختبار البحث الذكي (معطل في الإصدار النهائي)
+      if (_verboseLogs && productCount > 0) {
         print('Testing smart search functionality...');
         await testSmartSearch();
       }
@@ -339,6 +454,25 @@ class DatabaseService {
   // دالة لمحاولة فحص وإصلاح قاعدة البيانات
   Future<void> repairDatabase(Database db) async {
     try {
+      // إنشاء مجلد النسخ الاحتياطي إذا لم يكن موجوداً
+      final supportDir = await getApplicationSupportDirectory();
+      final backupDir = Directory(join(
+        supportDir.path,
+        '.dart_tool',
+        'sqflite_common_ffi',
+        'databases'
+      ));
+      if (!await backupDir.exists()) {
+        await backupDir.create(recursive: true);
+      }
+
+      // إنشاء نسخة احتياطية قبل الإصلاح
+      final dbFile = File(await getDatabaseFilePath());
+      if (await dbFile.exists()) {
+        final backupPath = join(backupDir.path, 'debt_book_backup.db');
+        await dbFile.copy(backupPath);
+      }
+
       // فحص سلامة قاعدة البيانات
       final List<Map<String, dynamic>> check = await db.rawQuery('PRAGMA integrity_check;');
       
@@ -619,6 +753,7 @@ class DatabaseService {
       CREATE TABLE IF NOT EXISTS invoice_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         invoice_id INTEGER NOT NULL,
+        product_id INTEGER,
         product_name TEXT NOT NULL,
         unit TEXT NOT NULL,
         unit_price REAL NOT NULL,
@@ -708,8 +843,10 @@ class DatabaseService {
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    print(
-        'DEBUG DB: Running onUpgrade from version $oldVersion to $newVersion');
+    if (_verboseLogs) {
+      print(
+          'DEBUG DB: Running onUpgrade from version $oldVersion to $newVersion');
+    }
     //  ترتيب الترقيات مهم
     if (oldVersion < 2) {
       //  ... (أكواد الترقية السابقة إذا كانت موجودة)
@@ -1003,6 +1140,17 @@ class DatabaseService {
         print('العمود موجود بالفعل أو حدث خطأ: $e');
       }
     }
+    // تأكيد وجود عمود product_id في جدول invoice_items بعد الترقية
+    try {
+      final info = await db.rawQuery('PRAGMA table_info(invoice_items);');
+      final hasProductId = info.any((c) => c['name'] == 'product_id');
+      if (!hasProductId) {
+        await db.execute('ALTER TABLE invoice_items ADD COLUMN product_id INTEGER');
+        print('DEBUG DB: product_id column added to invoice_items during upgrade.');
+      }
+    } catch (e) {
+      print("DEBUG DB: Failed ensuring 'product_id' on invoice_items during upgrade: $e");
+    }
     
     // إضافة عمود balance_before_transaction إلى جدول transactions
     if (oldVersion < 30) {
@@ -1039,6 +1187,13 @@ class DatabaseService {
         print('تم تحديث قيم الرصيد قبل المعاملة لجميع المعاملات بنجاح');
       } catch (e) {
         print('خطأ في إضافة أو تحديث عمود balance_before_transaction: $e');
+      }
+    }
+        if (oldVersion < 31) {
+      try {
+        await db.execute('ALTER TABLE invoices ADD COLUMN loading_fee REAL DEFAULT 0;');
+      } catch (e) {
+        print("DEBUG DB Error: Failed to add column 'loading_fee' to invoices table or it already exists: $e");
       }
     }
   }
@@ -1277,8 +1432,34 @@ class DatabaseService {
   Future<int> insertTransaction(DebtTransaction transaction) async {
     final db = await database;
     try {
-      return await db.insert(
-          'transactions', transaction.toMap()); // افترض أن toMap جاهزة
+      // الحصول على العميل لمعرفة الرصيد الحالي قبل إضافة المعاملة
+      final customer = await getCustomerById(transaction.customerId);
+      if (customer == null) {
+        throw Exception('لم يتم العثور على العميل');
+      }
+      
+      // تعيين الرصيد قبل المعاملة
+      double balanceBeforeTransaction = customer.currentTotalDebt;
+      
+      // حساب الرصيد الجديد بعد المعاملة
+      double newBalanceAfterTransaction = balanceBeforeTransaction + transaction.amountChanged;
+      
+      // تحديث المعاملة بالأرصدة الصحيحة
+      final updatedTransaction = transaction.copyWith(
+        balanceBeforeTransaction: balanceBeforeTransaction,
+        newBalanceAfterTransaction: newBalanceAfterTransaction,
+      );
+      
+      // إدخال المعاملة المحدثة في قاعدة البيانات
+      final id = await db.insert('transactions', updatedTransaction.toMap());
+
+      // تحديث رصيد العميل
+      await updateCustomer(customer.copyWith(
+        currentTotalDebt: newBalanceAfterTransaction,
+        lastModifiedAt: DateTime.now(),
+      ));
+
+      return id;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
@@ -2943,70 +3124,94 @@ class DatabaseService {
   Future<void> initializeFTSForExistingProducts() async {
     final db = await database;
     try {
-      // التحقق من وجود عمود name_norm
-      final columns = await db.rawQuery("PRAGMA table_info(products);");
-      final hasNameNorm = columns.any((col) => col['name'] == 'name_norm');
-      
-      if (!hasNameNorm) {
-        print('Adding name_norm column to products table...');
-        await db.execute('ALTER TABLE products ADD COLUMN name_norm TEXT;');
-      }
-
-      // تحديث name_norm لجميع المنتجات الموجودة
-      final products = await db.query('products');
-      if (products.isNotEmpty) {
-        print('Updating name_norm for ${products.length} existing products...');
+      await db.transaction((txn) async {
+        // التحقق من وجود عمود name_norm
+        final columns = await txn.rawQuery("PRAGMA table_info(products);");
+        final hasNameNorm = columns.any((col) => col['name'] == 'name_norm');
         
-        for (final product in products) {
-          final normalizedName = normalizeArabic(product['name'] as String);
-          await db.update(
-            'products',
-            {'name_norm': normalizedName},
-            where: 'id = ?',
-            whereArgs: [product['id']],
-          );
+        if (!hasNameNorm) {
+          print('إضافة عمود name_norm إلى جدول المنتجات...');
+          await txn.execute('ALTER TABLE products ADD COLUMN name_norm TEXT;');
         }
-        print('All products updated with normalized names');
-      }
 
-      // التحقق من وجود جدول FTS5
-      final ftsTable = await db.rawQuery(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='products_fts'"
-      );
-      
-      if (ftsTable.isEmpty) {
-        print('FTS5 table does not exist, creating it...');
-        await db.execute('''
-          CREATE VIRTUAL TABLE IF NOT EXISTS products_fts USING fts5(
+        // تحديث name_norm لجميع المنتجات الموجودة
+        final products = await txn.query('products');
+        if (products.isNotEmpty) {
+          print('تحديث name_norm لـ ${products.length} منتج موجود...');
+          
+          for (final product in products) {
+            final normalizedName = normalizeArabic(product['name'] as String);
+            await txn.update(
+              'products',
+              {'name_norm': normalizedName},
+              where: 'id = ?',
+              whereArgs: [product['id']],
+            );
+          }
+          print('تم تحديث جميع المنتجات بأسماء مطبعة');
+        }
+
+        // إعادة إنشاء جدول FTS5 من الصفر
+        try {
+          await txn.execute('DROP TABLE IF EXISTS products_fts;');
+        } catch (e) {
+          print('خطأ أثناء حذف جدول FTS القديم: $e');
+        }
+
+        print('إنشاء جدول FTS5 جديد...');
+        await txn.execute('''
+          CREATE VIRTUAL TABLE products_fts USING fts5(
             name_norm,
             content='products',
             content_rowid='id',
             tokenize = 'unicode61 remove_diacritics 2'
           )
         ''');
+
+        // إعادة إدراج جميع المنتجات في FTS5
+        if (products.isNotEmpty) {
+          print('إدراج ${products.length} منتج في فهرس FTS...');
+          
+          for (final product in products) {
+            final normalizedName = product['name_norm'] ?? normalizeArabic(product['name'] as String);
+            await txn.execute(
+              'INSERT INTO products_fts(rowid, name_norm) VALUES (?, ?)',
+              [product['id'], normalizedName]
+            );
+          }
+          
+          print('تم تهيئة FTS5 بـ ${products.length} منتج');
+        }
+      });
+
+      // التحقق من نجاح التهيئة باستعلام صالح (معطل افتراضياً)
+      if (_verboseLogs) {
+        try {
+          final sanity = await db.rawQuery(
+            'SELECT count(1) as c FROM products_fts WHERE products_fts MATCH ? LIMIT 1',
+            ['بلك*']
+          );
+          final c = (sanity.isNotEmpty ? sanity.first.values.first : 0) ?? 0;
+          print('اختبار البحث FTS (sanity): $c نتيجة');
+        } catch (e) {
+          print('FTS sanity check failed: $e');
+        }
       }
 
-      // إدراج جميع المنتجات في FTS5
-      if (products.isNotEmpty) {
-        await db.execute('DELETE FROM products_fts'); // مسح المحتوى القديم
-        
-        for (final product in products) {
-          final normalizedName = product['name_norm'] ?? normalizeArabic(product['name'] as String);
-          await db.execute(
-            'INSERT INTO products_fts(rowid, name_norm) VALUES (?, ?)',
-            [product['id'], normalizedName]
-          );
-        }
-        
-        print('FTS5 initialized with ${products.length} existing products');
-      }
     } catch (e) {
-      print('Error initializing FTS for existing products: $e');
+      print('خطأ أثناء تهيئة FTS للمنتجات الموجودة: $e');
+      // محاولة إعادة بناء الفهرس في حالة الفشل
+      try {
+        await rebuildFTSIndex();
+      } catch (rebuildError) {
+        print('فشل إعادة بناء فهرس FTS: $rebuildError');
+      }
     }
   }
 
   /// دالة اختبار للبحث الذكي
   Future<void> testSmartSearch() async {
+    if (!_verboseLogs) return; // تعطيل الاختبارات والطباعات في الإصدار النهائي
     print('=== اختبار البحث الذكي ===');
     
     try {
@@ -3700,7 +3905,7 @@ class DatabaseService {
   Future<void> updateOldInvoicesWithCustomerIds() async {
     final db = await database;
     try {
-      print('🔄 بدء تحديث الفواتير القديمة...');
+      if (_verboseLogs) print('🔄 بدء تحديث الفواتير القديمة...');
       
       // جلب جميع الفواتير التي لا تحتوي على customer_id
       final List<Map<String, dynamic>> invoicesWithoutCustomerId = await db.rawQuery('''
@@ -4261,6 +4466,7 @@ class DatabaseService {
 
   /// طباعة تفصيل فاتورة محددة بالمعرف: عناصر، تحويل الكمية الأساسية، التكلفة، الربح، وإجمالي الفاتورة
   Future<void> debugPrintInvoiceById(int invoiceId) async {
+    if (!_verboseLogs) return; // معطل في الإصدار النهائي
     final db = await database;
     try {
       final invRows = await db.rawQuery('''
@@ -4376,6 +4582,7 @@ class DatabaseService {
   }
 
   Future<void> debugPrintProductsForInvoice(int invoiceId) async {
+    if (!_verboseLogs) return; // معطل في الإصدار النهائي
     final db = await database;
     try {
       final List<Map<String, dynamic>> rows = await db.rawQuery('''

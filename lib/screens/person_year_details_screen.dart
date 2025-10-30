@@ -4,6 +4,7 @@ import '../models/customer.dart';
 import '../services/database_service.dart';
 import 'person_month_details_screen.dart';
 import '../models/person_data.dart' show PersonMonthData;
+import 'package:intl/intl.dart';
 
 class PersonYearDetailsScreen extends StatefulWidget {
   final Customer customer;
@@ -24,6 +25,8 @@ class _PersonYearDetailsScreenState extends State<PersonYearDetailsScreen> {
   final DatabaseService _databaseService = DatabaseService();
   Map<int, PersonMonthData> _monthlyData = {};
   bool _isLoading = true;
+   late final NumberFormat _nf = NumberFormat('#,##0', 'en_US');
+  String _fmt(num v) => _nf.format(v);
 
   @override
   void initState() {
@@ -232,7 +235,7 @@ class _PersonYearDetailsScreenState extends State<PersonYearDetailsScreen> {
                         icon: Icons.trending_up,
                         title: 'الربح',
                         value:
-                            '${monthData!.totalProfit >= 0 ? monthData.totalProfit.toStringAsFixed(2) : (-monthData.totalProfit).toStringAsFixed(2)} د.ع',
+                            '${monthData!.totalProfit >= 0 ? _fmt(monthData.totalProfit) : _fmt(-monthData.totalProfit)} د.ع',
                         color: const Color(0xFF4CAF50),
                       ),
                     ),
@@ -241,7 +244,7 @@ class _PersonYearDetailsScreenState extends State<PersonYearDetailsScreen> {
                       child: _buildInfoItem(
                         icon: Icons.shopping_cart,
                         title: 'المبيعات',
-                        value: '${monthData.totalSales.toStringAsFixed(2)} د.ع',
+                        value: '${_fmt(monthData.totalSales)} د.ع',
                         color: const Color(0xFF2196F3),
                       ),
                     ),

@@ -370,6 +370,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           totalAmount: totalAmount,
           discount: discount,
           amountPaidOnInvoice: paid,
+          loadingFee: loadingFee,
           createdAt: invoiceToManage?.createdAt ?? DateTime.now(),
           lastModifiedAt: DateTime.now(),
           customerId: customer?.id,
@@ -534,8 +535,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
   }
 
 // ============================================
-// 2. دالة إنشاء PDF (generateInvoicePdf)
-// ============================================
+// 2. دالة إنشاء PDF (generateInvoicePdf)// ============================================
   Future<pw.Document> generateInvoicePdf() async {
     try {
       final pdf = pw.Document();
@@ -988,7 +988,36 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                           pw.Column(
                               crossAxisAlignment: pw.CrossAxisAlignment.end,
                               children: [
-                                // ... (All summary rows code)
+                                pw.Row(
+                                  mainAxisAlignment: pw.MainAxisAlignment.end,
+                                  children: [
+                                    _summaryRow("الإجمالي قبل الخصم", preDiscountTotal, font,
+                                        color: PdfColor.fromInt(appSettings.totalBeforeDiscountColor)),
+                                    pw.SizedBox(width: 10),
+                                    _summaryRow("الخصم", discount, font,
+                                        color: PdfColor.fromInt(appSettings.discountColor)),
+                                    pw.SizedBox(width: 10),
+                                    _summaryRow("الإجمالي بعد الخصم", afterDiscount, font,
+                                        color: PdfColor.fromInt(appSettings.totalAfterDiscountColor)),
+                                    pw.SizedBox(width: 10),
+                                    _summaryRow("المبلغ المدفوع", displayedPaidForSettlementsCase, font,
+                                        color: PdfColor.fromInt(appSettings.paidAmountColor)),
+                                  ],
+                                ),
+                                pw.SizedBox(height: 4),
+                                pw.Row(
+                                  mainAxisAlignment: pw.MainAxisAlignment.end,
+                                  children: [
+                                    _summaryRow("المبلغ المتبقي", remainingForPdf, font,
+                                        color: PdfColor.fromInt(appSettings.remainingAmountColor)),
+                                    pw.SizedBox(width: 10),
+                                    _summaryRow("المبلغ المطلوب الحالي", currentDebtForPdf, font,
+                                        color: PdfColor.fromInt(appSettings.currentDebtColor)),
+                                    pw.SizedBox(width: 10),
+                                    _summaryRow("أجور التحميل", loadingFee, font,
+                                        color: PdfColor.fromInt(appSettings.loadingFeesColor)),
+                                  ],
+                                ),
                               ]),
                           pw.SizedBox(height: 6),
                           pw.Align(
@@ -1057,17 +1086,36 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                         pw.TextStyle(font: font, fontSize: 16, fontWeight: pw.FontWeight.bold)),
                 pw.Divider(),
                 // Re-add your summary rows here
-                _summaryRow("المجموع", itemsTotalForDisplay, font),
-                if (loadingFee > 0)
-                  _summaryRow("أجور التحميل", loadingFee, font),
-                _summaryRow("الإجمالي قبل الخصم", preDiscountTotal, font),
-                if (discount > 0) _summaryRow("الخصم", discount, font),
-                _summaryRow("المبلغ النهائي", afterDiscount, font, color: PdfColors.red),
-                _summaryRow("الواصل", displayedPaidForSettlementsCase, font, color: PdfColors.green),
-                _summaryRow("الباقي", remainingForPdf, font),
-                pw.Divider(),
-                _summaryRow("الدين السابق", previousDebt, font),
-                _summaryRow("الدين الحالي", currentDebtForPdf, font, color: PdfColors.blue),
+                pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.end,
+                  children: [
+                    _summaryRow("الإجمالي قبل الخصم", preDiscountTotal, font,
+                        color: PdfColor.fromInt(appSettings.totalBeforeDiscountColor)),
+                    pw.SizedBox(width: 10),
+                    _summaryRow("الخصم", discount, font,
+                        color: PdfColor.fromInt(appSettings.discountColor)),
+                    pw.SizedBox(width: 10),
+                    _summaryRow("الإجمالي بعد الخصم", afterDiscount, font,
+                        color: PdfColor.fromInt(appSettings.totalAfterDiscountColor)),
+                    pw.SizedBox(width: 10),
+                    _summaryRow("المبلغ المدفوع", displayedPaidForSettlementsCase, font,
+                        color: PdfColor.fromInt(appSettings.paidAmountColor)),
+                  ],
+                ),
+                pw.SizedBox(height: 4),
+                pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.end,
+                  children: [
+                    _summaryRow("المبلغ المتبقي", remainingForPdf, font,
+                        color: PdfColor.fromInt(appSettings.remainingAmountColor)),
+                    pw.SizedBox(width: 10),
+                    _summaryRow("المبلغ المطلوب الحالي", currentDebtForPdf, font,
+                        color: PdfColor.fromInt(appSettings.currentDebtColor)),
+                    pw.SizedBox(width: 10),
+                    _summaryRow("أجور التحميل", loadingFee, font,
+                        color: PdfColor.fromInt(appSettings.loadingFeesColor)),
+                  ],
+                ),
               ],
             );
           },
@@ -1085,7 +1133,9 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
     }
   }
 
-// ============================================
+// ========================================
+// 
+// ====
 // 3. دالة طباعة الفاتورة (printInvoice)
 // ============================================
   Future<void> printInvoice() async {
