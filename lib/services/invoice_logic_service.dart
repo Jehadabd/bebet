@@ -289,8 +289,11 @@ class InvoiceLogicService {
         }
       }
       if (paymentType == 'دين' && customer != null && debt > 0) {
+        // جلب الرصيد الفعلي قبل العملية
+        final beforeDebt = (await db.getCustomerById(customer.id!))?.currentTotalDebt ?? 0.0;
+        final afterDebt = beforeDebt + debt;
         final updatedCustomer = customer.copyWith(
-          currentTotalDebt: (customer.currentTotalDebt) + debt,
+          currentTotalDebt: afterDebt,
           lastModifiedAt: DateTime.now(),
         );
         await db.updateCustomer(updatedCustomer);
@@ -301,7 +304,8 @@ class InvoiceLogicService {
           amountChanged: debt,
           transactionType: 'invoice_debt',
           description: 'دين فاتورة رقم ${invoiceId ?? invoiceToManage?.id}',
-          newBalanceAfterTransaction: updatedCustomer.currentTotalDebt,
+          balanceBeforeTransaction: beforeDebt,
+          newBalanceAfterTransaction: afterDebt,
           invoiceId: invoiceId,
           transactionUuid: txUuid,
         );
