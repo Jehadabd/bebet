@@ -59,6 +59,11 @@ class _MainScreenState extends State<MainScreen> {
                 const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
           ),
           style: const TextStyle(fontSize: 18),
+          autofocus: true,
+          onSubmitted: (value) async {
+            final bool isCorrect = await _passwordService.verifyPassword(value);
+            Navigator.of(context).pop(isCorrect);
+          },
         ),
         actions: [
           TextButton(
@@ -199,18 +204,6 @@ class _MainScreenState extends State<MainScreen> {
                       title: const Text('أدخل عدد الأشهر',
                           style: TextStyle(fontSize: 20)),
                       content: TextField(
-                        controller: _monthsController,
-                        keyboardType: TextInputType.number,
-                        decoration: InputDecoration(
-                          hintText: 'على سبيل المثال: 10',
-                          labelText: 'عدد الأشهر',
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          contentPadding: const EdgeInsets.symmetric(
-                              vertical: 16, horizontal: 16),
-                        ),
-                        style: const TextStyle(fontSize: 18),
                       ),
                       actions: [
                         TextButton(

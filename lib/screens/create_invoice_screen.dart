@@ -38,6 +38,7 @@ import '../models/invoice_adjustment.dart';
 // removed duplicate imports
 import '../services/drive_service.dart';
 import 'invoice_actions.dart';
+import '../services/password_service.dart'; // Added for password protection
 
 // Helper: format product ID - show raw value without zero-padding
 String formatProductId5(int? id) {
@@ -116,6 +117,134 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
   
   // متغير لمنع الحفظ المزدوج
   bool isSaving = false;
+
+  // Profit Display State
+  bool _isProfitVisible = false;
+  double _currentInvoiceProfit = 0.0;
+
+  void _calculateProfit() {
+    double totalProfit = 0.0;
+    
+    // Create a map of products for faster lookup
+    final Map<String, Product> productMap = {
+      for (var p in (_allProductsForUnits ?? [])) p.name: p
+    };
+
+    for (var item in invoiceItems) {
+      if (!_isInvoiceItemComplete(item)) continue;
+      
+      final double sellingPrice = item.appliedPrice;
+      // Priority 1: Actual Cost Price (if specific batch/item cost is set)
+      final double? acp = item.actualCostPrice;
+      // Priority 4 (Fallback): Base Cost Price
+      final double itemBaseCost = item.costPrice ?? 0.0;
+      
+      final String saleType = item.saleType ?? '';
+      final double qi = item.quantityIndividual ?? 0.0;
+      final double ql = item.quantityLargeUnit ?? 0.0;
+      final double uilu = item.unitsInLargeUnit ?? 0.0;
+      
+      // Resolve product data
+      final Product? product = productMap[item.productName];
+      final String productUnit = product?.unit ?? '';
+      final double lengthPerUnit = product?.lengthPerUnit ?? 1.0;
+      final double productBaseCost = product?.costPrice ?? 0.0;
+      final Map<String, double> unitCosts = product?.getUnitCostsMap() ?? {};
+
+      final bool soldAsLargeUnit = ql > 0;
+      final double saleUnitsCount = soldAsLargeUnit ? ql : qi;
+
+      double costPerSaleUnit;
+      
+      if (acp != null && acp > 0) {
+        // Priority 1: Use actual cost price if available
+        costPerSaleUnit = acp;
+      } else if (soldAsLargeUnit) {
+        // Priority 2 & 3: Handle large units (Carton, Roll, etc.)
+        
+        // Check if specific cost exists for this sale type (e.g. cost of 'Carton')
+        if (unitCosts.containsKey(saleType)) {
+           costPerSaleUnit = unitCosts[saleType]!;
+        } else if (productUnit == 'meter' && saleType == 'لفة') {
+           // Special case for Rolls: Cost = Base Cost * Length
+           costPerSaleUnit = productBaseCost * lengthPerUnit;
+        } else {
+           // Default: Cost = Base Cost * Units in Large Unit
+           costPerSaleUnit = productBaseCost * (uilu > 0 ? uilu : 1.0);
+        }
+      } else {
+        // Priority 4: Selling in base units (Piece, Meter)
+        // Use item's stored cost if available, otherwise product's base cost
+        costPerSaleUnit = itemBaseCost > 0 ? itemBaseCost : productBaseCost;
+      }
+
+      final double lineAmount = sellingPrice * saleUnitsCount;
+      final double lineCostTotal = costPerSaleUnit * saleUnitsCount;
+      
+      totalProfit += (lineAmount - lineCostTotal);
+    }
+    
+    // Subtract discount from profit
+    _currentInvoiceProfit = totalProfit - discount;
+  }
+
+  Future<void> _toggleProfitVisibility() async {
+    if (_isProfitVisible) {
+      setState(() {
+        _isProfitVisible = false;
+      });
+    } else {
+      // Show password dialog
+      final controller = TextEditingController();
+      final shouldShow = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('أدخل رمز المرور'),
+          content: TextField(
+            controller: controller,
+            obscureText: true,
+            keyboardType: TextInputType.number,
+            autofocus: true,
+            decoration: const InputDecoration(hintText: '****'),
+            onSubmitted: (value) async {
+              if (await PasswordService().verifyPassword(value)) {
+                Navigator.pop(context, true);
+              } else {
+                Navigator.pop(context, false);
+              }
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('إلغاء'),
+            ),
+            TextButton(
+              onPressed: () async {
+                if (await PasswordService().verifyPassword(controller.text)) {
+                  Navigator.pop(context, true);
+                } else {
+                  Navigator.pop(context, false);
+                }
+              },
+              child: const Text('تأكيد'),
+            ),
+          ],
+        ),
+      );
+
+      if (shouldShow == true) {
+        _calculateProfit();
+        setState(() {
+          _isProfitVisible = true;
+        });
+      } else if (shouldShow == false) { // Explicit check for false (wrong password or cancel)
+         ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('رمز المرور غير صحيح')),
+        );
+      }
+    }
+  }
   
   // دالة لإظهار Dialog الحفظ عند الرجوع
   Future<bool> _showSaveDialog() async {
@@ -549,6 +678,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         final newTotal = currentTotalAmount - discount;
         paidAmountController.text = formatNumber(newTotal);
       }
+      _calculateProfit(); // Update profit on discount change
       _scheduleLiveDebtSync();
     } catch (e) {
       print('Error in onDiscountChanged: $e');
@@ -912,6 +1042,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
           _currentUnitHierarchy = [];
           _guardDiscount();
           _updatePaidAmountIfCash();
+          _calculateProfit(); // Update profit on item addition
           
           // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً
           if (invoiceToManage != null && paymentType == 'نقد' && !isViewOnly) {
@@ -992,6 +1123,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         }
         
         _recalculateTotals();
+        _calculateProfit(); // Update profit on item removal
         _autoSave();
         if (invoiceToManage != null &&
             invoiceToManage!.status == 'معلقة' &&
@@ -1213,10 +1345,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
   Future<double> _calculateRemainingAmount() async {
     if (invoiceToManage == null) return 0.0;
     
-    // حساب إجمالي الفاتورة
-    final itemsTotal = invoiceToManage!.totalAmount;
-    final discount = invoiceToManage!.discount;
-    final afterDiscount = itemsTotal - discount;
+    // حساب إجمالي الفاتورة - totalAmount يحتوي على الخصم مسبقاً
+    final afterDiscount = invoiceToManage!.totalAmount;
     
     // حساب التسويات
     final adjustments = await db.getInvoiceAdjustments(invoiceToManage!.id!);
@@ -2279,6 +2409,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
       }
       final int resolvedCustomerId = customerId!;
 
+      // تحقق مما إذا كانت هناك معاملة دين موجودة بالفعل لهذه الفاتورة
+      // لتجنب إنشاء معاملات مكررة
+      final existingDebtTransaction = await db.getInvoiceDebtTransaction(invoiceId);
+      if (existingDebtTransaction != null) {
+        // تم بالفعل إنشاء معاملة دين لهذه الفاتورة، لا تقم بإنشاء أخرى
+        return;
+      }
+
       double newContribution = 0.0;
       if (paymentType == 'دين') {
         // استخدم دالة المتبقي الحالية التي تأخذ بعين الاعتبار التسويات النقدية
@@ -3214,6 +3352,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                             invoiceItems[i] = updatedItem;
                           }
                           _recalculateTotals();
+                          _calculateProfit(); // Update profit on item update
                           final lastIndex = invoiceItems.length - 1;
                           if (i == lastIndex &&
                               _isInvoiceItemComplete(updatedItem)) {
@@ -3629,6 +3768,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                         ),
                     ],
                   ),
+
                 // إضافة حقل أجور التحميل فقط إذا لم يكن العرض فقط أو الفاتورة مقفلة
                 if (!isViewOnly && !(invoiceToManage?.isLocked ?? false)) ...[
                   const SizedBox(height: 16.0),
@@ -3643,8 +3783,56 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                     inputFormatters: [
                       ThousandSeparatorDecimalInputFormatter(),
                     ],
+                    onChanged: (val) {
+                       // Recalculate totals when loading fee changes
+                       setState(() {
+                         final itemsTotal = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+                         final double loadingFee = double.tryParse(val.replaceAll(',', '')) ?? 0.0;
+                         _totalAmountController.text = (itemsTotal + loadingFee).toStringAsFixed(2);
+                         _guardDiscount();
+                         _updatePaidAmountIfCash();
+                         _calculateProfit(); // Update profit on loading fee change
+                       });
+                    },
                   ),
                 ],
+                const SizedBox(height: 24.0),
+                // Protected Profit Display
+                Center(
+                  child: InkWell(
+                    onTap: _toggleProfitVisibility,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
+                      decoration: BoxDecoration(
+                        color: _isProfitVisible ? Colors.green.shade50 : Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(8.0),
+                        border: Border.all(color: _isProfitVisible ? Colors.green : Colors.grey),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _isProfitVisible ? Icons.visibility : Icons.lock,
+                            color: _isProfitVisible ? Colors.green : Colors.grey,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            _isProfitVisible
+                                ? 'إجمالي الربح: ${formatNumber(_currentInvoiceProfit)}'
+                                : 'إجمالي الربح: ***',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: _isProfitVisible ? Colors.green.shade800 : Colors.grey.shade700,
+                              fontSize: 16,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24.0),
               ],
             ),
           ),

@@ -1429,40 +1429,106 @@ class DatabaseService {
   // ... (بقية دوال الفنيين CRUD)
 
   // --- دوال المعاملات (Transactions) ---
+
+  /// التحقق من صحة رصيد العميل ومطابقته لآخر معاملة
+  Future<void> verifyCustomerBalance(int customerId) async {
+    final db = await database;
+    
+    final customer = await getCustomerById(customerId);
+    if (customer == null) throw Exception('Customer not found');
+
+    // جلب آخر معاملة فقط
+    final List<Map<String, dynamic>> lastTxRows = await db.query(
+      'transactions',
+      where: 'customer_id = ?',
+      whereArgs: [customerId],
+      orderBy: 'transaction_date DESC, id DESC',
+      limit: 1,
+    );
+
+    if (lastTxRows.isEmpty) {
+      if (customer.currentTotalDebt.abs() > 0.01) {
+         throw Exception('خطأ في البيانات: العميل لديه رصيد ${customer.currentTotalDebt} ولكن لا توجد معاملات مسجلة.');
+      }
+      return;
+    }
+
+    final lastTx = DebtTransaction.fromMap(lastTxRows.first);
+    
+    // التحقق من تطابق رصيد العميل مع رصيد آخر معاملة
+    final diff = (customer.currentTotalDebt - lastTx.newBalanceAfterTransaction!).abs();
+    if (diff > 0.01) {
+      throw Exception('خطأ خطير في التكامل المالي: رصيد العميل (${customer.currentTotalDebt}) لا يطابق رصيد آخر معاملة (${lastTx.newBalanceAfterTransaction}).');
+    }
+  }
+
   Future<int> insertTransaction(DebtTransaction transaction) async {
     final db = await database;
-    try {
-      // الحصول على العميل لمعرفة الرصيد الحالي قبل إضافة المعاملة
-      final customer = await getCustomerById(transaction.customerId);
-      if (customer == null) {
-        throw Exception('لم يتم العثور على العميل');
+    // استخدام معاملة قاعدة بيانات (Transaction) لضمان الذرية (Atomicity)
+    return await db.transaction((txn) async {
+      try {
+        // 1. جلب العميل (مصدر الحقيقة للرصيد الحالي)
+        final List<Map<String, dynamic>> customerMaps = await txn.query(
+          'customers',
+          where: 'id = ?',
+          whereArgs: [transaction.customerId],
+          limit: 1,
+        );
+        if (customerMaps.isEmpty) {
+          throw Exception('لم يتم العثور على العميل');
+        }
+        final customer = Customer.fromMap(customerMaps.first);
+        
+        // 2. جلب آخر معاملة للتحقق من التسلسل
+        final List<Map<String, dynamic>> lastTxRows = await txn.query(
+          'transactions',
+          where: 'customer_id = ?',
+          whereArgs: [transaction.customerId],
+          orderBy: 'transaction_date DESC, id DESC',
+          limit: 1,
+        );
+        
+        double verifiedBalanceBefore = customer.currentTotalDebt;
+
+        // التحقق من سلامة البيانات قبل الإضافة
+        if (lastTxRows.isNotEmpty) {
+          final lastTx = DebtTransaction.fromMap(lastTxRows.first);
+          if ((verifiedBalanceBefore - lastTx.newBalanceAfterTransaction!).abs() > 0.01) {
+             // في حال وجود عدم تطابق، نعتمد على الرصيد المسجل في العميل لكن نسجل تحذيراً
+             print('تحذير: عدم تطابق رصيد العميل مع آخر معاملة قبل الإضافة الجديدة.');
+             // يمكن تفعيل السطر التالي لرفض العملية تماماً إذا أردنا صرامة تامة
+             // throw Exception('تنبيه أمني: رصيد العميل الحالي لا يتطابق مع آخر معاملة مسجلة.');
+          }
+        }
+        
+        // 3. حساب الرصيد الجديد
+        double newBalanceAfterTransaction = verifiedBalanceBefore + transaction.amountChanged;
+        
+        // 4. تجهيز المعاملة بالأرصدة الصحيحة
+        final updatedTransaction = transaction.copyWith(
+          balanceBeforeTransaction: verifiedBalanceBefore,
+          newBalanceAfterTransaction: newBalanceAfterTransaction,
+        );
+        
+        // 5. إدراج المعاملة
+        final id = await txn.insert('transactions', updatedTransaction.toMap());
+
+        // 6. تحديث رصيد العميل
+        await txn.update(
+          'customers',
+          {
+            'current_total_debt': newBalanceAfterTransaction,
+            'last_modified_at': DateTime.now().toIso8601String(),
+          },
+          where: 'id = ?',
+          whereArgs: [transaction.customerId],
+        );
+
+        return id;
+      } catch (e) {
+        throw Exception(_handleDatabaseError(e));
       }
-      
-      // تعيين الرصيد قبل المعاملة
-      double balanceBeforeTransaction = customer.currentTotalDebt;
-      
-      // حساب الرصيد الجديد بعد المعاملة
-      double newBalanceAfterTransaction = balanceBeforeTransaction + transaction.amountChanged;
-      
-      // تحديث المعاملة بالأرصدة الصحيحة
-      final updatedTransaction = transaction.copyWith(
-        balanceBeforeTransaction: balanceBeforeTransaction,
-        newBalanceAfterTransaction: newBalanceAfterTransaction,
-      );
-      
-      // إدخال المعاملة المحدثة في قاعدة البيانات
-      final id = await db.insert('transactions', updatedTransaction.toMap());
-
-      // تحديث رصيد العميل
-      await updateCustomer(customer.copyWith(
-        currentTotalDebt: newBalanceAfterTransaction,
-        lastModifiedAt: DateTime.now(),
-      ));
-
-      return id;
-    } catch (e) {
-      throw Exception(_handleDatabaseError(e));
-    }
+    });
   }
 
   Future<DebtTransaction?> getTransactionById(int id) async {

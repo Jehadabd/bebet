@@ -77,6 +77,11 @@ class _EditProductsScreenState extends State<EditProductsScreen> {
             labelText: 'كلمة السر',
             border: OutlineInputBorder(),
           ),
+          autofocus: true,
+          onSubmitted: (value) async {
+            final bool isCorrect = await _passwordService.verifyPassword(value);
+            Navigator.of(context).pop(isCorrect);
+          },
         ),
         actions: [
           TextButton(

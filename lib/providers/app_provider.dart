@@ -128,18 +128,26 @@ class AppProvider with ChangeNotifier {
   }
 
   Future<void> addTransaction(DebtTransaction transaction) async {
+    // 1. إدراج المعاملة (تقوم قاعدة البيانات بتحديث رصيد العميل والتحقق منه)
     final id = await _db.insertTransaction(transaction);
-    final newTransaction = transaction.copyWith(id: id);
-    _customerTransactions.insert(0, newTransaction);
+    
+    // 2. إعادة تحميل العميل من قاعدة البيانات للحصول على الرصيد المحدث والموثق
+    final updatedCustomer = await _db.getCustomerById(transaction.customerId);
+    
+    if (updatedCustomer != null) {
+      // تحديث القائمة المحلية
+      final index = _customers.indexWhere((c) => c.id == transaction.customerId);
+      if (index != -1) {
+        _customers[index] = updatedCustomer;
+      }
+      // تحديث العميل المحدد إذا كان هو نفسه
+      if (_selectedCustomer?.id == transaction.customerId) {
+        _selectedCustomer = updatedCustomer;
+      }
+    }
 
-    // Update customer's total debt
-    final customer =
-        _customers.firstWhere((c) => c.id == transaction.customerId);
-    final updatedCustomer = customer.copyWith(
-      currentTotalDebt: transaction.newBalanceAfterTransaction,
-      lastModifiedAt: DateTime.now(),
-    );
-    await updateCustomer(updatedCustomer);
+    // 3. إعادة تحميل المعاملات لعرض الأرصدة الصحيحة (قبل/بعد) التي حسبتها قاعدة البيانات
+    await loadCustomerTransactions(transaction.customerId);
 
     notifyListeners();
   }
@@ -211,14 +219,35 @@ class AppProvider with ChangeNotifier {
     }
   }
 
+  // Flag to prevent concurrent syncs
+  bool _isSyncing = false;
+
   // مزامنة الديون عبر Google Drive
   Future<void> syncDebts() async {
     if (!_isDriveSupported) {
       throw Exception('ميزة Google Drive غير مدعومة على هذا النظام');
     }
+    
+    // 1. Re-entrancy Guard: Prevent double-click or concurrent syncs
+    if (_isSyncing) {
+      print('SYNC: Sync already in progress, ignoring request.');
+      return;
+    }
+
+    // 2. Strict Connectivity Check
+    try {
+      final result = await InternetAddress.lookup('google.com');
+      if (result.isEmpty || result[0].rawAddress.isEmpty) {
+        throw Exception('لا يوجد اتصال بالإنترنت. يرجى التحقق من الشبكة.');
+      }
+    } catch (_) {
+      throw Exception('لا يوجد اتصال بالإنترنت. يرجى التحقق من الشبكة.');
+    }
+
+    _isSyncing = true;
     _setLoading(true);
     try {
-      // 1) تأكد من تسجيل الدخول
+      // 3) تأكد من تسجيل الدخول
       final signed = await _drive.isSignedIn();
       if (!signed) {
         await _drive.signIn();
@@ -372,6 +401,7 @@ class AppProvider with ChangeNotifier {
             final String? desc = t['description'] as String?;
             final DateTime occurred = DateTime.tryParse(t['date'] ?? '') ?? DateTime.now();
             // أدرج محليًا إذا لم تكن موجودة
+            // أدرج محليًا إذا لم تكن موجودة
             try {
               await _db.insertExternalTransactionAndApply(
                 customerId: local.id!,
@@ -382,10 +412,13 @@ class AppProvider with ChangeNotifier {
                 transactionUuid: txId,
                 occurredAt: occurred,
               );
-            } catch (_) {}
-            // علّم كمقروءة
-            t['isRead'] = true;
-            changed = true;
+              // علّم كمقروءة فقط إذا تمت العملية بنجاح (أو تم تخطيها لأنها مكررة)
+              t['isRead'] = true;
+              changed = true;
+            } catch (e) {
+              print('SYNC ERROR: Failed to process transaction $txId: $e');
+              // لا نعلمها كمقروءة، لنحاول مرة أخرى في المزامنة القادمة
+            }
           }
         }
         if (changed) {
@@ -400,6 +433,7 @@ class AppProvider with ChangeNotifier {
       }
     } finally {
       _setLoading(false);
+      _isSyncing = false;
     }
   }
 

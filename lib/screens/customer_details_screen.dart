@@ -1113,43 +1113,7 @@ class TransactionListTile extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              // زر تحويل نوع المعاملة (إضافة دين <-> تسديد دين)
-              if (!isInvoiceRelated && onConvertType != null)
-                IconButton(
-                  icon: const Icon(Icons.swap_horiz, size: 18),
-                  visualDensity: VisualDensity.compact,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                  tooltip: isDebt ? 'تحويل إلى تسديد دين' : 'تحويل إلى إضافة دين',
-                  onPressed: () async {
-                    // تأكيد قبل التحويل
-                    final confirmed = await showDialog<bool>(
-                      context: context,
-                      builder: (context) => AlertDialog(
-                        title: const Text('تأكيد تحويل نوع المعاملة'),
-                        content: Text(
-                          isDebt 
-                              ? 'هل تريد تحويل هذه المعاملة من إضافة دين إلى تسديد دين؟'
-                              : 'هل تريد تحويل هذه المعاملة من تسديد دين إلى إضافة دين؟'
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.of(context).pop(false),
-                            child: const Text('إلغاء'),
-                          ),
-                          TextButton(
-                            onPressed: () => Navigator.of(context).pop(true),
-                            child: const Text('تأكيد'),
-                          ),
-                        ],
-                      ),
-                    ) ?? false;
-                    
-                    if (confirmed && transaction.id != null) {
-                      await onConvertType!(transaction.id!);
-                    }
-                  },
-                ),
+              // تمت إزالة زر تحويل نوع المعاملة بناءً على طلب المستخدم
               IconButton(
                 icon: const Icon(Icons.edit, size: 18),
                 visualDensity: VisualDensity.compact,

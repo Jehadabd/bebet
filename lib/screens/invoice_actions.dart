@@ -459,11 +459,18 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
             }
           }
 
-          if (debtChange != 0.0) {
+          if (debtChange.abs() > 0.001) {
+            // الرصيد قبل هذه المعاملة هو الدين الحالي للعميل
+            final double balanceBefore = customer.currentTotalDebt;
+
+            // الرصيد الجديد بعد اضافة الدين الجديد
+            final double balanceAfter = customer.currentTotalDebt + debtChange;
+
             final updatedCustomer = customer.copyWith(
-              currentTotalDebt: (customer.currentTotalDebt) + debtChange,
+              currentTotalDebt: balanceAfter,
               lastModifiedAt: DateTime.now(),
             );
+
             await txn.update(
                 'customers',
                 {
@@ -473,27 +480,13 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                 where: 'id = ?',
                 whereArgs: [customer.id]);
 
-            // جلب الرصيد الفعلي القديم قبل التعديل
-            final customerRow = await txn.query('customers', where: 'id = ?', whereArgs: [customer.id]);
-            double actualBefore = 0.0;
-            if (customerRow.isNotEmpty && customerRow.first['current_total_debt'] != null) {
-              final v = customerRow.first['current_total_debt'];
-              actualBefore = v is int ? v.toDouble() : (v is double ? v : 0.0);
-              // مطابقة معيار الرصيد قبل المعاملة
-              if (!isNewInvoice) {
-                // في حال التعديل: أضف/اطرح فرق الدين الجديد على الرصيد السابق
-                actualBefore -= debtChange;
-              }
-            }
-            final newBalanceAfter = actualBefore + debtChange;
-
             final txUuid = await DriveService().generateTransactionUuid();
             await txn.insert('transactions', {
               'customer_id': customer.id,
               'transaction_date': DateTime.now().toIso8601String(),
               'amount_changed': debtChange,
-              'balance_before_transaction': actualBefore,
-              'new_balance_after_transaction': newBalanceAfter,
+              'balance_before_transaction': balanceBefore,
+              'new_balance_after_transaction': balanceAfter,
               'transaction_type':
                   isNewInvoice ? 'invoice_debt' : 'invoice_edit',
               'description': transactionDescription,
