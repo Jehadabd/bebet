@@ -488,14 +488,21 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                     normalizedPhone = _normalizePhoneNumber(phoneController.text.trim());
                   }
                   
-                  final updated = widget.customer.copyWith(
+                  // الحصول على البيانات المحدثة من المزود (Provider)
+                  final provider = context.read<AppProvider>();
+                  final currentCustomer = provider.selectedCustomer ?? widget.customer;
+                  
+                  // طباعة تشخيصية للتحقق من القيم
+                  print('DEBUG: Updating customer - widget.customer.debt=${widget.customer.currentTotalDebt}, selectedCustomer.debt=${provider.selectedCustomer?.currentTotalDebt}, using=${currentCustomer.currentTotalDebt}');
+                  
+                  final updated = currentCustomer.copyWith(
                     name: nameController.text.trim(),
                     phone: normalizedPhone,
                     address: addressController.text.trim(),
-                    currentTotalDebt: widget.customer.currentTotalDebt, // الحفاظ على قيمة الدين الحالية
+                    currentTotalDebt: currentCustomer.currentTotalDebt, // الحفاظ على قيمة الدين المحدثة
                     lastModifiedAt: DateTime.now(),
                   );
-                  await context.read<AppProvider>().updateCustomer(updated);
+                  await provider.updateCustomer(updated);
                   
                   // تحديث الفواتير القديمة المرتبطة بهذا العميل
                   try {
