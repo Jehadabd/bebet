@@ -2925,8 +2925,16 @@ class DatabaseService {
       final terms = normalizedQuery.split(' ').where((t) => t.isNotEmpty).toList();
       if (terms.isEmpty) return [];
       
+      // تنظيف الكلمات من الأحرف الخاصة التي تسبب مشاكل في FTS5
+      final cleanedTerms = terms.map((term) {
+        // إزالة علامات الاقتباس والأحرف الخاصة
+        return term.replaceAll(RegExp(r'''['"*()[\]{}]'''), '');
+      }).where((t) => t.isNotEmpty).toList();
+      
+      if (cleanedTerms.isEmpty) return [];
+      
       // إنشاء استعلام FTS5 - البحث عن أي من الكلمات
-      final ftsQuery = terms.map((term) => '$term*').join(' OR ');
+      final ftsQuery = cleanedTerms.map((term) => '$term*').join(' OR ');
       
       final List<Map<String, dynamic>> maps = await db.rawQuery('''
         SELECT p.*, bm25(products_fts) AS rank_score

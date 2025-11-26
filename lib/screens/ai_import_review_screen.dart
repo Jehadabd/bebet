@@ -2,7 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../services/gemini_service.dart';
+import '../services/ai_extraction_service.dart';
 import '../services/suppliers_service.dart';
 import '../models/supplier.dart';
 import '../services/database_service.dart';
@@ -12,7 +12,9 @@ class AiImportReviewScreen extends StatefulWidget {
   final Uint8List fileBytes;
   final String mimeType; // image/png, image/jpeg, application/pdf
   final String type; // 'invoice' | 'receipt'
-  final String apiKey;
+  final String groqApiKey;
+  final String geminiApiKey;
+  final String huggingfaceApiKey;
   final int? supplierId; // إن تم تمرير المورد
 
   const AiImportReviewScreen({
@@ -20,7 +22,9 @@ class AiImportReviewScreen extends StatefulWidget {
     required this.fileBytes,
     required this.mimeType,
     required this.type,
-    required this.apiKey,
+    required this.groqApiKey,
+    required this.geminiApiKey,
+    required this.huggingfaceApiKey,
     this.supplierId,
   }) : super(key: key);
 
@@ -106,14 +110,23 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
       _error = null;
     });
     try {
-      final service = GeminiService(apiKey: widget.apiKey);
-      final result = await service.extractInvoiceOrReceiptStructured(
+      final service = AIExtractionService(
+        groqApiKey: widget.groqApiKey,
+        geminiApiKey: widget.geminiApiKey,
+        huggingfaceApiKey: widget.huggingfaceApiKey,
+      );
+      final extractionResult = await service.extractInvoiceOrReceiptStructured(
         fileBytes: widget.fileBytes,
         fileMimeType: widget.mimeType,
         extractType: widget.type,
       );
+      
+      if (!extractionResult.success) {
+        throw Exception(extractionResult.error ?? 'فشل الاستخراج');
+      }
+      
       if (!mounted) return;
-      final normalized = _normalizeResult(result);
+      final normalized = _normalizeResult(extractionResult.data);
       // طباعة العناصر المستخرجة ومطابقتها مع المنتجات في القاعدة للتشخيص في الـ terminal
       if (widget.type == 'invoice') {
         final items = (normalized['line_items'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
@@ -131,6 +144,9 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
           }
           print('DEBUG AI ITEM: name="$name" norm="$norm" => exact:$exact norm:$normHit partial:$partial');
         }
+        
+        // تحميل بيانات المنتجات الموجودة (التكلفة القديمة)
+        await _loadProductCosts(items);
       }
       setState(() {
         _extracted = normalized;
@@ -142,6 +158,36 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
         _error = e.toString();
         _loading = false;
       });
+    }
+  }
+
+  /// تحميل أسعار التكلفة القديمة للمنتجات الموجودة
+  Future<void> _loadProductCosts(List<Map<String, dynamic>> items) async {
+    try {
+      final db = DatabaseService();
+      for (final item in items) {
+        final productName = (item['name'] ?? '').toString().trim();
+        if (productName.isEmpty) continue;
+        
+        // البحث عن المنتج
+        final products = await db.searchProductsSmart(productName);
+        
+        // التحقق من التطابق الدقيق
+        for (final product in products) {
+          final normalizedProductName = _normalizeName(product.name);
+          final normalizedSearchName = _normalizeName(productName);
+          
+          if (normalizedProductName == normalizedSearchName) {
+            // حفظ سعر التكلفة القديم
+            item['oldCostPrice'] = product.costPrice;
+            item['productId'] = product.id;
+            print('  💾 تحميل تكلفة قديمة: $productName = ${product.costPrice}');
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      print('  ⚠️ خطأ في تحميل أسعار التكلفة: $e');
     }
   }
 
@@ -465,10 +511,19 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
     double lineItemsTotal = 0;
     for (final it in lineItems) {
       final qty = _toDouble(it['qty'] ?? 0);
-      final price = _toDouble(it['price'] ?? 0);
-      final amt = _toDouble(it['amount'] ?? (qty * price));
+      var price = _toDouble(it['price'] ?? 0);
+      var amt = _toDouble(it['amount'] ?? (qty * price));
+      
+      // تصحيح السعر إذا كان خطأ
+      if (price > 0 && amt > 0 && qty > 0) {
+        final calculatedPrice = amt / qty;
+        if (calculatedPrice > price * 10) {
+          price = calculatedPrice;
+        }
+      }
+      
       it['qty'] = qty;
-      it['price'] = price;
+      it['price'] = price; // السعر المصحح
       it['amount'] = amt;
       lineItemsTotal += amt;
     }
@@ -491,26 +546,60 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
           ],
           if (isInvoice && lineItems.isNotEmpty) ...[
             const Text('عناصر الفاتورة', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Icon(Icons.info_outline, size: 16, color: Colors.blue[700]),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    'التكلفة القديمة بالبرتقالي تعني تغير السعر. التكلفة الجديدة بالأخضر قابلة للتعديل.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                  ),
+                ),
+              ],
+            ),
             const SizedBox(height: 8),
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: DataTable(
-                columnSpacing: 8,
+                columnSpacing: 6,
                 headingRowHeight: 38,
-                dataRowHeight: 44,
+                dataRowHeight: 60,
                 columns: const [
-                  DataColumn(label: SizedBox(width: 28)),
-                  DataColumn(label: SizedBox(width: 220, child: Text('التفاصيل'))),
-                  DataColumn(label: SizedBox(width: 80, child: Text('العدد')), numeric: true),
-                  DataColumn(label: SizedBox(width: 100, child: Text('السعر')), numeric: true),
-                  DataColumn(label: SizedBox(width: 120, child: Text('المبلغ')), numeric: true),
+                  DataColumn(label: SizedBox(width: 24)),
+                  DataColumn(label: SizedBox(width: 180, child: Text('المنتج'))),
+                  DataColumn(label: SizedBox(width: 70, child: Text('العدد')), numeric: true),
+                  DataColumn(label: SizedBox(width: 90, child: Text('السعر')), numeric: true),
+                  DataColumn(label: SizedBox(width: 100, child: Text('المبلغ')), numeric: true),
+                  DataColumn(label: SizedBox(width: 80, child: Text('الوحدة'))),
+                  DataColumn(label: SizedBox(width: 90, child: Text('التكلفة القديمة'))),
+                  DataColumn(label: SizedBox(width: 90, child: Text('التكلفة الجديدة'))),
+                  DataColumn(label: SizedBox(width: 90, child: Text('السعر 1'))),
                 ],
                 rows: [
                   ...List.generate(lineItems.length, (index) {
                     final item = lineItems[index];
+                    // المنتج يعتبر "جديد" فقط إذا لم يكن له productId أو oldCostPrice
+                    final isNewProduct = !item.containsKey('productId') && !item.containsKey('oldCostPrice');
+                    
+                    // طباعة تشخيصية
+                    if (index == 0) {
+                      print('🔍 عرض البند: ${item['name']}');
+                      print('   isNewProduct: $isNewProduct');
+                      print('   hasProductId: ${item.containsKey('productId')}');
+                      print('   hasOldCostPrice: ${item.containsKey('oldCostPrice')}');
+                      print('   oldCostPrice: ${item['oldCostPrice']}');
+                    }
+                    
+                    // حقول المنتج الجديد
+                    if (!item.containsKey('newProductUnit')) item['newProductUnit'] = 'piece';
+                    if (!item.containsKey('newProductCost')) item['newProductCost'] = item['price'] ?? 0;
+                    if (!item.containsKey('newProductPrice1')) item['newProductPrice1'] = item['price'] ?? 0;
+                    
                     return DataRow(cells: [
                       DataCell(SizedBox(
-                        width: 28,
+                        width: 24,
                         child: Center(child: Text('${index + 1}')),
                       )),
                       DataCell(Row(
@@ -525,23 +614,14 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
                               },
                             ),
                           ),
-                          const SizedBox(width: 6),
-                          if (!_isKnownProduct((item['name'] ?? '').toString())) ...[
+                          const SizedBox(width: 4),
+                          if (isNewProduct) ...[ 
                             const Tooltip(
-                              message: 'غير موجود في المنتجات',
-                              child: Icon(Icons.error_outline, color: Colors.orange),
+                              message: 'منتج جديد - سيتم إنشاؤه',
+                              child: Icon(Icons.fiber_new, color: Colors.green, size: 20),
                             ),
-                            IconButton(
-                              icon: const Icon(Icons.add_circle_outline, color: Colors.green),
-                              tooltip: 'إضافة المنتج',
-                              onPressed: () async {
-                                final createdName = await _showAddProductDialog((item['name'] ?? '').toString());
-                                if (createdName != null) {
-                                  item['name'] = createdName;
-                                  setState(() {});
-                                }
-                              },
-                            )
+                          ] else ...[
+                            const Icon(Icons.check_circle, color: Colors.blue, size: 18),
                           ],
                         ],
                       )),
@@ -564,6 +644,11 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
                           final val = double.tryParse(v) ?? 0;
                           item['price'] = val;
                           item['amount'] = (_toDouble(item['qty'])) * val;
+                          // تحديث تلقائي للتكلفة والسعر 1 للمنتجات الجديدة
+                          if (isNewProduct) {
+                            item['newProductCost'] = val;
+                            item['newProductPrice1'] = val;
+                          }
                           setState(() {});
                         },
                       )),
@@ -571,6 +656,86 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
                         alignment: Alignment.centerRight,
                         child: Text(_fmt(_toDouble(item['amount'] ?? 0))),
                       )),
+                      // الوحدة (للمنتجات الجديدة فقط)
+                      DataCell(
+                        isNewProduct
+                            ? DropdownButton<String>(
+                                value: item['newProductUnit'] as String? ?? 'piece',
+                                isDense: true,
+                                underline: Container(),
+                                items: const [
+                                  DropdownMenuItem(value: 'piece', child: Text('قطعة')),
+                                  DropdownMenuItem(value: 'meter', child: Text('متر')),
+                                ],
+                                onChanged: (v) {
+                                  if (v != null) {
+                                    item['newProductUnit'] = v;
+                                    setState(() {});
+                                  }
+                                },
+                              )
+                            : const Text('-'),
+                      ),
+                      // التكلفة القديمة (للمنتجات الموجودة فقط)
+                      DataCell(
+                        !isNewProduct && item.containsKey('oldCostPrice')
+                            ? Text(
+                                _fmt(_toDouble(item['oldCostPrice'] ?? 0)),
+                                style: TextStyle(
+                                  color: (_toDouble(item['oldCostPrice'] ?? 0) != _toDouble(item['price'] ?? 0))
+                                      ? Colors.orange
+                                      : Colors.grey,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              )
+                            : const Text('-'),
+                      ),
+                      // التكلفة الجديدة (قابلة للتعديل دائماً)
+                      DataCell(
+                        TextFormField(
+                          initialValue: isNewProduct
+                              ? (item['newProductCost'] ?? item['price'] ?? 0).toString()
+                              : (item['price'] ?? 0).toString(),
+                          keyboardType: TextInputType.number,
+                          decoration: InputDecoration(
+                            border: InputBorder.none,
+                            isDense: true,
+                            hintText: 'التكلفة',
+                            hintStyle: TextStyle(color: Colors.grey[400]),
+                          ),
+                          style: TextStyle(
+                            color: !isNewProduct && item.containsKey('oldCostPrice') &&
+                                    (_toDouble(item['oldCostPrice'] ?? 0) != _toDouble(item['price'] ?? 0))
+                                ? Colors.green
+                                : Colors.black,
+                            fontWeight: !isNewProduct && item.containsKey('oldCostPrice') &&
+                                    (_toDouble(item['oldCostPrice'] ?? 0) != _toDouble(item['price'] ?? 0))
+                                ? FontWeight.bold
+                                : FontWeight.normal,
+                          ),
+                          onChanged: (v) {
+                            final newCost = double.tryParse(v) ?? 0;
+                            if (isNewProduct) {
+                              item['newProductCost'] = newCost;
+                            } else {
+                              item['price'] = newCost;
+                            }
+                          },
+                        ),
+                      ),
+                      // السعر 1 (للمنتجات الجديدة فقط)
+                      DataCell(
+                        isNewProduct
+                            ? TextFormField(
+                                initialValue: (item['newProductPrice1'] ?? 0).toString(),
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(border: InputBorder.none, isDense: true),
+                                onChanged: (v) {
+                                  item['newProductPrice1'] = double.tryParse(v) ?? 0;
+                                },
+                              )
+                            : const Text('-'),
+                      ),
                     ]);
                   })
                 ],
@@ -727,6 +892,20 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
     String? paidText,
   }) async {
     try {
+      // التحقق من اختيار المورد
+      final supplierId = widget.supplierId ?? _selectedSupplierId;
+      if (supplierId == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⚠️ الرجاء اختيار المورد أولاً'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 3),
+          ),
+        );
+        return;
+      }
+      
       // احفظ الملف أولاً كمرفق
       final ext = widget.mimeType == 'application/pdf'
           ? 'pdf'
@@ -737,7 +916,6 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
       );
 
       int? ownerId;
-      final supplierId = widget.supplierId ?? _selectedSupplierId ?? 0;
       if (isInvoice) {
         final lineItems = (_extracted?['line_items'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
         final total = _toDouble(amountText);
@@ -759,7 +937,201 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
           status: status,
           paymentType: _paymentType,
         );
+        
+        print('📝 حفظ فاتورة من الذكاء الاصطناعي...');
         ownerId = await _suppliersService.insertSupplierInvoice(inv);
+        print('✅ تم حفظ الفاتورة برقم: $ownerId');
+        
+        // حفظ البنود
+        if (lineItems.isNotEmpty) {
+          print('📝 حفظ ${lineItems.length} بنود من الذكاء الاصطناعي...');
+          final db = DatabaseService();
+          
+          for (var item in lineItems) {
+            var productName = (item['name'] ?? '').toString().trim();
+            final quantity = _toDouble(item['qty'] ?? 0);
+            
+            // استخدام التكلفة الجديدة المعدلة من الجدول
+            // للمنتجات الجديدة: استخدم newProductCost
+            // للمنتجات الموجودة: استخدم price (الذي تم تعديله في الجدول)
+            var unitPrice = _toDouble(item['newProductCost'] ?? item['price'] ?? 0);
+            var totalPrice = _toDouble(item['amount'] ?? (quantity * unitPrice));
+            
+            if (productName.isEmpty || quantity <= 0) continue;
+            
+            // تطبيع الاسم (تحويل الأحرف الفارسية للعربية)
+            productName = productName
+                .replaceAll('ک', 'ك')
+                .replaceAll('ی', 'ي')
+                .replaceAll('ى', 'ي');
+            
+            // إصلاح السعر: إذا كان unitPrice صغير جداً والإجمالي كبير، احسب من الإجمالي
+            if (unitPrice > 0 && totalPrice > 0 && quantity > 0) {
+              final calculatedPrice = totalPrice / quantity;
+              // إذا كان السعر المحسوب أكبر بكثير من المستخرج، استخدم المحسوب
+              if (calculatedPrice > unitPrice * 10) {
+                print('  🔧 تصحيح السعر: $unitPrice → $calculatedPrice');
+                unitPrice = calculatedPrice;
+              }
+            }
+            
+            // البحث عن المنتج في القاعدة
+            int? productId;
+            double? oldCostPrice; // سعر التكلفة القديم من القاعدة
+            
+            try {
+              final products = await db.searchProductsSmart(productName);
+              
+              // التحقق من التطابق الدقيق للاسم
+              Product? exactMatch;
+              for (final product in products) {
+                // تطبيع الأسماء للمقارنة
+                final normalizedProductName = _normalizeName(product.name);
+                final normalizedSearchName = _normalizeName(productName);
+                
+                if (normalizedProductName == normalizedSearchName) {
+                  exactMatch = product;
+                  break;
+                }
+              }
+              
+              if (exactMatch != null) {
+                productId = exactMatch.id;
+                oldCostPrice = exactMatch.costPrice; // حفظ سعر التكلفة القديم
+                
+                // التحقق من تغير السعر
+                final newCost = unitPrice;
+                final costChanged = oldCostPrice != null && (oldCostPrice - newCost).abs() > 0.01;
+                
+                print('  ✅ تم العثور على منتج: $productName (ID: $productId)');
+                if (costChanged) {
+                  print('     💰 التكلفة القديمة: $oldCostPrice → الجديدة: $newCost (تغير: ${(newCost - oldCostPrice!).toStringAsFixed(2)})');
+                } else {
+                  print('     💰 التكلفة: $oldCostPrice (بدون تغيير)');
+                }
+                
+                // حفظ سعر التكلفة القديم في البند
+                item['oldCostPrice'] = oldCostPrice;
+              } else {
+                if (products.isNotEmpty) {
+                  print('  ⚠️ لم يتم العثور على تطابق دقيق. نتائج البحث:');
+                  for (final p in products.take(3)) {
+                    print('    - ${p.name} (ID: ${p.id})');
+                  }
+                }
+                print('  ⚠️ منتج غير موجود: $productName');
+                
+                // استخدام القيم من الجدول للمنتجات الجديدة
+                final unit = item['newProductUnit'] as String? ?? 'piece';
+                final cost = _toDouble(item['newProductCost'] ?? unitPrice);
+                final price1 = _toDouble(item['newProductPrice1'] ?? unitPrice);
+                
+                // إنشاء المنتج تلقائياً
+                try {
+                  final newProduct = Product(
+                    name: productName,
+                    unit: unit,
+                    unitPrice: price1,
+                    price1: price1,
+                    costPrice: cost,
+                    piecesPerUnit: null,
+                    lengthPerUnit: null,
+                    price2: null,
+                    price3: null,
+                    price4: null,
+                    price5: null,
+                    unitHierarchy: null,
+                    unitCosts: null,
+                    createdAt: DateTime.now(),
+                    lastModifiedAt: DateTime.now(),
+                  );
+                  final newId = await db.insertProduct(newProduct);
+                  productId = newId;
+                  
+                  // تحديث قائمة المنتجات المعروفة
+                  if (mounted) {
+                    setState(() {
+                      _knownProductNames.add(productName);
+                      _knownProductNamesNorm.add(_normalizeName(productName));
+                    });
+                  }
+                  
+                  print('  ✅ تم إنشاء منتج جديد: $productName (ID: $newId, unit: $unit, cost: $cost, price1: $price1)');
+                } catch (e) {
+                  print('  ❌ خطأ في إنشاء المنتج: $e');
+                }
+              }
+            } catch (e) {
+              print('  ❌ خطأ في البحث عن منتج: $e');
+            }
+            
+            final invoiceItem = SupplierInvoiceItem(
+              invoiceId: ownerId,
+              productId: productId,
+              productName: productName,
+              quantity: quantity,
+              unitPrice: unitPrice,
+              totalPrice: totalPrice,
+              unit: 'قطعة', // افتراضي
+            );
+            
+            try {
+              await _suppliersService.insertInvoiceItem(invoiceItem);
+              print('  - حفظ بند: $productName, productId: $productId, unitPrice: $unitPrice');
+            } catch (e) {
+              print('  ❌ فشل حفظ بند: $productName - خطأ: $e');
+              throw Exception('فشل حفظ البند: $productName');
+            }
+          }
+          
+          // التحقق النهائي: قراءة البنود من قاعدة البيانات للتأكد
+          print('🔍 التحقق من البنود في قاعدة البيانات...');
+          final savedItemsInDb = await _suppliersService.getInvoiceItems(ownerId);
+          if (savedItemsInDb.length != lineItems.length) {
+            final errorMsg = 'خطأ في التحقق: تم حفظ ${savedItemsInDb.length} بند في قاعدة البيانات بدلاً من ${lineItems.length}!';
+            print('❌ $errorMsg');
+            throw Exception(errorMsg);
+          }
+          print('✅ تم التحقق: جميع البنود موجودة في قاعدة البيانات (${savedItemsInDb.length}/${lineItems.length})');
+          print('✅ تم حفظ جميع البنود بنجاح');
+          
+          // تحديث أسعار المنتجات
+          print('🔄 بدء تحديث الأسعار...');
+          final updatedProducts = await _suppliersService.updateProductCostsFromInvoice(ownerId);
+          print('✅ انتهى التحديث. عدد المنتجات المحدثة: ${updatedProducts.length}');
+          
+          // عرض رسالة تأكيد
+          if (updatedProducts.isNotEmpty && mounted) {
+            print('📢 عرض رسالة التأكيد...');
+            await showDialog(
+              context: context,
+              builder: (context) => AlertDialog(
+                title: const Text('تحديث أسعار المنتجات'),
+                content: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('تم تحديث أسعار المنتجات التالية:'),
+                      const SizedBox(height: 8),
+                      ...updatedProducts.map((p) => Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Text('• $p', style: const TextStyle(fontSize: 14)),
+                      )),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('موافق'),
+                  ),
+                ],
+              ),
+            );
+          }
+        }
+        
         await _suppliersService.insertAttachment(Attachment(
           ownerType: 'SupplierInvoice',
           ownerId: ownerId,
@@ -771,13 +1143,44 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
           extractionConfidence: null,
         ));
       } else {
+        // حفظ سند قبض
+        print('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        print('💰 حفظ سند قبض من الذكاء الاصطناعي...');
+        print('📋 supplierId: $supplierId');
+        print('📋 receiptNumber: $numberText');
+        print('📋 receiptDate: $dateText');
+        print('📋 amount: $amountText');
+        
+        // إزالة الفواصل من المبلغ قبل التحليل
+        final cleanAmount = amountText.replaceAll(',', '').trim();
+        final amount = double.tryParse(cleanAmount) ?? 0;
+        
+        print('📋 cleanAmount: $cleanAmount');
+        print('📋 parsed amount: $amount');
+        
+        if (amount <= 0) {
+          print('❌ خطأ: المبلغ يجب أن يكون أكبر من صفر!');
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('❌ المبلغ يجب أن يكون أكبر من صفر'),
+              backgroundColor: Colors.red,
+            ),
+          );
+          return;
+        }
+        
         final rec = SupplierReceipt(
           supplierId: supplierId,
           receiptNumber: numberText.isEmpty ? null : numberText,
           receiptDate: DateTime.tryParse(dateText) ?? DateTime.now(),
-          amount: double.tryParse(amountText) ?? 0,
+          amount: amount,
         );
+        
         ownerId = await _suppliersService.insertSupplierReceipt(rec);
+        print('✅ تم حفظ سند القبض برقم: $ownerId');
+        print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+        
         await _suppliersService.insertAttachment(Attachment(
           ownerType: 'SupplierReceipt',
           ownerId: ownerId,

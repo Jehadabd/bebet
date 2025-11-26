@@ -33,8 +33,21 @@ void main() async {
   // تحميل ملف .env
   try {
     await dotenv.load();
+    print('✅ تم تحميل ملف .env بنجاح');
+    print('📊 عدد المفاتيح المحملة: ${dotenv.env.length}');
+    
+    // طباعة المفاتيح المتعلقة بـ API (مع إخفاء القيم)
+    final apiKeys = dotenv.env.keys.where((k) => k.contains('API_KEY')).toList();
+    if (apiKeys.isNotEmpty) {
+      print('🔑 مفاتيح API الموجودة:');
+      for (var key in apiKeys) {
+        print('  - $key');
+      }
+    } else {
+      print('⚠️ لم يتم العثور على أي مفاتيح API في ملف .env');
+    }
   } catch (e) {
-    print('خطأ في تحميل ملف .env: $e');
+    print('❌ خطأ في تحميل ملف .env: $e');
   }
 
   // تهيئة sqflite_common_ffi على ويندوز فقط

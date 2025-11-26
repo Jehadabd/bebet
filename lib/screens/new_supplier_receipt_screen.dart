@@ -113,9 +113,18 @@ class _NewSupplierReceiptScreenState extends State<NewSupplierReceiptScreen> {
 
   Future<void> _onSave() async {
     if (!_formKey.currentState!.validate()) return;
+    
+    // منع الضغط المتكرر
+    if (_saving) return;
+    
     setState(() => _saving = true);
+    
     try {
+      print('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      print('🚀 بدء عملية حفظ سند القبض...');
+      
       final amount = double.tryParse(_amountCtrl.text.replaceAll(',', '').trim()) ?? 0;
+      
       final rec = SupplierReceipt(
         supplierId: widget.supplier.id!,
         receiptNumber: _numberCtrl.text.trim().isEmpty ? null : _numberCtrl.text.trim(),
@@ -123,8 +132,15 @@ class _NewSupplierReceiptScreenState extends State<NewSupplierReceiptScreen> {
         amount: amount,
         paymentMethod: _methodCtrl.text.trim().isEmpty ? 'نقد' : _methodCtrl.text.trim(),
       );
+      
+      // الخطوة 1: حفظ سند القبض
+      print('📝 [1/2] حفظ سند القبض...');
       final id = await _service.insertSupplierReceipt(rec);
+      print('✅ تم حفظ سند القبض برقم: $id');
+      
+      // الخطوة 2: حفظ المرفق (إذا وجد)
       if (_pickedBytes != null && _pickedMime != null) {
+        print('📎 [2/2] حفظ المرفق...');
         final ext = _pickedMime == 'application/pdf' ? 'pdf' : (_pickedMime == 'image/png' ? 'png' : 'jpg');
         final path = await _service.saveAttachmentFile(bytes: _pickedBytes!, extension: ext);
         await _service.insertAttachment(Attachment(
@@ -135,15 +151,56 @@ class _NewSupplierReceiptScreenState extends State<NewSupplierReceiptScreen> {
           extractedText: null,
           extractionConfidence: null,
         ));
+        print('✅ تم حفظ المرفق');
+      } else {
+        print('⏭️ [2/2] لا يوجد مرفق');
       }
+      
+      print('✅ اكتملت جميع العمليات بنجاح');
+      print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+      
+      // العودة إلى الشاشة السابقة
       if (!mounted) return;
       Navigator.of(context).pop(true);
-    } catch (e) {
+      
+    } catch (e, stackTrace) {
+      print('❌ خطأ في الحفظ: $e');
+      print('Stack trace: $stackTrace');
+      
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل الحفظ: $e')));
-    } finally {
+      
+      // عرض رسالة خطأ واضحة
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('❌ فشل الحفظ'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('حدث خطأ أثناء حفظ سند القبض:'),
+                const SizedBox(height: 8),
+                Text(
+                  e.toString(),
+                  style: const TextStyle(color: Colors.red, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('موافق'),
+            ),
+          ],
+        ),
+      );
+      
+      // إعادة تفعيل الزر في حالة الخطأ فقط
       if (mounted) setState(() => _saving = false);
     }
+    // ملاحظة: لا يوجد finally هنا - الزر يبقى معطلاً حتى تكتمل العملية أو يحدث خطأ
   }
 
   Future<void> _onPickAttachment() async {

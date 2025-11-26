@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
@@ -92,6 +93,24 @@ class SuppliersService {
         extracted_text TEXT,
         extraction_confidence REAL,
         uploaded_at TEXT NOT NULL
+      )
+    ''');
+    
+    // جدول بنود فواتير الموردين
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS supplier_invoice_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_id INTEGER NOT NULL,
+        product_id INTEGER,
+        product_name TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        unit_price REAL NOT NULL,
+        total_price REAL NOT NULL,
+        unit TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (invoice_id) REFERENCES supplier_invoices(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
       )
     ''');
   }
@@ -226,6 +245,187 @@ class SuppliersService {
         whereArgs: [ownerType, ownerId],
         orderBy: 'uploaded_at DESC');
     return rows.map((e) => Attachment.fromMap(e)).toList();
+  }
+
+  // --- دوال بنود فواتير الموردين ---
+  
+  Future<int> insertInvoiceItem(SupplierInvoiceItem item) async {
+    await ensureTables();
+    final db = await _db;
+    return await db.insert('supplier_invoice_items', item.toMap());
+  }
+
+  Future<List<SupplierInvoiceItem>> getInvoiceItems(int invoiceId) async {
+    await ensureTables();
+    final db = await _db;
+    final rows = await db.query(
+      'supplier_invoice_items',
+      where: 'invoice_id = ?',
+      whereArgs: [invoiceId],
+      orderBy: 'created_at ASC',
+    );
+    return rows.map((e) => SupplierInvoiceItem.fromMap(e)).toList();
+  }
+
+  Future<void> deleteInvoiceItems(int invoiceId) async {
+    await ensureTables();
+    final db = await _db;
+    await db.delete(
+      'supplier_invoice_items',
+      where: 'invoice_id = ?',
+      whereArgs: [invoiceId],
+    );
+  }
+
+  /// تحديث أسعار المنتجات من بنود الفاتورة
+  Future<List<String>> updateProductCostsFromInvoice(int invoiceId) async {
+    print('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    print('🔄 بدء updateProductCostsFromInvoice للفاتورة: $invoiceId');
+    
+    final items = await getInvoiceItems(invoiceId);
+    print('📦 عدد البنود المسترجعة: ${items.length}');
+    
+    final db = await _db;
+    final List<String> updatedProducts = [];
+    
+    // تجميع البنود حسب المنتج لتجنب التحديث المتكرر
+    final Map<int, List<SupplierInvoiceItem>> itemsByProduct = {};
+    for (var item in items) {
+      if (item.productId != null) {
+        itemsByProduct.putIfAbsent(item.productId!, () => []).add(item);
+      }
+    }
+    
+    print('📊 عدد المنتجات الفريدة: ${itemsByProduct.length}');
+    
+    for (var entry in itemsByProduct.entries) {
+      final productId = entry.key;
+      final productItems = entry.value;
+      
+      print('\n--- معالجة منتج ID: $productId ---');
+      print('  عدد البنود لهذا المنتج: ${productItems.length}');
+      
+      // اختيار البند الأفضل للتحديث:
+      // 1. أولوية للبند بوحدة "قطعة"
+      // 2. إذا لم يوجد، نستخدم أول بند
+      SupplierInvoiceItem? bestItem;
+      for (var item in productItems) {
+        print('  - بند: ${item.productName}, وحدة: ${item.unit}, سعر: ${item.unitPrice}');
+        if (item.unit == 'قطعة') {
+          bestItem = item;
+          print('    ✓ تم اختيار هذا البند (وحدة قطعة)');
+          break;
+        }
+      }
+      bestItem ??= productItems.first;
+      
+      if (bestItem.unit != 'قطعة') {
+        print('  ⚠️ تحذير: لا يوجد بند بوحدة "قطعة"، سيتم استخدام: ${bestItem.unit}');
+      }
+      
+      final item = bestItem;
+      print('  📌 البند المختار: ${item.productName}');
+      print('  productId: ${item.productId}');
+      print('  unitPrice: ${item.unitPrice}');
+      print('  quantity: ${item.quantity}');
+      print('  unit: ${item.unit}');
+      
+      try {
+        // جلب المنتج الحالي
+        final productMaps = await db.query(
+          'products',
+          where: 'id = ?',
+          whereArgs: [item.productId],
+          limit: 1,
+        );
+        
+        if (productMaps.isEmpty) {
+          print('  ❌ لم يتم العثور على المنتج في قاعدة البيانات!');
+          continue;
+        }
+        
+        final productMap = productMaps.first;
+        final oldCost = (productMap['cost_price'] as num?)?.toDouble() ?? 0.0;
+        final newCost = item.unitPrice;
+        
+        print('  💰 التكلفة القديمة: $oldCost');
+        print('  💰 التكلفة الجديدة: $newCost');
+        print('  📊 الفرق: ${(newCost - oldCost).toStringAsFixed(2)}');
+        
+        // تحديث التكلفة فقط إذا اختلفت
+        if ((oldCost - newCost).abs() > 0.01) {
+          print('  🔄 التكلفة تغيرت! سيتم التحديث...');
+          
+          // حساب unit_costs الجديدة
+          String? newUnitCosts;
+          final unit = productMap['unit'] as String?;
+          final unitHierarchy = productMap['unit_hierarchy'] as String?;
+          
+          print('  📐 وحدة المنتج: $unit');
+          print('  📐 الهرمية: $unitHierarchy');
+          
+          if (unit == 'piece' && unitHierarchy != null && unitHierarchy.isNotEmpty) {
+            try {
+              final List<dynamic> hierarchy = json.decode(unitHierarchy);
+              final Map<String, double> unitCosts = {};
+              double currentCost = newCost;
+              unitCosts['قطعة'] = currentCost;
+              
+              for (var level in hierarchy) {
+                final unitName = level['unit_name'] as String?;
+                final qty = level['quantity'] as int?;
+                if (unitName != null && qty != null && qty > 0) {
+                  currentCost = currentCost * qty;
+                  unitCosts[unitName] = currentCost;
+                }
+              }
+              
+              newUnitCosts = json.encode(unitCosts);
+              print('  ✅ حساب unit_costs: $newUnitCosts');
+            } catch (e) {
+              print('  ⚠️ خطأ في حساب unit_costs: $e');
+            }
+          } else if (unit == 'meter') {
+            final lengthPerUnit = (productMap['length_per_unit'] as num?)?.toDouble() ?? 0.0;
+            if (lengthPerUnit > 0) {
+              newUnitCosts = json.encode({
+                'متر': newCost,
+                'لفة': newCost * lengthPerUnit,
+              });
+              print('  ✅ حساب unit_costs للمتر: $newUnitCosts');
+            }
+          }
+          
+          // تحديث cost_price و unit_costs
+          if (newUnitCosts != null) {
+            print('  💾 تحديث cost_price و unit_costs...');
+            await db.rawUpdate(
+              'UPDATE products SET cost_price = ?, unit_costs = ?, last_modified_at = ? WHERE id = ?',
+              [newCost, newUnitCosts, DateTime.now().toIso8601String(), item.productId],
+            );
+          } else {
+            print('  💾 تحديث cost_price فقط...');
+            await db.rawUpdate(
+              'UPDATE products SET cost_price = ?, last_modified_at = ? WHERE id = ?',
+              [newCost, DateTime.now().toIso8601String(), item.productId],
+            );
+          }
+          
+          updatedProducts.add('${item.productName}: ${oldCost.toStringAsFixed(2)} ← ${newCost.toStringAsFixed(2)}');
+          print('  ✅ تم التحديث بنجاح!');
+        } else {
+          print('  ⏭️ تخطي: السعر لم يتغير');
+        }
+      } catch (e) {
+        print('  ❌ خطأ: $e');
+      }
+    }
+    
+    print('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    print('📊 النتيجة النهائية: ${updatedProducts.length} منتج محدث');
+    print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+    
+    return updatedProducts;
   }
 }
 

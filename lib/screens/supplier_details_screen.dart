@@ -18,7 +18,7 @@ class SupplierDetailsScreen extends StatefulWidget {
   State<SupplierDetailsScreen> createState() => _SupplierDetailsScreenState();
 }
 
-class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
+class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> with SingleTickerProviderStateMixin {
   final SuppliersService _service = SuppliersService();
   List<SupplierInvoice> _invoices = const [];
   List<SupplierReceipt> _receipts = const [];
@@ -27,23 +27,64 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
   final Map<int, Map<String, double>> _invoiceBalances = {}; // id -> {before, after}
   final Map<int, Map<String, double>> _receiptBalances = {}; // id -> {before, after}
   late final NumberFormat _nfCompact = NumberFormat('#,##0', 'en');
+  late Supplier _currentSupplier; // المورد الحالي مع البيانات المحدثة
+  late TabController _tabController;
 
   @override
   void initState() {
     super.initState();
+    _currentSupplier = widget.supplier; // نسخ البيانات الأولية
+    _tabController = TabController(length: 3, vsync: this);
     _loadData();
   }
 
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadData() async {
+    print('\n🔄 تحديث بيانات المورد ${widget.supplier.companyName}...');
+    
+    // إعادة تحميل بيانات المورد من قاعدة البيانات للحصول على الرصيد المحدث
+    final suppliers = await _service.getAllSuppliers();
+    final updatedSupplier = suppliers.firstWhere(
+      (s) => s.id == widget.supplier.id,
+      orElse: () => widget.supplier,
+    );
+    
     final inv = await _service.getInvoicesBySupplier(widget.supplier.id!);
     final rec = await _service.getReceiptsBySupplier(widget.supplier.id!);
     final att = await _service.getAttachmentsForSupplier(widget.supplier.id!);
+    
+    print('📊 عدد الفواتير: ${inv.length}');
+    if (inv.isNotEmpty) {
+      for (var i in inv) {
+        print('  📄 فاتورة ${i.id}: ${i.invoiceNumber}, ${i.totalAmount} دينار, نوع: ${i.paymentType}');
+      }
+    }
+    
+    print('📊 عدد سندات القبض: ${rec.length}');
+    if (rec.isNotEmpty) {
+      for (var r in rec) {
+        print('  💰 سند ${r.id}: ${r.receiptNumber}, ${r.amount} دينار, تاريخ: ${r.receiptDate}');
+      }
+    } else {
+      print('  ⚠️ لا توجد سندات قبض لهذا المورد!');
+    }
+    
+    print('📊 عدد المرفقات: ${att.length}');
+    print('💰 الرصيد الحالي: ${updatedSupplier.currentBalance}');
+    
     setState(() {
+      _currentSupplier = updatedSupplier;
       _invoices = inv;
       _receipts = rec;
       _attachments = att;
     });
     _computeRunningBalances();
+    print('✅ تم تحديث البيانات بنجاح\n');
   }
 
   @override
@@ -165,15 +206,15 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
                             ),
                       ),
                       const SizedBox(height: 16),
-                      _buildInfoRow(context, 'الهاتف', (widget.supplier.phoneNumber ?? '').isEmpty ? 'غير متوفر' : widget.supplier.phoneNumber!),
+                      _buildInfoRow(context, 'الهاتف', (_currentSupplier.phoneNumber ?? '').isEmpty ? 'غير متوفر' : _currentSupplier.phoneNumber!),
                       const SizedBox(height: 12),
-                      _buildInfoRow(context, 'العنوان', (widget.supplier.address ?? '').isEmpty ? 'غير متوفر' : widget.supplier.address!),
+                      _buildInfoRow(context, 'العنوان', (_currentSupplier.address ?? '').isEmpty ? 'غير متوفر' : _currentSupplier.address!),
                       const SizedBox(height: 12),
                       _buildInfoRow(
                         context,
                         'إجمالي المديونية',
-                        '${_nf.format(widget.supplier.currentBalance)} دينار',
-                        valueColor: (widget.supplier.currentBalance) > 0
+                        '${_nf.format(_currentSupplier.currentBalance)} دينار',
+                        valueColor: (_currentSupplier.currentBalance) > 0
                             ? Theme.of(context).colorScheme.error
                             : Theme.of(context).colorScheme.tertiary,
                       ),
@@ -200,8 +241,50 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
                   ),
                 ],
               ),
+              const SizedBox(height: 12),
+              // التبويبات الثلاثة
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: TabBar(
+                  controller: _tabController,
+                  indicator: BoxDecoration(
+                    color: Theme.of(context).colorScheme.primary,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  labelColor: Colors.white,
+                  unselectedLabelColor: Colors.grey[700],
+                  labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                  unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.normal, fontSize: 14),
+                  tabs: [
+                    Tab(
+                      icon: const Icon(Icons.receipt_long, size: 20),
+                      text: 'فواتير نقد',
+                    ),
+                    Tab(
+                      icon: const Icon(Icons.credit_card, size: 20),
+                      text: 'فواتير دين',
+                    ),
+                    Tab(
+                      icon: const Icon(Icons.payments, size: 20),
+                      text: 'سندات قبض',
+                    ),
+                  ],
+                ),
+              ),
               const SizedBox(height: 8),
-              Expanded(child: _buildUnifiedTimeline(context)),
+              Expanded(
+                child: TabBarView(
+                  controller: _tabController,
+                  children: [
+                    _buildCashInvoicesTab(context),
+                    _buildCreditInvoicesTab(context),
+                    _buildReceiptsTab(context),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
@@ -224,22 +307,306 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
     );
   }
 
+  // تبويب فواتير النقد
+  Widget _buildCashInvoicesTab(BuildContext context) {
+    final cashInvoices = _invoices.where((inv) => inv.paymentType == 'نقد').toList();
+    cashInvoices.sort((a, b) => b.invoiceDate.compareTo(a.invoiceDate));
+
+    if (cashInvoices.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.receipt_long, size: 64, color: Colors.grey[400]),
+            const SizedBox(height: 16),
+            Text(
+              'لا توجد فواتير نقد',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.grey[600]),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return ListView.separated(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      itemCount: cashInvoices.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 12),
+      itemBuilder: (context, index) {
+        final inv = cashInvoices[index];
+        return _buildInvoiceCard(context, inv, Colors.blue, Icons.receipt);
+      },
+    );
+  }
+
+  // تبويب فواتير الدين
+  Widget _buildCreditInvoicesTab(BuildContext context) {
+    final creditInvoices = _invoices.where((inv) => inv.paymentType == 'دين').toList();
+    creditInvoices.sort((a, b) => b.invoiceDate.compareTo(a.invoiceDate));
+
+    if (creditInvoices.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.credit_card, size: 64, color: Colors.grey[400]),
+            const SizedBox(height: 16),
+            Text(
+              'لا توجد فواتير دين',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.grey[600]),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return ListView.separated(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      itemCount: creditInvoices.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 12),
+      itemBuilder: (context, index) {
+        final inv = creditInvoices[index];
+        return _buildInvoiceCard(context, inv, Theme.of(context).colorScheme.error, Icons.add);
+      },
+    );
+  }
+
+  // تبويب سندات القبض
+  Widget _buildReceiptsTab(BuildContext context) {
+    final receipts = List<SupplierReceipt>.from(_receipts);
+    receipts.sort((a, b) => b.receiptDate.compareTo(a.receiptDate));
+
+    if (receipts.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.payments, size: 64, color: Colors.grey[400]),
+            const SizedBox(height: 16),
+            Text(
+              'لا توجد سندات قبض',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.grey[600]),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return ListView.separated(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      itemCount: receipts.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 12),
+      itemBuilder: (context, index) {
+        final receipt = receipts[index];
+        return _buildReceiptCard(context, receipt);
+      },
+    );
+  }
+
+  // بطاقة عرض الفاتورة
+  Widget _buildInvoiceCard(BuildContext context, SupplierInvoice inv, Color color, IconData icon) {
+    final DateFormat dateFormat = DateFormat('yyyy-MM-dd');
+    
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _showInvoiceDetails(inv),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(icon, color: color, size: 28),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'فاتورة ${inv.invoiceNumber}',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      dateFormat.format(inv.invoiceDate),
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: Colors.grey[600],
+                          ),
+                    ),
+                    if (inv.paymentType == 'دين' && inv.totalAmount > inv.amountPaid) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'المتبقي: ${_nf.format(inv.totalAmount - inv.amountPaid)} دينار',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Colors.orange[700],
+                              fontWeight: FontWeight.bold,
+                            ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    '${_nf.format(inv.totalAmount)} دينار',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: color,
+                        ),
+                  ),
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: inv.paymentType == 'نقد' ? Colors.blue[50] : Colors.red[50],
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      inv.paymentType,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: inv.paymentType == 'نقد' ? Colors.blue[700] : Colors.red[700],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // بطاقة عرض سند القبض
+  Widget _buildReceiptCard(BuildContext context, SupplierReceipt receipt) {
+    final DateFormat dateFormat = DateFormat('yyyy-MM-dd');
+    
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _showReceiptDetails(receipt),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.green[50],
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(Icons.payments, color: Colors.green[700], size: 28),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'سند قبض ${receipt.receiptNumber}',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      dateFormat.format(receipt.receiptDate),
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: Colors.grey[600],
+                          ),
+                    ),
+                    if (receipt.paymentMethod != null && receipt.paymentMethod!.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'طريقة الدفع: ${receipt.paymentMethod}',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Colors.grey[600],
+                            ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              Text(
+                '${_nf.format(receipt.amount)} دينار',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.green[700],
+                    ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildUnifiedTimeline(BuildContext context) {
+    print('\n📋 بناء سجل المعاملات...');
+    print('📊 عدد الفواتير: ${_invoices.length}');
+    print('📊 عدد سندات القبض: ${_receipts.length}');
+    
     // Merge invoices (debt) and receipts (payment)
     final List<_Entry> entries = [];
+    
+    // إضافة الفواتير
     for (final inv in _invoices) {
+      // حساب المبلغ الذي يؤثر على الدين
       final remaining = inv.paymentType == 'نقد' ? 0.0 : (inv.totalAmount - inv.amountPaid);
-      final delta = remaining < 0 ? 0.0 : remaining; // add debt
-      entries.add(_Entry(dt: inv.invoiceDate, id: inv.id ?? -1, kind: 'invoice', delta: delta));
+      final delta = remaining < 0 ? 0.0 : remaining;
+      
+      // حفظ معلومات إضافية للعرض
+      entries.add(_Entry(
+        dt: inv.invoiceDate,
+        id: inv.id ?? -1,
+        kind: 'invoice',
+        delta: delta,
+        totalAmount: inv.totalAmount, // المبلغ الإجمالي للعرض
+        paymentType: inv.paymentType, // نوع الدفع
+        createdAt: inv.createdAt,
+      ));
+      print('  ➕ فاتورة ${inv.id}: ${inv.paymentType}, ${inv.totalAmount} دينار, تاريخ الإنشاء: ${inv.createdAt}');
     }
+    
+    // إضافة سندات القبض
     for (final r in _receipts) {
-      entries.add(_Entry(dt: r.receiptDate, id: r.id ?? -1, kind: 'receipt', delta: -r.amount)); // payment reduces debt
+      entries.add(_Entry(
+        dt: r.receiptDate,
+        id: r.id ?? -1,
+        kind: 'receipt',
+        delta: -r.amount, // سالب لأنه يخفض الدين
+        totalAmount: r.amount,
+        createdAt: r.createdAt,
+      ));
+      print('  ➖ سند قبض ${r.id}: ${r.amount} دينار, تاريخ الإنشاء: ${r.createdAt}');
     }
+    
+    // ترتيب من الأحدث إلى الأقدم
     entries.sort((a, b) {
+      // أولاً: حسب تاريخ المعاملة (الأحدث أولاً)
       final c = b.dt.compareTo(a.dt);
       if (c != 0) return c;
-      return b.id.compareTo(a.id);
+      // ثانياً: حسب وقت الإنشاء (الأحدث أولاً)
+      return b.createdAt.compareTo(a.createdAt);
     });
+
+    print('📊 إجمالي المعاملات في السجل: ${entries.length}');
 
     if (entries.isEmpty) {
       return Center(child: Text('لا توجد معاملات', style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Colors.grey[600])));
@@ -251,19 +618,41 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
       separatorBuilder: (_, __) => const SizedBox(height: 12),
       itemBuilder: (context, index) {
         final e = entries[index];
-        final isDebt = e.delta > 0;
-        final color = isDebt ? Theme.of(context).colorScheme.error : Theme.of(context).colorScheme.tertiary;
-        final icon = isDebt ? Icons.add : Icons.remove;
-        final titleAmount = _nf.format(e.delta.abs());
-
-        String subtitle = '';
+        
+        // تحديد نوع المعاملة والمبلغ المعروض
+        String displayAmount;
+        Color color;
+        IconData icon;
+        String subtitle;
+        
+        if (e.kind == 'invoice') {
+          // فاتورة
+          if (e.paymentType == 'نقد') {
+            // فاتورة نقد: تظهر المبلغ الفعلي (وليس صفر)
+            displayAmount = _nf.format(e.totalAmount ?? 0);
+            color = Colors.blue;
+            icon = Icons.receipt;
+            subtitle = 'فاتورة مشتريات نقد';
+          } else {
+            // فاتورة دين: تظهر المبلغ الفعلي
+            displayAmount = _nf.format(e.totalAmount ?? 0);
+            color = Theme.of(context).colorScheme.error;
+            icon = Icons.add;
+            subtitle = 'فاتورة مشتريات آجل';
+          }
+        } else {
+          // سند قبض: يخفض الدين
+          displayAmount = _nf.format(e.totalAmount ?? 0);
+          color = Theme.of(context).colorScheme.tertiary;
+          icon = Icons.remove;
+          subtitle = 'سند قبض';
+        }
+        
         Map<String, double>? balanceMap;
         if (e.kind == 'invoice') {
           balanceMap = _invoiceBalances[e.id];
-          subtitle = 'فاتورة مشتريات';
         } else {
           balanceMap = _receiptBalances[e.id];
-          subtitle = 'سند قبض';
         }
         final dateStr = DateFormat('yyyy/MM/dd').format(e.dt);
 
@@ -275,7 +664,7 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
               backgroundColor: color.withOpacity(0.1),
               child: Icon(icon, color: color, size: 28),
             ),
-            title: Text('$titleAmount دينار', style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: color, fontWeight: FontWeight.bold)),
+            title: Text('$displayAmount دينار', style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: color, fontWeight: FontWeight.bold)),
             subtitle: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -534,13 +923,33 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
   }
 
   Future<void> _onAddByAI() async {
-    final apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
-    if (apiKey.isEmpty) {
+    print('\n🔑 تحميل مفاتيح API...');
+    print('📂 محتويات dotenv.env:');
+    dotenv.env.forEach((key, value) {
+      if (key.contains('API_KEY')) {
+        // إخفاء جزء من المفتاح للأمان
+        final maskedValue = value.length > 10 
+            ? '${value.substring(0, 10)}...${value.substring(value.length - 4)}'
+            : '***';
+        print('  $key = $maskedValue');
+      }
+    });
+    
+    final groqApiKey = dotenv.env['GROQ_API_KEY'] ?? '';
+    final geminiApiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
+    final huggingfaceApiKey = dotenv.env['HUGGINGFACE_API_KEY'] ?? '';
+    
+    print('🔵 GROQ_API_KEY: ${groqApiKey.isEmpty ? "فارغ ❌" : "موجود ✅ (${groqApiKey.length} حرف)"}');
+    print('🟢 GEMINI_API_KEY: ${geminiApiKey.isEmpty ? "فارغ ❌" : "موجود ✅ (${geminiApiKey.length} حرف)"}');
+    print('🟠 HUGGINGFACE_API_KEY: ${huggingfaceApiKey.isEmpty ? "فارغ ❌" : "موجود ✅ (${huggingfaceApiKey.length} حرف)"}');
+    
+    if (groqApiKey.isEmpty && geminiApiKey.isEmpty && huggingfaceApiKey.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('GEMINI_API_KEY غير مضبوط')),
+        const SnackBar(content: Text('لم يتم العثور على أي API Key')),
       );
       return;
     }
+    
     final type = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
@@ -585,7 +994,9 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
           fileBytes: bytes,
           mimeType: mime,
           type: type,
-          apiKey: apiKey,
+          groqApiKey: groqApiKey,
+          geminiApiKey: geminiApiKey,
+          huggingfaceApiKey: huggingfaceApiKey,
           supplierId: widget.supplier.id,
         ),
       ),
@@ -600,10 +1011,14 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
   }
 
   void _computeRunningBalances() async {
+    print('\n🔢 حساب الأرصدة...');
     _invoiceBalances.clear();
     _receiptBalances.clear();
+    
     // جهّز تسلسل موحد للعمليات حسب التاريخ ثم id
     final List<_Entry> entries = [];
+    
+    print('📊 عدد الفواتير: ${_invoices.length}');
     for (final inv in _invoices) {
       final remaining = inv.paymentType == 'نقد'
           ? 0.0
@@ -613,42 +1028,156 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> {
         id: inv.id ?? -1,
         kind: 'invoice',
         delta: remaining < 0 ? 0.0 : remaining,
+        createdAt: inv.createdAt,
       ));
+      print('  ➕ فاتورة ${inv.id}: نوع=${inv.paymentType}, مبلغ=${inv.totalAmount}, مدفوع=${inv.amountPaid}, تأثير=$remaining');
     }
+    
+    print('📊 عدد سندات القبض: ${_receipts.length}');
     for (final r in _receipts) {
       entries.add(_Entry(
         dt: r.receiptDate,
         id: r.id ?? -1,
         kind: 'receipt',
         delta: -r.amount,
+        createdAt: r.createdAt,
       ));
+      print('  ➖ سند ${r.id}: مبلغ=${r.amount}, تأثير=${-r.amount}');
     }
-    // رتب من الأحدث إلى الأقدم
+    
+    // رتب من الأقدم إلى الأحدث للحساب الصحيح
     entries.sort((a, b) {
-      final c = b.dt.compareTo(a.dt);
+      // أولاً: حسب تاريخ المعاملة (الأقدم أولاً)
+      final c = a.dt.compareTo(b.dt);
       if (c != 0) return c;
-      return b.id.compareTo(a.id);
+      // ثانياً: حسب وقت الإنشاء (الأقدم أولاً)
+      return a.createdAt.compareTo(b.createdAt);
     });
 
-    // احسب الرصيد الرجعي بدءاً من current_balance الحالي من القاعدة لضمان التطابق
+    print('📊 إجمالي المعاملات: ${entries.length}');
+    
+    // احسب الرصيد من الصفر إلى الحالي
     try {
-      final db = await DatabaseService().database;
-      final row = await db.query('suppliers', columns: ['current_balance'], where: 'id = ?', whereArgs: [widget.supplier.id], limit: 1);
-      double runningAfter = row.isNotEmpty ? ((row.first['current_balance'] as num?)?.toDouble() ?? widget.supplier.currentBalance) : widget.supplier.currentBalance;
+      double runningBalance = 0.0;
+      
       for (final e in entries) {
-        final after = runningAfter;
-        final before = after - e.delta;
+        final before = runningBalance;
+        final after = before + e.delta;
+        
         if (e.kind == 'invoice') {
           _invoiceBalances[e.id] = {'before': before, 'after': after};
+          print('  📄 فاتورة ${e.id}: قبل=${before.toStringAsFixed(2)}، تغيير=${e.delta.toStringAsFixed(2)}, بعد=${after.toStringAsFixed(2)}');
         } else {
           _receiptBalances[e.id] = {'before': before, 'after': after};
+          print('  💰 سند ${e.id}: قبل=${before.toStringAsFixed(2)}، تغيير=${e.delta.toStringAsFixed(2)}, بعد=${after.toStringAsFixed(2)}');
         }
-        runningAfter = before;
+        
+        runningBalance = after;
       }
-    } catch (_) {
-      // في حالة الفشل، لا نُظهر الأرقام لتجنب التضليل
+      
+      print('💰 الرصيد النهائي المحسوب: ${runningBalance.toStringAsFixed(2)}');
+      print('💰 الرصيد الفعلي في القاعدة: ${_currentSupplier.currentBalance.toStringAsFixed(2)}');
+      
+      // تحقق من التطابق
+      final diff = (runningBalance - _currentSupplier.currentBalance).abs();
+      if (diff > 0.01) {
+        print('⚠️ تحذير: هناك فرق بين الرصيد المحسوب والفعلي: ${diff.toStringAsFixed(2)}');
+      }
+      
+    } catch (e) {
+      print('❌ خطأ في حساب الأرصدة: $e');
     }
+    
     if (mounted) setState(() {});
+    print('✅ انتهى حساب الأرصدة\n');
+  }
+
+  // عرض تفاصيل الفاتورة
+  void _showInvoiceDetails(SupplierInvoice invoice) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('تفاصيل فاتورة ${invoice.invoiceNumber ?? "بدون رقم"}'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildDetailRow('رقم الفاتورة', invoice.invoiceNumber ?? 'غير محدد'),
+              _buildDetailRow('التاريخ', DateFormat('yyyy-MM-dd').format(invoice.invoiceDate)),
+              _buildDetailRow('المبلغ الإجمالي', '${_nf.format(invoice.totalAmount)} دينار'),
+              _buildDetailRow('نوع الدفع', invoice.paymentType),
+              _buildDetailRow('الحالة', invoice.status),
+              if (invoice.paymentType == 'دين') ...[
+                _buildDetailRow('المبلغ المدفوع', '${_nf.format(invoice.amountPaid)} دينار'),
+                _buildDetailRow('المتبقي', '${_nf.format(invoice.totalAmount - invoice.amountPaid)} دينار'),
+              ],
+              if (invoice.discount > 0)
+                _buildDetailRow('الخصم', '${_nf.format(invoice.discount)} دينار'),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إغلاق'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // عرض تفاصيل سند القبض
+  void _showReceiptDetails(SupplierReceipt receipt) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('تفاصيل سند ${receipt.receiptNumber ?? "بدون رقم"}'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildDetailRow('رقم السند', receipt.receiptNumber ?? 'غير محدد'),
+              _buildDetailRow('التاريخ', DateFormat('yyyy-MM-dd').format(receipt.receiptDate)),
+              _buildDetailRow('المبلغ', '${_nf.format(receipt.amount)} دينار'),
+              if (receipt.paymentMethod != null && receipt.paymentMethod!.isNotEmpty)
+                _buildDetailRow('طريقة الدفع', receipt.paymentMethod!),
+              if (receipt.notes != null && receipt.notes!.isNotEmpty)
+                _buildDetailRow('ملاحظات', receipt.notes!),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إغلاق'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // صف تفاصيل
+  Widget _buildDetailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 100,
+            child: Text(
+              '$label:',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+          Expanded(
+            child: Text(value),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -656,8 +1185,20 @@ class _Entry {
   final DateTime dt;
   final int id;
   final String kind; // invoice | receipt
-  final double delta;
-  _Entry({required this.dt, required this.id, required this.kind, required this.delta});
+  final double delta; // التغيير في الدين
+  final double? totalAmount; // المبلغ الإجمالي للعرض
+  final String? paymentType; // نوع الدفع (نقد/دين)
+  final DateTime createdAt; // وقت الإنشاء للترتيب الصحيح
+  
+  _Entry({
+    required this.dt,
+    required this.id,
+    required this.kind,
+    required this.delta,
+    this.totalAmount,
+    this.paymentType,
+    required this.createdAt,
+  });
 }
 
 

@@ -246,11 +246,14 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
             ? 'image/png'
             : 'image/jpeg');
 
-    final apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
-    if (apiKey.isEmpty) {
+    final groqApiKey = dotenv.env['GROQ_API_KEY'] ?? '';
+    final geminiApiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
+    final huggingfaceApiKey = dotenv.env['HUGGINGFACE_API_KEY'] ?? '';
+    
+    if (groqApiKey.isEmpty && geminiApiKey.isEmpty && huggingfaceApiKey.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لم يتم العثور على مفتاح GEMINI_API_KEY في .env')),
+        const SnackBar(content: Text('لم يتم العثور على أي API Key في .env')),
       );
       return;
     }
@@ -262,7 +265,9 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
           fileBytes: bytes,
           mimeType: mime,
           type: selectedType,
-          apiKey: apiKey,
+          groqApiKey: groqApiKey,
+          geminiApiKey: geminiApiKey,
+          huggingfaceApiKey: huggingfaceApiKey,
         ),
       ),
     );
@@ -306,7 +311,6 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
   void initState() {
     super.initState();
     _reload();
-    _debugPrintAllProducts();
   }
 
   Future<void> _reload() async {
@@ -324,20 +328,6 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
     setState(() {
       _suppliers.add(created);
     });
-  }
-
-  Future<void> _debugPrintAllProducts() async {
-    try {
-      final db = await DatabaseService().database;
-      final rows = await db.query('products', columns: ['name']);
-      final names = rows.map((e) => (e['name'] ?? '').toString()).where((s) => s.trim().isNotEmpty).toList();
-      print('DEBUG SUPPLIERS: Loaded ${names.length} products from DB');
-      for (final n in names) {
-        print('DEBUG SUPPLIERS PRODUCT: $n');
-      }
-    } catch (e) {
-      print('DEBUG SUPPLIERS: Failed to list products: $e');
-    }
   }
 }
 

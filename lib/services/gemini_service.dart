@@ -138,10 +138,24 @@ class GeminiService {
     final parts = content['parts'] as List? ?? [];
     if (parts.isEmpty) return {};
     final text = parts.first['text'] as String? ?? '{}';
+    
+    // طباعة الاستجابة الخام للتشخيص
+    print('📄 Gemini Raw Response:');
+    print(text);
+    print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
     try {
       final extracted = jsonDecode(text) as Map<String, dynamic>;
+      
+      // طباعة البيانات المستخرجة
+      if (extractType == 'invoice') {
+        final items = extracted['line_items'] ?? extracted['items'] ?? [];
+        print('📦 عدد العناصر المستخرجة: ${items is List ? items.length : 0}');
+      }
+      
       return extracted;
-    } catch (_) {
+    } catch (e) {
+      print('⚠️ فشل تحليل JSON من Gemini: $e');
       return {'raw': text};
     }
   }

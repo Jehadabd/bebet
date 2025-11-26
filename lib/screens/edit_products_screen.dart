@@ -18,6 +18,7 @@ class _EditProductsScreenState extends State<EditProductsScreen> {
   List<Product> _products = [];
   List<Product> _filteredProducts = [];
   bool _loading = true;
+  bool _passwordChecked = false;
   final TextEditingController _searchController = TextEditingController();
   final PasswordService _passwordService = PasswordService();
 
@@ -30,11 +31,21 @@ class _EditProductsScreenState extends State<EditProductsScreen> {
       final bool canAccess = await _showPasswordDialog();
       if (!mounted) return;
       if (canAccess) {
+        setState(() => _passwordChecked = true);
         _loadProducts();
       } else {
         Navigator.of(context).pop();
       }
     });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // إعادة تحميل المنتجات عند العودة للشاشة (بعد التحقق من الباسورد)
+    if (_passwordChecked && !_loading) {
+      _loadProducts();
+    }
   }
 
   Future<void> _loadProducts() async {
@@ -439,6 +450,8 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     final db = DatabaseService();
     final inputName = _nameController.text.trim();
     String? unitHierarchyJson;
+    String? unitCostsJson;
+    
     if (_selectedUnit == 'piece' && _unitHierarchyList.isNotEmpty) {
       final filtered = _unitHierarchyList
           .where((row) =>
@@ -453,11 +466,40 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                   'quantity': int.tryParse(row['quantity'].toString()) ?? 0,
                 })
             .toList());
+        
+        // حساب unit_costs تلقائياً
+        final baseCost = double.tryParse(_costPriceController.text.trim()) ?? (widget.product.costPrice ?? 0.0);
+        if (baseCost > 0) {
+          final Map<String, double> unitCosts = {};
+          double currentCost = baseCost;
+          unitCosts['قطعة'] = currentCost;
+          
+          for (final level in filtered) {
+            final String unitName = (level['unit_name'] ?? '').toString();
+            if (unitName.isEmpty) continue;
+            final int qty = int.tryParse(level['quantity'].toString()) ?? 1;
+            currentCost = currentCost * qty;
+            unitCosts[unitName] = currentCost;
+          }
+          
+          unitCostsJson = json.encode(unitCosts);
+        }
       }
     }
+    
     if (_selectedUnit == 'meter') {
       unitHierarchyJson = null;
+      // حساب unit_costs للمنتجات المباعة بالمتر
+      final baseCost = double.tryParse(_costPriceController.text.trim()) ?? (widget.product.costPrice ?? 0.0);
+      final length = double.tryParse(_lengthPerUnitController.text.trim()) ?? (widget.product.lengthPerUnit ?? 0.0);
+      if (baseCost > 0 && length > 0) {
+        unitCostsJson = json.encode({
+          'متر': baseCost,
+          'لفة': baseCost * length,
+        });
+      }
     }
+    
     final updatedProduct = widget.product.copyWith(
       name: inputName,
       unit: _selectedUnit,
@@ -488,6 +530,7 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
           : null,
       lastModifiedAt: DateTime.now(),
       unitHierarchy: unitHierarchyJson,
+      unitCosts: unitCostsJson, // إضافة unit_costs المحسوبة
     );
     final allProducts = await db.getAllProducts();
     final inputNameForCompare = normalizeProductNameForCompare(inputName);

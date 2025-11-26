@@ -257,3 +257,86 @@ class Attachment {
 }
 
 
+class SupplierInvoiceItem {
+  int? id;
+  int invoiceId;
+  int? productId; // NULL إذا كان منتج غير موجود في المخزون
+  String productName;
+  double quantity;
+  double unitPrice; // السعر للوحدة الواحدة (التكلفة)
+  double totalPrice; // الكمية × السعر
+  String? unit; // الوحدة (قطعة، متر، لفة، إلخ)
+  String? notes;
+  DateTime createdAt;
+
+  SupplierInvoiceItem({
+    this.id,
+    required this.invoiceId,
+    this.productId,
+    required this.productName,
+    required this.quantity,
+    required this.unitPrice,
+    required this.totalPrice,
+    this.unit,
+    this.notes,
+    DateTime? createdAt,
+  }) : createdAt = createdAt ?? DateTime.now();
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'invoice_id': invoiceId,
+      'product_id': productId,
+      'product_name': productName,
+      'quantity': quantity,
+      'unit_price': unitPrice,
+      'total_price': totalPrice,
+      'unit': unit,
+      'notes': notes,
+      'created_at': createdAt.toIso8601String(),
+    };
+  }
+
+  factory SupplierInvoiceItem.fromMap(Map<String, dynamic> map) {
+    return SupplierInvoiceItem(
+      id: map['id'] as int?,
+      invoiceId: map['invoice_id'] as int,
+      productId: map['product_id'] as int?,
+      productName: map['product_name'] as String,
+      quantity: (map['quantity'] as num).toDouble(),
+      unitPrice: (map['unit_price'] as num).toDouble(),
+      totalPrice: (map['total_price'] as num).toDouble(),
+      unit: map['unit'] as String?,
+      notes: map['notes'] as String?,
+      createdAt: DateTime.parse(map['created_at'] as String),
+    );
+  }
+
+  SupplierInvoiceItem copyWith({
+    int? id,
+    int? invoiceId,
+    int? productId,
+    String? productName,
+    double? quantity,
+    double? unitPrice,
+    double? totalPrice,
+    String? unit,
+    String? notes,
+    DateTime? createdAt,
+  }) {
+    return SupplierInvoiceItem(
+      id: id ?? this.id,
+      invoiceId: invoiceId ?? this.invoiceId,
+      productId: productId ?? this.productId,
+      productName: productName ?? this.productName,
+      quantity: quantity ?? this.quantity,
+      unitPrice: unitPrice ?? this.unitPrice,
+      totalPrice: totalPrice ?? this.totalPrice,
+      unit: unit ?? this.unit,
+      notes: notes ?? this.notes,
+      createdAt: createdAt ?? this.createdAt,
+    );
+  }
+}
+
+
