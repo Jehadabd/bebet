@@ -2761,12 +2761,54 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                     const SizedBox(width: 8.0),
                     Expanded(
                       flex: 2,
-                      child: TextFormField(
-                        controller: installerNameController,
-                        decoration: const InputDecoration(
-                            labelText: 'اسم المؤسس/الفني (اختياري)'),
-                        enabled: !isViewOnly,
-                      ),
+                      child: isViewOnly
+                          ? TextFormField(
+                              controller: installerNameController,
+                              decoration: const InputDecoration(
+                                  labelText: 'اسم المؤسس/الفني (اختياري)'),
+                              enabled: false,
+                            )
+                          : Autocomplete<String>(
+                              optionsBuilder:
+                                  (TextEditingValue textEditingValue) async {
+                                if (textEditingValue.text == '') {
+                                  return const Iterable<String>.empty();
+                                }
+                                final installers = await db
+                                    .searchInstallers(textEditingValue.text);
+                                return installers.map((i) => i.name).toSet();
+                              },
+                              fieldViewBuilder: (context, controller, focusNode,
+                                  onFieldSubmitted) {
+                                WidgetsBinding.instance
+                                    .addPostFrameCallback((_) {
+                                  if (controller.text !=
+                                      installerNameController.text) {
+                                    controller.text =
+                                        installerNameController.text;
+                                    controller.selection =
+                                        TextSelection.fromPosition(
+                                      TextPosition(
+                                          offset: controller.text.length),
+                                    );
+                                  }
+                                });
+                                return TextFormField(
+                                  controller: controller,
+                                  focusNode: focusNode,
+                                  decoration: const InputDecoration(
+                                      labelText: 'اسم المؤسس/الفني (اختياري)'),
+                                  onChanged: (val) {
+                                    installerNameController.text = val;
+                                    _onFieldChanged();
+                                  },
+                                );
+                              },
+                              onSelected: (String selection) {
+                                installerNameController.text = selection;
+                                _onFieldChanged();
+                              },
+                            ),
                     ),
                   ],
                 ),

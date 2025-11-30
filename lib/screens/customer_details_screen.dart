@@ -617,6 +617,270 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
 
             return Column(
               children: [
+                // التحقق من تطابق الرصيد وعرض تنبيه
+                Builder(
+                  builder: (context) {
+                    double calculatedBalance = 0.0;
+                    for (var t in transactions) {
+                      calculatedBalance += t.amountChanged;
+                    }
+                    final diff = (calculatedBalance - (customer.currentTotalDebt ?? 0.0)).abs();
+                    
+                    if (diff > 0.01) {
+                      return Container(
+                        margin: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.orange[50],
+                          border: Border.all(color: Colors.orange),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Column(
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(Icons.warning_amber_rounded, color: Colors.orange),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    'تنبيه: يوجد اختلاف بين رصيد العميل ومجموع المعاملات.\nالرصيد المسجل: ${formatCurrency(customer.currentTotalDebt ?? 0)}\nالمجموع الفعلي: ${formatCurrency(calculatedBalance)}',
+                                    style: const TextStyle(color: Colors.black87, fontSize: 13),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: TextButton.icon(
+                                onPressed: () async {
+                                  // Dialog 1: Check if accounts are correct
+                                  final result = await showDialog<String>(
+                                    context: context,
+                                    builder: (context) => AlertDialog(
+                                      title: const Text('تحقق من الحسابات'),
+                                      content: Text(
+                                        'يوجد اختلاف بين الرصيد المسجل (${formatCurrency(customer.currentTotalDebt ?? 0)}) ومجموع المعاملات (${formatCurrency(calculatedBalance)}).\n\nهل أنت متأكد من أن الرصيد المسجل هو الصحيح؟'
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () => Navigator.pop(context, 'no'),
+                                          child: const Text('لا'),
+                                        ),
+                                        TextButton(
+                                          onPressed: () => Navigator.pop(context, 'yes'),
+                                          child: const Text('نعم'),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+
+                                  if (!mounted) return;
+
+                                  if (result == 'yes') {
+                                    // User says Recorded Balance is correct -> Add correction transaction
+                                    final confirmed = await showDialog<bool>(
+                                      context: context,
+                                      builder: (context) => AlertDialog(
+                                        title: const Text('إضافة معاملة تصحيحية'),
+                                        content: Text(
+                                          'سيتم إضافة معاملة بقيمة الفرق (${formatCurrency(customer.currentTotalDebt! - calculatedBalance)}) ليصبح مجموع المعاملات مطابقاً للرصيد المسجل.\n\nهل أنت متأكد؟'
+                                        ),
+                                        actions: [
+                                          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
+                                          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('نعم، أضف المعاملة')),
+                                        ],
+                                      ),
+                                    );
+
+                                    if (confirmed == true && mounted) {
+                                      try {
+                                        final db = DatabaseService();
+                                        final diffAmount = (customer.currentTotalDebt ?? 0.0) - calculatedBalance;
+                                        
+                                        // FIX: Before adding the correction transaction, we must set the customer's
+                                        // current debt to match the calculatedBalance (sum of transactions).
+                                        // Why? Because insertTransaction adds the amount to the *current* debt.
+                                        // If we don't reset it, we get: Current(Correct) + Diff = Correct + Diff (Wrong!).
+                                        // We want: Calculated(Wrong) + Diff = Correct.
+                                        // So we update the DB directly without notifying the UI yet.
+                                        await db.updateCustomer(customer.copyWith(
+                                          currentTotalDebt: calculatedBalance,
+                                          lastModifiedAt: DateTime.now(),
+                                        ));
+
+                                        await db.insertTransaction(DebtTransaction(
+                                          customerId: customer.id!,
+                                          transactionDate: DateTime.now(),
+                                          amountChanged: diffAmount,
+                                          transactionNote: 'تصحيح رصيد (رصيد افتتاحي سابق)',
+                                          transactionType: 'opening_balance',
+                                          description: 'تصحيح تلقائي للفروقات',
+                                          createdAt: DateTime.now(),
+                                        ));
+                                        
+                                        await db.recalculateCustomerTransactionBalances(customer.id!);
+                                        
+                                        // Reload customer and transactions to update UI with correct final values
+                                        final provider = context.read<AppProvider>();
+                                        await provider.selectCustomer(customer);
+                                        await _loadTransactions();
+                                        
+                                        if (mounted) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(content: Text('تم تصحيح الرصيد بنجاح')),
+                                          );
+                                        }
+                                      } catch (e) {
+                                        if (mounted) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            SnackBar(content: Text('خطأ: $e')),
+                                          );
+                                        }
+                                      }
+                                    }
+                                  } else if (result == 'no') {
+                                    // User says Recorded Balance is WRONG -> Ask to update it to match transactions
+                                    final confirmed = await showDialog<bool>(
+                                      context: context,
+                                      builder: (context) => AlertDialog(
+                                        title: const Text('تحديث الرصيد المسجل'),
+                                        content: Text(
+                                          'مجموع المعاملات لهذا العميل هو ${formatCurrency(calculatedBalance)}.\n\nهل تريد اعتماد هذا المجموع كرصيد نهائي (بدلاً من ${formatCurrency(customer.currentTotalDebt ?? 0)})؟'
+                                        ),
+                                        actions: [
+                                          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
+                                          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('نعم، اعتمد المجموع')),
+                                        ],
+                                      ),
+                                    );
+
+                                    if (confirmed == true && mounted) {
+                                      try {
+                                        final provider = context.read<AppProvider>();
+                                        final updatedCustomer = customer.copyWith(
+                                          currentTotalDebt: calculatedBalance,
+                                          lastModifiedAt: DateTime.now(),
+                                        );
+                                        
+                                        await provider.updateCustomer(updatedCustomer);
+                                        // Force reload to refresh UI
+                                        await _loadTransactions();
+
+                                        if (mounted) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(content: Text('تم تحديث الرصيد المسجل بنجاح')),
+                                          );
+                                        }
+                                      } catch (e) {
+                                        if (mounted) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            SnackBar(content: Text('خطأ: $e')),
+                                          );
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                icon: const Icon(Icons.build, size: 16),
+                                label: const Text('حل مشكلة الاختلاف'),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: Colors.orange[900],
+                                  padding: EdgeInsets.zero,
+                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    } else {
+                      // التحقق من تزامن سجل المعاملات (هل الرصيد التراكمي في آخر معاملة يطابق المجموع؟)
+                      final lastTxBalance = transactions.isNotEmpty ? (transactions.first.newBalanceAfterTransaction ?? 0.0) : 0.0;
+                      final historyMismatch = (calculatedBalance - lastTxBalance).abs() > 0.01;
+                      
+                      if (historyMismatch) {
+                         return Container(
+                        margin: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.blue[50],
+                          border: Border.all(color: Colors.blue),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Column(
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(Icons.info_outline_rounded, color: Colors.blue),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    'تنبيه: تسلسل الأرصدة في السجل يحتاج إلى تحديث.\nالمجموع صحيح (${formatCurrency(calculatedBalance)}) ولكن الأرصدة التراكمية غير متزامنة.',
+                                    style: const TextStyle(color: Colors.black87, fontSize: 13),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: TextButton.icon(
+                                onPressed: () async {
+                                  final confirmed = await showDialog<bool>(
+                                    context: context,
+                                    builder: (context) => AlertDialog(
+                                      title: const Text('تحديث السجل'),
+                                      content: const Text(
+                                        'سيتم إعادة حساب "الرصيد قبل" و "الرصيد بعد" لجميع المعاملات لضمان تسلسل صحيح.\nلن يتم تغيير المبلغ الإجمالي.\n\nهل تريد المتابعة؟'
+                                      ),
+                                      actions: [
+                                        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
+                                        TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('نعم، تحديث')),
+                                      ],
+                                    ),
+                                  );
+                                  
+                                  if (confirmed == true && mounted) {
+                                    try {
+                                      final db = DatabaseService();
+                                      // إعادة حساب تسلسل الأرصدة فقط
+                                      await db.recalculateCustomerTransactionBalances(customer.id!);
+                                      
+                                      // تحديث الواجهة
+                                      await _loadTransactions();
+                                      
+                                      if (mounted) {
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          const SnackBar(content: Text('تم تحديث سجل المعاملات بنجاح')),
+                                        );
+                                      }
+                                    } catch (e) {
+                                      if (mounted) {
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(content: Text('خطأ: $e')),
+                                        );
+                                      }
+                                    }
+                                  }
+                                },
+                                icon: const Icon(Icons.refresh, size: 16),
+                                label: const Text('تحديث تسلسل الأرصدة'),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: Colors.blue[900],
+                                  padding: EdgeInsets.zero,
+                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                      }
+                    }
+                    return const SizedBox.shrink();
+                  },
+                ),
                 Padding(
                   padding: const EdgeInsets.all(
                       24.0), // Increased padding for more spacious look
@@ -883,45 +1147,49 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
 
       allTransactions.sort((a, b) => a.date.compareTo(b.date));
 
-      final last15Transactions = allTransactions.length > 15
-          ? allTransactions.sublist(allTransactions.length - 15)
-          : allTransactions;
+      // استخدام جميع المعاملات بدلاً من آخر 15 فقط - كشف حساب تفصيلي كامل
+      final allTransactionsToShow = allTransactions;
 
+      // حساب الرصيد من البداية (صفر)
       double currentBalance = 0.0;
 
-      if (last15Transactions.isNotEmpty) {
-        final firstTransactionDate = last15Transactions.first.date;
-
-        for (var transaction in transactions) {
-          if (transaction.transactionDate!.isBefore(firstTransactionDate)) {
-            currentBalance += transaction.amountChanged;
-          }
-        }
-      }
-
-      for (var item in last15Transactions) {
+      // حساب الرصيد قبل وبعد كل معاملة من أول معاملة إلى آخر معاملة
+      for (var item in allTransactionsToShow) {
         item.balanceBefore = currentBalance;
         currentBalance += item.amount;
         item.balanceAfter = currentBalance;
       }
 
       final actualCustomerBalance = widget.customer.currentTotalDebt;
+      
+      // التحقق من وجود فرق بين الرصيد المحسوب والمعروض
       if ((currentBalance - actualCustomerBalance).abs() > 0.01) {
         print(
-            'Warning: Calculated balance ($currentBalance) differs from actual customer balance ($actualCustomerBalance)');
-        // In a real app, you might re-calculate from scratch or use the actual balance
-        // For this scenario, we'll use the actual customer balance as the final one for display
-        // but it's important to understand the discrepancy might point to data inconsistencies.
-        currentBalance =
-            actualCustomerBalance; // Use the actual latest balance from customer model
+            '⚠️ Warning: Calculated balance ($currentBalance) differs from actual customer balance ($actualCustomerBalance)');
+        print('📊 سيتم استخدام الرصيد المحسوب من المعاملات في كشف الحساب');
+        // ملاحظة: نستخدم الرصيد المحسوب (currentBalance) وليس الرصيد المعروض
+        // لأن الرصيد المحسوب هو الصحيح بناءً على المعاملات الفعلية
       }
 
+      print('📄 إنشاء PDF لـ ${allTransactionsToShow.length} معاملة...');
+      
+      // تحديد عدد المعاملات (حد أقصى 500 معاملة لتجنب مشاكل الذاكرة)
+      final transactionsForPdf = allTransactionsToShow.length > 500
+          ? allTransactionsToShow.sublist(allTransactionsToShow.length - 500)
+          : allTransactionsToShow;
+      
+      if (allTransactionsToShow.length > 500) {
+        print('⚠️ تحذير: عدد المعاملات كبير (${allTransactionsToShow.length})، سيتم عرض آخر 500 معاملة فقط');
+      }
+      
       final pdfService = PdfService();
       final pdf = await pdfService.generateAccountStatement(
         customer: widget.customer,
-        transactions: last15Transactions,
-        finalBalance: currentBalance,
+        transactions: transactionsForPdf,
+        finalBalance: currentBalance, // ✅ دائماً نستخدم الرصيد المحسوب من المعاملات
       );
+
+      print('✅ تم إنشاء PDF بنجاح');
 
       if (mounted) {
         Navigator.pop(context); // Dismiss loading indicator
@@ -958,7 +1226,10 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
           );
         }
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
+      print('❌ خطأ في إنشاء كشف الحساب: $e');
+      print('❌ Stack trace: $stackTrace');
+      
       if (mounted) {
         Navigator.pop(context); // Dismiss loading indicator
       }
@@ -968,6 +1239,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
           SnackBar(
             content: Text('حدث خطأ أثناء إنشاء كشف الحساب: ${e.toString()}'),
             backgroundColor: Theme.of(context).colorScheme.error,
+            duration: const Duration(seconds: 5),
           ),
         );
       }

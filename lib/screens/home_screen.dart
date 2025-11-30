@@ -1,15 +1,14 @@
 // screens/home_screen.dart
-// screens/home_screen.dart
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:font_awesome_flutter/font_awesome_flutter.dart'; // Make sure this package is in your pubspec.yaml
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../providers/app_provider.dart';
 import '../models/customer.dart';
 import 'customer_details_screen.dart';
 import 'add_customer_screen.dart';
 import 'saved_invoices_screen.dart';
-
-import 'package:intl/intl.dart'; // For currency formatting
+import 'ai_chat_screen.dart';
+import 'package:intl/intl.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -373,7 +372,14 @@ class _HomeScreenState extends State<HomeScreen> {
                       },
                       tooltip: 'الفواتير المحفوظة',
                     ),
-                    
+                    IconButton(
+                      icon: const Icon(Icons.chat_bubble_outline,
+                          color: Colors.white), // AI Chat icon
+                      onPressed: () {
+                        Navigator.pushNamed(context, '/ai_chat');
+                      },
+                      tooltip: 'الدردشة مع الذكاء الاصطناعي',
+                    ),
                   ],
                 );
               },

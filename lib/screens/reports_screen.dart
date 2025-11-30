@@ -2,6 +2,8 @@
 import 'package:flutter/material.dart';
 import 'product_reports_screen.dart';
 import 'people_reports_screen.dart';
+import 'daily_report_screen.dart';
+import 'weekly_report_screen.dart';
 
 class ReportsScreen extends StatelessWidget {
   const ReportsScreen({super.key});
@@ -74,7 +76,39 @@ class ReportsScreen extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 20),
-                  
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildReportCard(
+                          title: 'تقرير اليوم',
+                          subtitle: 'عرض تقرير مفصل لمبيعات اليوم',
+                          icon: Icons.today,
+                          color: const Color(0xFFFF9800),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const DailyReportScreen(),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 20),
+                      Expanded(
+                        child: _buildReportCard(
+                          title: 'تقرير الأسبوع',
+                          subtitle: 'عرض تقرير مفصل لمبيعات الأسبوع',
+                          icon: Icons.date_range,
+                          color: const Color(0xFF9C27B0),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const WeeklyReportScreen(),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),

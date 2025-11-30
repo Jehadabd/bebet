@@ -383,6 +383,37 @@ class DatabaseService {
     } catch (e) {
       print('DEBUG DB: Failed to inspect/add invoice_adjustments columns: $e');
     }
+
+    // --- تحقق من وجود عمود total_points في جدول installers ---
+    try {
+      final installersInfo = await _database!.rawQuery('PRAGMA table_info(installers);');
+      final hasTotalPoints = installersInfo.any((col) => col['name'] == 'total_points');
+      if (!hasTotalPoints) {
+        try {
+          await _database!.execute('ALTER TABLE installers ADD COLUMN total_points REAL DEFAULT 0.0;');
+          print('DEBUG: Added total_points to installers');
+        } catch (e) {
+          print('DEBUG: Failed adding total_points: $e');
+        }
+      }
+    } catch (e) {
+      print('DEBUG DB: Failed to inspect/add installers columns: $e');
+    }
+
+    // --- إنشاء جدول نقاط المؤسسين installer_points ---
+    await _database!.execute('''
+      CREATE TABLE IF NOT EXISTS installer_points (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        installer_id INTEGER NOT NULL,
+        invoice_id INTEGER,
+        points REAL NOT NULL,
+        reason TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (installer_id) REFERENCES installers (id) ON DELETE CASCADE,
+        FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE SET NULL
+      )
+    ''');
+    
     // --- نهاية التحقق ---
 
     // التحقق من حالة FTS5 وإعادة بناء الفهرس إذا لزم الأمر
@@ -1201,7 +1232,29 @@ class DatabaseService {
   // --- دوال العملاء ---
   Future<int> insertCustomer(Customer customer) async {
     final db = await database;
-    return await db.insert('customers', customer.toMap());
+    
+    // إدراج العميل أولاً
+    final customerId = await db.insert('customers', customer.toMap());
+    
+    // إذا كان هناك دين مبدئي، أضف معاملة تلقائية
+    if (customer.currentTotalDebt > 0) {
+      final now = DateTime.now();
+      await db.insert('transactions', {
+        'customer_id': customerId,
+        'transaction_date': now.toIso8601String(),
+        'amount_changed': customer.currentTotalDebt,
+        'new_balance_after_transaction': customer.currentTotalDebt,
+        'transaction_note': 'الدين المبدئي عند إضافة العميل',
+        'transaction_type': 'opening_balance',
+        'description': 'رصيد افتتاحي',
+        'created_at': now.toIso8601String(),
+        'invoice_id': null,
+      });
+      
+      print('✅ تم إضافة معاملة الدين المبدئي: ${customer.currentTotalDebt} دينار للعميل: ${customer.name}');
+    }
+    
+    return customerId;
   }
 
   Future<List<Customer>> getAllCustomers({String orderBy = 'name ASC'}) async {
@@ -1425,6 +1478,212 @@ class DatabaseService {
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
+  }
+
+  // --- Installer Points System ---
+
+  /// Add points to an installer manually
+  Future<void> addInstallerPoints(int installerId, double points, String reason, {int? invoiceId}) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      // 1. Insert into installer_points
+      await txn.insert('installer_points', {
+        'installer_id': installerId,
+        'invoice_id': invoiceId,
+        'points': points,
+        'reason': reason,
+        'created_at': DateTime.now().toIso8601String(),
+      });
+
+      // 2. Update installer total_points
+      final List<Map<String, dynamic>> installerMaps = await txn.query(
+        'installers',
+        columns: ['total_points'],
+        where: 'id = ?',
+        whereArgs: [installerId],
+      );
+      
+      if (installerMaps.isNotEmpty) {
+        double currentPoints = (installerMaps.first['total_points'] as num?)?.toDouble() ?? 0.0;
+        double newTotal = currentPoints + points;
+        
+        await txn.update(
+          'installers',
+          {'total_points': newTotal},
+          where: 'id = ?',
+          whereArgs: [installerId],
+        );
+      }
+    });
+  }
+
+  /// Deduct points from an installer manually
+  Future<void> deductInstallerPoints(int installerId, double points, String reason) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      // 1. Insert into installer_points with negative value
+      await txn.insert('installer_points', {
+        'installer_id': installerId,
+        'invoice_id': null,
+        'points': -points, // Negative value for deduction
+        'reason': reason,
+        'created_at': DateTime.now().toIso8601String(),
+      });
+
+      // 2. Update installer total_points
+      final List<Map<String, dynamic>> installerMaps = await txn.query(
+        'installers',
+        columns: ['total_points'],
+        where: 'id = ?',
+        whereArgs: [installerId],
+      );
+      
+      if (installerMaps.isNotEmpty) {
+        double currentPoints = (installerMaps.first['total_points'] as num?)?.toDouble() ?? 0.0;
+        double newTotal = currentPoints - points; // Subtract the points
+        
+        await txn.update(
+          'installers',
+          {'total_points': newTotal},
+          where: 'id = ?',
+          whereArgs: [installerId],
+        );
+      }
+    });
+  }
+
+  /// Get points history for an installer
+  Future<List<Map<String, dynamic>>> getInstallerPointsHistory(int installerId) async {
+    final db = await database;
+    return await db.query(
+      'installer_points',
+      where: 'installer_id = ?',
+      whereArgs: [installerId],
+      orderBy: 'created_at DESC',
+    );
+  }
+
+  /// Update points from an invoice (handle create/update)
+  Future<void> updateInstallerPointsFromInvoice(int invoiceId, String installerName, double invoiceTotal) async {
+    if (installerName.trim().isEmpty) return;
+
+    final db = await database;
+    
+    // 1. Find the installer by name
+    final List<Map<String, dynamic>> installers = await db.query(
+      'installers',
+      where: 'name = ?',
+      whereArgs: [installerName],
+    );
+    
+    if (installers.isEmpty) return; 
+    
+    final int installerId = installers.first['id'] as int;
+    
+    // 2. Calculate points: 100,000 IQD = 1 Point
+    final double newPoints = invoiceTotal / 100000.0;
+    
+    await db.transaction((txn) async {
+      // 3. Check if points already exist for this invoice
+      final List<Map<String, dynamic>> existingPoints = await txn.query(
+        'installer_points',
+        where: 'invoice_id = ?',
+        whereArgs: [invoiceId],
+      );
+      
+      if (existingPoints.isNotEmpty) {
+        // Update existing entry
+        final double oldPoints = (existingPoints.first['points'] as num).toDouble();
+        final double diff = newPoints - oldPoints;
+        
+        if (diff.abs() > 0.001) {
+          await txn.update(
+            'installer_points',
+            {
+              'points': newPoints,
+              'reason': 'فاتورة رقم $invoiceId (تعديل)',
+            },
+            where: 'invoice_id = ?',
+            whereArgs: [invoiceId],
+          );
+          
+          // Update total points
+           final List<Map<String, dynamic>> inst = await txn.query(
+            'installers',
+            columns: ['total_points'],
+            where: 'id = ?',
+            whereArgs: [installerId],
+          );
+          double currentTotal = (inst.first['total_points'] as num?)?.toDouble() ?? 0.0;
+          await txn.update(
+            'installers',
+            {'total_points': currentTotal + diff},
+            where: 'id = ?',
+            whereArgs: [installerId],
+          );
+        }
+      } else {
+        // Insert new entry
+        await txn.insert('installer_points', {
+          'installer_id': installerId,
+          'invoice_id': invoiceId,
+          'points': newPoints,
+          'reason': 'فاتورة رقم $invoiceId',
+          'created_at': DateTime.now().toIso8601String(),
+        });
+        
+        // Update total points
+         final List<Map<String, dynamic>> inst = await txn.query(
+          'installers',
+          columns: ['total_points'],
+          where: 'id = ?',
+          whereArgs: [installerId],
+        );
+        double currentTotal = (inst.first['total_points'] as num?)?.toDouble() ?? 0.0;
+        await txn.update(
+          'installers',
+          {'total_points': currentTotal + newPoints},
+          where: 'id = ?',
+          whereArgs: [installerId],
+        );
+      }
+    });
+  }
+
+  /// Recalculate and update total billed amount for a specific installer
+  Future<void> updateInstallerBilledAmount(int installerId) async {
+    final db = await database;
+    
+    // 1. Get installer name
+    final List<Map<String, dynamic>> installerMaps = await db.query(
+      'installers',
+      columns: ['name'],
+      where: 'id = ?',
+      whereArgs: [installerId],
+    );
+    
+    if (installerMaps.isEmpty) return;
+    final String installerName = installerMaps.first['name'] as String;
+
+    // 2. Sum all invoices for this installer
+    final List<Map<String, dynamic>> result = await db.rawQuery('''
+      SELECT SUM(total_amount) as total 
+      FROM invoices 
+      WHERE installer_name = ? AND status = 'محفوظة'
+    ''', [installerName]);
+    
+    double total = 0.0;
+    if (result.isNotEmpty && result.first['total'] != null) {
+      total = (result.first['total'] as num).toDouble();
+    }
+
+    // 3. Update installer record
+    await db.update(
+      'installers',
+      {'total_billed_amount': total},
+      where: 'id = ?',
+      whereArgs: [installerId],
+    );
   }
   // ... (بقية دوال الفنيين CRUD)
 
@@ -1772,7 +2031,7 @@ class DatabaseService {
   }
 
   /// إعادة حساب الرصيد بعد كل معاملة بناءً على الترتيب الزمني
-  Future<void> _recalculateTransactionBalances(int customerId) async {
+  Future<void> recalculateCustomerTransactionBalances(int customerId) async {
     final db = await database;
     
     // جلب جميع معاملات العميل مرتبة حسب التاريخ
@@ -1782,11 +2041,15 @@ class DatabaseService {
     
     // تحديث الرصيد بعد كل معاملة
     for (final transaction in transactions) {
+      final double balanceBefore = runningBalance;
       runningBalance += transaction.amountChanged;
       
       await db.update(
         'transactions',
-        {'new_balance_after_transaction': runningBalance},
+        {
+          'balance_before_transaction': balanceBefore,
+          'new_balance_after_transaction': runningBalance
+        },
         where: 'id = ?',
         whereArgs: [transaction.id],
       );
@@ -1802,7 +2065,7 @@ class DatabaseService {
     
     for (final customer in customers) {
       if (customer.id != null) {
-        await _recalculateTransactionBalances(customer.id!);
+        await recalculateCustomerTransactionBalances(customer.id!);
         await recalculateAndApplyCustomerDebt(customer.id!);
       }
     }
@@ -5267,6 +5530,72 @@ class DatabaseService {
       };
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  /// إعادة حساب مجاميع جميع الفواتير من البنود
+  Future<Map<String, dynamic>> recalculateAllInvoiceTotals() async {
+    try {
+      final db = await database;
+      int fixed = 0;
+      int totalInvoices = 0;
+      final List<String> details = [];
+      
+      // جلب جميع الفواتير
+      final invoices = await db.query('invoices');
+      totalInvoices = invoices.length;
+      
+      for (var invoice in invoices) {
+        final invoiceId = invoice['id'] as int;
+        final displayedTotal = (invoice['total_amount'] as num?)?.toDouble() ?? 0.0;
+        final discount = (invoice['discount'] as num?)?.toDouble() ?? 0.0;
+        final loadingFee = (invoice['loading_fee'] as num?)?.toDouble() ?? 0.0;
+        
+        // جلب عناصر الفاتورة
+        final items = await db.query(
+          'invoice_items',
+          where: 'invoice_id = ?',
+          whereArgs: [invoiceId],
+        );
+        
+        // حساب المجموع الفعلي من item_total
+        double calculatedTotal = 0.0;
+        for (var item in items) {
+          final itemTotal = (item['item_total'] as num?)?.toDouble() ?? 0.0;
+          calculatedTotal += itemTotal;
+        }
+        
+        // المجموع الصحيح = مجموع البنود - الخصم + أجور التحميل
+        final correctTotal = calculatedTotal - discount + loadingFee;
+        
+        // مقارنة المجموع (مع هامش خطأ صغير للأرقام العشرية)
+        if ((displayedTotal - correctTotal).abs() > 0.01) {
+          // تحديث الفاتورة
+          await db.update(
+            'invoices',
+            {'total_amount': correctTotal},
+            where: 'id = ?',
+            whereArgs: [invoiceId],
+          );
+          
+          fixed++;
+          details.add(
+            'فاتورة #$invoiceId: ${displayedTotal.toStringAsFixed(0)} ← ${correctTotal.toStringAsFixed(0)} دينار'
+          );
+        }
+      }
+      
+      return {
+        'success': true,
+        'fixed': fixed,
+        'total_invoices': totalInvoices,
+        'details': details,
+      };
+    } catch (e) {
+      return {
+        'success': false,
+        'error': e.toString(),
+      };
     }
   }
 } // نهاية كلاس DatabaseService

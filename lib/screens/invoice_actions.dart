@@ -502,6 +502,27 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
         savedInvoice = Invoice.fromMap(maps.first);
       });
 
+      // Update Installer Points
+      if (savedInvoice != null && 
+          savedInvoice!.installerName != null && 
+          savedInvoice!.installerName!.isNotEmpty) {
+         try {
+           await db.updateInstallerPointsFromInvoice(
+             savedInvoice!.id!, 
+             savedInvoice!.installerName!, 
+             savedInvoice!.totalAmount
+           );
+           
+           // Also update the total billed amount for the installer
+           final installer = await db.getInstallerByName(savedInvoice!.installerName!);
+           if (installer != null && installer.id != null) {
+             await db.updateInstallerBilledAmount(installer.id!);
+           }
+         } catch (e) {
+           print('Error updating installer points/amount: $e');
+         }
+      }
+
       await storage.delete(key: 'temp_invoice_data');
       savedOrSuspended = true;
       hasUnsavedChanges = false;

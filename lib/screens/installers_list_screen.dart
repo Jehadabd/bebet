@@ -99,7 +99,8 @@ class _InstallersListScreenState extends State<InstallersListScreen> {
                           return ListTile(
                             title: Text(installer.name),
                             subtitle: Text(
-                              'إجمالي المبلغ المفوتر: ${installer.totalBilledAmount.toStringAsFixed(2)} دينار عراقي',
+                              'إجمالي المبلغ المفوتر: ${installer.totalBilledAmount.toStringAsFixed(2)} دينار عراقي\n'
+                              'النقاط: ${installer.totalPoints.toStringAsFixed(1)}',
                             ),
                             trailing: const Icon(Icons.arrow_forward_ios),
                             onTap: () {
@@ -138,4 +139,4 @@ class _InstallersListScreenState extends State<InstallersListScreen> {
     _searchController.dispose();
     super.dispose();
   }
-} 
+}

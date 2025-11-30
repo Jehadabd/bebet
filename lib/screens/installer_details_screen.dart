@@ -1,12 +1,9 @@
 // screens/installer_details_screen.dart
 import 'package:flutter/material.dart';
-// import 'package:provider/provider.dart'; // Not directly used in this snippet's logic, but good practice for full app context
-// import '../providers/app_provider.dart'; // Not directly used here
 import '../models/installer.dart';
 import '../models/invoice.dart';
 import '../services/database_service.dart';
-import 'package:intl/intl.dart'; // For currency formatting
-// import 'create_invoice_screen.dart'; // If navigation to invoice details is enabled later
+import 'package:intl/intl.dart';
 
 class InstallerDetailsScreen extends StatefulWidget {
   final Installer installer;
@@ -20,23 +17,42 @@ class InstallerDetailsScreen extends StatefulWidget {
   State<InstallerDetailsScreen> createState() => _InstallerDetailsScreenState();
 }
 
-class _InstallerDetailsScreenState extends State<InstallerDetailsScreen> {
+class _InstallerDetailsScreenState extends State<InstallerDetailsScreen> with SingleTickerProviderStateMixin {
   final DatabaseService _db = DatabaseService();
+  late Installer _currentInstaller;
   List<Invoice> _invoices = [];
+  List<Map<String, dynamic>> _pointsHistory = [];
   bool _isLoading = true;
+  late TabController _tabController;
 
   @override
   void initState() {
     super.initState();
-    _loadInvoices();
+    _currentInstaller = widget.installer;
+    _tabController = TabController(length: 2, vsync: this);
+    _loadData();
   }
 
-  Future<void> _loadInvoices() async {
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadData() async {
     setState(() => _isLoading = true);
     try {
-      final invoices = await _db.getInvoicesByInstaller(widget.installer.name);
+      final invoices = await _db.getInvoicesByInstaller(_currentInstaller.name);
+      final points = await _db.getInstallerPointsHistory(_currentInstaller.id!);
+      
+      // Reload installer to get latest totals
+      final installers = await _db.getAllInstallers();
+      final updatedInstaller = installers.firstWhere((i) => i.id == _currentInstaller.id, orElse: () => _currentInstaller);
+
       setState(() {
         _invoices = invoices;
+        _pointsHistory = points;
+        _currentInstaller = updatedInstaller;
         _isLoading = false;
       });
     } catch (e) {
@@ -44,250 +60,332 @@ class _InstallerDetailsScreenState extends State<InstallerDetailsScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('خطأ في تحميل الفواتير: $e'),
-            backgroundColor: Theme.of(context).colorScheme.error,
+            content: Text('خطأ في تحميل البيانات: $e'),
+            backgroundColor: Colors.red,
           ),
         );
       }
     }
   }
 
-  // Helper to format currency consistently
+  Future<void> _showAddPointsDialog() async {
+    final pointsController = TextEditingController();
+    final reasonController = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('إضافة نقاط يدوياً'),
+        content: Form(
+          key: formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: pointsController,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(labelText: 'عدد النقاط'),
+                validator: (value) {
+                  if (value == null || value.isEmpty) return 'يرجى إدخال عدد النقاط';
+                  if (double.tryParse(value) == null) return 'رقم غير صحيح';
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: reasonController,
+                decoration: const InputDecoration(labelText: 'السبب / الملاحظات'),
+                validator: (value) {
+                  if (value == null || value.isEmpty) return 'يرجى إدخال السبب';
+                  return null;
+                },
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              if (formKey.currentState!.validate()) {
+                final points = double.parse(pointsController.text);
+                final reason = reasonController.text;
+                
+                try {
+                  await _db.addInstallerPoints(_currentInstaller.id!, points, reason);
+                  if (mounted) {
+                    Navigator.pop(context);
+                    _loadData(); // Reload to show new points
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('تم إضافة النقاط بنجاح'), backgroundColor: Colors.green),
+                    );
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('خطأ: $e'), backgroundColor: Colors.red),
+                    );
+                  }
+                }
+              }
+            },
+            child: const Text('إضافة'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showDeductPointsDialog() async {
+    final pointsController = TextEditingController();
+    final reasonController = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('خصم نقاط'),
+        content: Form(
+          key: formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: pointsController,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(labelText: 'عدد النقاط المراد خصمها'),
+                validator: (value) {
+                  if (value == null || value.isEmpty) return 'يرجى إدخال عدد النقاط';
+                  if (double.tryParse(value) == null) return 'رقم غير صحيح';
+                  if (double.parse(value) <= 0) return 'يجب أن يكون الرقم أكبر من صفر';
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: reasonController,
+                decoration: const InputDecoration(labelText: 'السبب / الملاحظات'),
+                validator: (value) {
+                  if (value == null || value.isEmpty) return 'يرجى إدخال السبب';
+                  return null;
+                },
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              if (formKey.currentState!.validate()) {
+                final points = double.parse(pointsController.text);
+                final reason = reasonController.text;
+                
+                try {
+                  await _db.deductInstallerPoints(_currentInstaller.id!, points, reason);
+                  if (mounted) {
+                    Navigator.pop(context);
+                    _loadData(); // Reload to show new points
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('تم خصم النقاط بنجاح'), backgroundColor: Colors.green),
+                    );
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('خطأ: $e'), backgroundColor: Colors.red),
+                    );
+                  }
+                }
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('خصم'),
+          ),
+        ],
+      ),
+    );
+  }
+
   String formatCurrency(num value) {
-    return NumberFormat('0.00', 'en_US')
-        .format(value); // Always two decimal places
+    return NumberFormat('#,##0.##', 'en_US').format(value);
   }
 
   @override
   Widget build(BuildContext context) {
-    // Define the consistent theme colors for the screen
-    final Color primaryColor = const Color(0xFF3F51B5); // Indigo 700
-    final Color accentColor =
-        const Color(0xFF8C9EFF); // Light Indigo Accent (Indigo A200)
-    final Color textColor =
-        const Color(0xFF212121); // Dark grey for general text
-    final Color lightBackgroundColor =
-        const Color(0xFFF8F8F8); // Very light grey for text field fill
-    final Color successColor = Colors.green[600]!; // Green for success messages
-    final Color errorColor = Colors.red[700]!; // Red for error messages
+    final primaryColor = const Color(0xFF3F51B5);
 
-    return Theme(
-      data: ThemeData(
-        // Define color scheme for light theme
-        colorScheme: ColorScheme.light(
-          primary: primaryColor,
-          onPrimary: Colors.white, // Text/icons on primary color
-          secondary: accentColor,
-          onSecondary: Colors.black, // Text/icons on secondary color
-          surface: Colors.white, // Card/sheet background
-          onSurface: textColor, // Text/icons on surface
-          background: Colors.white, // Scaffold background
-          onBackground: textColor, // Text/icons on background
-          error: errorColor,
-          onError: Colors.white, // Text/icons on error color
-          tertiary: successColor, // Custom color for success, used in SnackBars
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(_currentInstaller.name),
+        backgroundColor: primaryColor,
+        foregroundColor: Colors.white,
+        bottom: TabBar(
+          controller: _tabController,
+          labelColor: Colors.white,
+          unselectedLabelColor: Colors.white70,
+          indicatorColor: Colors.white,
+          tabs: const [
+            Tab(text: 'الفواتير', icon: Icon(Icons.receipt_long)),
+            Tab(text: 'سجل النقاط', icon: Icon(Icons.stars)),
+          ],
         ),
-        // Define typography (font family and text styles)
-        fontFamily: 'Roboto', // Modern, clean font
-        textTheme: TextTheme(
-          titleLarge: TextStyle(
-              fontSize: 22.0,
-              fontWeight: FontWeight.bold,
-              color: Colors.white), // AppBar title
-          titleMedium: TextStyle(
-              fontSize: 18.0,
-              fontWeight: FontWeight.w600,
-              color: textColor), // Section titles
-          bodyLarge:
-              TextStyle(fontSize: 16.0, color: textColor), // General body text
-          bodyMedium:
-              TextStyle(fontSize: 14.0, color: textColor), // Smaller body text
-          labelLarge: TextStyle(
-              fontSize: 16.0,
-              color: Colors.white,
-              fontWeight: FontWeight.w600), // Button text
-          labelMedium: TextStyle(
-              fontSize: 14.0, color: Colors.grey[600]), // Input field labels
-          bodySmall: TextStyle(
-              fontSize: 12.0, color: Colors.grey[700]), // Hint text / captions
-        ),
-        // Define AppBar theme
-        appBarTheme: AppBarTheme(
-          backgroundColor: primaryColor, // AppBar background color
-          foregroundColor: Colors.white, // AppBar text/icon color
-          centerTitle: true, // Center title
-          elevation: 4, // Shadow elevation
-          titleTextStyle: TextStyle(
-            // Title text style (inherits from TextTheme.titleLarge)
-            fontSize: 24.0,
-            fontWeight: FontWeight.w600,
-            color: Colors.white,
-          ),
-        ),
-        // Define Card theme
-        cardTheme: CardThemeData(
-          elevation: 3, // Consistent shadow for cards
-          shape: RoundedRectangleBorder(
-            borderRadius:
-                BorderRadius.circular(12.0), // Rounded corners for cards
-          ),
-          margin: EdgeInsets
-              .zero, // Reset default card margin to manage it manually
-        ),
-        // Define ListTile theme
-        listTileTheme: ListTileThemeData(
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-          tileColor: Colors.transparent, // Default transparent
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10.0)),
-        ),
-        // Define TextButton theme (if any are used in future updates)
-        textButtonTheme: TextButtonThemeData(
-          style: TextButton.styleFrom(
-            foregroundColor: primaryColor,
-            textStyle: TextStyle(fontSize: 16.0, fontWeight: FontWeight.w600),
-          ),
-        ),
-        // Define IconButton theme (if any are used in future updates)
-        iconTheme: IconThemeData(color: Colors.grey[700], size: 24.0),
       ),
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(widget.installer.name),
-          // The title style is now managed by appBarTheme.titleTextStyle
-        ),
-        body: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(24.0), // Consistent padding
-              child: Card(
-                // Card theme applied from ThemeData
-                child: Padding(
-                  padding:
-                      const EdgeInsets.all(20.0), // Increased internal padding
-                  child: Column(
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
+              children: [
+                // Summary Cards
+                Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Row(
                     children: [
-                      Text(
-                        'إجمالي المبلغ المفوتر',
-                        style:
-                            Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .primary, // Primary color for heading
-                                  fontWeight: FontWeight.bold,
-                                ),
+                      Expanded(
+                        child: _buildSummaryCard(
+                          'إجمالي المبلغ',
+                          '${formatCurrency(_currentInstaller.totalBilledAmount)} د.ع',
+                          Icons.attach_money,
+                          Colors.blue.shade700,
+                        ),
                       ),
-                      const SizedBox(height: 12), // Increased spacing
-                      Text(
-                        '${formatCurrency(widget.installer.totalBilledAmount)} دينار عراقي', // Formatted currency
-                        style: Theme.of(context)
-                            .textTheme
-                            .headlineMedium
-                            ?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .primary, // Primary color for the amount
-                              fontWeight: FontWeight.bold, // Make it bold
-                              fontSize: 28, // Larger font size for emphasis
-                            ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: _buildSummaryCard(
+                          'مجموع النقاط',
+                          _currentInstaller.totalPoints.toStringAsFixed(1),
+                          Icons.star,
+                          Colors.amber.shade700,
+                        ),
                       ),
                     ],
                   ),
                 ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 24.0, vertical: 12.0), // Consistent padding
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: Text(
-                  'الفواتير المرتبطة',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: Theme.of(context).colorScheme.primary,
-                        fontWeight: FontWeight.bold,
-                      ),
+                
+                // Tab Content
+                Expanded(
+                  child: TabBarView(
+                    controller: _tabController,
+                    children: [
+                      _buildInvoicesList(),
+                      _buildPointsHistoryList(),
+                    ],
+                  ),
                 ),
-              ),
+              ],
             ),
-            Expanded(
-              child: _isLoading
-                  ? const Center(
-                      child: CircularProgressIndicator(
-                        color: Color(
-                            0xFF3F51B5), // Explicitly set color for indicator
-                      ),
-                    )
-                  : _invoices.isEmpty
-                      ? Center(
-                          child: Text('لا توجد فواتير مرتبطة',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodyLarge
-                                  ?.copyWith(color: Colors.grey[600])),
-                        )
-                      : ListView.builder(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 24.0,
-                              vertical: 12.0), // Padding for the list itself
-                          itemCount: _invoices.length,
-                          itemBuilder: (context, index) {
-                            final invoice = _invoices[index];
-                            return Card(
-                              // Card theme applied from ThemeData
-                              margin: const EdgeInsets.only(
-                                  bottom: 12.0), // Spacing between cards
-                              child: ListTile(
-                                contentPadding: const EdgeInsets.symmetric(
-                                    horizontal: 20.0,
-                                    vertical:
-                                        12.0), // Increased internal padding for ListTile
-                                title: Text(
-                                  invoice.customerName,
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodyLarge
-                                      ?.copyWith(
-                                        fontWeight: FontWeight.bold,
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .onSurface,
-                                      ),
-                                ),
-                                subtitle: Text(
-                                  'التاريخ: ${DateFormat('yyyy/MM/dd').format(invoice.invoiceDate)}\n' // Consistent date format
-                                  'المبلغ: ${formatCurrency(invoice.totalAmount)} دينار عراقي', // Formatted currency
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodyMedium
-                                      ?.copyWith(
-                                          color: Colors
-                                              .grey[700]), // Themed text style
-                                ),
-                                trailing: Icon(Icons.receipt_long,
-                                    color:
-                                        Theme.of(context).colorScheme.secondary,
-                                    size: 28), // Themed icon
-                                onTap: () {
-                                  // TODO: Navigate to invoice details - Keep this TODO for now
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                        content: Text(
-                                            'الانتقال لتفاصيل الفاتورة رقم ${invoice.id}'),
-                                        backgroundColor: Theme.of(context)
-                                            .colorScheme
-                                            .tertiary),
-                                  );
-                                },
-                              ),
-                            );
-                          },
-                        ),
+      floatingActionButton: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          FloatingActionButton.extended(
+            onPressed: _showDeductPointsDialog,
+            label: const Text('خصم نقاط'),
+            icon: const Icon(Icons.remove_circle_outline),
+            backgroundColor: Colors.red.shade700,
+            heroTag: 'deduct_points',
+          ),
+          const SizedBox(width: 16),
+          FloatingActionButton.extended(
+            onPressed: _showAddPointsDialog,
+            label: const Text('إضافة نقاط'),
+            icon: const Icon(Icons.add_circle_outline),
+            backgroundColor: primaryColor,
+            heroTag: 'add_points',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSummaryCard(String title, String value, IconData icon, Color color) {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            Icon(icon, size: 32, color: color),
+            const SizedBox(height: 8),
+            Text(title, style: const TextStyle(fontSize: 14, color: Colors.grey)),
+            const SizedBox(height: 4),
+            Text(
+              value,
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color),
+              textAlign: TextAlign.center,
             ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildInvoicesList() {
+    if (_invoices.isEmpty) {
+      return const Center(child: Text('لا توجد فواتير مرتبطة'));
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: _invoices.length,
+      itemBuilder: (context, index) {
+        final invoice = _invoices[index];
+        return Card(
+          margin: const EdgeInsets.only(bottom: 12),
+          child: ListTile(
+            leading: const CircleAvatar(child: Icon(Icons.receipt)),
+            title: Text(invoice.customerName),
+            subtitle: Text(DateFormat('yyyy/MM/dd').format(invoice.invoiceDate)),
+            trailing: Text(
+              '${formatCurrency(invoice.totalAmount)} د.ع',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildPointsHistoryList() {
+    if (_pointsHistory.isEmpty) {
+      return const Center(child: Text('لا يوجد سجل نقاط'));
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: _pointsHistory.length,
+      itemBuilder: (context, index) {
+        final point = _pointsHistory[index];
+        final double points = (point['points'] as num).toDouble();
+        final bool isPositive = points > 0;
+        
+        return Card(
+          margin: const EdgeInsets.only(bottom: 12),
+          child: ListTile(
+            leading: CircleAvatar(
+              backgroundColor: isPositive ? Colors.green.shade100 : Colors.red.shade100,
+              child: Icon(
+                isPositive ? Icons.arrow_upward : Icons.arrow_downward,
+                color: isPositive ? Colors.green : Colors.red,
+              ),
+            ),
+            title: Text(point['reason'] ?? 'بدون سبب'),
+            subtitle: Text(DateFormat('yyyy/MM/dd HH:mm').format(DateTime.parse(point['created_at']))),
+            trailing: Text(
+              '${points > 0 ? '+' : ''}${points.toStringAsFixed(1)}',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 18,
+                color: isPositive ? Colors.green.shade700 : Colors.red.shade700,
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

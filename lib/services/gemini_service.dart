@@ -58,6 +58,65 @@ class GeminiService {
     }
   }
 
+  /// إرسال رسالة نصية إلى Gemini والحصول على رد
+  Future<String> sendMessage(String message, {List<String>? conversationHistory}) async {
+    print('🤖 Gemini: إرسال رسالة...');
+    
+    // بناء المحادثة
+    final contents = <Map<String, dynamic>>[];
+    
+    // إضافة السياق من المحادثة السابقة
+    if (conversationHistory != null && conversationHistory.isNotEmpty) {
+      for (var i = 0; i < conversationHistory.length; i++) {
+        contents.add({
+          'role': i % 2 == 0 ? 'user' : 'model',
+          'parts': [{'text': conversationHistory[i]}]
+        });
+      }
+    }
+    
+    // إضافة الرسالة الحالية
+    contents.add({
+      'role': 'user',
+      'parts': [{'text': message}]
+    });
+    
+    final requestBody = {
+      'contents': contents,
+      'generationConfig': {
+        'temperature': 0.7,
+        'topK': 40,
+        'topP': 0.95,
+        'maxOutputTokens': 1024,
+      },
+    };
+
+    final response = await _postWithRetry(body: requestBody);
+
+    if (response.statusCode != 200) {
+      print('❌ Gemini: خطأ ${response.statusCode}');
+      throw HttpException('Gemini error: ${response.statusCode} ${response.body}');
+    }
+
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    final candidates = decoded['candidates'] as List?;
+    if (candidates == null || candidates.isEmpty) {
+      print('❌ Gemini: لا توجد نتائج');
+      return '';
+    }
+    final content = candidates.first['content'] as Map<String, dynamic>?
+        ?? const {};
+    final parts = content['parts'] as List? ?? [];
+    if (parts.isEmpty) {
+      print('❌ Gemini: رد فارغ');
+      return '';
+    }
+    final text = parts.first['text'] as String? ?? '';
+    
+    print('✅ Gemini: تم استلام الرد (${text.length} حرف)');
+    return text;
+  }
+
   Future<String> extractTextFromPrompt(String prompt) async {
     final requestBody = {
       'contents': [

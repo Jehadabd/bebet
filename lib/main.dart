@@ -17,10 +17,10 @@ import 'screens/inventory_screen.dart';
 import 'screens/reports_screen.dart';
 // removed font settings screen import
 import 'screens/suppliers_list_screen.dart';
+import 'screens/ai_chat_screen.dart';
 import 'services/password_service.dart';
 import 'screens/password_setup_screen.dart';
- import 'screens/general_settings_screen.dart'; // Import GeneralSettingsScreen
-
+import 'screens/general_settings_screen.dart';
 import 'services/printing_service_windows.dart';
 import 'services/printing_service.dart';
 
@@ -132,6 +132,7 @@ class MyApp extends StatelessWidget {
           '/inventory': (context) => const InventoryScreen(),
           '/reports': (context) => const ReportsScreen(),
           '/suppliers': (context) => const SuppliersListScreen(),
+          '/ai_chat': (context) => const AIChatScreen(),
         },
         initialRoute: initialRoute,
       ),
