@@ -533,6 +533,12 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
               tooltip: 'كشف الحساب',
               onPressed: () => _generateAccountStatement(),
             ),
+            // 🛡️ زر فحص السلامة المالية
+            IconButton(
+              icon: const Icon(Icons.verified_user, color: Colors.white),
+              tooltip: 'فحص السلامة المالية',
+              onPressed: () => _showFinancialIntegrityReport(),
+            ),
             // زر إيقاف الصوت
             if (_isPlaying)
               IconButton(
@@ -1115,6 +1121,145 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         ),
       ],
     );
+  }
+
+  // 🛡️ دالة عرض تقرير السلامة المالية
+  Future<void> _showFinancialIntegrityReport() async {
+    try {
+      // إظهار مؤشر التحميل
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+
+      final db = DatabaseService();
+      final report = await db.verifyCustomerFinancialIntegrity(widget.customer.id!);
+
+      if (mounted) {
+        Navigator.pop(context); // إغلاق مؤشر التحميل
+      }
+
+      if (!mounted) return;
+
+      // عرض التقرير
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Row(
+            children: [
+              Icon(
+                report.isHealthy ? Icons.check_circle : Icons.warning,
+                color: report.isHealthy ? Colors.green : Colors.orange,
+                size: 28,
+              ),
+              const SizedBox(width: 12),
+              Text(
+                report.isHealthy ? 'البيانات سليمة ✅' : 'يوجد تحذيرات ⚠️',
+                style: TextStyle(
+                  color: report.isHealthy ? Colors.green[700] : Colors.orange[700],
+                ),
+              ),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // معلومات الرصيد
+                Card(
+                  color: Colors.blue[50],
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('📊 معلومات الرصيد:', style: TextStyle(fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 8),
+                        Text('الرصيد المسجل: ${formatCurrency(report.recordedBalance)} دينار'),
+                        Text('الرصيد المحسوب: ${formatCurrency(report.calculatedBalance)} دينار'),
+                        Text('عدد المعاملات: ${report.transactionCount}'),
+                        if ((report.recordedBalance - report.calculatedBalance).abs() > 0.01)
+                          Text(
+                            'الفرق: ${formatCurrency((report.recordedBalance - report.calculatedBalance).abs())} دينار',
+                            style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                
+                // المشاكل
+                if (report.issues.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  const Text('❌ مشاكل:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+                  ...report.issues.map((issue) => Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text('• $issue', style: const TextStyle(color: Colors.red)),
+                  )),
+                ],
+                
+                // التحذيرات
+                if (report.warnings.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  const Text('⚠️ تحذيرات:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
+                  ...report.warnings.take(5).map((warning) => Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text('• $warning', style: TextStyle(color: Colors.orange[800], fontSize: 12)),
+                  )),
+                  if (report.warnings.length > 5)
+                    Text('... و ${report.warnings.length - 5} تحذيرات أخرى', style: TextStyle(color: Colors.grey[600], fontSize: 11)),
+                ],
+                
+                // رسالة النجاح
+                if (report.isHealthy && report.issues.isEmpty && report.warnings.isEmpty) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.green[50],
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.green),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.verified, color: Colors.green),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'جميع البيانات المالية لهذا العميل سليمة 100%',
+                            style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('إغلاق'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context); // إغلاق مؤشر التحميل إن كان مفتوحاً
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('خطأ في فحص السلامة: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _generateAccountStatement() async {

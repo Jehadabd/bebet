@@ -54,6 +54,9 @@ void main() async {
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
 
+  // ملاحظة: أدوات فحص وإصلاح البيانات المالية متاحة يدوياً فقط
+  // من خلال: الإعدادات العامة → أدوات الحماية والتدقيق المالي
+
   // Check if passwords are set
   final passwordService = PasswordService();
   final bool passwordsSet = await passwordService.arePasswordsSet();

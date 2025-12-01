@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:alnaser/models/app_settings.dart';
 import 'package:alnaser/services/settings_manager.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
+import 'package:intl/intl.dart';
+import '../services/database_service.dart';
 
 class GeneralSettingsScreen extends StatefulWidget {
   const GeneralSettingsScreen({super.key});
@@ -569,8 +571,372 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
               ),
             ),
           ),
+          
+          // 🛡️ أدوات الحماية والتدقيق المالي
+          Card(
+            margin: const EdgeInsets.only(bottom: 20),
+            elevation: 4,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.verified_user, color: Colors.green, size: 24),
+                      SizedBox(width: 8),
+                      Text('🛡️ أدوات الحماية والتدقيق المالي', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  // فحص شامل لجميع العملاء
+                  ListTile(
+                    leading: const Icon(Icons.fact_check, color: Colors.blue),
+                    title: const Text('فحص شامل لجميع العملاء'),
+                    subtitle: const Text('التحقق من سلامة جميع البيانات المالية'),
+                    trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                    onTap: () => _runFullIntegrityCheck(),
+                  ),
+                  
+                  const Divider(),
+                  
+                  // ملخص مالي
+                  ListTile(
+                    leading: const Icon(Icons.analytics, color: Colors.purple),
+                    title: const Text('ملخص مالي سريع'),
+                    subtitle: const Text('عرض إحصائيات مالية عامة'),
+                    trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                    onTap: () => _showFinancialSummary(),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );
+  }
+
+  // 🛡️ دالة الفحص الشامل
+  Future<void> _runFullIntegrityCheck() async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const AlertDialog(
+        content: Row(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(width: 16),
+            Text('جاري فحص جميع العملاء...'),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      final db = DatabaseService();
+      final reports = await db.verifyAllCustomersFinancialIntegrity();
+      
+      if (mounted) Navigator.pop(context);
+      
+      final healthyCount = reports.where((r) => r.isHealthy).length;
+      final issueCount = reports.where((r) => !r.isHealthy).length;
+      final warningCount = reports.where((r) => r.warnings.isNotEmpty).length;
+      
+      if (!mounted) return;
+      
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Row(
+            children: [
+              Icon(
+                issueCount == 0 ? Icons.check_circle : Icons.warning,
+                color: issueCount == 0 ? Colors.green : Colors.orange,
+              ),
+              const SizedBox(width: 8),
+              const Text('نتيجة الفحص الشامل'),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Card(
+                  color: Colors.blue[50],
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('إجمالي العملاء:'),
+                            Text('${reports.length}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('✅ سليم:'),
+                            Text('$healthyCount', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('❌ يحتاج إصلاح:'),
+                            Text('$issueCount', style: TextStyle(fontWeight: FontWeight.bold, color: issueCount > 0 ? Colors.red : Colors.green)),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('⚠️ تحذيرات:'),
+                            Text('$warningCount', style: TextStyle(fontWeight: FontWeight.bold, color: warningCount > 0 ? Colors.orange : Colors.green)),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                
+                if (issueCount == 0 && warningCount == 0) ...[
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.green[50],
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.green),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.verified, color: Colors.green),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '🎉 جميع البيانات المالية سليمة 100%!',
+                            style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                
+                // عرض العملاء الذين لديهم مشاكل
+                if (issueCount > 0) ...[
+                  const SizedBox(height: 16),
+                  const Text('العملاء الذين لديهم مشاكل:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+                  const SizedBox(height: 8),
+                  ...reports.where((r) => !r.isHealthy).take(15).map((r) => Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('• ${r.customerName}', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.red)),
+                        Text('  ${r.issues.first}', style: TextStyle(fontSize: 11, color: Colors.grey[700])),
+                      ],
+                    ),
+                  )),
+                  if (issueCount > 15)
+                    Text('... و ${issueCount - 15} عملاء آخرين', style: TextStyle(color: Colors.grey[600], fontSize: 11)),
+                ],
+                
+                // عرض العملاء الذين لديهم تحذيرات
+                if (warningCount > 0 && issueCount == 0) ...[
+                  const SizedBox(height: 16),
+                  const Text('عملاء لديهم تحذيرات:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
+                  const SizedBox(height: 8),
+                  ...reports.where((r) => r.warnings.isNotEmpty).take(10).map((r) => Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('• ${r.customerName}', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.orange)),
+                        Text('  ${r.warnings.first}', style: TextStyle(fontSize: 11, color: Colors.grey[700])),
+                      ],
+                    ),
+                  )),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('إغلاق'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  // 🛡️ دالة عرض الملخص المالي
+  Future<void> _showFinancialSummary() async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const AlertDialog(
+        content: Row(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(width: 16),
+            Text('جاري تحميل الملخص...'),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      final db = DatabaseService();
+      final summary = await db.getFinancialSummary();
+      
+      if (mounted) Navigator.pop(context);
+      
+      final formatter = NumberFormat('#,##0', 'en_US');
+      
+      if (!mounted) return;
+      
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.analytics, color: Colors.purple),
+              SizedBox(width: 8),
+              Text('📊 ملخص مالي'),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Card(
+                  color: Colors.blue[50],
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      children: [
+                        const Text('👥 العملاء', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        const Divider(),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('إجمالي العملاء:'),
+                            Text('${summary.totalCustomers}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('العملاء المدينون:'),
+                            Text('${summary.debtorCount}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Card(
+                  color: Colors.red[50],
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      children: [
+                        const Text('💰 الديون', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        const Divider(),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('إجمالي الديون:'),
+                            Text('${formatter.format(summary.totalCustomerDebt)} د.ع', 
+                              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('أرصدة دائنة:'),
+                            Text('${formatter.format(summary.totalCustomerCredit)} د.ع', 
+                              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Card(
+                  color: Colors.green[50],
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      children: [
+                        const Text('🧾 الفواتير', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        const Divider(),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('عدد الفواتير:'),
+                            Text('${summary.totalInvoices}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('إجمالي المبيعات:'),
+                            Text('${formatter.format(summary.totalInvoiceAmount)} د.ع', 
+                              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'آخر تحديث: ${DateFormat('yyyy-MM-dd HH:mm').format(summary.generatedAt)}',
+                  style: TextStyle(color: Colors.grey[600], fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('إغلاق'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 }

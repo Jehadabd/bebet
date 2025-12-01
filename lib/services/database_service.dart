@@ -5598,7 +5598,560 @@ class DatabaseService {
       };
     }
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🛡️ دوال الحماية والتدقيق المالي الإضافية
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// التحقق الشامل من سلامة البيانات المالية لعميل معين
+  /// يُرجع تقريراً مفصلاً عن حالة البيانات
+  Future<FinancialIntegrityReport> verifyCustomerFinancialIntegrity(int customerId) async {
+    final db = await database;
+    final List<String> issues = [];
+    final List<String> warnings = [];
+    bool isHealthy = true;
+
+    try {
+      // 1. جلب بيانات العميل
+      final customer = await getCustomerById(customerId);
+      if (customer == null) {
+        return FinancialIntegrityReport(
+          customerId: customerId,
+          customerName: 'غير موجود',
+          isHealthy: false,
+          issues: ['العميل غير موجود'],
+          warnings: [],
+          calculatedBalance: 0,
+          recordedBalance: 0,
+          transactionCount: 0,
+        );
+      }
+      
+      final String customerName = customer.name;
+
+      // 2. حساب مجموع المعاملات
+      final sumResult = await db.rawQuery(
+        'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ?',
+        [customerId]
+      );
+      final double calculatedBalance = ((sumResult.first['total'] as num?) ?? 0).toDouble();
+      final double recordedBalance = customer.currentTotalDebt;
+
+      // 3. جلب عدد المعاملات
+      final countResult = await db.rawQuery(
+        'SELECT COUNT(*) AS cnt FROM transactions WHERE customer_id = ?',
+        [customerId]
+      );
+      final int transactionCount = (countResult.first['cnt'] as int?) ?? 0;
+
+      // 4. التحقق من تطابق الرصيد
+      final double balanceDiff = (calculatedBalance - recordedBalance).abs();
+      if (balanceDiff > 0.01) {
+        isHealthy = false;
+        issues.add('عدم تطابق الرصيد: المسجل=${recordedBalance.toStringAsFixed(2)}, المحسوب=${calculatedBalance.toStringAsFixed(2)}, الفرق=${balanceDiff.toStringAsFixed(2)}');
+      }
+
+      // 5. التحقق من تسلسل الأرصدة في المعاملات
+      final transactions = await getCustomerTransactions(customerId, orderBy: 'transaction_date ASC, id ASC');
+      double runningBalance = 0.0;
+      for (int i = 0; i < transactions.length; i++) {
+        final tx = transactions[i];
+        final expectedBalanceAfter = runningBalance + tx.amountChanged;
+        
+        // التحقق من الرصيد قبل المعاملة
+        if (tx.balanceBeforeTransaction != null) {
+          final beforeDiff = (tx.balanceBeforeTransaction! - runningBalance).abs();
+          if (beforeDiff > 0.01) {
+            warnings.add('معاملة #${tx.id}: الرصيد قبل غير متطابق (المتوقع: ${runningBalance.toStringAsFixed(2)}, المسجل: ${tx.balanceBeforeTransaction!.toStringAsFixed(2)})');
+          }
+        }
+        
+        // التحقق من الرصيد بعد المعاملة
+        if (tx.newBalanceAfterTransaction != null) {
+          final afterDiff = (tx.newBalanceAfterTransaction! - expectedBalanceAfter).abs();
+          if (afterDiff > 0.01) {
+            warnings.add('معاملة #${tx.id}: الرصيد بعد غير متطابق (المتوقع: ${expectedBalanceAfter.toStringAsFixed(2)}, المسجل: ${tx.newBalanceAfterTransaction!.toStringAsFixed(2)})');
+          }
+        }
+        
+        runningBalance = expectedBalanceAfter;
+      }
+
+      // 6. التحقق من وجود معاملات بمبالغ صفرية (قد تكون خطأ)
+      final zeroTransactions = transactions.where((t) => t.amountChanged == 0).toList();
+      if (zeroTransactions.isNotEmpty) {
+        warnings.add('يوجد ${zeroTransactions.length} معاملة بمبلغ صفر');
+      }
+
+      // 7. التحقق من وجود معاملات مستقبلية
+      final now = DateTime.now();
+      final futureTransactions = transactions.where((t) => t.transactionDate.isAfter(now.add(const Duration(days: 1)))).toList();
+      if (futureTransactions.isNotEmpty) {
+        warnings.add('يوجد ${futureTransactions.length} معاملة بتاريخ مستقبلي');
+      }
+
+      return FinancialIntegrityReport(
+        customerId: customerId,
+        customerName: customerName,
+        isHealthy: isHealthy && warnings.isEmpty,
+        issues: issues,
+        warnings: warnings,
+        calculatedBalance: calculatedBalance,
+        recordedBalance: recordedBalance,
+        transactionCount: transactionCount,
+      );
+    } catch (e) {
+      return FinancialIntegrityReport(
+        customerId: customerId,
+        customerName: 'خطأ',
+        isHealthy: false,
+        issues: ['خطأ في التحقق: $e'],
+        warnings: [],
+        calculatedBalance: 0,
+        recordedBalance: 0,
+        transactionCount: 0,
+      );
+    }
+  }
+
+  /// التحقق الشامل من سلامة البيانات المالية لجميع العملاء
+  Future<List<FinancialIntegrityReport>> verifyAllCustomersFinancialIntegrity() async {
+    final customers = await getAllCustomers();
+    final List<FinancialIntegrityReport> reports = [];
+    
+    for (final customer in customers) {
+      if (customer.id != null) {
+        final report = await verifyCustomerFinancialIntegrity(customer.id!);
+        reports.add(report);
+      }
+    }
+    
+    return reports;
+  }
+
+  /// إصلاح تلقائي لجميع مشاكل الأرصدة
+  /// يُرجع عدد العملاء الذين تم إصلاحهم
+  Future<int> autoFixAllBalanceIssues() async {
+    final db = await database;
+    int fixedCount = 0;
+    
+    try {
+      final customers = await getAllCustomers();
+      
+      for (final customer in customers) {
+        if (customer.id == null) continue;
+        
+        // حساب المجموع الصحيح
+        final sumResult = await db.rawQuery(
+          'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ?',
+          [customer.id]
+        );
+        final double correctBalance = ((sumResult.first['total'] as num?) ?? 0).toDouble();
+        
+        // التحقق من وجود فرق
+        final diff = (customer.currentTotalDebt - correctBalance).abs();
+        if (diff > 0.01) {
+          // تحديث رصيد العميل
+          await db.update(
+            'customers',
+            {
+              'current_total_debt': correctBalance,
+              'last_modified_at': DateTime.now().toIso8601String(),
+            },
+            where: 'id = ?',
+            whereArgs: [customer.id],
+          );
+          
+          // إعادة حساب تسلسل الأرصدة
+          await recalculateCustomerTransactionBalances(customer.id!);
+          
+          fixedCount++;
+          print('✅ تم إصلاح رصيد العميل ${customer.name}: ${customer.currentTotalDebt} → $correctBalance');
+        }
+      }
+      
+      return fixedCount;
+    } catch (e) {
+      print('❌ خطأ في الإصلاح التلقائي: $e');
+      return fixedCount;
+    }
+  }
+
+  /// التحقق من صحة معاملة قبل إدراجها (طبقة حماية إضافية)
+  Future<TransactionValidationResult> validateTransactionBeforeInsert({
+    required int customerId,
+    required double amountChanged,
+    required String transactionType,
+  }) async {
+    final List<String> errors = [];
+    final List<String> warnings = [];
+    
+    try {
+      // 1. التحقق من وجود العميل
+      final customer = await getCustomerById(customerId);
+      if (customer == null) {
+        errors.add('العميل غير موجود');
+        return TransactionValidationResult(isValid: false, errors: errors, warnings: warnings);
+      }
+      
+      // 2. التحقق من المبلغ
+      if (amountChanged == 0) {
+        warnings.add('المبلغ صفر - هل هذا مقصود؟');
+      }
+      
+      if (amountChanged.abs() > 1000000000) {
+        errors.add('المبلغ كبير جداً (أكثر من مليار)');
+      }
+      
+      // 3. التحقق من نوع المعاملة
+      final validTypes = ['manual_debt', 'manual_payment', 'invoice_debt', 'opening_balance', 'return_payment', 'SETTLEMENT', 'invoice_live_update', 'Invoice_Debt_Reversal'];
+      if (!validTypes.contains(transactionType)) {
+        warnings.add('نوع المعاملة غير معروف: $transactionType');
+      }
+      
+      // 4. التحقق من أن التسديد لا يتجاوز الدين (للمدفوعات فقط)
+      if (amountChanged < 0 && transactionType == 'manual_payment') {
+        final newBalance = customer.currentTotalDebt + amountChanged;
+        if (newBalance < -0.01) {
+          warnings.add('التسديد سيجعل الرصيد سالباً (${newBalance.toStringAsFixed(2)})');
+        }
+      }
+      
+      // 5. التحقق من سلامة بيانات العميل الحالية
+      final integrityReport = await verifyCustomerFinancialIntegrity(customerId);
+      if (!integrityReport.isHealthy) {
+        warnings.add('تحذير: بيانات العميل تحتاج إصلاح قبل إضافة معاملات جديدة');
+      }
+      
+      return TransactionValidationResult(
+        isValid: errors.isEmpty,
+        errors: errors,
+        warnings: warnings,
+        currentBalance: customer.currentTotalDebt,
+        expectedNewBalance: customer.currentTotalDebt + amountChanged,
+      );
+    } catch (e) {
+      errors.add('خطأ في التحقق: $e');
+      return TransactionValidationResult(isValid: false, errors: errors, warnings: warnings);
+    }
+  }
+
+  /// إدراج معاملة مع تحقق مُحسّن (بديل آمن لـ insertTransaction)
+  Future<int> insertTransactionSafe(DebtTransaction transaction) async {
+    // 1. التحقق أولاً
+    final validation = await validateTransactionBeforeInsert(
+      customerId: transaction.customerId,
+      amountChanged: transaction.amountChanged,
+      transactionType: transaction.transactionType,
+    );
+    
+    if (!validation.isValid) {
+      throw Exception('فشل التحقق: ${validation.errors.join(', ')}');
+    }
+    
+    // 2. طباعة التحذيرات إن وجدت
+    for (final warning in validation.warnings) {
+      print('⚠️ تحذير: $warning');
+    }
+    
+    // 3. إدراج المعاملة
+    return await insertTransaction(transaction);
+  }
+
+  /// التحقق من صحة فاتورة قبل حفظها
+  Future<InvoiceValidationResult> validateInvoiceBeforeSave({
+    required double totalAmount,
+    required double discount,
+    required double amountPaid,
+    required String paymentType,
+    required List<Map<String, dynamic>> items,
+  }) async {
+    final List<String> errors = [];
+    final List<String> warnings = [];
+    
+    // 1. التحقق من المبالغ
+    if (totalAmount <= 0) {
+      errors.add('إجمالي الفاتورة يجب أن يكون أكبر من صفر');
+    }
+    
+    if (discount < 0) {
+      errors.add('الخصم لا يمكن أن يكون سالباً');
+    }
+    
+    if (discount >= totalAmount) {
+      errors.add('الخصم لا يمكن أن يكون أكبر من أو يساوي الإجمالي');
+    }
+    
+    if (amountPaid < 0) {
+      errors.add('المبلغ المدفوع لا يمكن أن يكون سالباً');
+    }
+    
+    // 2. التحقق من البنود
+    if (items.isEmpty) {
+      errors.add('الفاتورة يجب أن تحتوي على بند واحد على الأقل');
+    }
+    
+    // 3. التحقق من تطابق المجموع
+    double calculatedTotal = 0;
+    for (final item in items) {
+      final itemTotal = (item['item_total'] as num?)?.toDouble() ?? 0;
+      calculatedTotal += itemTotal;
+    }
+    
+    // ملاحظة: totalAmount قد يشمل رسوم التحميل، لذا نتحقق من الفرق المعقول
+    final totalDiff = (calculatedTotal - totalAmount).abs();
+    if (totalDiff > 1000000) { // فرق كبير جداً
+      warnings.add('فرق كبير بين مجموع البنود والإجمالي');
+    }
+    
+    // 4. التحقق من نوع الدفع
+    if (paymentType == 'نقد' && amountPaid < (totalAmount - discount)) {
+      warnings.add('المبلغ المدفوع أقل من الإجمالي في فاتورة نقدية');
+    }
+    
+    return InvoiceValidationResult(
+      isValid: errors.isEmpty,
+      errors: errors,
+      warnings: warnings,
+      calculatedTotal: calculatedTotal,
+    );
+  }
+
+  /// إنشاء نسخة احتياطية من بيانات عميل معين (JSON)
+  Future<Map<String, dynamic>> backupCustomerData(int customerId) async {
+    final db = await database;
+    
+    final customer = await getCustomerById(customerId);
+    if (customer == null) {
+      throw Exception('العميل غير موجود');
+    }
+    
+    final transactions = await getCustomerTransactions(customerId, orderBy: 'transaction_date ASC, id ASC');
+    
+    // جلب الفواتير المرتبطة
+    final invoices = await db.query(
+      'invoices',
+      where: 'customer_id = ?',
+      whereArgs: [customerId],
+      orderBy: 'invoice_date ASC',
+    );
+    
+    return {
+      'backup_date': DateTime.now().toIso8601String(),
+      'customer': customer.toMap(),
+      'transactions': transactions.map((t) => t.toMap()).toList(),
+      'invoices': invoices,
+      'calculated_balance': transactions.fold(0.0, (sum, t) => sum + t.amountChanged),
+    };
+  }
+
+  /// التحقق الدوري التلقائي (يمكن استدعاؤها عند بدء التطبيق)
+  Future<PeriodicCheckResult> performPeriodicIntegrityCheck() async {
+    final startTime = DateTime.now();
+    int customersChecked = 0;
+    int issuesFound = 0;
+    int issuesFixed = 0;
+    final List<String> details = [];
+    
+    try {
+      final customers = await getAllCustomers();
+      customersChecked = customers.length;
+      
+      for (final customer in customers) {
+        if (customer.id == null) continue;
+        
+        final report = await verifyCustomerFinancialIntegrity(customer.id!);
+        
+        if (!report.isHealthy) {
+          issuesFound++;
+          details.add('${customer.name}: ${report.issues.join(', ')}');
+          
+          // إصلاح تلقائي
+          await recalculateAndApplyCustomerDebt(customer.id!);
+          await recalculateCustomerTransactionBalances(customer.id!);
+          issuesFixed++;
+        }
+      }
+      
+      final duration = DateTime.now().difference(startTime);
+      
+      return PeriodicCheckResult(
+        checkDate: startTime,
+        duration: duration,
+        customersChecked: customersChecked,
+        issuesFound: issuesFound,
+        issuesFixed: issuesFixed,
+        details: details,
+        success: true,
+      );
+    } catch (e) {
+      return PeriodicCheckResult(
+        checkDate: startTime,
+        duration: DateTime.now().difference(startTime),
+        customersChecked: customersChecked,
+        issuesFound: issuesFound,
+        issuesFixed: issuesFixed,
+        details: ['خطأ: $e'],
+        success: false,
+      );
+    }
+  }
+
+  /// حساب ملخص مالي سريع للتطبيق
+  Future<FinancialSummary> getFinancialSummary() async {
+    final db = await database;
+    
+    // إجمالي ديون العملاء
+    final debtResult = await db.rawQuery(
+      'SELECT COALESCE(SUM(current_total_debt), 0) AS total FROM customers WHERE current_total_debt > 0'
+    );
+    final totalCustomerDebt = ((debtResult.first['total'] as num?) ?? 0).toDouble();
+    
+    // إجمالي الأرصدة الدائنة (عملاء لهم رصيد سالب)
+    final creditResult = await db.rawQuery(
+      'SELECT COALESCE(SUM(ABS(current_total_debt)), 0) AS total FROM customers WHERE current_total_debt < 0'
+    );
+    final totalCustomerCredit = ((creditResult.first['total'] as num?) ?? 0).toDouble();
+    
+    // عدد العملاء
+    final customerCountResult = await db.rawQuery('SELECT COUNT(*) AS cnt FROM customers');
+    final totalCustomers = (customerCountResult.first['cnt'] as int?) ?? 0;
+    
+    // عدد العملاء المدينين
+    final debtorCountResult = await db.rawQuery(
+      'SELECT COUNT(*) AS cnt FROM customers WHERE current_total_debt > 0'
+    );
+    final debtorCount = (debtorCountResult.first['cnt'] as int?) ?? 0;
+    
+    // إجمالي الفواتير
+    final invoiceResult = await db.rawQuery(
+      "SELECT COUNT(*) AS cnt, COALESCE(SUM(total_amount), 0) AS total FROM invoices WHERE status = 'محفوظة'"
+    );
+    final totalInvoices = (invoiceResult.first['cnt'] as int?) ?? 0;
+    final totalInvoiceAmount = ((invoiceResult.first['total'] as num?) ?? 0).toDouble();
+    
+    return FinancialSummary(
+      totalCustomerDebt: totalCustomerDebt,
+      totalCustomerCredit: totalCustomerCredit,
+      totalCustomers: totalCustomers,
+      debtorCount: debtorCount,
+      totalInvoices: totalInvoices,
+      totalInvoiceAmount: totalInvoiceAmount,
+      generatedAt: DateTime.now(),
+    );
+  }
 } // نهاية كلاس DatabaseService
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🛡️ نماذج البيانات للحماية والتدقيق المالي
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// تقرير سلامة البيانات المالية
+class FinancialIntegrityReport {
+  final int customerId;
+  final String customerName; // اسم العميل
+  final bool isHealthy;
+  final List<String> issues;
+  final List<String> warnings;
+  final double calculatedBalance;
+  final double recordedBalance;
+  final int transactionCount;
+
+  FinancialIntegrityReport({
+    required this.customerId,
+    required this.customerName,
+    required this.isHealthy,
+    required this.issues,
+    required this.warnings,
+    required this.calculatedBalance,
+    required this.recordedBalance,
+    required this.transactionCount,
+  });
+
+  @override
+  String toString() {
+    return 'FinancialIntegrityReport(customerId: $customerId, customerName: $customerName, isHealthy: $isHealthy, issues: ${issues.length}, warnings: ${warnings.length})';
+  }
+}
+
+/// نتيجة التحقق من المعاملة
+class TransactionValidationResult {
+  final bool isValid;
+  final List<String> errors;
+  final List<String> warnings;
+  final double? currentBalance;
+  final double? expectedNewBalance;
+
+  TransactionValidationResult({
+    required this.isValid,
+    required this.errors,
+    required this.warnings,
+    this.currentBalance,
+    this.expectedNewBalance,
+  });
+}
+
+/// نتيجة التحقق من الفاتورة
+class InvoiceValidationResult {
+  final bool isValid;
+  final List<String> errors;
+  final List<String> warnings;
+  final double calculatedTotal;
+
+  InvoiceValidationResult({
+    required this.isValid,
+    required this.errors,
+    required this.warnings,
+    required this.calculatedTotal,
+  });
+}
+
+/// نتيجة الفحص الدوري
+class PeriodicCheckResult {
+  final DateTime checkDate;
+  final Duration duration;
+  final int customersChecked;
+  final int issuesFound;
+  final int issuesFixed;
+  final List<String> details;
+  final bool success;
+
+  PeriodicCheckResult({
+    required this.checkDate,
+    required this.duration,
+    required this.customersChecked,
+    required this.issuesFound,
+    required this.issuesFixed,
+    required this.details,
+    required this.success,
+  });
+
+  @override
+  String toString() {
+    return 'PeriodicCheckResult(checked: $customersChecked, issues: $issuesFound, fixed: $issuesFixed, success: $success)';
+  }
+}
+
+/// ملخص مالي
+class FinancialSummary {
+  final double totalCustomerDebt;
+  final double totalCustomerCredit;
+  final int totalCustomers;
+  final int debtorCount;
+  final int totalInvoices;
+  final double totalInvoiceAmount;
+  final DateTime generatedAt;
+
+  FinancialSummary({
+    required this.totalCustomerDebt,
+    required this.totalCustomerCredit,
+    required this.totalCustomers,
+    required this.debtorCount,
+    required this.totalInvoices,
+    required this.totalInvoiceAmount,
+    required this.generatedAt,
+  });
+}
 
 // أنواع البيانات لنظام التقارير
 class InvoiceWithProductData {

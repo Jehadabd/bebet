@@ -4201,6 +4201,47 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     super.dispose();
   }
 
+  @override
+  void didUpdateWidget(EditableInvoiceItemRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // مزامنة الحالة الداخلية عندما يتم تحديث العنصر من الخارج
+    // هذا يحل مشكلة عدم ظهور التحديثات في واجهة المستخدم عند التعديلات المتكررة
+    if (oldWidget.item.uniqueId == widget.item.uniqueId) {
+      // تحقق من وجود تغييرات فعلية
+      bool hasChanges = false;
+      
+      if (_currentItem.quantityIndividual != widget.item.quantityIndividual) hasChanges = true;
+      if (_currentItem.quantityLargeUnit != widget.item.quantityLargeUnit) hasChanges = true;
+      if (_currentItem.appliedPrice != widget.item.appliedPrice) hasChanges = true;
+      if (_currentItem.saleType != widget.item.saleType) hasChanges = true;
+      if (_currentItem.itemTotal != widget.item.itemTotal) hasChanges = true;
+      if (_currentItem.productName != widget.item.productName) hasChanges = true;
+      
+      if (hasChanges) {
+        setState(() {
+          _currentItem = widget.item;
+          
+          // تحديث الـ controllers لتعكس القيم الجديدة
+          final quantity = (widget.item.quantityIndividual ?? 
+              widget.item.quantityLargeUnit ?? '').toString();
+          if (_quantityController.text != quantity) {
+            _quantityController.text = quantity;
+          }
+          
+          final priceText = _formatNumber(widget.item.appliedPrice);
+          if (_priceController.text != priceText) {
+            _priceController.text = priceText;
+          }
+          
+          // تحديث controller التفاصيل إذا كان موجوداً
+          if (_detailsController != null && _detailsController!.text != widget.item.productName) {
+            _detailsController!.text = widget.item.productName;
+          }
+        });
+      }
+    }
+  }
+
   List<DropdownMenuItem<String>> _getUnitOptions() {
     Product? product = widget.allProducts.firstWhere(
       (p) => p.name == _currentItem.productName,
