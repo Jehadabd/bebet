@@ -20,6 +20,8 @@ import 'package:printing/printing.dart';
 import 'package:flutter/services.dart';
 import 'package:get_storage/get_storage.dart';
 import '../services/drive_service.dart';
+import '../services/financial_validation_service.dart';
+import '../services/financial_audit_service.dart';
 
 class InvoiceLogicService {
   // هنا يتم نقل جميع الدوال المنطقية من شاشة الفاتورة
@@ -177,6 +179,61 @@ class InvoiceLogicService {
     // يمكن إضافة أي متغيرات أخرى حسب الحاجة
   }) async {
     if (!formKey.currentState!.validate()) return null;
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // التحقق من صحة البيانات المالية (Financial Validation)
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    try {
+      // 1. التحقق من وجود أصناف
+      final itemsValidation = FinancialValidationService.validateInvoiceItems(invoiceItems.length);
+      if (!itemsValidation.isValid) {
+        throw Exception(itemsValidation.errorMessage ?? 'لا يمكن حفظ فاتورة بدون أصناف');
+      }
+      
+      // 2. حساب المبالغ
+      double currentTotalAmount = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+      double paid = double.tryParse(paidAmountController.text.replaceAll(',', '')) ?? 0.0;
+      final double loadingFee = double.tryParse(loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
+      
+      // 3. التحقق من أجور التحميل
+      final loadingFeeValidation = FinancialValidationService.validateLoadingFee(loadingFee);
+      if (!loadingFeeValidation.isValid) {
+        throw Exception(loadingFeeValidation.errorMessage ?? 'أجور التحميل غير صحيحة');
+      }
+      
+      // 4. التحقق من الخصم
+      final discountValidation = FinancialValidationService.validateDiscount(discount, currentTotalAmount);
+      if (!discountValidation.isValid) {
+        throw Exception(discountValidation.errorMessage ?? 'الخصم غير صحيح');
+      }
+      
+      // 5. حساب الإجمالي النهائي
+      double totalAmount = (currentTotalAmount + loadingFee) - discount;
+      
+      // 6. التحقق من المبلغ المدفوع
+      final paidValidation = FinancialValidationService.validatePaidAmount(paid, totalAmount, paymentType);
+      if (!paidValidation.isValid) {
+        throw Exception(paidValidation.errorMessage ?? 'المبلغ المدفوع غير صحيح');
+      }
+      
+      // 7. التحقق الشامل من الفاتورة
+      final invoiceValidation = FinancialValidationService.validateInvoiceBeforeSave(
+        itemsCount: invoiceItems.length,
+        totalAmount: totalAmount,
+        discount: discount,
+        paidAmount: paid,
+        loadingFee: loadingFee,
+        paymentType: paymentType,
+      );
+      if (!invoiceValidation.isValid) {
+        throw Exception(invoiceValidation.errorMessage ?? 'بيانات الفاتورة غير صحيحة');
+      }
+      
+      // ═══════════════════════════════════════════════════════════════════════════
+      // حفظ الفاتورة (بعد التحقق من صحة البيانات)
+      // ═══════════════════════════════════════════════════════════════════════════
+      
     try {
       Customer? customer;
       if (customerNameController.text.trim().isNotEmpty) {
@@ -311,10 +368,57 @@ class InvoiceLogicService {
         );
         await db.insertDebtTransaction(debtTransaction);
       }
+      
+      // ═══════════════════════════════════════════════════════════════════════════
+      // تسجيل العملية في سجل التدقيق
+      // ═══════════════════════════════════════════════════════════════════════════
+      try {
+        final auditService = FinancialAuditService();
+        if (invoiceToManage != null) {
+          // تعديل فاتورة موجودة
+          await auditService.logInvoiceUpdate(
+            invoiceId,
+            {
+              'total_amount': invoiceToManage.totalAmount,
+              'discount': invoiceToManage.discount,
+              'payment_type': invoiceToManage.paymentType,
+              'paid_amount': invoiceToManage.amountPaidOnInvoice,
+            },
+            {
+              'total_amount': totalAmount,
+              'discount': discount,
+              'payment_type': paymentType,
+              'paid_amount': paid,
+            },
+            customerId: customer?.id,
+          );
+        } else {
+          // إنشاء فاتورة جديدة
+          await auditService.logInvoiceCreation(invoiceId, {
+            'total_amount': totalAmount,
+            'discount': discount,
+            'payment_type': paymentType,
+            'paid_amount': paid,
+            'customer_name': customerNameController.text,
+            'items_count': invoiceItems.length,
+          }, customerId: customer?.id);
+        }
+      } catch (auditError) {
+        print('تحذير: فشل تسجيل التدقيق: $auditError');
+        // لا نوقف العملية إذا فشل التسجيل
+      }
+      
       storage.remove('temp_invoice_data');
       return await db.getInvoiceById(invoiceId);
     } catch (e) {
-      return null;
+      // إعادة رمي الاستثناء مع رسالة واضحة
+      print('خطأ في حفظ الفاتورة: $e');
+      rethrow;
+    }
+    } catch (validationError) {
+      // خطأ في التحقق من البيانات
+      print('خطأ في التحقق من البيانات: $validationError');
+      rethrow;
     }
   }
 

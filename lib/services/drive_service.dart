@@ -790,20 +790,34 @@ extension DriveSyncExtension on DriveService {
   }
 
   // إدراج معاملة من المزامنة في قاعدة البيانات المحلية
+  // ✅ تم إصلاح: إعادة حساب رصيد العميل بعد إدراج المعاملة
   Future<void> _insertTransactionFromSync(Map<String, dynamic> txData) async {
     final db = DatabaseService();
     final transaction = DebtTransaction.fromMap(txData);
     
     // التحقق من وجود المعاملة محلياً
-    final existing = await db.database.then((db) => db.query(
+    final existing = await db.database.then((d) => d.query(
       'transactions',
       where: 'transaction_uuid = ?',
       whereArgs: [transaction.transactionUuid],
     ));
     
     if (existing.isEmpty) {
-      // إدراج المعاملة الجديدة
-      await db.insertDebtTransaction(transaction);
+      try {
+        // 1. إدراج المعاملة الجديدة
+        await db.insertDebtTransaction(transaction);
+        
+        // 2. ✅ إعادة حساب رصيد العميل من جميع المعاملات
+        await db.recalculateAndApplyCustomerDebt(transaction.customerId);
+        
+        // 3. ✅ إعادة حساب أرصدة المعاملات (قبل/بعد) للترتيب الصحيح
+        await db.recalculateCustomerTransactionBalances(transaction.customerId);
+        
+        print('SYNC: تم إدراج معاملة وتحديث رصيد العميل ${transaction.customerId}');
+      } catch (e) {
+        print('SYNC ERROR: فشل إدراج معاملة من المزامنة: $e');
+        rethrow;
+      }
     }
   }
 

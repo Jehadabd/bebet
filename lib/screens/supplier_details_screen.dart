@@ -9,6 +9,7 @@ import 'new_supplier_receipt_screen.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:intl/intl.dart';
+import 'audit_log_screen.dart';
 
 class SupplierDetailsScreen extends StatefulWidget {
   final Supplier supplier;
@@ -182,6 +183,23 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> with Sing
               icon: const Icon(Icons.auto_awesome, color: Colors.white),
               tooltip: 'إضافة عبر الذكاء',
               onPressed: _onAddByAI,
+            ),
+            // 📋 زر سجل التدقيق المالي
+            IconButton(
+              icon: const Icon(Icons.history, color: Colors.white),
+              tooltip: 'سجل التدقيق المالي',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => AuditLogScreen(
+                      customerId: widget.supplier.id,
+                      customerName: widget.supplier.companyName,
+                      entityType: 'supplier',
+                    ),
+                  ),
+                );
+              },
             ),
           ],
         ),

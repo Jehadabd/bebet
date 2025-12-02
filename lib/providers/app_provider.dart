@@ -7,6 +7,7 @@ import '../models/invoice_item.dart';
 import '../services/database_service.dart';
 import '../services/drive_service.dart';
 import '../services/pdf_service.dart';
+import '../services/financial_audit_service.dart';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:archive/archive_io.dart';
@@ -148,6 +149,31 @@ class AppProvider with ChangeNotifier {
 
     // 3. إعادة تحميل المعاملات لعرض الأرصدة الصحيحة (قبل/بعد) التي حسبتها قاعدة البيانات
     await loadCustomerTransactions(transaction.customerId);
+
+    // 4. تسجيل العملية في سجل التدقيق
+    try {
+      final auditService = FinancialAuditService();
+      await auditService.logOperation(
+        operationType: transaction.transactionType == 'manual_debt' 
+            ? 'transaction_create' 
+            : 'payment_create',
+        entityType: 'customer',
+        entityId: transaction.customerId,
+        newValues: {
+          'transaction_id': id,
+          'amount': transaction.amountChanged,
+          'type': transaction.transactionType,
+          'balance_before': transaction.balanceBeforeTransaction,
+          'balance_after': transaction.newBalanceAfterTransaction,
+          'note': transaction.transactionNote,
+        },
+        notes: transaction.transactionType == 'manual_debt'
+            ? 'إضافة دين يدوي بقيمة ${transaction.amountChanged}'
+            : 'تسديد دين بقيمة ${transaction.amountChanged.abs()}',
+      );
+    } catch (e) {
+      print('تحذير: فشل تسجيل التدقيق: $e');
+    }
 
     notifyListeners();
   }

@@ -19,6 +19,7 @@ import 'package:process/process.dart'; // For Process.start on Windows
 import 'package:audioplayers/audioplayers.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart';
+import 'audit_log_screen.dart';
 
 class CustomerDetailsScreen extends StatefulWidget {
   final Customer customer;
@@ -538,6 +539,23 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
               icon: const Icon(Icons.verified_user, color: Colors.white),
               tooltip: 'فحص السلامة المالية',
               onPressed: () => _showFinancialIntegrityReport(),
+            ),
+            // 📋 زر سجل التدقيق المالي
+            IconButton(
+              icon: const Icon(Icons.history, color: Colors.white),
+              tooltip: 'سجل التدقيق المالي',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => AuditLogScreen(
+                      customerId: widget.customer.id,
+                      customerName: widget.customer.name,
+                      entityType: 'customer',
+                    ),
+                  ),
+                );
+              },
             ),
             // زر إيقاف الصوت
             if (_isPlaying)

@@ -274,6 +274,30 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
       final db = DatabaseService();
       Invoice? savedInvoice;
 
+      // 📸 حفظ نسخة من الفاتورة قبل التعديل
+      if (!isNewInvoice && invoiceToManage?.id != null) {
+        try {
+          // التحقق من وجود نسخة أصلية
+          final hasSnapshots = await db.hasInvoiceBeenModified(invoiceToManage!.id!);
+          if (!hasSnapshots) {
+            // حفظ النسخة الأصلية (أول مرة يتم التعديل)
+            await db.saveInvoiceSnapshot(
+              invoiceId: invoiceToManage!.id!,
+              snapshotType: 'original',
+              notes: 'النسخة الأصلية قبل أي تعديل',
+            );
+          }
+          // حفظ نسخة قبل التعديل الحالي
+          await db.saveInvoiceSnapshot(
+            invoiceId: invoiceToManage!.id!,
+            snapshotType: 'before_edit',
+            notes: 'قبل التعديل',
+          );
+        } catch (e) {
+          print('تحذير: فشل حفظ نسخة الفاتورة: $e');
+        }
+      }
+
       await (await db.database).transaction((txn) async {
         Customer? customer;
         if (customerNameController.text.trim().isNotEmpty) {
@@ -437,63 +461,218 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
         }
         await batch.commit(noResult: true);
 
-        if (customer != null && paymentType == 'دين') {
-          double debtChange = 0.0;
-          String transactionDescription = '';
-
-          if (isNewInvoice) {
-            final newRemaining = totalAmount - paid;
-            debtChange = newRemaining;
-            transactionDescription = 'دين فاتورة جديدة رقم $invoiceId';
-          } else {
-            final oldInvoice = widget.existingInvoice!;
-            final oldRemaining =
-                oldInvoice.totalAmount - oldInvoice.amountPaidOnInvoice;
-            final newRemaining = totalAmount - paid;
-            debtChange = newRemaining - oldRemaining;
-
-            if (debtChange.abs() > 0.01) {
-              transactionDescription = 'تعديل فاتورة دين رقم $invoiceId';
-            } else {
-              debtChange = 0.0;
+        // ═══════════════════════════════════════════════════════════════════════════
+        // ✅ منطق الدين المحسّن - يتعامل مع جميع الحالات
+        // ═══════════════════════════════════════════════════════════════════════════
+        
+        if (!isNewInvoice) {
+          final oldInvoice = widget.existingInvoice!;
+          final oldPaymentType = oldInvoice.paymentType;
+          final oldCustomerId = oldInvoice.customerId;
+          final newCustomerId = customer?.id;
+          final oldRemaining = oldInvoice.totalAmount - oldInvoice.amountPaidOnInvoice;
+          final newRemaining = totalAmount - paid;
+          
+          // ═══════════════════════════════════════════════════════════════════════
+          // حالة 1: تغيير من دين إلى نقد - إلغاء الدين القديم
+          // ═══════════════════════════════════════════════════════════════════════
+          if (oldPaymentType == 'دين' && paymentType == 'نقد' && oldCustomerId != null) {
+            if (oldRemaining > 0.001) {
+              // جلب العميل القديم
+              final oldCustomerMaps = await txn.query('customers', where: 'id = ?', whereArgs: [oldCustomerId]);
+              if (oldCustomerMaps.isNotEmpty) {
+                final oldCustomer = Customer.fromMap(oldCustomerMaps.first);
+                final balanceBefore = oldCustomer.currentTotalDebt;
+                final balanceAfter = balanceBefore - oldRemaining;
+                
+                // تحديث رصيد العميل
+                await txn.update('customers', {
+                  'current_total_debt': balanceAfter,
+                  'last_modified_at': DateTime.now().toIso8601String(),
+                }, where: 'id = ?', whereArgs: [oldCustomerId]);
+                
+                // تسجيل معاملة إلغاء الدين
+                final txUuid = await DriveService().generateTransactionUuid();
+                await txn.insert('transactions', {
+                  'customer_id': oldCustomerId,
+                  'transaction_date': DateTime.now().toIso8601String(),
+                  'amount_changed': -oldRemaining,
+                  'balance_before_transaction': balanceBefore,
+                  'new_balance_after_transaction': balanceAfter,
+                  'transaction_type': 'invoice_payment_type_change',
+                  'description': 'إلغاء دين فاتورة رقم $invoiceId (تحويل لنقد)',
+                  'invoice_id': invoiceId,
+                  'transaction_uuid': txUuid,
+                  'created_at': DateTime.now().toIso8601String(),
+                });
+                print('✅ تم إلغاء دين $oldRemaining من العميل $oldCustomerId (تحويل لنقد)');
+              }
             }
           }
-
-          if (debtChange.abs() > 0.001) {
-            // الرصيد قبل هذه المعاملة هو الدين الحالي للعميل
-            final double balanceBefore = customer.currentTotalDebt;
-
-            // الرصيد الجديد بعد اضافة الدين الجديد
-            final double balanceAfter = customer.currentTotalDebt + debtChange;
-
-            final updatedCustomer = customer.copyWith(
-              currentTotalDebt: balanceAfter,
-              lastModifiedAt: DateTime.now(),
-            );
-
-            await txn.update(
-                'customers',
-                {
-                  'current_total_debt': updatedCustomer.currentTotalDebt,
+          
+          // ═══════════════════════════════════════════════════════════════════════
+          // حالة 2: تغيير من نقد إلى دين - إضافة دين جديد
+          // ═══════════════════════════════════════════════════════════════════════
+          else if (oldPaymentType == 'نقد' && paymentType == 'دين' && customer != null) {
+            if (newRemaining > 0.001) {
+              final balanceBefore = customer.currentTotalDebt;
+              final balanceAfter = balanceBefore + newRemaining;
+              
+              // تحديث رصيد العميل
+              await txn.update('customers', {
+                'current_total_debt': balanceAfter,
+                'last_modified_at': DateTime.now().toIso8601String(),
+              }, where: 'id = ?', whereArgs: [customer.id]);
+              
+              // تسجيل معاملة إضافة الدين
+              final txUuid = await DriveService().generateTransactionUuid();
+              await txn.insert('transactions', {
+                'customer_id': customer.id,
+                'transaction_date': DateTime.now().toIso8601String(),
+                'amount_changed': newRemaining,
+                'balance_before_transaction': balanceBefore,
+                'new_balance_after_transaction': balanceAfter,
+                'transaction_type': 'invoice_payment_type_change',
+                'description': 'إضافة دين فاتورة رقم $invoiceId (تحويل من نقد)',
+                'invoice_id': invoiceId,
+                'transaction_uuid': txUuid,
+                'created_at': DateTime.now().toIso8601String(),
+              });
+              print('✅ تم إضافة دين $newRemaining للعميل ${customer.id} (تحويل من نقد)');
+            }
+          }
+          
+          // ═══════════════════════════════════════════════════════════════════════
+          // حالة 3: تغيير العميل في فاتورة دين
+          // ═══════════════════════════════════════════════════════════════════════
+          else if (oldPaymentType == 'دين' && paymentType == 'دين' && 
+                   oldCustomerId != null && newCustomerId != null && 
+                   oldCustomerId != newCustomerId) {
+            
+            // 3.1: خصم الدين من العميل القديم
+            if (oldRemaining > 0.001) {
+              final oldCustomerMaps = await txn.query('customers', where: 'id = ?', whereArgs: [oldCustomerId]);
+              if (oldCustomerMaps.isNotEmpty) {
+                final oldCustomer = Customer.fromMap(oldCustomerMaps.first);
+                final oldBalanceBefore = oldCustomer.currentTotalDebt;
+                final oldBalanceAfter = oldBalanceBefore - oldRemaining;
+                
+                await txn.update('customers', {
+                  'current_total_debt': oldBalanceAfter,
                   'last_modified_at': DateTime.now().toIso8601String(),
-                },
-                where: 'id = ?',
-                whereArgs: [customer.id]);
-
+                }, where: 'id = ?', whereArgs: [oldCustomerId]);
+                
+                final txUuid1 = await DriveService().generateTransactionUuid();
+                await txn.insert('transactions', {
+                  'customer_id': oldCustomerId,
+                  'transaction_date': DateTime.now().toIso8601String(),
+                  'amount_changed': -oldRemaining,
+                  'balance_before_transaction': oldBalanceBefore,
+                  'new_balance_after_transaction': oldBalanceAfter,
+                  'transaction_type': 'invoice_customer_change',
+                  'description': 'نقل دين فاتورة رقم $invoiceId إلى عميل آخر',
+                  'invoice_id': invoiceId,
+                  'transaction_uuid': txUuid1,
+                  'created_at': DateTime.now().toIso8601String(),
+                });
+                print('✅ تم خصم دين $oldRemaining من العميل القديم $oldCustomerId');
+              }
+            }
+            
+            // 3.2: إضافة الدين للعميل الجديد
+            if (newRemaining > 0.001 && customer != null) {
+              // إعادة جلب العميل الجديد للحصول على الرصيد المحدث
+              final newCustomerMaps = await txn.query('customers', where: 'id = ?', whereArgs: [newCustomerId]);
+              if (newCustomerMaps.isNotEmpty) {
+                final newCustomer = Customer.fromMap(newCustomerMaps.first);
+                final newBalanceBefore = newCustomer.currentTotalDebt;
+                final newBalanceAfter = newBalanceBefore + newRemaining;
+                
+                await txn.update('customers', {
+                  'current_total_debt': newBalanceAfter,
+                  'last_modified_at': DateTime.now().toIso8601String(),
+                }, where: 'id = ?', whereArgs: [newCustomerId]);
+                
+                final txUuid2 = await DriveService().generateTransactionUuid();
+                await txn.insert('transactions', {
+                  'customer_id': newCustomerId,
+                  'transaction_date': DateTime.now().toIso8601String(),
+                  'amount_changed': newRemaining,
+                  'balance_before_transaction': newBalanceBefore,
+                  'new_balance_after_transaction': newBalanceAfter,
+                  'transaction_type': 'invoice_customer_change',
+                  'description': 'استلام دين فاتورة رقم $invoiceId من عميل آخر',
+                  'invoice_id': invoiceId,
+                  'transaction_uuid': txUuid2,
+                  'created_at': DateTime.now().toIso8601String(),
+                });
+                print('✅ تم إضافة دين $newRemaining للعميل الجديد $newCustomerId');
+              }
+            }
+          }
+          
+          // ═══════════════════════════════════════════════════════════════════════
+          // حالة 4: تعديل فاتورة دين عادي (نفس العميل ونفس نوع الدفع)
+          // ═══════════════════════════════════════════════════════════════════════
+          else if (oldPaymentType == 'دين' && paymentType == 'دين' && customer != null &&
+                   (oldCustomerId == newCustomerId || oldCustomerId == null)) {
+            final debtChange = newRemaining - oldRemaining;
+            
+            if (debtChange.abs() > 0.001) {
+              final balanceBefore = customer.currentTotalDebt;
+              final balanceAfter = balanceBefore + debtChange;
+              
+              await txn.update('customers', {
+                'current_total_debt': balanceAfter,
+                'last_modified_at': DateTime.now().toIso8601String(),
+              }, where: 'id = ?', whereArgs: [customer.id]);
+              
+              final txUuid = await DriveService().generateTransactionUuid();
+              await txn.insert('transactions', {
+                'customer_id': customer.id,
+                'transaction_date': DateTime.now().toIso8601String(),
+                'amount_changed': debtChange,
+                'balance_before_transaction': balanceBefore,
+                'new_balance_after_transaction': balanceAfter,
+                'transaction_type': 'invoice_edit',
+                'description': 'تعديل فاتورة دين رقم $invoiceId',
+                'invoice_id': invoiceId,
+                'transaction_uuid': txUuid,
+                'created_at': DateTime.now().toIso8601String(),
+              });
+              print('✅ تم تعديل دين بفارق $debtChange للعميل ${customer.id}');
+            }
+          }
+        }
+        // ═══════════════════════════════════════════════════════════════════════
+        // حالة 5: فاتورة جديدة بالدين
+        // ═══════════════════════════════════════════════════════════════════════
+        else if (isNewInvoice && customer != null && paymentType == 'دين') {
+          final newRemaining = totalAmount - paid;
+          
+          if (newRemaining > 0.001) {
+            final balanceBefore = customer.currentTotalDebt;
+            final balanceAfter = balanceBefore + newRemaining;
+            
+            await txn.update('customers', {
+              'current_total_debt': balanceAfter,
+              'last_modified_at': DateTime.now().toIso8601String(),
+            }, where: 'id = ?', whereArgs: [customer.id]);
+            
             final txUuid = await DriveService().generateTransactionUuid();
             await txn.insert('transactions', {
               'customer_id': customer.id,
               'transaction_date': DateTime.now().toIso8601String(),
-              'amount_changed': debtChange,
+              'amount_changed': newRemaining,
               'balance_before_transaction': balanceBefore,
               'new_balance_after_transaction': balanceAfter,
-              'transaction_type':
-                  isNewInvoice ? 'invoice_debt' : 'invoice_edit',
-              'description': transactionDescription,
+              'transaction_type': 'invoice_debt',
+              'description': 'دين فاتورة جديدة رقم $invoiceId',
               'invoice_id': invoiceId,
               'transaction_uuid': txUuid,
               'created_at': DateTime.now().toIso8601String(),
             });
+            print('✅ تم إضافة دين $newRemaining للعميل ${customer.id} (فاتورة جديدة)');
           }
         }
 
@@ -521,6 +700,99 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
          } catch (e) {
            print('Error updating installer points/amount: $e');
          }
+      }
+
+      // ═══════════════════════════════════════════════════════════════════════════
+      // ✅ تسجيل التدقيق المالي
+      // ═══════════════════════════════════════════════════════════════════════════
+      try {
+        if (savedInvoice != null) {
+          final double totalAmount = savedInvoice!.totalAmount;
+          final double discountVal = savedInvoice!.discount;
+          final double paidVal = savedInvoice!.amountPaidOnInvoice;
+          final int? customerId = savedInvoice!.customerId;
+          
+          // تسجيل للفاتورة
+          await db.insertAuditLog(
+            operationType: isNewInvoice ? 'invoice_create' : 'invoice_update',
+            entityType: 'invoice',
+            entityId: savedInvoice!.id!,
+            oldValues: isNewInvoice ? null : jsonEncode({
+              'total_amount': widget.existingInvoice?.totalAmount,
+              'discount': widget.existingInvoice?.discount,
+              'payment_type': widget.existingInvoice?.paymentType,
+              'paid_amount': widget.existingInvoice?.amountPaidOnInvoice,
+              'customer_id': widget.existingInvoice?.customerId,
+            }),
+            newValues: jsonEncode({
+              'total_amount': totalAmount,
+              'discount': discountVal,
+              'payment_type': paymentType,
+              'paid_amount': paidVal,
+              'customer_id': customerId,
+              'customer_name': customerNameController.text,
+              'items_count': invoiceItems.where((i) => _isInvoiceItemComplete(i)).length,
+            }),
+            notes: isNewInvoice 
+              ? 'إنشاء فاتورة جديدة' 
+              : 'تعديل فاتورة - الإجمالي: $totalAmount، الخصم: $discountVal، المدفوع: $paidVal',
+          );
+          
+          // تسجيل للعميل أيضاً (لتظهر في سجل تدقيق العميل)
+          if (customerId != null) {
+            await db.insertAuditLog(
+              operationType: isNewInvoice ? 'invoice_create' : 'invoice_update',
+              entityType: 'customer',
+              entityId: customerId,
+              oldValues: isNewInvoice ? null : jsonEncode({
+                'invoice_id': savedInvoice!.id,
+                'total_amount': widget.existingInvoice?.totalAmount,
+                'payment_type': widget.existingInvoice?.paymentType,
+              }),
+              newValues: jsonEncode({
+                'invoice_id': savedInvoice!.id,
+                'total_amount': totalAmount,
+                'discount': discountVal,
+                'payment_type': paymentType,
+                'paid_amount': paidVal,
+              }),
+              notes: isNewInvoice 
+                ? 'فاتورة جديدة رقم ${savedInvoice!.id} بقيمة $totalAmount' 
+                : 'تعديل فاتورة رقم ${savedInvoice!.id}',
+            );
+          }
+          
+          print('✅ تم تسجيل التدقيق للفاتورة ${savedInvoice!.id} والعميل $customerId');
+          
+          // 📸 حفظ النسخة الأصلية عند إنشاء فاتورة جديدة
+          if (isNewInvoice) {
+            try {
+              await db.saveInvoiceSnapshot(
+                invoiceId: savedInvoice!.id!,
+                snapshotType: 'original',
+                notes: 'النسخة الأصلية عند الإنشاء',
+              );
+              print('✅ تم حفظ النسخة الأصلية للفاتورة ${savedInvoice!.id}');
+            } catch (e) {
+              print('تحذير: فشل حفظ النسخة الأصلية: $e');
+            }
+          } else {
+            // 📸 حفظ نسخة بعد التعديل
+            try {
+              await db.saveInvoiceSnapshot(
+                invoiceId: savedInvoice!.id!,
+                snapshotType: 'after_edit',
+                notes: 'بعد التعديل - الإجمالي: $totalAmount',
+              );
+              print('✅ تم حفظ نسخة بعد التعديل للفاتورة ${savedInvoice!.id}');
+            } catch (e) {
+              print('تحذير: فشل حفظ نسخة بعد التعديل: $e');
+            }
+          }
+        }
+      } catch (auditError) {
+        print('تحذير: فشل تسجيل التدقيق: $auditError');
+        // لا نوقف العملية إذا فشل التسجيل
       }
 
       await storage.delete(key: 'temp_invoice_data');

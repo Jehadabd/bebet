@@ -49,6 +49,7 @@ dependencies:
   network_info_plus: ^5.0.3
   archive: ^3.6.1
   flutter_colorpicker: ^1.1.0
+  decimal: ^3.2.4
 
 dev_dependencies:
   flutter_test:

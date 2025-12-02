@@ -6,6 +6,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../models/supplier.dart';
 import 'database_service.dart';
+import 'financial_audit_service.dart';
 
 class SuppliersService {
   SuppliersService();
@@ -137,9 +138,10 @@ class SuppliersService {
     final double remaining = (invoice.totalAmount - invoice.amountPaid);
     final double delta = invoice.paymentType == 'نقد' ? 0.0 : (remaining > 0 ? remaining : 0.0);
     // اطبع الرصيد قبل/بعد للتشخيص
+    double before = 0.0;
     try {
       final beforeRow = await db.query('suppliers', columns: ['current_balance','total_purchases'], where: 'id = ?', whereArgs: [invoice.supplierId], limit: 1);
-      final double before = beforeRow.isNotEmpty ? ((beforeRow.first['current_balance'] as num?)?.toDouble() ?? 0.0) : 0.0;
+      before = beforeRow.isNotEmpty ? ((beforeRow.first['current_balance'] as num?)?.toDouble() ?? 0.0) : 0.0;
       final double after = before + delta;
       print('DEBUG BALANCE (Invoice): supplier=${invoice.supplierId} total=${invoice.totalAmount} paid=${invoice.amountPaid} type=${invoice.paymentType} delta=$delta before=$before after=$after');
     } catch (_) {}
@@ -148,6 +150,28 @@ class SuppliersService {
       'UPDATE suppliers SET current_balance = current_balance + ?, total_purchases = total_purchases + ?, last_modified_at = ? WHERE id = ?',
       [delta, invoice.totalAmount, DateTime.now().toIso8601String(), invoice.supplierId],
     );
+    
+    // تسجيل العملية في سجل التدقيق
+    try {
+      final auditService = FinancialAuditService();
+      await auditService.logOperation(
+        operationType: 'supplier_invoice_create',
+        entityType: 'supplier',
+        entityId: invoice.supplierId,
+        newValues: {
+          'invoice_id': id,
+          'total_amount': invoice.totalAmount,
+          'amount_paid': invoice.amountPaid,
+          'payment_type': invoice.paymentType,
+          'balance_before': before,
+          'balance_after': before + delta,
+        },
+        notes: 'فاتورة مورد جديدة بقيمة ${invoice.totalAmount}',
+      );
+    } catch (e) {
+      print('خطأ في تسجيل التدقيق: $e');
+    }
+    
     return id;
   }
 
@@ -156,9 +180,10 @@ class SuppliersService {
     final db = await _db;
     final id = await db.insert('supplier_receipts', receipt.toMap());
     // اطبع الرصيد قبل/بعد للتشخيص
+    double before = 0.0;
     try {
       final beforeRow = await db.query('suppliers', columns: ['current_balance'], where: 'id = ?', whereArgs: [receipt.supplierId], limit: 1);
-      final double before = beforeRow.isNotEmpty ? ((beforeRow.first['current_balance'] as num?)?.toDouble() ?? 0.0) : 0.0;
+      before = beforeRow.isNotEmpty ? ((beforeRow.first['current_balance'] as num?)?.toDouble() ?? 0.0) : 0.0;
       final double delta = -receipt.amount;
       final double after = before + delta;
       print('DEBUG BALANCE (Receipt): supplier=${receipt.supplierId} amount=${receipt.amount} delta=$delta before=$before after=$after');
@@ -167,6 +192,27 @@ class SuppliersService {
       'UPDATE suppliers SET current_balance = current_balance - ? , last_modified_at = ? WHERE id = ?',
       [receipt.amount, DateTime.now().toIso8601String(), receipt.supplierId],
     );
+    
+    // تسجيل العملية في سجل التدقيق
+    try {
+      final auditService = FinancialAuditService();
+      await auditService.logOperation(
+        operationType: 'supplier_receipt_create',
+        entityType: 'supplier',
+        entityId: receipt.supplierId,
+        newValues: {
+          'receipt_id': id,
+          'amount': receipt.amount,
+          'payment_method': receipt.paymentMethod,
+          'balance_before': before,
+          'balance_after': before - receipt.amount,
+        },
+        notes: 'سند قبض مورد بقيمة ${receipt.amount}',
+      );
+    } catch (e) {
+      print('خطأ في تسجيل التدقيق: $e');
+    }
+    
     return id;
   }
 

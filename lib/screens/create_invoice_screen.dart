@@ -38,6 +38,7 @@ import '../models/invoice_adjustment.dart';
 // removed duplicate imports
 import '../services/drive_service.dart';
 import 'invoice_actions.dart';
+import 'invoice_history_screen.dart';
 import '../services/password_service.dart'; // Added for password protection
 
 // Helper: format product ID - show raw value without zero-padding
@@ -2611,6 +2612,32 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
               tooltip: 'مشاركة الفاتورة PDF',
               onPressed: (invoiceItems.isEmpty || isSaving) ? null : shareInvoice,
             ),
+            // 📋 زر سجل التعديلات
+            if (invoiceToManage != null) 
+              FutureBuilder<bool>(
+                future: DatabaseService().hasInvoiceBeenModified(invoiceToManage!.id!),
+                builder: (context, snapshot) {
+                  final hasHistory = snapshot.data ?? false;
+                  return IconButton(
+                    icon: Icon(
+                      Icons.history,
+                      color: hasHistory ? Colors.orange : null,
+                    ),
+                    tooltip: hasHistory ? 'سجل التعديلات (تم التعديل)' : 'سجل التعديلات',
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => InvoiceHistoryScreen(
+                            invoiceId: invoiceToManage!.id!,
+                            customerName: customerNameController.text,
+                          ),
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
             if (invoiceToManage != null && isViewOnly) ...[
               IconButton(
                 icon: const Icon(Icons.edit),

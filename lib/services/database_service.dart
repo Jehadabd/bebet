@@ -19,11 +19,12 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:convert';
+import 'dart:convert';
 
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
   static Database? _database;
-  static const int _databaseVersion = 31;
+  static const int _databaseVersion = 33;
   // تحكم بالطباعات التشخيصية من مصدر واحد
   static const bool _verboseLogs = false;
 
@@ -231,6 +232,53 @@ class DatabaseService {
       ''');
     } catch (e) {
       print('DEBUG DB: ensure invoice_logs failed in getter: $e');
+    }
+    
+    // التأكد من وجود جدول التدقيق المالي
+    try {
+      await _database!.execute('''
+        CREATE TABLE IF NOT EXISTS financial_audit_log (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          operation_type TEXT NOT NULL,
+          entity_type TEXT NOT NULL,
+          entity_id INTEGER NOT NULL,
+          old_values TEXT,
+          new_values TEXT,
+          notes TEXT,
+          created_at TEXT NOT NULL
+        )
+      ''');
+      print('DEBUG DB: financial_audit_log table ensured');
+    } catch (e) {
+      print('DEBUG DB: ensure financial_audit_log failed: $e');
+    }
+    
+    // التأكد من وجود جدول نسخ الفواتير
+    try {
+      await _database!.execute('''
+        CREATE TABLE IF NOT EXISTS invoice_snapshots (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          invoice_id INTEGER NOT NULL,
+          version_number INTEGER NOT NULL DEFAULT 1,
+          snapshot_type TEXT NOT NULL,
+          customer_name TEXT,
+          customer_phone TEXT,
+          customer_address TEXT,
+          invoice_date TEXT,
+          payment_type TEXT,
+          total_amount REAL,
+          discount REAL,
+          amount_paid REAL,
+          loading_fee REAL,
+          items_json TEXT,
+          created_at TEXT NOT NULL,
+          notes TEXT,
+          FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
+        )
+      ''');
+      print('DEBUG DB: invoice_snapshots table ensured');
+    } catch (e) {
+      print('DEBUG DB: ensure invoice_snapshots failed: $e');
     }
     // --- تحقق من وجود العمود قبل محاولة إضافته ---
     // معاملات: أعمدة المزامنة
@@ -835,6 +883,43 @@ class DatabaseService {
       )
     ''');
 
+    // Financial audit log - سجل التدقيق المالي الشامل
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS financial_audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        operation_type TEXT NOT NULL,
+        entity_type TEXT NOT NULL,
+        entity_id INTEGER NOT NULL,
+        old_values TEXT,
+        new_values TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL
+      )
+    ''');
+
+    // Invoice snapshots - نسخ الفواتير لتتبع التعديلات
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS invoice_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_id INTEGER NOT NULL,
+        version_number INTEGER NOT NULL DEFAULT 1,
+        snapshot_type TEXT NOT NULL,
+        customer_name TEXT,
+        customer_phone TEXT,
+        customer_address TEXT,
+        invoice_date TEXT,
+        payment_type TEXT,
+        total_amount REAL,
+        discount REAL,
+        amount_paid REAL,
+        loading_fee REAL,
+        items_json TEXT,
+        created_at TEXT NOT NULL,
+        notes TEXT,
+        FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
+      )
+    ''');
+
     // -->> بداية الإضافة: إنشاء جدول FTS5 والمحفزات
 
     // 1. إنشاء جدول FTS5 لفهرسة أسماء المنتجات المطبع
@@ -1225,6 +1310,57 @@ class DatabaseService {
         await db.execute('ALTER TABLE invoices ADD COLUMN loading_fee REAL DEFAULT 0;');
       } catch (e) {
         print("DEBUG DB Error: Failed to add column 'loading_fee' to invoices table or it already exists: $e");
+      }
+    }
+    
+    // إضافة جدول التدقيق المالي في الترقية 32
+    if (oldVersion < 32) {
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS financial_audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            operation_type TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id INTEGER NOT NULL,
+            old_values TEXT,
+            new_values TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL
+          )
+        ''');
+        print('DEBUG DB: جدول التدقيق المالي تم إنشاؤه بنجاح');
+      } catch (e) {
+        print("DEBUG DB Error: Failed to create financial_audit_log table: $e");
+      }
+    }
+    
+    // إضافة جدول نسخ الفواتير (لتتبع التعديلات) في الترقية 33
+    if (oldVersion < 33) {
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS invoice_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice_id INTEGER NOT NULL,
+            version_number INTEGER NOT NULL DEFAULT 1,
+            snapshot_type TEXT NOT NULL,
+            customer_name TEXT,
+            customer_phone TEXT,
+            customer_address TEXT,
+            invoice_date TEXT,
+            payment_type TEXT,
+            total_amount REAL,
+            discount REAL,
+            amount_paid REAL,
+            loading_fee REAL,
+            items_json TEXT,
+            created_at TEXT NOT NULL,
+            notes TEXT,
+            FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
+          )
+        ''');
+        print('DEBUG DB: جدول نسخ الفواتير تم إنشاؤه بنجاح');
+      } catch (e) {
+        print("DEBUG DB Error: Failed to create invoice_snapshots table: $e");
       }
     }
   }
@@ -3724,6 +3860,8 @@ class DatabaseService {
     );
   }
 
+  /// إدراج معاملة خارجية (من المزامنة) وتطبيقها على رصيد العميل
+  /// ✅ تم تحسين: التحقق من UUID قبل الإدراج لمنع التكرار
   Future<void> insertExternalTransactionAndApply({
     required int customerId,
     required double amount,
@@ -3734,18 +3872,41 @@ class DatabaseService {
     DateTime? occurredAt,
   }) async {
     final db = await database;
+    
+    // ✅ التحقق من وجود المعاملة مسبقاً بناءً على UUID
+    if (transactionUuid != null && transactionUuid.isNotEmpty) {
+      final existing = await db.query(
+        'transactions',
+        where: 'transaction_uuid = ?',
+        whereArgs: [transactionUuid],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) {
+        print('SYNC: تجاهل معاملة مكررة UUID=$transactionUuid');
+        return; // المعاملة موجودة مسبقاً، لا نضيفها مرة أخرى
+      }
+    }
+    
     await db.transaction((txn) async {
       final customer = await getCustomerByIdUsingTransaction(txn, customerId);
       if (customer == null) throw Exception('العميل غير موجود');
-      final double newBalance = (customer.currentTotalDebt) + amount;
+      
+      // حساب الرصيد قبل وبعد المعاملة
+      final double balanceBefore = customer.currentTotalDebt;
+      final double newBalance = balanceBefore + amount;
+      
+      // تحديث رصيد العميل
       await txn.update('customers', {
         'current_total_debt': newBalance,
         'last_modified_at': DateTime.now().toIso8601String(),
       }, where: 'id = ?', whereArgs: [customer.id]);
+      
+      // إدراج المعاملة مع الأرصدة الصحيحة
       await txn.insert('transactions', {
         'customer_id': customer.id,
         'transaction_date': (occurredAt ?? DateTime.now()).toIso8601String(),
         'amount_changed': amount,
+        'balance_before_transaction': balanceBefore,
         'new_balance_after_transaction': newBalance,
         'transaction_note': note,
         'transaction_type': type,
@@ -3756,6 +3917,8 @@ class DatabaseService {
         'is_uploaded': 0,
         'transaction_uuid': transactionUuid,
       });
+      
+      print('✅ SYNC: تم إدراج معاملة خارجية للعميل $customerId، المبلغ: $amount، الرصيد الجديد: $newBalance');
     });
   }
 
@@ -6039,6 +6202,211 @@ class DatabaseService {
       totalInvoiceAmount: totalInvoiceAmount,
       generatedAt: DateTime.now(),
     );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // دوال سجل التدقيق المالي (Financial Audit Log)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// إدراج سجل تدقيق
+  Future<int> insertAuditLog({
+    required String operationType,
+    required String entityType,
+    required int entityId,
+    String? oldValues,
+    String? newValues,
+    String? notes,
+  }) async {
+    final db = await database;
+    try {
+      return await db.insert('financial_audit_log', {
+        'operation_type': operationType,
+        'entity_type': entityType,
+        'entity_id': entityId,
+        'old_values': oldValues,
+        'new_values': newValues,
+        'notes': notes,
+        'created_at': DateTime.now().toIso8601String(),
+      });
+    } catch (e) {
+      print('خطأ في إدراج سجل التدقيق: $e');
+      return 0;
+    }
+  }
+
+  /// جلب سجل التدقيق لكيان معين
+  Future<List<Map<String, dynamic>>> getAuditLogForEntity(
+    String entityType,
+    int entityId,
+  ) async {
+    final db = await database;
+    try {
+      return await db.query(
+        'financial_audit_log',
+        where: 'entity_type = ? AND entity_id = ?',
+        whereArgs: [entityType, entityId],
+        orderBy: 'created_at DESC',
+      );
+    } catch (e) {
+      print('خطأ في جلب سجل التدقيق: $e');
+      return [];
+    }
+  }
+
+  /// جلب سجل التدقيق لفترة زمنية
+  Future<List<Map<String, dynamic>>> getAuditLogForPeriod(
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    final db = await database;
+    try {
+      return await db.query(
+        'financial_audit_log',
+        where: 'created_at >= ? AND created_at <= ?',
+        whereArgs: [
+          startDate.toIso8601String(),
+          endDate.toIso8601String(),
+        ],
+        orderBy: 'created_at DESC',
+      );
+    } catch (e) {
+      print('خطأ في جلب سجل التدقيق للفترة: $e');
+      return [];
+    }
+  }
+
+  /// جلب آخر العمليات المالية
+  Future<List<Map<String, dynamic>>> getRecentAuditLogs({int limit = 50}) async {
+    final db = await database;
+    try {
+      return await db.query(
+        'financial_audit_log',
+        orderBy: 'created_at DESC',
+        limit: limit,
+      );
+    } catch (e) {
+      print('خطأ في جلب آخر العمليات: $e');
+      return [];
+    }
+  }
+
+  /// حذف سجلات التدقيق القديمة (أقدم من 6 أشهر)
+  Future<int> cleanOldAuditLogs() async {
+    final db = await database;
+    try {
+      final sixMonthsAgo = DateTime.now().subtract(const Duration(days: 180));
+      return await db.delete(
+        'financial_audit_log',
+        where: 'created_at < ?',
+        whereArgs: [sixMonthsAgo.toIso8601String()],
+      );
+    } catch (e) {
+      print('خطأ في حذف سجلات التدقيق القديمة: $e');
+      return 0;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📸 دوال نسخ الفواتير (Invoice Snapshots)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// حفظ نسخة من الفاتورة قبل التعديل
+  Future<int> saveInvoiceSnapshot({
+    required int invoiceId,
+    required String snapshotType, // 'original', 'before_edit', 'after_edit'
+    String? notes,
+  }) async {
+    final db = await database;
+    try {
+      // جلب بيانات الفاتورة الحالية
+      final invoiceMaps = await db.query('invoices', where: 'id = ?', whereArgs: [invoiceId]);
+      if (invoiceMaps.isEmpty) {
+        throw Exception('الفاتورة غير موجودة');
+      }
+      final invoice = invoiceMaps.first;
+      
+      // جلب أصناف الفاتورة
+      final items = await db.query('invoice_items', where: 'invoice_id = ?', whereArgs: [invoiceId]);
+      final itemsJson = jsonEncode(items);
+      
+      // حساب رقم النسخة
+      final existingSnapshots = await db.query(
+        'invoice_snapshots',
+        where: 'invoice_id = ?',
+        whereArgs: [invoiceId],
+        orderBy: 'version_number DESC',
+        limit: 1,
+      );
+      final versionNumber = existingSnapshots.isEmpty 
+          ? 1 
+          : ((existingSnapshots.first['version_number'] as int?) ?? 0) + 1;
+      
+      // حفظ النسخة
+      return await db.insert('invoice_snapshots', {
+        'invoice_id': invoiceId,
+        'version_number': versionNumber,
+        'snapshot_type': snapshotType,
+        'customer_name': invoice['customer_name'],
+        'customer_phone': invoice['customer_phone'],
+        'customer_address': invoice['customer_address'],
+        'invoice_date': invoice['invoice_date'],
+        'payment_type': invoice['payment_type'],
+        'total_amount': invoice['total_amount'],
+        'discount': invoice['discount'],
+        'amount_paid': invoice['amount_paid_on_invoice'],
+        'loading_fee': invoice['loading_fee'],
+        'items_json': itemsJson,
+        'created_at': DateTime.now().toIso8601String(),
+        'notes': notes,
+      });
+    } catch (e) {
+      print('خطأ في حفظ نسخة الفاتورة: $e');
+      return -1;
+    }
+  }
+
+  /// جلب جميع نسخ فاتورة معينة
+  Future<List<Map<String, dynamic>>> getInvoiceSnapshots(int invoiceId) async {
+    final db = await database;
+    try {
+      return await db.query(
+        'invoice_snapshots',
+        where: 'invoice_id = ?',
+        whereArgs: [invoiceId],
+        orderBy: 'version_number ASC',
+      );
+    } catch (e) {
+      print('خطأ في جلب نسخ الفاتورة: $e');
+      return [];
+    }
+  }
+
+  /// التحقق من وجود تعديلات على الفاتورة
+  Future<bool> hasInvoiceBeenModified(int invoiceId) async {
+    final db = await database;
+    try {
+      final count = Sqflite.firstIntValue(await db.rawQuery(
+        'SELECT COUNT(*) FROM invoice_snapshots WHERE invoice_id = ?',
+        [invoiceId],
+      ));
+      return (count ?? 0) > 0;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// جلب عدد التعديلات على الفاتورة
+  Future<int> getInvoiceModificationCount(int invoiceId) async {
+    final db = await database;
+    try {
+      final count = Sqflite.firstIntValue(await db.rawQuery(
+        'SELECT COUNT(*) FROM invoice_snapshots WHERE invoice_id = ?',
+        [invoiceId],
+      ));
+      return count ?? 0;
+    } catch (e) {
+      return 0;
+    }
   }
 } // نهاية كلاس DatabaseService
 
