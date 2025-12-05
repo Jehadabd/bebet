@@ -305,15 +305,109 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
     super.dispose();
   }
 
+  static const Color primaryColor = Color(0xFF3F51B5);
+
+  Widget _buildActionTile({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(vertical: 4),
+      leading: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: iconColor.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Icon(icon, color: iconColor, size: 24),
+      ),
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w500)),
+      subtitle: Text(subtitle, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+      trailing: Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey[400]),
+      onTap: onTap,
+    );
+  }
+
+  Widget _buildColorTile(String title, Color color, VoidCallback onTap) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      title: Text(title),
+      trailing: Container(
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.grey.shade300, width: 2),
+          boxShadow: [
+            BoxShadow(
+              color: color.withOpacity(0.4),
+              blurRadius: 4,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+      ),
+      onTap: onTap,
+    );
+  }
+
+  Widget _buildSettingsCard({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required Widget child,
+  }) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: iconColor.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(icon, color: iconColor, size: 24),
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  title,
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            child,
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('الإعدادات العامة'),
         centerTitle: true,
+        backgroundColor: primaryColor,
+        foregroundColor: Colors.white,
+        elevation: 0,
         actions: [
           IconButton(
             icon: const Icon(Icons.save),
+            tooltip: 'حفظ الإعدادات',
             onPressed: _saveSettings,
           ),
         ],
@@ -322,381 +416,221 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
         padding: const EdgeInsets.all(16.0),
         children: [
           
-          Card(
-            margin: const EdgeInsets.only(bottom: 20),
-            elevation: 4,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('أرقام الهواتف', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 10),
-                  ..._phoneNumberControllers.asMap().entries.map((entry) {
-                    final index = entry.key;
-                    final controller = entry.value;
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 8.0),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: controller,
-                              keyboardType: TextInputType.phone,
-                              decoration: InputDecoration(
-                                labelText: 'رقم الهاتف ${index + 1}',
-                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+          _buildSettingsCard(
+            icon: Icons.phone,
+            iconColor: Colors.green,
+            title: 'أرقام الهواتف',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ..._phoneNumberControllers.asMap().entries.map((entry) {
+                  final index = entry.key;
+                  final controller = entry.value;
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8.0),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: controller,
+                            keyboardType: TextInputType.phone,
+                            decoration: InputDecoration(
+                              labelText: 'رقم الهاتف ${index + 1}',
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(color: primaryColor, width: 2),
                               ),
                             ),
                           ),
-                          if (_phoneNumberControllers.length > 1) // Only show remove button if more than one field
-                            IconButton(
-                              icon: const Icon(Icons.remove_circle_outline, color: Colors.red),
-                              onPressed: () => _removePhoneNumberField(index),
-                            ),
-                        ],
-                      ),
-                    );
-                  }).toList(),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton.icon(
-                      icon: const Icon(Icons.add),
-                      label: const Text('إضافة رقم هاتف'),
-                      onPressed: _addPhoneNumberField,
+                        ),
+                        if (_phoneNumberControllers.length > 1)
+                          IconButton(
+                            icon: const Icon(Icons.remove_circle_outline, color: Colors.red),
+                            onPressed: () => _removePhoneNumberField(index),
+                          ),
+                      ],
                     ),
+                  );
+                }).toList(),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    icon: const Icon(Icons.add, color: primaryColor),
+                    label: const Text('إضافة رقم هاتف', style: TextStyle(color: primaryColor)),
+                    onPressed: _addPhoneNumberField,
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
           // وصف الشركة
-          Card(
-            margin: const EdgeInsets.only(bottom: 20),
-            elevation: 4,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('وصف الشركة', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: _companyDescriptionController,
-                    decoration: InputDecoration(
-                      labelText: 'وصف الشركة',
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+          _buildSettingsCard(
+            icon: Icons.business,
+            iconColor: primaryColor,
+            title: 'وصف الشركة',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: _companyDescriptionController,
+                  decoration: InputDecoration(
+                    labelText: 'وصف الشركة',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: primaryColor, width: 2),
                     ),
-                    maxLines: 2,
                   ),
-                  const SizedBox(height: 10),
-                  ListTile(
-                    title: const Text('لون اسم الشركة (الناصر)'),
-                    trailing: CircleAvatar(backgroundColor: _companyNameColor, radius: 15),
-                    onTap: () => _pickColor('companyName'),
-                  ),
-                  ListTile(
-                    title: const Text('لون وصف الشركة'),
-                    trailing: CircleAvatar(backgroundColor: _companyDescriptionColor, radius: 15),
-                    onTap: () => _pickColor('companyDescription'),
-                  ),
-                ],
-              ),
+                  maxLines: 2,
+                ),
+                const SizedBox(height: 10),
+                _buildColorTile('لون اسم الشركة (الناصر)', _companyNameColor, () => _pickColor('companyName')),
+                _buildColorTile('لون وصف الشركة', _companyDescriptionColor, () => _pickColor('companyDescription')),
+              ],
             ),
           ),
           
           // ألوان عناصر الفاتورة
-          Card(
-            margin: const EdgeInsets.only(bottom: 20),
-            elevation: 4,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('ألوان عناصر الفاتورة', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 10),
-                  
-                  // المبلغ المتبقي
-                  ListTile(
-                    title: const Text('المبلغ المتبقي'),
-                    trailing: CircleAvatar(backgroundColor: _remainingAmountColor, radius: 15),
-                    onTap: () => _pickColor('remainingAmount'),
-                  ),
-                  
-                  // الخصم
-                  ListTile(
-                    title: const Text('الخصم'),
-                    trailing: CircleAvatar(backgroundColor: _discountColor, radius: 15),
-                    onTap: () => _pickColor('discount'),
-                  ),
-                  
-                  // الإجمالي قبل الخصم
-                  ListTile(
-                    title: const Text('الإجمالي قبل الخصم'),
-                    trailing: CircleAvatar(backgroundColor: _totalBeforeDiscountColor, radius: 15),
-                    onTap: () => _pickColor('totalBeforeDiscount'),
-                  ),
-                  
-                  // الإجمالي بعد الخصم
-                  ListTile(
-                    title: const Text('الإجمالي بعد الخصم'),
-                    trailing: CircleAvatar(backgroundColor: _totalAfterDiscountColor, radius: 15),
-                    onTap: () => _pickColor('totalAfterDiscount'),
-                  ),
-                  
-                  // أجور التحميل
-                  ListTile(
-                    title: const Text('أجور التحميل'),
-                    trailing: CircleAvatar(backgroundColor: _loadingFeesColor, radius: 15),
-                    onTap: () => _pickColor('loadingFees'),
-                  ),
-                  
-                  // الدين السابق
-                  ListTile(
-                    title: const Text('الدين السابق'),
-                    trailing: CircleAvatar(backgroundColor: _previousDebtColor, radius: 15),
-                    onTap: () => _pickColor('previousDebt'),
-                  ),
-                  
-                  // الدين الحالي
-                  ListTile(
-                    title: const Text('الدين الحالي'),
-                    trailing: CircleAvatar(backgroundColor: _currentDebtColor, radius: 15),
-                    onTap: () => _pickColor('currentDebt'),
-                  ),
-
-                  // المبلغ المدفوع
-                  ListTile(
-                    title: const Text('المبلغ المدفوع'),
-                    trailing: CircleAvatar(backgroundColor: _paidAmountColor, radius: 15),
-                    onTap: () => _pickColor('paidAmount'),
-                  ),
-                ],
-              ),
+          _buildSettingsCard(
+            icon: Icons.receipt_long,
+            iconColor: Colors.blue,
+            title: 'ألوان عناصر الفاتورة',
+            child: Column(
+              children: [
+                _buildColorTile('المبلغ المتبقي', _remainingAmountColor, () => _pickColor('remainingAmount')),
+                _buildColorTile('الخصم', _discountColor, () => _pickColor('discount')),
+                _buildColorTile('الإجمالي قبل الخصم', _totalBeforeDiscountColor, () => _pickColor('totalBeforeDiscount')),
+                _buildColorTile('الإجمالي بعد الخصم', _totalAfterDiscountColor, () => _pickColor('totalAfterDiscount')),
+                _buildColorTile('أجور التحميل', _loadingFeesColor, () => _pickColor('loadingFees')),
+                _buildColorTile('الدين السابق', _previousDebtColor, () => _pickColor('previousDebt')),
+                _buildColorTile('الدين الحالي', _currentDebtColor, () => _pickColor('currentDebt')),
+                _buildColorTile('المبلغ المدفوع', _paidAmountColor, () => _pickColor('paidAmount')),
+              ],
             ),
           ),
           
           // ألوان أرقام الهواتف
-          Card(
-            margin: const EdgeInsets.only(bottom: 20),
-            elevation: 4,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('ألوان أرقام الهواتف', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 10),
-                  
-                  // أرقام الكهربائيات
-                  ListTile(
-                    title: const Text('أرقام الكهربائيات'),
-                    trailing: CircleAvatar(backgroundColor: _electricPhoneColor, radius: 15),
-                    onTap: () => _pickColor('electricPhone'),
-                  ),
-                  
-                  // أرقام الصحيات
-                  ListTile(
-                    title: const Text('أرقام الصحيات'),
-                    trailing: CircleAvatar(backgroundColor: _healthPhoneColor, radius: 15),
-                    onTap: () => _pickColor('healthPhone'),
-                  ),
-                ],
-              ),
+          _buildSettingsCard(
+            icon: Icons.phone_android,
+            iconColor: Colors.orange,
+            title: 'ألوان أرقام الهواتف',
+            child: Column(
+              children: [
+                _buildColorTile('أرقام الكهربائيات', _electricPhoneColor, () => _pickColor('electricPhone')),
+                _buildColorTile('أرقام الصحيات', _healthPhoneColor, () => _pickColor('healthPhone')),
+              ],
             ),
           ),
           
           // ألوان عناصر الجدول
-          Card(
-            margin: const EdgeInsets.only(bottom: 20),
-            elevation: 4,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('ألوان عناصر الجدول', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 10),
-                  
-                  // التسلسل
-                  ListTile(
-                    title: const Text('التسلسل'),
-                    trailing: CircleAvatar(backgroundColor: _itemSerialColor, radius: 15),
-                    onTap: () => _pickColor('itemSerial'),
-                  ),
-                  
-                  // التفاصيل
-                  ListTile(
-                    title: const Text('التفاصيل (أسماء المواد)'),
-                    trailing: CircleAvatar(backgroundColor: _itemDetailsColor, radius: 15),
-                    onTap: () => _pickColor('itemDetails'),
-                  ),
-                  
-                  // العدد
-                  ListTile(
-                    title: const Text('العدد'),
-                    trailing: CircleAvatar(backgroundColor: _itemQuantityColor, radius: 15),
-                    onTap: () => _pickColor('itemQuantity'),
-                  ),
-                  
-                  // السعر
-                  ListTile(
-                    title: const Text('السعر'),
-                    trailing: CircleAvatar(backgroundColor: _itemPriceColor, radius: 15),
-                    onTap: () => _pickColor('itemPrice'),
-                  ),
-                  
-                  // المبلغ
-                  ListTile(
-                    title: const Text('المبلغ'),
-                    trailing: CircleAvatar(backgroundColor: _itemTotalColor, radius: 15),
-                    onTap: () => _pickColor('itemTotal'),
-                  ),
-                ],
-              ),
+          _buildSettingsCard(
+            icon: Icons.table_chart,
+            iconColor: Colors.purple,
+            title: 'ألوان عناصر الجدول',
+            child: Column(
+              children: [
+                _buildColorTile('التسلسل', _itemSerialColor, () => _pickColor('itemSerial')),
+                _buildColorTile('التفاصيل (أسماء المواد)', _itemDetailsColor, () => _pickColor('itemDetails')),
+                _buildColorTile('العدد', _itemQuantityColor, () => _pickColor('itemQuantity')),
+                _buildColorTile('السعر', _itemPriceColor, () => _pickColor('itemPrice')),
+                _buildColorTile('المبلغ', _itemTotalColor, () => _pickColor('itemTotal')),
+              ],
             ),
           ),
           
           // ألوان أخرى
-          Card(
-            margin: const EdgeInsets.only(bottom: 20),
-            elevation: 4,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('ألوان أخرى', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 10),
-                  
-                  // التنويه
-                  ListTile(
-                    title: const Text('التنويه'),
-                    trailing: CircleAvatar(backgroundColor: _noticeColor, radius: 15),
-                    onTap: () => _pickColor('notice'),
-                  ),
-                ],
-              ),
+          _buildSettingsCard(
+            icon: Icons.color_lens,
+            iconColor: Colors.red,
+            title: 'ألوان أخرى',
+            child: Column(
+              children: [
+                _buildColorTile('التنويه', _noticeColor, () => _pickColor('notice')),
+              ],
             ),
           ),
           
           // ⭐ إعدادات نقاط المؤسسين
-          Card(
-            margin: const EdgeInsets.only(bottom: 20),
-            elevation: 4,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Row(
-                    children: [
-                      Icon(Icons.star, color: Colors.amber, size: 24),
-                      SizedBox(width: 8),
-                      Text('⭐ إعدادات نقاط المؤسسين', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  
-                  // عدد النقاط لكل 100,000
-                  Row(
-                    children: [
-                      const Expanded(
-                        flex: 2,
-                        child: Text('عدد النقاط لكل 100,000:', style: TextStyle(fontSize: 14)),
-                      ),
-                      Expanded(
-                        flex: 1,
-                        child: TextField(
-                          controller: _pointsController,
-                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                          textAlign: TextAlign.center,
-                          decoration: InputDecoration(
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                            hintText: '1.0',
+          _buildSettingsCard(
+            icon: Icons.star,
+            iconColor: Colors.amber,
+            title: 'إعدادات نقاط المؤسسين',
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
+                      flex: 2,
+                      child: Text('عدد النقاط لكل 100,000:', style: TextStyle(fontSize: 14)),
+                    ),
+                    Expanded(
+                      flex: 1,
+                      child: TextField(
+                        controller: _pointsController,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        textAlign: TextAlign.center,
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(color: primaryColor, width: 2),
                           ),
-                          onChanged: (value) {
-                            final parsed = double.tryParse(value);
-                            if (parsed != null && parsed > 0) {
-                              setState(() {
-                                _pointsPerHundredThousand = parsed;
-                              });
-                            }
-                          },
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                          hintText: '1.0',
                         ),
+                        onChanged: (value) {
+                          final parsed = double.tryParse(value);
+                          if (parsed != null && parsed > 0) {
+                            setState(() {
+                              _pointsPerHundredThousand = parsed;
+                            });
+                          }
+                        },
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'مثال: إذا كانت القيمة 1.5، فاتورة بـ 200,000 = 3 نقاط',
-                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                  ),
-                ],
-              ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'مثال: إذا كانت القيمة 1.5، فاتورة بـ 200,000 = 3 نقاط',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+              ],
             ),
           ),
           
           // 🛡️ أدوات الحماية والتدقيق المالي
-          Card(
-            margin: const EdgeInsets.only(bottom: 20),
-            elevation: 4,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Row(
-                    children: [
-                      Icon(Icons.verified_user, color: Colors.green, size: 24),
-                      SizedBox(width: 8),
-                      Text('🛡️ أدوات الحماية والتدقيق المالي', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  
-                  // فحص شامل لجميع العملاء
-                  ListTile(
-                    leading: const Icon(Icons.fact_check, color: Colors.blue),
-                    title: const Text('فحص شامل لجميع العملاء'),
-                    subtitle: const Text('التحقق من سلامة جميع البيانات المالية'),
-                    trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-                    onTap: () => _runFullIntegrityCheck(),
-                  ),
-                  
-                  const Divider(),
-                  
-                  // ملخص مالي
-                  ListTile(
-                    leading: const Icon(Icons.analytics, color: Colors.purple),
-                    title: const Text('ملخص مالي سريع'),
-                    subtitle: const Text('عرض إحصائيات مالية عامة'),
-                    trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-                    onTap: () => _showFinancialSummary(),
-                  ),
-                  
-                  const Divider(),
-                  
-                  // 📄 مشاركة كشوفات الحساب
-                  ListTile(
-                    leading: const Icon(Icons.share, color: Colors.teal),
-                    title: const Text('مشاركة كشوفات الحساب'),
-                    subtitle: const Text('إنشاء ملف PDF لجميع كشوفات العملاء'),
-                    trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-                    onTap: () => _shareAllAccountStatements(),
-                  ),
-                ],
-              ),
+          _buildSettingsCard(
+            icon: Icons.verified_user,
+            iconColor: Colors.green,
+            title: 'أدوات الحماية والتدقيق المالي',
+            child: Column(
+              children: [
+                _buildActionTile(
+                  icon: Icons.fact_check,
+                  iconColor: Colors.blue,
+                  title: 'فحص شامل لجميع العملاء',
+                  subtitle: 'التحقق من سلامة جميع البيانات المالية',
+                  onTap: () => _runFullIntegrityCheck(),
+                ),
+                const Divider(height: 1),
+                _buildActionTile(
+                  icon: Icons.analytics,
+                  iconColor: Colors.purple,
+                  title: 'ملخص مالي سريع',
+                  subtitle: 'عرض إحصائيات مالية عامة',
+                  onTap: () => _showFinancialSummary(),
+                ),
+                const Divider(height: 1),
+                _buildActionTile(
+                  icon: Icons.share,
+                  iconColor: Colors.teal,
+                  title: 'مشاركة كشوفات الحساب',
+                  subtitle: 'إنشاء ملف PDF لجميع كشوفات العملاء',
+                  onTap: () => _shareAllAccountStatements(),
+                ),
+              ],
             ),
           ),
         ],

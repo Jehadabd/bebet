@@ -10,6 +10,22 @@ import 'saved_invoices_screen.dart';
 import 'ai_chat_screen.dart';
 import 'package:intl/intl.dart';
 
+// أسماء أنواع الترتيب بالعربية
+String getSortTypeName(CustomerSortType type) {
+  switch (type) {
+    case CustomerSortType.alphabetical:
+      return 'أبجدي';
+    case CustomerSortType.lastDebtAdded:
+      return 'آخر إضافة دين';
+    case CustomerSortType.lastPayment:
+      return 'آخر تسديد';
+    case CustomerSortType.lastTransaction:
+      return 'آخر معاملة';
+    case CustomerSortType.highestDebt:
+      return 'الأكبر مبلغاً';
+  }
+}
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -379,6 +395,101 @@ class _HomeScreenState extends State<HomeScreen> {
                         Navigator.pushNamed(context, '/ai_chat');
                       },
                       tooltip: 'الدردشة مع الذكاء الاصطناعي',
+                    ),
+                    // زر ترتيب العملاء
+                    PopupMenuButton<CustomerSortType>(
+                      icon: const Icon(Icons.sort, color: Colors.white),
+                      tooltip: 'ترتيب العملاء',
+                      onSelected: (CustomerSortType sortType) async {
+                        await provider.setSortType(sortType);
+                      },
+                      itemBuilder: (BuildContext context) => [
+                        PopupMenuItem<CustomerSortType>(
+                          value: CustomerSortType.alphabetical,
+                          child: Row(
+                            children: [
+                              Icon(
+                                provider.currentSortType == CustomerSortType.alphabetical
+                                    ? Icons.check_circle
+                                    : Icons.sort_by_alpha,
+                                color: provider.currentSortType == CustomerSortType.alphabetical
+                                    ? Colors.green
+                                    : Colors.grey,
+                              ),
+                              const SizedBox(width: 8),
+                              const Text('أبجدي (الافتراضي)'),
+                            ],
+                          ),
+                        ),
+                        PopupMenuItem<CustomerSortType>(
+                          value: CustomerSortType.lastDebtAdded,
+                          child: Row(
+                            children: [
+                              Icon(
+                                provider.currentSortType == CustomerSortType.lastDebtAdded
+                                    ? Icons.check_circle
+                                    : Icons.add_circle_outline,
+                                color: provider.currentSortType == CustomerSortType.lastDebtAdded
+                                    ? Colors.green
+                                    : Colors.red,
+                              ),
+                              const SizedBox(width: 8),
+                              const Text('آخر إضافة دين'),
+                            ],
+                          ),
+                        ),
+                        PopupMenuItem<CustomerSortType>(
+                          value: CustomerSortType.lastPayment,
+                          child: Row(
+                            children: [
+                              Icon(
+                                provider.currentSortType == CustomerSortType.lastPayment
+                                    ? Icons.check_circle
+                                    : Icons.payment,
+                                color: provider.currentSortType == CustomerSortType.lastPayment
+                                    ? Colors.green
+                                    : Colors.blue,
+                              ),
+                              const SizedBox(width: 8),
+                              const Text('آخر تسديد'),
+                            ],
+                          ),
+                        ),
+                        PopupMenuItem<CustomerSortType>(
+                          value: CustomerSortType.lastTransaction,
+                          child: Row(
+                            children: [
+                              Icon(
+                                provider.currentSortType == CustomerSortType.lastTransaction
+                                    ? Icons.check_circle
+                                    : Icons.history,
+                                color: provider.currentSortType == CustomerSortType.lastTransaction
+                                    ? Colors.green
+                                    : Colors.orange,
+                              ),
+                              const SizedBox(width: 8),
+                              const Text('آخر معاملة'),
+                            ],
+                          ),
+                        ),
+                        PopupMenuItem<CustomerSortType>(
+                          value: CustomerSortType.highestDebt,
+                          child: Row(
+                            children: [
+                              Icon(
+                                provider.currentSortType == CustomerSortType.highestDebt
+                                    ? Icons.check_circle
+                                    : Icons.trending_up,
+                                color: provider.currentSortType == CustomerSortType.highestDebt
+                                    ? Colors.green
+                                    : Colors.purple,
+                              ),
+                              const SizedBox(width: 8),
+                              const Text('الأكبر مبلغاً'),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 );

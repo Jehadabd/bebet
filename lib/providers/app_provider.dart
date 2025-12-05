@@ -12,6 +12,15 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:archive/archive_io.dart';
 
+// أنواع ترتيب العملاء
+enum CustomerSortType {
+  alphabetical,      // أبجدي (الافتراضي)
+  lastDebtAdded,     // آخر إضافة دين
+  lastPayment,       // آخر تسديد
+  lastTransaction,   // آخر معاملة (أي نوع)
+  highestDebt,       // الأكبر مبلغاً
+}
+
 class AppProvider with ChangeNotifier {
   final DatabaseService _db = DatabaseService();
   final DriveService _drive = DriveService();
@@ -26,6 +35,7 @@ class AppProvider with ChangeNotifier {
   bool _isDriveSupported = false;
   bool _isDriveSignedInSync = false;
   bool _autoCreateCustomerOnSync = true; // إنشاء العميل تلقائياً عند المزامنة إذا لم يكن موجوداً
+  CustomerSortType _currentSortType = CustomerSortType.alphabetical; // نوع الترتيب الحالي
 
   // Temporary invoice state for preserving unsaved invoice data
   String _tempCustomerName = '';
@@ -48,6 +58,7 @@ class AppProvider with ChangeNotifier {
   bool get isDriveSupported => _isDriveSupported;
   bool get isDriveSignedInSync => _isDriveSignedInSync;
   bool get autoCreateCustomerOnSync => _autoCreateCustomerOnSync;
+  CustomerSortType get currentSortType => _currentSortType;
 
   // Temporary invoice getters
   String get tempCustomerName => _tempCustomerName;
@@ -86,8 +97,65 @@ class AppProvider with ChangeNotifier {
   Future<void> _loadCustomers() async {
     // استخدم قائمة سجل الديون: تظهر من لديهم دين أو لديهم معاملات
     _customers = await _db.getCustomersForDebtRegister();
+    await _applySorting();
+    _applySearchFilter();
+  }
+
+  // تطبيق الترتيب على قائمة العملاء
+  Future<void> _applySorting() async {
+    switch (_currentSortType) {
+      case CustomerSortType.alphabetical:
+        _customers.sort((a, b) => a.name.compareTo(b.name));
+        break;
+      case CustomerSortType.lastDebtAdded:
+        // ترتيب حسب آخر إضافة دين
+        final sortedIds = await _db.getCustomerIdsSortedByLastDebtAdded();
+        _sortCustomersByIds(sortedIds);
+        break;
+      case CustomerSortType.lastPayment:
+        // ترتيب حسب آخر تسديد
+        final sortedIds = await _db.getCustomerIdsSortedByLastPayment();
+        _sortCustomersByIds(sortedIds);
+        break;
+      case CustomerSortType.lastTransaction:
+        // ترتيب حسب آخر معاملة (أي نوع)
+        final sortedIds = await _db.getCustomerIdsSortedByLastTransaction();
+        _sortCustomersByIds(sortedIds);
+        break;
+      case CustomerSortType.highestDebt:
+        // ترتيب حسب أكبر مبلغ دين
+        _customers.sort((a, b) => (b.currentTotalDebt ?? 0).compareTo(a.currentTotalDebt ?? 0));
+        break;
+    }
+  }
+
+  // ترتيب العملاء حسب قائمة IDs
+  void _sortCustomersByIds(List<int> sortedIds) {
+    final idToIndex = <int, int>{};
+    for (int i = 0; i < sortedIds.length; i++) {
+      idToIndex[sortedIds[i]] = i;
+    }
+    _customers.sort((a, b) {
+      final indexA = idToIndex[a.id] ?? 999999;
+      final indexB = idToIndex[b.id] ?? 999999;
+      return indexA.compareTo(indexB);
+    });
+  }
+
+  // تغيير نوع الترتيب
+  Future<void> setSortType(CustomerSortType sortType) async {
+    _currentSortType = sortType;
+    await _applySorting();
+    _applySearchFilter();
+    notifyListeners();
+  }
+
+  // إعادة تعيين الترتيب للافتراضي (أبجدي)
+  void resetSortType() {
+    _currentSortType = CustomerSortType.alphabetical;
     _customers.sort((a, b) => a.name.compareTo(b.name));
     _applySearchFilter();
+    notifyListeners();
   }
 
   Future<void> addCustomer(Customer customer) async {

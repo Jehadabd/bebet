@@ -31,12 +31,6 @@ class AIChatService {
         _huggingFaceService = huggingFaceService,
         _sambaNovaService = sambaNovaService,
         _openRouterService = openRouterService {
-    print('🤖 AI Chat Service: تم التهيئة');
-    print('   - OpenRouter (Qwen/Llama): ${_openRouterService != null ? "متاح ✅ (الأولوية الأولى!)" : "غير متاح ❌"}');
-    print('   - SambaNova (Llama 405B): ${_sambaNovaService != null ? "متاح ✅" : "غير متاح ❌"}');
-    print('   - Gemini: ${_geminiService != null ? "متاح ✅" : "غير متاح ❌"}');
-    print('   - Groq: ${_groqService != null ? "متاح ✅" : "غير متاح ❌"}');
-    print('   - Qwen (HuggingFace): ${_huggingFaceService != null ? "متاح ✅" : "غير متاح ❌"}');
   }
 
   /// الاقتراحات السريعة الافتراضية
@@ -58,11 +52,8 @@ class AIChatService {
 
   /// معالجة رسالة المستخدم
   Future<ChatResponse> processMessage(String userMessage, {List<String>? conversationHistory}) async {
-    print('🤖 AI Chat: بدء معالجة الرسالة: "$userMessage"');
-    
     try {
       // تحليل نية المستخدم
-      print('🔍 AI Chat: تحليل نية المستخدم...');
       final intent = await _analyzeIntent(userMessage);
     
       
@@ -111,10 +102,6 @@ class AIChatService {
           );
       }
     } catch (e, stackTrace) {
-      print('❌ AI Chat ERROR: خطأ في معالجة الرسالة');
-      print('❌ الخطأ: $e');
-      print('❌ Stack Trace: $stackTrace');
-      
       return ChatResponse(
         text: "حدث خطأ أثناء معالجة طلبك: ${e.toString()}",
         followups: ["إعادة المحاولة", "العودة للقائمة الرئيسية"],
@@ -226,17 +213,12 @@ class AIChatService {
   /// تدقيق شامل لجميع أرصدة الديون بذكاء عالي
   /// يستخدم نفس المنطق الذي يستخدمه كشف الحساب لضمان الدقة 100%
   Future<ChatResponse> _auditAllDebts() async {
-    print('📊 AI Chat: بدء تدقيق أرصدة الديون بذكاء عالي (نفس منطق كشف الحساب)...');
-    
     try {
       final db = await _dbService.database;
       final errors = <Map<String, dynamic>>[];
       
       // جلب جميع العملاء
-      print('📊 AI Chat: جلب بيانات العملاء...');
       final customers = await db.query('customers');
-      print('📊 AI Chat: تم جلب ${customers.length} عميل');
-    
       for (var customer in customers) {
         final customerId = customer['id'] as int;
         final customerName = customer['name'] as String;
@@ -253,9 +235,6 @@ class AIChatService {
           whereArgs: [customerId],
           orderBy: 'transaction_date ASC, created_at ASC', // نفس الترتيب في كشف الحساب
         );
-        
-        print('📊 AI Chat: فحص العميل "$customerName" - ${transactions.length} معاملة');
-        
         // حساب الرصيد من البداية (صفر) - نفس طريقة كشف الحساب
         double calculatedBalance = 0.0;
         
@@ -291,15 +270,10 @@ class AIChatService {
             );
           }
         }
-        
-        print('📊 AI Chat: الرصيد المعروض: $displayedBalance، الرصيد المحسوب (من المعاملات): $calculatedBalance');
-        
         // مقارنة الرصيد المعروض مع المحسوب
         final diff = (displayedBalance - calculatedBalance).abs();
         
         if (diff > 0.01) { // هامش خطأ صغير للتعامل مع الأرقام العشرية
-          print('⚠️ AI Chat: خطأ في رصيد "$customerName" - معروض: $displayedBalance، محسوب: $calculatedBalance');
-          
           errors.add({
             'customer': customerName,
             'displayedBalance': displayedBalance,
@@ -316,7 +290,6 @@ class AIChatService {
       }
       
       if (errors.isEmpty) {
-        print('✅ AI Chat: تدقيق الديون مكتمل - لا توجد أخطاء');
         return ChatResponse(
           text: "✅ تم تدقيق ${customers.length} عميل\n\n"
                 "جميع الأرصدة صحيحة ومتطابقة مع المعاملات!",
@@ -324,8 +297,6 @@ class AIChatService {
           status: 'success',
         );
       } else {
-        print('⚠️ AI Chat: تدقيق الديون مكتمل - وجدت ${errors.length} خطأ');
-        
         // بناء تقرير تفصيلي للأخطاء
         final report = StringBuffer();
         report.writeln('⚠️ وجدت ${errors.length} خطأ في الأرصدة:\n');
@@ -384,25 +355,18 @@ class AIChatService {
         );
       }
     } catch (e, stackTrace) {
-      print('❌ AI Chat ERROR في _auditAllDebts: $e');
-      print('❌ Stack Trace: $stackTrace');
       rethrow;
     }
   }
 
   /// تدقيق شامل لجميع الفواتير
   Future<ChatResponse> _auditAllInvoices() async {
-    print('📄 AI Chat: بدء تدقيق الفواتير...');
-    
     try {
       final db = await _dbService.database;
       final errors = <String>[];
       
       // جلب جميع الفواتير
-      print('📄 AI Chat: جلب بيانات الفواتير...');
       final invoices = await db.query('invoices');
-      print('📄 AI Chat: تم جلب ${invoices.length} فاتورة');
-    
       for (var invoice in invoices) {
         final invoiceId = invoice['id'] as int;
         final displayedTotal = (invoice['total_amount'] as num?)?.toDouble() ?? 0.0;
@@ -413,9 +377,6 @@ class AIChatService {
           where: 'invoice_id = ?',
           whereArgs: [invoiceId],
         );
-        
-        print('📄 AI Chat: فحص الفاتورة #$invoiceId - ${items.length} عنصر');
-        
         // حساب المجموع الفعلي من item_total
         double calculatedTotal = 0.0;
         for (var item in items) {
@@ -433,29 +394,36 @@ class AIChatService {
         
         // مقارنة المجموع (مع هامش خطأ صغير للأرقام العشرية)
         if ((displayedTotal - correctTotal).abs() > 0.01) {
-          print('⚠️ AI Chat: خطأ في الفاتورة #$invoiceId - معروض: $displayedTotal، محسوب: $correctTotal');
+          final difference = displayedTotal - correctTotal;
+          
+          // تحديد السبب المحتمل
+          String possibleReason = "";
+          if (difference > 0 && items.isEmpty) {
+            possibleReason = "💡 السبب المحتمل: تم حذف جميع بنود الفاتورة دون تحديث المجموع";
+          } else if (difference > 0) {
+            possibleReason = "💡 السبب المحتمل: تم حذف بعض البنود من الفاتورة دون تحديث المجموع";
+          } else if (difference < 0) {
+            possibleReason = "💡 السبب المحتمل: تم إضافة بنود للفاتورة دون تحديث المجموع";
+          }
           
           String errorMsg = "❌ خطأ في الفاتورة رقم: $invoiceId\n"
               "   المجموع المعروض: ${displayedTotal.toStringAsFixed(0)} دينار\n"
-              "   مجموع البنود: ${calculatedTotal.toStringAsFixed(0)} دينار\n";
-          
-          if (discount > 0) {
-            errorMsg += "   الخصم: ${discount.toStringAsFixed(0)} دينار\n";
-          }
-          
-          if (loadingFee > 0) {
-            errorMsg += "   أجور التحميل: ${loadingFee.toStringAsFixed(0)} دينار\n";
-          }
-          
-          errorMsg += "   المجموع الصحيح: ${correctTotal.toStringAsFixed(0)} دينار\n"
-              "   عدد العناصر: ${items.length}";
+              "   ━━━━━━━━━━━━━━━━━━━━━━━━\n"
+              "   📋 تفاصيل الحساب:\n"
+              "   • مجموع البنود: ${calculatedTotal.toStringAsFixed(0)} دينار\n"
+              "   • الخصم: ${discount.toStringAsFixed(0)} دينار\n"
+              "   • أجور التحميل: ${loadingFee.toStringAsFixed(0)} دينار\n"
+              "   • عدد العناصر: ${items.length}\n"
+              "   ━━━━━━━━━━━━━━━━━━━━━━━━\n"
+              "   المجموع الصحيح: ${correctTotal.toStringAsFixed(0)} دينار\n"
+              "   الفرق: ${difference.abs().toStringAsFixed(0)} دينار ${difference > 0 ? '(زيادة)' : '(نقصان)'} ⚠️\n\n"
+              "   $possibleReason";
           
           errors.add(errorMsg);
         }
       }
       
       if (errors.isEmpty) {
-        print('✅ AI Chat: تدقيق الفواتير مكتمل - لا توجد أخطاء');
         return ChatResponse(
           text: "✅ تم تدقيق ${invoices.length} فاتورة\n\n"
                 "جميع مجاميع الفواتير صحيحة!",
@@ -463,7 +431,6 @@ class AIChatService {
           status: 'success',
         );
       } else {
-        print('⚠️ AI Chat: تدقيق الفواتير مكتمل - وجدت ${errors.length} خطأ');
         return ChatResponse(
           text: "⚠️ وجدت ${errors.length} خطأ في الفواتير:\n\n${errors.join('\n\n')}",
           followups: ["تصحيح الأخطاء", "عرض الفواتير المتأثرة"],
@@ -472,20 +439,14 @@ class AIChatService {
         );
       }
     } catch (e, stackTrace) {
-      print('❌ AI Chat ERROR في _auditAllInvoices: $e');
-      print('❌ Stack Trace: $stackTrace');
       rethrow;
     }
   }
 
   /// تدقيق النظام الهرمي للوحدات (قطعة - باكية - سيات - كرتون)
   Future<ChatResponse> _auditInventoryHierarchy() async {
-    print('📦 AI Chat: بدء تدقيق المخزون والوحدات...');
-    
     // ملاحظة: جدول inventory غير موجود في قاعدة البيانات الحالية
     // سيتم تفعيل هذه الميزة عند إضافة الجدول
-    print('⚠️ AI Chat: ميزة تدقيق المخزون معطلة مؤقتًا (جدول inventory غير موجود)');
-    
     return ChatResponse(
       text: "⚠️ ميزة تدقيق المخزون غير متاحة حاليًا\n\n"
             "جدول المخزون (inventory) غير موجود في قاعدة البيانات.\n"
@@ -500,16 +461,10 @@ class AIChatService {
       final errors = <String>[];
       
       // جلب جميع المنتجات
-      print('📦 AI Chat: جلب بيانات المنتجات...');
       final products = await db.query('products');
-      print('📦 AI Chat: تم جلب ${products.length} منتج');
-    
       for (var product in products) {
         final productId = product['id'] as int;
         final productName = product['name'] ?? 'غير معروف';
-        
-        print('📦 AI Chat: فحص المنتج "$productName"');
-        
         // التحقق من الوحدات الهرمية
         final piecePerPacket = (product['piece_per_packet'] as int?) ?? 1;
         final packetPerCarton = (product['packet_per_carton'] as int?) ?? 1;
@@ -517,7 +472,6 @@ class AIChatService {
         
         // التحقق من القيم المنطقية
         if (piecePerPacket <= 0 || packetPerCarton <= 0 || cartonPerSiat <= 0) {
-          print('⚠️ AI Chat: خطأ في وحدات "$productName" - قطعة/باكية: $piecePerPacket، باكية/كرتون: $packetPerCarton، كرتون/سيات: $cartonPerSiat');
           errors.add(
             "❌ خطأ في وحدات المنتج: $productName\n"
             "   قطعة/باكية: $piecePerPacket\n"
@@ -550,7 +504,6 @@ class AIChatService {
             pieces;
           
           if (totalPieces != calculatedPieces) {
-            print('⚠️ AI Chat: خطأ في مخزون "$productName" - معروض: $totalPieces، محسوب: $calculatedPieces');
             errors.add(
               "❌ خطأ في حساب المخزون: $productName\n"
               "   القطع المعروضة: $totalPieces\n"
@@ -562,7 +515,6 @@ class AIChatService {
       }
       
       if (errors.isEmpty) {
-        print('✅ AI Chat: تدقيق المخزون مكتمل - لا توجد أخطاء');
         return ChatResponse(
           text: "✅ تم تدقيق ${products.length} منتج\n\n"
                 "جميع الوحدات الهرمية والمخزون صحيحة!",
@@ -570,7 +522,6 @@ class AIChatService {
           status: 'success',
         );
       } else {
-        print('⚠️ AI Chat: تدقيق المخزون مكتمل - وجدت ${errors.length} خطأ');
         return ChatResponse(
           text: "⚠️ وجدت ${errors.length} خطأ في المخزون:\n\n${errors.join('\n\n')}",
           followups: ["تصحيح الأخطاء", "إعادة حساب المخزون"],
@@ -579,8 +530,6 @@ class AIChatService {
         );
       }
     } catch (e, stackTrace) {
-      print('❌ AI Chat ERROR في _auditInventoryHierarchy: $e');
-      print('❌ Stack Trace: $stackTrace');
       rethrow;
     }
     */
@@ -588,8 +537,6 @@ class AIChatService {
 
   /// ملخص المبيعات المفصل
   Future<ChatResponse> _getSalesSummary(Map<String, dynamic> params) async {
-    print('📊 AI Chat: بدء إنشاء ملخص المبيعات...');
-    
     try {
       final db = await _dbService.database;
       
@@ -597,18 +544,12 @@ class AIChatService {
       final now = DateTime.now();
       final startDate = params['start_date'] ?? DateTime(now.year, now.month, 1);
       final endDate = params['end_date'] ?? now;
-      
-      print('📊 AI Chat: الفترة من ${_formatDate(startDate)} إلى ${_formatDate(endDate)}');
-      
       // جلب الفواتير في الفترة
       final invoices = await db.query(
         'invoices',
         where: 'invoice_date BETWEEN ? AND ?',
         whereArgs: [startDate.toIso8601String(), endDate.toIso8601String()],
       );
-      
-      print('📊 AI Chat: تم جلب ${invoices.length} فاتورة');
-      
       double totalSales = 0.0;
       double totalCost = 0.0;
       double totalProfit = 0.0;
@@ -661,9 +602,6 @@ class AIChatService {
       
       // نسبة الربح
       final profitMargin = totalSales > 0 ? (totalProfit / totalSales) * 100 : 0.0;
-      
-      print('✅ AI Chat: المبيعات: $totalSales، التكلفة: $totalCost، الأرباح: $totalProfit');
-      
       return ChatResponse(
         text: "📊 ملخص المبيعات\n\n"
               "الفترة: ${_formatDate(startDate)} - ${_formatDate(endDate)}\n"
@@ -684,9 +622,6 @@ class AIChatService {
       );
       
     } catch (e, stackTrace) {
-      print('❌ AI Chat ERROR في _getSalesSummary: $e');
-      print('❌ Stack Trace: $stackTrace');
-      
       return ChatResponse(
         text: '❌ حدث خطأ أثناء إنشاء ملخص المبيعات:\n\n$e',
         followups: ["المحاولة مرة أخرى", "تقرير الأرباح"],
@@ -697,8 +632,6 @@ class AIChatService {
 
   /// كشف الأخطاء المحاسبية بتفاصيل كاملة
   Future<ChatResponse> _detectAccountingAnomalies() async {
-    print('🔍 AI Chat: بدء كشف الأخطاء المحاسبية الشامل...');
-    
     final report = StringBuffer();
     report.writeln('🔍 فحص شامل للنظام\n');
     report.writeln('━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
@@ -707,7 +640,6 @@ class AIChatService {
     final List<String> followups = [];
     
     // 1. تدقيق الديون
-    print('📊 AI Chat: فحص أرصدة الديون...');
     final debtResult = await _auditAllDebts();
     if (debtResult.status == 'warning') {
       hasErrors = true;
@@ -720,7 +652,6 @@ class AIChatService {
     }
     
     // 2. تدقيق الفواتير
-    print('📄 AI Chat: فحص مجاميع الفواتير...');
     final invoiceResult = await _auditAllInvoices();
     if (invoiceResult.status == 'warning') {
       hasErrors = true;
@@ -733,7 +664,6 @@ class AIChatService {
     }
     
     // 3. تدقيق المخزون
-    print('📦 AI Chat: فحص حسابات المخزون...');
     final inventoryResult = await _auditInventoryHierarchy();
     if (inventoryResult.status == 'warning') {
       hasErrors = true;
@@ -748,7 +678,6 @@ class AIChatService {
     report.writeln('━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     
     if (!hasErrors) {
-      print('✅ AI Chat: لم يتم العثور على أي أخطاء');
       return ChatResponse(
         text: "✅ فحص شامل للنظام\n\n"
               "لم يتم العثور على أي أخطاء محاسبية!\n"
@@ -757,7 +686,6 @@ class AIChatService {
         status: 'success',
       );
     } else {
-      print('⚠️ AI Chat: تم العثور على أخطاء');
       return ChatResponse(
         text: report.toString(),
         followups: followups.isNotEmpty ? followups : ["تصحيح جميع الأخطاء"],
@@ -833,15 +761,11 @@ class AIChatService {
 
   /// تقرير الأرباح المفصل
   Future<ChatResponse> _generateProfitReport(Map<String, dynamic> params) async {
-    print('📊 AI Chat: بدء إنشاء تقرير الأرباح...');
-    
     try {
       final db = await _dbService.database;
       
       // جلب جميع الفواتير
       final invoices = await db.query('invoices');
-      print('📊 AI Chat: تم جلب ${invoices.length} فاتورة');
-      
       double totalSales = 0.0;
       double totalProfit = 0.0;
       int invoiceCount = 0;
@@ -893,9 +817,6 @@ class AIChatService {
       
       // حساب نسبة الربح
       final profitMargin = totalSales > 0 ? (totalProfit / totalSales) * 100 : 0.0;
-      
-      print('✅ AI Chat: تم حساب الأرباح - المبيعات: $totalSales، الأرباح: $totalProfit');
-      
       final report = StringBuffer();
       report.writeln('📊 تقرير الأرباح\n');
       report.writeln('━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
@@ -926,9 +847,6 @@ class AIChatService {
       );
       
     } catch (e, stackTrace) {
-      print('❌ AI Chat ERROR في _generateProfitReport: $e');
-      print('❌ Stack Trace: $stackTrace');
-      
       return ChatResponse(
         text: '❌ حدث خطأ أثناء إنشاء تقرير الأرباح:\n\n$e',
         followups: ["المحاولة مرة أخرى", "ملخص المبيعات"],
@@ -959,8 +877,6 @@ class AIChatService {
 
   /// تصحيح تلقائي لأخطاء الديون بذكاء عالي
   Future<ChatResponse> autoFixDebtErrors() async {
-    print('🔧 AI Chat: بدء تصحيح أخطاء الديون تلقائياً...');
-    
     try {
       final db = await _dbService.database;
       int fixedCount = 0;
@@ -970,8 +886,6 @@ class AIChatService {
       
       // جلب جميع العملاء
       final customers = await db.query('customers');
-      print('🔧 AI Chat: فحص ${customers.length} عميل...');
-      
       for (var customer in customers) {
         final customerId = customer['id'] as int;
         final customerName = customer['name'] as String;
@@ -996,8 +910,6 @@ class AIChatService {
           final diff = (displayedBalance - correctBalance).abs();
           
           if (diff > 0.01) {
-            print('🔧 AI Chat: تصحيح رصيد "$customerName" من $displayedBalance إلى $correctBalance');
-            
             // تحديث الرصيد باستخدام دالة database_service
             await _dbService.recalculateAndApplyCustomerDebt(customerId);
             
@@ -1007,14 +919,10 @@ class AIChatService {
             );
           }
         } catch (e) {
-          print('❌ AI Chat: فشل تصحيح رصيد "$customerName": $e');
           errorCount++;
           failedCustomers.add('$customerName: $e');
         }
       }
-      
-      print('✅ AI Chat: اكتمل التصحيح - تم تصحيح $fixedCount عميل، فشل $errorCount');
-      
       // بناء التقرير
       final report = StringBuffer();
       
@@ -1049,9 +957,6 @@ class AIChatService {
       );
       
     } catch (e, stackTrace) {
-      print('❌ AI Chat ERROR في autoFixDebtErrors: $e');
-      print('❌ Stack Trace: $stackTrace');
-      
       return ChatResponse(
         text: '❌ حدث خطأ أثناء التصحيح التلقائي:\n\n$e',
         followups: ["المحاولة مرة أخرى", "تدقيق الديون"],
@@ -1062,8 +967,6 @@ class AIChatService {
 
   /// تصحيح مجاميع الفواتير (إعادة حساب من البنود + أجور التحميل - الخصم)
   Future<ChatResponse> _fixInvoiceTotals() async {
-    print('🔧 AI Chat: بدء تصحيح مجاميع الفواتير...');
-    
     try {
       final result = await _dbService.recalculateAllInvoiceTotals();
       
@@ -1402,8 +1305,6 @@ class AIChatService {
   /// تحليل دقة حساب الأرباح مع الذكاء الاصطناعي (Qwen)
   /// يرسل بيانات تفصيلية عن المنتجات والأسعار للذكاء الاصطناعي
   Future<ChatResponse> analyzeProfitAccuracyWithAI() async {
-    print('🤖 AI Chat: تحليل دقة الأرباح مع Qwen...');
-    
     if (_huggingFaceService == null) {
       return await analyzeProfitAccuracy(); // استخدام التحليل العادي
     }
@@ -1482,7 +1383,6 @@ class AIChatService {
         status: 'success',
       );
     } catch (e) {
-      print('⚠️ فشل التحليل بالذكاء الاصطناعي، استخدام التحليل المحلي...');
       return await analyzeProfitAccuracy();
     }
   }
@@ -1490,12 +1390,8 @@ class AIChatService {
   /// تحليل دقة حساب الأرباح واكتشاف الأخطاء (Clash Detection)
   /// يستخدم نفس المنطق الدقيق من getMonthlySalesSummary و getProductSalesData
   Future<ChatResponse> analyzeProfitAccuracy() async {
-    print('🔍 AI Chat: بدء تحليل دقة الأرباح بمنطق الجرد الشهري...');
-    
     try {
-      print('📊 AI Chat: جلب قاعدة البيانات...');
       final db = await _dbService.database;
-      print('✅ AI Chat: تم جلب قاعدة البيانات');
       final report = StringBuffer();
       final List<String> warnings = [];
       final List<String> errors = [];
@@ -1698,9 +1594,6 @@ class AIChatService {
         status: errors.isNotEmpty ? 'error' : (warnings.isNotEmpty ? 'warning' : 'success'),
       );
     } catch (e, stackTrace) {
-      print('❌ AI Chat ERROR في analyzeProfitAccuracy: $e');
-      print('❌ Stack Trace: $stackTrace');
-      
       return ChatResponse(
         text: 'حدث خطأ أثناء تحليل دقة الأرباح: $e',
         followups: ['إعادة المحاولة'],
@@ -1713,8 +1606,6 @@ class AIChatService {
   /// تقرير اليوم - حساب دقيق للأرباح والمبيعات
   /// 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط (مصاريف كهرباء/تشغيل)
   Future<Map<String, dynamic>> getDailyReport() async {
-    print('📊 AI Chat: بدء إنشاء تقرير اليوم...');
-    
     try {
       final db = await _dbService.database;
       final today = DateTime.now();
@@ -1856,9 +1747,6 @@ class AIChatService {
       // صافي الربح = (المبيعات - الراجع) - التكلفة
       final netSaleAmount = totalSales - totalReturns;
       final netProfit = netSaleAmount - totalCost;
-      
-      print('✅ AI Chat: تقرير اليوم - مبيعات: $totalSales، تكلفة: $totalCost، ربح: $netProfit');
-      
       return {
         'totalSales': totalSales,
         'totalCost': totalCost,
@@ -1873,16 +1761,12 @@ class AIChatService {
         'manualPaymentCount': manualPaymentTransactions.length,
       };
     } catch (e, stackTrace) {
-      print('❌ AI Chat ERROR في getDailyReport: $e');
-      print('❌ Stack Trace: $stackTrace');
       rethrow;
     }
   }
 
   /// تقرير الأسبوع - حساب دقيق للأرباح والمبيعات
   Future<Map<String, dynamic>> getWeeklyReport() async {
-    print('📊 AI Chat: بدء إنشاء تقرير الأسبوع...');
-    
     try {
       final db = await _dbService.database;
       final today = DateTime.now();
@@ -2025,9 +1909,6 @@ class AIChatService {
       // صافي الربح = (المبيعات - الراجع) - التكلفة
       final netSaleAmount = totalSales - totalReturns;
       final netProfit = netSaleAmount - totalCost;
-      
-      print('✅ AI Chat: تقرير الأسبوع - مبيعات: $totalSales، تكلفة: $totalCost، ربح: $netProfit');
-      
       return {
         'totalSales': totalSales,
         'totalCost': totalCost,
@@ -2042,8 +1923,6 @@ class AIChatService {
         'manualPaymentCount': manualPaymentTransactions.length,
       };
     } catch (e, stackTrace) {
-      print('❌ AI Chat ERROR في getWeeklyReport: $e');
-      print('❌ Stack Trace: $stackTrace');
       rethrow;
     }
   }
@@ -2058,8 +1937,6 @@ class AIChatService {
   /// 2. التحقق من مجموع الفاتورة
   /// 3. إرسال الأخطاء للذكاء الاصطناعي للتحليل العميق
   Future<ChatResponse> _auditInvoicesWithAI() async {
-    print('🤖 AI Chat: بدء التدقيق الذكي للفواتير...');
-    
     try {
       final db = await _dbService.database;
       final List<Map<String, dynamic>> invoiceErrors = [];
@@ -2067,8 +1944,6 @@ class AIChatService {
       
       // جلب جميع الفواتير
       final invoices = await db.query('invoices');
-      print('🤖 AI Chat: فحص ${invoices.length} فاتورة بدقة عالية...');
-      
       for (var invoice in invoices) {
         final invoiceId = invoice['id'] as int;
         final displayedTotal = (invoice['total_amount'] as num?)?.toDouble() ?? 0.0;
@@ -2156,8 +2031,6 @@ class AIChatService {
       }
       
       // 4️⃣ إرسال الأخطاء للذكاء الاصطناعي للتحليل
-      print('🤖 AI Chat: إرسال ${itemErrors.length + invoiceErrors.length} خطأ للتحليل الذكي...');
-      
       final analysisData = {
         'total_invoices': invoices.length,
         'item_errors': itemErrors,
@@ -2174,8 +2047,6 @@ class AIChatService {
       );
       
     } catch (e, stackTrace) {
-      print('❌ AI Chat ERROR في _auditInvoicesWithAI: $e');
-      print('❌ Stack Trace: $stackTrace');
       return ChatResponse(
         text: '❌ حدث خطأ أثناء التدقيق الذكي:\n\n$e',
         followups: ["إعادة المحاولة", "التدقيق العادي"],
@@ -2189,7 +2060,6 @@ class AIChatService {
     try {
       // 🌐 محاولة استخدام OpenRouter أولاً (الأولوية الأولى!)
       if (_openRouterService != null) {
-        print('🌐 استخدام OpenRouter (Qwen/Llama) للتحليل المحاسبي...');
         try {
           final analysis = await _openRouterService!.analyzeInvoiceErrors(
             errorsData: errorsData,
@@ -2197,13 +2067,11 @@ class AIChatService {
           
           return '🌐 تحليل ذكي من OpenRouter (Qwen 2.5 Coder 32B)\n\n$analysis';
         } catch (e) {
-          print('⚠️ فشل OpenRouter، محاولة SambaNova...');
         }
       }
       
       // 🚀 محاولة استخدام SambaNova (الأقوى!)
       if (_sambaNovaService != null) {
-        print('🚀 استخدام SambaNova (Llama 405B) للتحليل المحاسبي...');
         try {
           final analysis = await _sambaNovaService!.analyzeInvoiceErrors(
             errorsData: errorsData,
@@ -2211,7 +2079,6 @@ class AIChatService {
           
           return '🚀 تحليل ذكي من SambaNova (Llama 3.1 405B)\n\n$analysis';
         } catch (e) {
-          print('⚠️ فشل SambaNova، محاولة Qwen...');
         }
       }
       
@@ -2219,7 +2086,6 @@ class AIChatService {
       
       // محاولة استخدام Qwen (الأقوى في المحاسبة)
       if (_huggingFaceService != null) {
-        print('🤖 استخدام Qwen للتحليل المحاسبي...');
         try {
           final analysis = await _huggingFaceService!.analyzeDatabaseData(
             systemContext: '''أنت محاسب خبير ومدقق مالي محترف.
@@ -2237,13 +2103,11 @@ class AIChatService {
           
           return '🤖 تحليل ذكي من المحاسب الآلي (Qwen)\n\n$analysis';
         } catch (e) {
-          print('⚠️ فشل Qwen، محاولة Gemini...');
         }
       }
       
       // محاولة Gemini كبديل
       if (_geminiService != null) {
-        print('🤖 استخدام Gemini للتحليل...');
         try {
           final prompt = '''أنت محاسب خبير ومدقق مالي محترف.
 
@@ -2264,7 +2128,6 @@ $dataJson
           
           return '🤖 تحليل ذكي من Gemini\n\n$analysis';
         } catch (e) {
-          print('⚠️ فشل Gemini: $e');
         }
       }
       
@@ -2272,7 +2135,6 @@ $dataJson
       return _generateLocalErrorReport(errorsData);
       
     } catch (e) {
-      print('❌ فشل التحليل الذكي: $e');
       return _generateLocalErrorReport(errorsData);
     }
   }
@@ -2324,8 +2186,6 @@ $dataJson
 
   /// البحث عن عميل محدد وعرض كل بياناته مع تحليل ذكي بالذكاء الاصطناعي
   Future<ChatResponse> searchCustomerComplete(String customerName) async {
-    print('🔍 AI Chat: البحث عن العميل "$customerName"...');
-    
     try {
       final db = await _dbService.database;
       
@@ -2465,8 +2325,6 @@ $dataJson
       );
       
     } catch (e, stackTrace) {
-      print('❌ AI Chat ERROR في searchCustomerComplete: $e');
-      print('❌ Stack Trace: $stackTrace');
       return ChatResponse(
         text: '❌ حدث خطأ أثناء البحث:\n\n$e',
         followups: ["إعادة المحاولة"],
@@ -2520,7 +2378,6 @@ $dbContext
       );
       
     } catch (e) {
-      print('❌ Error in _handleGeneralQuery: $e');
       return ChatResponse(
         text: "حدث خطأ أثناء معالجة طلبك: $e",
         status: 'error',

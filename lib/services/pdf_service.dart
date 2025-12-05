@@ -551,6 +551,10 @@ class PdfService {
     // ترتيب العملاء أبجدياً
     final sortedCustomers = List<Customer>.from(customers);
     sortedCustomers.sort((a, b) => a.name.compareTo(b.name));
+    
+    // فلترة العملاء: فقط من لديهم رصيد أو معاملات
+    final customersWithActivity = sortedCustomers.where((c) => (c.currentTotalDebt ?? 0) != 0).toList();
+    final totalDebt = customersWithActivity.fold(0.0, (sum, c) => sum + (c.currentTotalDebt ?? 0));
 
     // صفحة الغلاف
     pdf.addPage(
@@ -576,8 +580,8 @@ class PdfService {
                 ),
                 pw.SizedBox(height: 10),
                 pw.Text(
-                  'عدد العملاء: ${sortedCustomers.length}',
-                  style: pw.TextStyle(font: ttf, fontSize: 16, color: PdfColors.grey700),
+                  'عدد العملاء (لديهم رصيد أو معاملات): يتم حسابه...',
+                  style: pw.TextStyle(font: ttf, fontSize: 14, color: PdfColors.grey700),
                 ),
                 pw.SizedBox(height: 40),
                 pw.Container(
@@ -587,7 +591,7 @@ class PdfService {
                     borderRadius: pw.BorderRadius.circular(8),
                   ),
                   child: pw.Text(
-                    'إجمالي الديون: ${formatNumber(sortedCustomers.fold(0.0, (sum, c) => sum + (c.currentTotalDebt ?? 0)))} دينار',
+                    'إجمالي الديون: ${formatNumber(totalDebt)} دينار',
                     style: pw.TextStyle(font: ttf, fontSize: 18, fontWeight: pw.FontWeight.bold, color: PdfColors.red700),
                   ),
                 ),
@@ -598,8 +602,9 @@ class PdfService {
       ),
     );
 
-    // إنشاء كشف حساب لكل عميل
+    // إنشاء كشف حساب لكل عميل (فقط للعملاء الذين لديهم معاملات أو رصيد)
     int customerIndex = 0;
+    int includedCustomers = 0;
     for (final customer in sortedCustomers) {
       customerIndex++;
 
@@ -607,6 +612,15 @@ class PdfService {
 
       // جلب معاملات العميل
       final transactions = await getCustomerTransactions(customer.id!);
+      
+      // تخطي العملاء الذين رصيدهم صفر وليس لديهم معاملات
+      final hasBalance = (customer.currentTotalDebt ?? 0) != 0;
+      final hasTransactions = transactions.isNotEmpty;
+      if (!hasBalance && !hasTransactions) {
+        continue; // تخطي هذا العميل
+      }
+      
+      includedCustomers++;
 
       // دالة بناء رأس الصفحة للعميل
       pw.Widget buildCustomerHeader() {

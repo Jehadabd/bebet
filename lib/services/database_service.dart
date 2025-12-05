@@ -27,8 +27,8 @@ class DatabaseService {
   static Database? _database;
   static const int _databaseVersion = 34;
   // تحكم بالطباعات التشخيصية من مصدر واحد
-  // تم تفعيله للتحقق من سلامة قاعدة البيانات عند البدء
-  static const bool _verboseLogs = true;
+  // معطل في الإصدار النهائي لتجنب الطباعات المزعجة
+  static const bool _verboseLogs = false;
 
   factory DatabaseService() => _instance;
 
@@ -57,12 +57,11 @@ class DatabaseService {
         final sourceFile = File(sourcePath);
         if (await sourceFile.exists()) {
           await sourceFile.copy(backupPath);
-          print('تم إنشاء نسخة احتياطية: $backupPath');
         } else {
-          print('تحذير: ملف قاعدة البيانات غير موجود للنسخ الاحتياطي: $sourcePath');
+          // ملف قاعدة البيانات غير موجود
         }
       } catch (e) {
-        print('تحذير أثناء إنشاء النسخة الاحتياطية: $e');
+        // تجاهل خطأ النسخ الاحتياطي
       }
 
       // التحقق من سلامة قاعدة البيانات
@@ -70,23 +69,17 @@ class DatabaseService {
       final isIntact = integrityCheck.first.values.first == 'ok';
       
       if (!isIntact) {
-        print('تم اكتشاف مشاكل في سلامة قاعدة البيانات');
-        
         // محاولة إصلاح قاعدة البيانات
         await db.execute('VACUUM;');
-        print('تم تنفيذ عملية VACUUM');
         
         // إعادة بناء جداول FTS
         await rebuildFTSIndex();
-        print('تم إعادة بناء فهرس FTS');
         
         return false;
       }
       
-      print('قاعدة البيانات سليمة');
       return true;
     } catch (e) {
-      print('خطأ أثناء فحص سلامة قاعدة البيانات: $e');
       return false;
     }
   }
@@ -99,7 +92,6 @@ class DatabaseService {
       final currentDbPath = join(dbPath, 'debt_book.db');
       
       if (!File(backupPath).existsSync()) {
-        print('لا توجد نسخة احتياطية متوفرة');
         return false;
       }
       
@@ -111,11 +103,9 @@ class DatabaseService {
       
       // نسخ النسخة الاحتياطية
       File(backupPath).copySync(currentDbPath);
-      print('تم استعادة قاعدة البيانات من النسخة الاحتياطية');
       
       return true;
     } catch (e) {
-      print('خطأ أثناء استعادة النسخة الاحتياطية: $e');
       return false;
     }
   }
@@ -134,7 +124,6 @@ class DatabaseService {
     } else if (e is Exception) {
       errorMessage = 'حدث خطأ غير متوقع: ${e.toString()}';
     }
-    print('Database operation failed: $e'); // للسجل التقني
     return errorMessage;
   }
 
@@ -170,7 +159,6 @@ class DatabaseService {
       
       return 0.0;
     } catch (e) {
-      print('Error calculating cost from hierarchy: $e');
       return 0.0;
     }
   }
@@ -206,12 +194,9 @@ class DatabaseService {
       _database = await _initDatabase();
       
       // التحقق من سلامة قاعدة البيانات عند كل تهيئة
-      final isIntact = await checkAndRepairDatabaseIntegrity();
-      if (!isIntact) {
-        print('تم اكتشاف وإصلاح مشاكل في قاعدة البيانات');
-      }
+      await checkAndRepairDatabaseIntegrity();
     } catch (e) {
-      print('خطأ أثناء تهيئة قاعدة البيانات: $e');
+      // تجاهل الخطأ
       // محاولة استعادة من النسخة الاحتياطية إذا فشلت التهيئة
       final restored = await restoreFromBackup();
       if (restored) {
@@ -233,7 +218,7 @@ class DatabaseService {
         )
       ''');
     } catch (e) {
-      print('DEBUG DB: ensure invoice_logs failed in getter: $e');
+      // تجاهل الخطأ
     }
     
     // التأكد من وجود جدول التدقيق المالي
@@ -250,9 +235,8 @@ class DatabaseService {
           created_at TEXT NOT NULL
         )
       ''');
-      print('DEBUG DB: financial_audit_log table ensured');
     } catch (e) {
-      print('DEBUG DB: ensure financial_audit_log failed: $e');
+      // تجاهل الخطأ
     }
     
     // التأكد من وجود جدول نسخ الفواتير
@@ -278,9 +262,8 @@ class DatabaseService {
           FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE
         )
       ''');
-      print('DEBUG DB: invoice_snapshots table ensured');
     } catch (e) {
-      print('DEBUG DB: ensure invoice_snapshots failed: $e');
+      // تجاهل الخطأ
     }
     // --- تحقق من وجود العمود قبل محاولة إضافته ---
     // معاملات: أعمدة المزامنة
@@ -292,30 +275,27 @@ class DatabaseService {
       if (!hasIsCreatedByMe) {
         try {
           await _database!.execute('ALTER TABLE transactions ADD COLUMN is_created_by_me INTEGER DEFAULT 1;');
-          print('DEBUG: Added is_created_by_me to transactions');
         } catch (e) {
-          print('DEBUG: Failed adding is_created_by_me: $e');
+          // تجاهل الخطأ
         }
       }
       if (!hasIsUploaded) {
         try {
           await _database!.execute('ALTER TABLE transactions ADD COLUMN is_uploaded INTEGER DEFAULT 0;');
-          print('DEBUG: Added is_uploaded to transactions');
         } catch (e) {
-          print('DEBUG: Failed adding is_uploaded: $e');
+          // تجاهل الخطأ
         }
       }
       if (!hasTxnUuid) {
         try {
           await _database!.execute('ALTER TABLE transactions ADD COLUMN transaction_uuid TEXT;');
           await _database!.execute('CREATE UNIQUE INDEX IF NOT EXISTS ux_transactions_uuid ON transactions(transaction_uuid) WHERE transaction_uuid IS NOT NULL;');
-          print('DEBUG: Added transaction_uuid to transactions');
         } catch (e) {
-          print('DEBUG: Failed adding transaction_uuid: $e');
+          // تجاهل الخطأ
         }
       }
     } catch (e) {
-      print('DEBUG DB: Failed to inspect/add transactions sync columns: $e');
+      // تجاهل الخطأ
     }
     final columns = await _database!.rawQuery("PRAGMA table_info(products);");
     final hasUnitHierarchy =
@@ -327,24 +307,18 @@ class DatabaseService {
       try {
         await _database!
             .execute('ALTER TABLE products ADD COLUMN unit_hierarchy TEXT;');
-        print('DEBUG: تم إضافة عمود unit_hierarchy بنجاح!');
       } catch (e) {
-        print('DEBUG: خطأ أثناء إضافة العمود unit_hierarchy: $e');
+        // تجاهل الخطأ
       }
-    } else {
-      print('DEBUG: عمود unit_hierarchy موجود بالفعل، لا حاجة للإضافة.');
     }
 
     if (!hasUnitCosts) {
       try {
         await _database!
             .execute('ALTER TABLE products ADD COLUMN unit_costs TEXT;');
-        print('DEBUG: تم إضافة عمود unit_costs بنجاح!');
       } catch (e) {
-        print('DEBUG: خطأ أثناء إضافة العمود unit_costs: $e');
+        // تجاهل الخطأ
       }
-    } else {
-      print('DEBUG: عمود unit_costs موجود بالفعل، لا حاجة للإضافة.');
     }
 
     // تحقق من أعمدة جدول invoice_items وإضافتها إذا لزم
@@ -362,9 +336,8 @@ class DatabaseService {
         try {
           await _database!
               .execute('ALTER TABLE invoice_items ADD COLUMN product_id INTEGER');
-          print('DEBUG DB: product_id column added successfully to invoice_items table.');
         } catch (e) {
-          print("DEBUG DB Error: Failed to add column 'product_id' to invoice_items table or it already exists: $e");
+          // تجاهل الخطأ
         }
       }
 
@@ -372,43 +345,36 @@ class DatabaseService {
         try {
           await _database!
               .execute('ALTER TABLE invoice_items ADD COLUMN actual_cost_price REAL');
-          print('DEBUG DB: actual_cost_price column added successfully to invoice_items table.');
         } catch (e) {
-          print("DEBUG DB Error: Failed to add column 'actual_cost_price' to invoice_items table or it already exists: $e");
+          // تجاهل الخطأ
         }
       }
       if (!hasSaleType) {
         try {
           await _database!
               .execute('ALTER TABLE invoice_items ADD COLUMN sale_type TEXT');
-          print('DEBUG DB: sale_type column added successfully to invoice_items table.');
         } catch (e) {
-          print("DEBUG DB Error: Failed to add column 'sale_type' to invoice_items table or it already exists: $e");
+          // تجاهل الخطأ
         }
       }
       if (!hasUnitsInLargeUnit) {
         try {
           await _database!.execute(
               'ALTER TABLE invoice_items ADD COLUMN units_in_large_unit REAL');
-          print(
-              'DEBUG DB: units_in_large_unit column added successfully to invoice_items table.');
         } catch (e) {
-          print(
-              "DEBUG DB Error: Failed to add column 'units_in_large_unit' to invoice_items table or it already exists: $e");
+          // تجاهل الخطأ
         }
       }
       if (!hasUniqueId) {
         try {
           await _database!
               .execute('ALTER TABLE invoice_items ADD COLUMN unique_id TEXT');
-          print('DEBUG DB: unique_id column added successfully to invoice_items table.');
         } catch (e) {
-          print(
-              "DEBUG DB Error: Failed to add column 'unique_id' to invoice_items table or it already exists: $e");
+          // تجاهل الخطأ
         }
       }
     } catch (e) {
-      print('DEBUG DB: Failed to inspect/add invoice_items columns: $e');
+      // تجاهل الخطأ
     }
     // تحقق من أعمدة جدول invoice_adjustments وإضافتها إذا لزم (لتوافق القواعد الجديدة)
     try {
@@ -417,9 +383,8 @@ class DatabaseService {
         if (!adjInfo.any((c) => c['name'] == name)) {
           try {
             await _database!.execute('ALTER TABLE invoice_adjustments ADD COLUMN ' + ddl + ';');
-            print('DEBUG DB: Added missing column on invoice_adjustments: ' + name);
           } catch (e) {
-            print("DEBUG DB: Failed to add column '" + name + "' to invoice_adjustments: $e");
+            // تجاهل الخطأ
           }
         }
       }
@@ -431,7 +396,7 @@ class DatabaseService {
       await _ensureAdjCol('sale_type', 'sale_type TEXT');
       await _ensureAdjCol('units_in_large_unit', 'units_in_large_unit REAL');
     } catch (e) {
-      print('DEBUG DB: Failed to inspect/add invoice_adjustments columns: $e');
+      // تجاهل الخطأ
     }
 
     // --- تحقق من وجود عمود total_points في جدول installers ---
@@ -441,13 +406,12 @@ class DatabaseService {
       if (!hasTotalPoints) {
         try {
           await _database!.execute('ALTER TABLE installers ADD COLUMN total_points REAL DEFAULT 0.0;');
-          print('DEBUG: Added total_points to installers');
         } catch (e) {
-          print('DEBUG: Failed adding total_points: $e');
+          // تجاهل الخطأ
         }
       }
     } catch (e) {
-      print('DEBUG DB: Failed to inspect/add installers columns: $e');
+      // تجاهل الخطأ
     }
     
     // --- تحقق من وجود عمود points_rate في جدول invoices ---
@@ -457,13 +421,12 @@ class DatabaseService {
       if (!hasPointsRate) {
         try {
           await _database!.execute('ALTER TABLE invoices ADD COLUMN points_rate REAL DEFAULT 1.0;');
-          print('DEBUG: Added points_rate to invoices');
         } catch (e) {
-          print('DEBUG: Failed adding points_rate: $e');
+          // تجاهل الخطأ
         }
       }
     } catch (e) {
-      print('DEBUG DB: Failed to inspect/add invoices points_rate column: $e');
+      // تجاهل الخطأ
     }
 
     // --- إنشاء جدول نقاط المؤسسين installer_points ---
@@ -497,7 +460,6 @@ class DatabaseService {
         FOREIGN KEY (transaction_id) REFERENCES transactions (id) ON DELETE SET NULL
       )
     ''');
-    print('DEBUG DB: customer_receipt_vouchers table ensured');
     
     // --- نهاية التحقق ---
 
@@ -508,7 +470,7 @@ class DatabaseService {
     try {
       await initializeFTSForExistingProducts();
     } catch (e) {
-      print('Error initializing FTS: $e');
+      // تجاهل الخطأ
     }
     
     // إذا كان عدد السجلات في FTS أقل من المنتجات، أعد بناء الفهرس
@@ -520,17 +482,15 @@ class DatabaseService {
       final int ftsCount = (ftsCountRes.first['c'] as int?) ?? 0;
       
       if (productCount > 0 && ftsCount < productCount) {
-        print('Rebuilding FTS index due to missing records');
         await rebuildFTSIndex();
       }
 
       // اختبار البحث الذكي (معطل في الإصدار النهائي)
       if (_verboseLogs && productCount > 0) {
-        print('Testing smart search functionality...');
         await testSmartSearch();
       }
     } catch (e) {
-      print('Error checking FTS counts: $e');
+      // تجاهل الخطأ
     }
 
     return _database!;
@@ -559,12 +519,34 @@ class DatabaseService {
       version: _databaseVersion, // رفع رقم النسخة لتفعيل الترقية وإضافة عمود unique_id
       onCreate: _createDatabase,
       onUpgrade: _onUpgrade,
+      onOpen: (db) async {
+        // تفعيل FOREIGN KEYS لضمان عمل CASCADE
+        await db.execute('PRAGMA foreign_keys = ON');
+      },
     );
     
     // إصلاح قاعدة البيانات بعد الفتح مباشرة
     await repairDatabase(db);
     
+    // تنظيف المعاملات اليتيمة (بدون عميل)
+    await _cleanupOrphanedTransactions(db);
+    
     return db;
+  }
+
+  /// تنظيف المعاملات اليتيمة (التي لا يوجد لها عميل)
+  Future<void> _cleanupOrphanedTransactions(Database db) async {
+    try {
+      // حذف المعاملات التي customer_id الخاص بها غير موجود في جدول customers
+      final result = await db.rawDelete('''
+        DELETE FROM transactions 
+        WHERE customer_id NOT IN (SELECT id FROM customers)
+      ''');
+      
+      // لا نطبع شيء - تنظيف صامت
+    } catch (e) {
+      // تجاهل الخطأ - لا نوقف التطبيق
+    }
   }
 
   // دالة لمحاولة فحص وإصلاح قاعدة البيانات
@@ -593,22 +575,11 @@ class DatabaseService {
       final List<Map<String, dynamic>> check = await db.rawQuery('PRAGMA integrity_check;');
       
       if (check.isNotEmpty && check.first['integrity_check'] != 'ok') {
-        print('⚠️ Database integrity issue detected. Attempting repair...');
         // إعادة بناء الفهارس قد يصلح بعض المشاكل
         await db.rawQuery('REINDEX;');
-        print('✅ Database repair completed successfully.');
-
-        // إعادة فحص السلامة بعد الإصلاح
-        final List<Map<String, dynamic>> afterCheck = await db.rawQuery('PRAGMA integrity_check;');
-        if (afterCheck.isNotEmpty && afterCheck.first['integrity_check'] == 'ok') {
-          print('✅ Database integrity restored.');
-        } else {
-          print('⚠️ Database still has integrity issues after repair.');
-        }
       }
-      // لا نطبع رسالة إذا كانت قاعدة البيانات سليمة لتجنب الإزعاج
     } catch (e) {
-      print('❌ Error during database repair: $e');
+      // تجاهل الخطأ
     }
   }
 
@@ -631,13 +602,12 @@ class DatabaseService {
       final audioDir = Directory('${supportDir.path}/audio_notes');
       if (!await audioDir.exists()) {
         await audioDir.create(recursive: true);
-        print('DEBUG DB: Created audio notes directory: ${audioDir.path}');
         
         // نسخ الملفات الصوتية من مجلد المستندات القديم إذا وجدت
         await _migrateAudioFilesFromDocuments();
       }
     } catch (e) {
-      print('DEBUG DB: Error creating audio notes directory: $e');
+      // تجاهل الخطأ
     }
   }
 
@@ -679,7 +649,7 @@ class DatabaseService {
         }
       }
     } catch (e) {
-      print('DEBUG DB: migrate transactions audio paths failed: $e');
+      // تجاهل الخطأ
     }
 
     // ترحيل customers
@@ -701,7 +671,7 @@ class DatabaseService {
         }
       }
     } catch (e) {
-      print('DEBUG DB: migrate customers audio paths failed: $e');
+      // تجاهل الخطأ
     }
   }
 
@@ -715,8 +685,6 @@ class DatabaseService {
         final supportDir = await getApplicationSupportDirectory();
         final newAudioDir = Directory('${supportDir.path}/audio_notes');
         
-        print('DEBUG DB: Migrating audio files from documents to database directory');
-        
         await for (final entity in oldAudioDir.list()) {
           if (entity is File) {
             final fileName = entity.path.split(Platform.pathSeparator).last;
@@ -724,13 +692,12 @@ class DatabaseService {
             
             if (!await targetFile.exists()) {
               await entity.copy(targetFile.path);
-              print('DEBUG DB: Migrated audio file: $fileName');
             }
           }
         }
       }
     } catch (e) {
-      print('DEBUG DB: Error migrating audio files: $e');
+      // تجاهل الخطأ
     }
   }
 
@@ -741,34 +708,28 @@ class DatabaseService {
     try {
       final trs = await db.rawQuery(
           "SELECT audio_note_path FROM transactions WHERE audio_note_path IS NOT NULL AND TRIM(audio_note_path) <> ''");
-      print('DEBUG DB: Found ${trs.length} transaction audio paths');
       for (final row in trs) {
         final p = row['audio_note_path'] as String?;
         if (p != null && p.trim().isNotEmpty) {
           paths.add(p);
-          print('DEBUG DB: Transaction audio path: $p');
         }
       }
     } catch (e) {
-      print('DEBUG DB: read transaction audio paths failed: $e');
+      // تجاهل الخطأ
     }
     try {
       final cus = await db.rawQuery(
           "SELECT audio_note_path FROM customers WHERE audio_note_path IS NOT NULL AND TRIM(audio_note_path) <> ''");
-      print('DEBUG DB: Found ${cus.length} customer audio paths');
       for (final row in cus) {
         final p = row['audio_note_path'] as String?;
         if (p != null && p.trim().isNotEmpty) {
           paths.add(p);
-          print('DEBUG DB: Customer audio path: $p');
         }
       }
     } catch (e) {
-      print('DEBUG DB: read customer audio paths failed: $e');
+      // تجاهل الخطأ
     }
-    final uniquePaths = paths.toSet().toList();
-    print('DEBUG DB: Total unique audio paths: ${uniquePaths.length}');
-    return uniquePaths;
+    return paths.toSet().toList();
   }
 
   Future<void> _createDatabase(Database db, int version) async {
@@ -1460,6 +1421,68 @@ class DatabaseService {
     }
   }
 
+  // ترتيب العملاء حسب آخر إضافة دين (من الأحدث للأقدم)
+  Future<List<int>> getCustomerIdsSortedByLastDebtAdded() async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT c.id, MAX(t.transaction_date) as last_debt_date
+        FROM customers c
+        LEFT JOIN transactions t ON t.customer_id = c.id 
+          AND t.transaction_type IN ('manual_debt', 'DEBT_ADDITION', 'debt_addition')
+        WHERE c.current_total_debt > 0
+           OR EXISTS (SELECT 1 FROM transactions t2 WHERE t2.customer_id = c.id LIMIT 1)
+        GROUP BY c.id
+        ORDER BY last_debt_date DESC NULLS LAST, c.name ASC
+      ''');
+      return maps.map((m) => m['id'] as int).toList();
+    } catch (e) {
+      print('Error getting customers sorted by last debt added: $e');
+      return [];
+    }
+  }
+
+  // ترتيب العملاء حسب آخر تسديد (من الأحدث للأقدم)
+  Future<List<int>> getCustomerIdsSortedByLastPayment() async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT c.id, MAX(t.transaction_date) as last_payment_date
+        FROM customers c
+        LEFT JOIN transactions t ON t.customer_id = c.id 
+          AND t.transaction_type IN ('debt_payment', 'DEBT_PAYMENT')
+        WHERE c.current_total_debt > 0
+           OR EXISTS (SELECT 1 FROM transactions t2 WHERE t2.customer_id = c.id LIMIT 1)
+        GROUP BY c.id
+        ORDER BY last_payment_date DESC NULLS LAST, c.name ASC
+      ''');
+      return maps.map((m) => m['id'] as int).toList();
+    } catch (e) {
+      print('Error getting customers sorted by last payment: $e');
+      return [];
+    }
+  }
+
+  // ترتيب العملاء حسب آخر معاملة (أي نوع - من الأحدث للأقدم)
+  Future<List<int>> getCustomerIdsSortedByLastTransaction() async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT c.id, MAX(t.transaction_date) as last_transaction_date
+        FROM customers c
+        LEFT JOIN transactions t ON t.customer_id = c.id
+        WHERE c.current_total_debt > 0
+           OR EXISTS (SELECT 1 FROM transactions t2 WHERE t2.customer_id = c.id LIMIT 1)
+        GROUP BY c.id
+        ORDER BY last_transaction_date DESC NULLS LAST, c.name ASC
+      ''');
+      return maps.map((m) => m['id'] as int).toList();
+    } catch (e) {
+      print('Error getting customers sorted by last transaction: $e');
+      return [];
+    }
+  }
+
   Future<Customer?> getCustomerById(int id) async {
     final db = await database;
     try {
@@ -1528,10 +1551,23 @@ class DatabaseService {
         }
       } catch (e) {
         // لا تمنع حذف العميل إذا فشل حذف الملفات
-        print('WARN: Failed to delete audio files for customer $id: $e');
       }
 
-      //  ON DELETE CASCADE ستحذف المعاملات المرتبطة
+      // حذف المعاملات المرتبطة بالعميل يدوياً (لضمان الحذف حتى لو CASCADE لم يعمل)
+      await db.delete(
+        'transactions',
+        where: 'customer_id = ?',
+        whereArgs: [id],
+      );
+      
+      // حذف سندات القبض المرتبطة بالعميل
+      await db.delete(
+        'customer_receipt_vouchers',
+        where: 'customer_id = ?',
+        whereArgs: [id],
+      );
+      
+      // حذف العميل
       return await db.delete(
         'customers',
         where: 'id = ?',
@@ -4110,6 +4146,7 @@ class DatabaseService {
       'invoices',
       where: 'installer_name = ?',
       whereArgs: [installerName],
+      orderBy: 'invoice_date DESC', // ترتيب من الأحدث إلى الأقدم
     );
     return List.generate(maps.length, (i) => Invoice.fromMap(maps[i]));
   }
