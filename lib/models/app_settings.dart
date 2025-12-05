@@ -23,6 +23,10 @@ class AppSettings {
   final int noticeColor;
   final int paidAmountColor;
   final FontSettings fontSettings;
+  
+  // إعدادات نقاط المؤسسين
+  final double pointsPerHundredThousand; // عدد النقاط لكل 100,000
+  final bool showPointsConfirmationOnSave; // إظهار رسالة تأكيد النقاط عند الحفظ
 
   AppSettings({
     this.phoneNumbers = const [],
@@ -46,6 +50,8 @@ class AppSettings {
     int? noticeColor,
     int? paidAmountColor,
     FontSettings? fontSettings,
+    double? pointsPerHundredThousand,
+    bool? showPointsConfirmationOnSave,
   }) : remainingAmountColor = remainingAmountColor ?? Colors.black.value,
        discountColor = discountColor ?? Colors.black.value,
        loadingFeesColor = loadingFeesColor ?? Colors.black.value,
@@ -65,7 +71,9 @@ class AppSettings {
        itemTotalColor = itemTotalColor ?? Colors.black.value,
        noticeColor = noticeColor ?? Colors.red.value,
        paidAmountColor = paidAmountColor ?? Colors.black.value,
-       fontSettings = fontSettings ?? FontSettings();
+       fontSettings = fontSettings ?? FontSettings(),
+       pointsPerHundredThousand = pointsPerHundredThousand ?? 1.0,
+       showPointsConfirmationOnSave = showPointsConfirmationOnSave ?? false;
 
   Map<String, dynamic> toJson() => {
         'phoneNumbers': phoneNumbers,
@@ -89,6 +97,8 @@ class AppSettings {
         'noticeColor': noticeColor,
         'paidAmountColor': paidAmountColor,
         'fontSettings': fontSettings.toJson(),
+        'pointsPerHundredThousand': pointsPerHundredThousand,
+        'showPointsConfirmationOnSave': showPointsConfirmationOnSave,
       };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -113,6 +123,8 @@ class AppSettings {
         noticeColor: json['noticeColor'] ?? Colors.red.value,
         paidAmountColor: json['paidAmountColor'] ?? Colors.black.value,
         fontSettings: FontSettings.fromJson(json['fontSettings'] ?? {}),
+        pointsPerHundredThousand: (json['pointsPerHundredThousand'] as num?)?.toDouble() ?? 1.0,
+        showPointsConfirmationOnSave: json['showPointsConfirmationOnSave'] ?? false,
       );
 
   AppSettings copyWith({
@@ -137,6 +149,8 @@ class AppSettings {
     int? noticeColor,
     int? paidAmountColor,
     FontSettings? fontSettings,
+    double? pointsPerHundredThousand,
+    bool? showPointsConfirmationOnSave,
   }) {
     return AppSettings(
       phoneNumbers: phoneNumbers ?? this.phoneNumbers,
@@ -160,6 +174,8 @@ class AppSettings {
       noticeColor: noticeColor ?? this.noticeColor,
       paidAmountColor: paidAmountColor ?? this.paidAmountColor,
       fontSettings: fontSettings ?? this.fontSettings,
+      pointsPerHundredThousand: pointsPerHundredThousand ?? this.pointsPerHundredThousand,
+      showPointsConfirmationOnSave: showPointsConfirmationOnSave ?? this.showPointsConfirmationOnSave,
     );
   }
 }

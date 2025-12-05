@@ -1,9 +1,14 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:alnaser/models/app_settings.dart';
 import 'package:alnaser/services/settings_manager.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:intl/intl.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import '../services/database_service.dart';
+import '../services/pdf_service.dart';
+import '../models/account_statement_item.dart';
 
 class GeneralSettingsScreen extends StatefulWidget {
   const GeneralSettingsScreen({super.key});
@@ -36,6 +41,10 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
   Color _itemTotalColor = Colors.black;
   Color _noticeColor = Colors.red;
   Color _paidAmountColor = Colors.black;
+  
+  // إعدادات نقاط المؤسسين
+  double _pointsPerHundredThousand = 1.0;
+  final TextEditingController _pointsController = TextEditingController();
 
   @override
   void initState() {
@@ -65,6 +74,10 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
     _itemTotalColor = Color(_appSettings.itemTotalColor);
     _noticeColor = Color(_appSettings.noticeColor);
     _paidAmountColor = Color(_appSettings.paidAmountColor);
+    
+    // تحميل إعدادات نقاط المؤسسين
+    _pointsPerHundredThousand = _appSettings.pointsPerHundredThousand;
+    _pointsController.text = _pointsPerHundredThousand.toString();
     
     // تحميل وصف الشركة
     _companyDescriptionController.text = _appSettings.companyDescription;
@@ -107,6 +120,7 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
       itemTotalColor: _itemTotalColor.value,
       noticeColor: _noticeColor.value,
       paidAmountColor: _paidAmountColor.value,
+      pointsPerHundredThousand: _pointsPerHundredThousand,
     );
     await SettingsManager.saveAppSettings(_appSettings);
     if (mounted) {
@@ -287,6 +301,7 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
       controller.dispose();
     }
     _companyDescriptionController.dispose();
+    _pointsController.dispose();
     super.dispose();
   }
 
@@ -572,6 +587,65 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
             ),
           ),
           
+          // ⭐ إعدادات نقاط المؤسسين
+          Card(
+            margin: const EdgeInsets.only(bottom: 20),
+            elevation: 4,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.star, color: Colors.amber, size: 24),
+                      SizedBox(width: 8),
+                      Text('⭐ إعدادات نقاط المؤسسين', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  // عدد النقاط لكل 100,000
+                  Row(
+                    children: [
+                      const Expanded(
+                        flex: 2,
+                        child: Text('عدد النقاط لكل 100,000:', style: TextStyle(fontSize: 14)),
+                      ),
+                      Expanded(
+                        flex: 1,
+                        child: TextField(
+                          controller: _pointsController,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          textAlign: TextAlign.center,
+                          decoration: InputDecoration(
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                            hintText: '1.0',
+                          ),
+                          onChanged: (value) {
+                            final parsed = double.tryParse(value);
+                            if (parsed != null && parsed > 0) {
+                              setState(() {
+                                _pointsPerHundredThousand = parsed;
+                              });
+                            }
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'مثال: إذا كانت القيمة 1.5، فاتورة بـ 200,000 = 3 نقاط',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          
           // 🛡️ أدوات الحماية والتدقيق المالي
           Card(
             margin: const EdgeInsets.only(bottom: 20),
@@ -609,6 +683,17 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                     subtitle: const Text('عرض إحصائيات مالية عامة'),
                     trailing: const Icon(Icons.arrow_forward_ios, size: 16),
                     onTap: () => _showFinancialSummary(),
+                  ),
+                  
+                  const Divider(),
+                  
+                  // 📄 مشاركة كشوفات الحساب
+                  ListTile(
+                    leading: const Icon(Icons.share, color: Colors.teal),
+                    title: const Text('مشاركة كشوفات الحساب'),
+                    subtitle: const Text('إنشاء ملف PDF لجميع كشوفات العملاء'),
+                    trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                    onTap: () => _shareAllAccountStatements(),
                   ),
                 ],
               ),
@@ -948,6 +1033,135 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('خطأ: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  // 📄 دالة مشاركة كشوفات حسابات جميع العملاء
+  Future<void> _shareAllAccountStatements() async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const AlertDialog(
+        content: Row(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(width: 16),
+            Expanded(child: Text('جاري إنشاء كشوفات الحساب لجميع العملاء...\nقد يستغرق هذا بعض الوقت')),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      final db = DatabaseService();
+      final pdfService = PdfService();
+      
+      // جلب جميع العملاء
+      final customers = await db.getAllCustomers();
+      
+      if (customers.isEmpty) {
+        if (mounted) Navigator.pop(context);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('لا يوجد عملاء في النظام'), backgroundColor: Colors.orange),
+          );
+        }
+        return;
+      }
+
+      // دالة لجلب معاملات العميل وتحويلها إلى AccountStatementItem
+      Future<List<AccountStatementItem>> getCustomerTransactionsForStatement(int customerId) async {
+        final transactions = await db.getCustomerTransactions(customerId, orderBy: 'transaction_date ASC, id ASC');
+        final allTransactions = <AccountStatementItem>[];
+        
+        for (var transaction in transactions) {
+          if (transaction.transactionDate != null) {
+            String description = '';
+            if (transaction.amountChanged > 0) {
+              description = 'إضافة دين';
+            } else if (transaction.amountChanged < 0) {
+              description = 'تسديد دين';
+            } else {
+              description = 'معاملة مالية';
+            }
+            if (transaction.invoiceId != null) {
+              description += ' (فاتورة #${transaction.invoiceId})';
+            }
+            
+            allTransactions.add(AccountStatementItem(
+              date: transaction.transactionDate!,
+              description: description,
+              amount: transaction.amountChanged,
+              type: 'transaction',
+              transaction: transaction,
+            ));
+          }
+        }
+        
+        // حساب الرصيد قبل وبعد كل معاملة
+        double currentBalance = 0.0;
+        for (var item in allTransactions) {
+          item.balanceBefore = currentBalance;
+          currentBalance += item.amount;
+          item.balanceAfter = currentBalance;
+        }
+        
+        return allTransactions;
+      }
+
+      // إنشاء ملف PDF
+      final pdfBytes = await pdfService.generateAllCustomersAccountStatements(
+        customers: customers,
+        getCustomerTransactions: getCustomerTransactionsForStatement,
+      );
+
+      if (mounted) Navigator.pop(context);
+
+      // حفظ الملف
+      final now = DateTime.now();
+      final fileName = 'كشوفات_الحسابات_${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}.pdf';
+      
+      if (Platform.isWindows) {
+        // على Windows: حفظ في مجلد المستندات وفتح للمشاركة
+        final directory = Directory('${Platform.environment['USERPROFILE']}/Documents/account_statements');
+        if (!await directory.exists()) {
+          await directory.create(recursive: true);
+        }
+        final filePath = '${directory.path}/$fileName';
+        final file = File(filePath);
+        await file.writeAsBytes(pdfBytes);
+        
+        // فتح الملف
+        await Process.start('cmd', ['/c', 'start', '', filePath]);
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('تم حفظ الملف في:\n$filePath'),
+              backgroundColor: Colors.green,
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
+      } else {
+        // على الأجهزة الأخرى: استخدام share_plus للمشاركة
+        final tempDir = await getTemporaryDirectory();
+        final filePath = '${tempDir.path}/$fileName';
+        final file = File(filePath);
+        await file.writeAsBytes(pdfBytes);
+        
+        await Share.shareXFiles(
+          [XFile(filePath)],
+          text: 'كشوفات حسابات العملاء - ${now.year}/${now.month}/${now.day}',
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ في إنشاء كشوفات الحساب: $e'), backgroundColor: Colors.red),
         );
       }
     }

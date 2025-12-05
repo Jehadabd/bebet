@@ -18,6 +18,7 @@ class Invoice {
   String status;
   double returnAmount;
   bool isLocked;
+  double pointsRate; // معدل النقاط لكل 100,000
 
   Invoice({
     this.id,
@@ -37,6 +38,7 @@ class Invoice {
     this.status = 'محفوظة',
     this.returnAmount = 0.0,
     this.isLocked = false,
+    this.pointsRate = 1.0,
   });
 
   // Convert an Invoice object into a Map object
@@ -59,6 +61,7 @@ class Invoice {
       'status': status,
       'return_amount': returnAmount,
       'is_locked': isLocked ? 1 : 0,
+      'points_rate': pointsRate,
     };
   }
 
@@ -82,6 +85,7 @@ class Invoice {
       status: map['status'] as String? ?? 'محفوظة',
       returnAmount: map['return_amount'] as double? ?? 0.0,
       isLocked: (map['is_locked'] ?? 0) == 1,
+      pointsRate: (map['points_rate'] as num?)?.toDouble() ?? 1.0,
     );
   }
 
@@ -104,6 +108,7 @@ class Invoice {
     String? status,
     double? returnAmount,
     bool? isLocked,
+    double? pointsRate,
   }) {
     return Invoice(
       id: id ?? this.id,
@@ -123,6 +128,7 @@ class Invoice {
       status: status ?? this.status,
       returnAmount: returnAmount ?? this.returnAmount,
       isLocked: isLocked ?? this.isLocked,
+      pointsRate: pointsRate ?? this.pointsRate,
     );
   }
 }

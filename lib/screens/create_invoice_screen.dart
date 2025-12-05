@@ -77,6 +77,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
   final customerPhoneController = TextEditingController();
   final customerAddressController = TextEditingController();
   final installerNameController = TextEditingController();
+  final _installerPointsRateController = TextEditingController(); // معدل النقاط لكل 100,000
+  double _installerPointsRate = 1.0; // القيمة الافتراضية
+  
+  // Getter للواجهة InvoiceActionsInterface
+  double get installerPointsRate => _installerPointsRate;
+  
   final _productSearchController = TextEditingController();
   final _quantityController = TextEditingController();
   final FocusNode _quantityFocusNode = FocusNode(); // FocusNode لحقل الكمية
@@ -344,6 +350,20 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
       }
     }
   }
+  
+  // تحميل القيمة الافتراضية لمعدل النقاط من الإعدادات
+  Future<void> _loadDefaultPointsRate() async {
+    try {
+      final settings = await SettingsManager.getAppSettings();
+      setState(() {
+        _installerPointsRate = settings.pointsPerHundredThousand;
+        _installerPointsRateController.text = _installerPointsRate.toString();
+      });
+    } catch (e) {
+      print('Error loading default points rate: $e');
+      _installerPointsRateController.text = '1.0';
+    }
+  }
 
   final FocusNode _searchFocusNode = FocusNode(); // FocusNode جديد لحقل البحث
   bool suppressSearch = false; // لمنع البحث التلقائي عند اختيار منتج
@@ -470,6 +490,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
       loadingFeeController = TextEditingController();
       _loadAutoSavedData();
       _loadSettlementInfo(); // جلب معلومات التسويات
+      
+      // تحميل إعدادات النقاط الافتراضية (فقط للفواتير الجديدة)
+      if (widget.existingInvoice == null) {
+        _loadDefaultPointsRate();
+      }
+      
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         try {
           _allProductsForUnits = await db.getAllProducts();
@@ -513,6 +539,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
           loadingFeeController.text = invoiceToManage!.loadingFee.toString();
         }
         
+        // تحميل معدل النقاط من الفاتورة الموجودة
+        _installerPointsRate = invoiceToManage!.pointsRate;
+        _installerPointsRateController.text = _installerPointsRate.toString();
 
         _loadInvoiceItems();
       } else {
@@ -772,6 +801,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
       customerPhoneController.dispose();
       customerAddressController.dispose();
       installerNameController.dispose();
+      _installerPointsRateController.dispose();
       _productSearchController.dispose();
       _quantityController.dispose();
       _itemsController.dispose();
@@ -2805,6 +2835,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // العنوان (اختياري)
                     Expanded(
                       flex: 3,
                       child: TextFormField(
@@ -2815,6 +2846,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                       ),
                     ),
                     const SizedBox(width: 8.0),
+                    // اسم المؤسس/الفني
                     Expanded(
                       flex: 2,
                       child: isViewOnly
@@ -2865,6 +2897,30 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                                 _onFieldChanged();
                               },
                             ),
+                    ),
+                    const SizedBox(width: 8.0),
+                    // حقل صغير لمعدل النقاط (في الطرف)
+                    SizedBox(
+                      width: 50,
+                      child: TextFormField(
+                        controller: _installerPointsRateController,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                        decoration: InputDecoration(
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                          filled: true,
+                          fillColor: Colors.amber.shade50,
+                        ),
+                        enabled: !isViewOnly,
+                        onChanged: (val) {
+                          final parsed = double.tryParse(val);
+                          if (parsed != null && parsed >= 0) {
+                            _installerPointsRate = parsed;
+                          }
+                        },
+                      ),
                     ),
                   ],
                 ),

@@ -45,6 +45,9 @@ abstract class InvoiceActionsInterface {
   TextEditingController get paidAmountController;
   TextEditingController get loadingFeeController;
   
+  // معدل النقاط لكل 100,000
+  double get installerPointsRate;
+  
   List<InvoiceItem> get invoiceItems;
   
   double get discount;
@@ -510,6 +513,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           customerId: customer?.id,
           status: newStatus,
           isLocked: false,
+          pointsRate: installerPointsRate, // حفظ معدل النقاط مع الفاتورة
         );
 
         int invoiceId;
@@ -827,10 +831,14 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           savedInvoice!.installerName != null && 
           savedInvoice!.installerName!.isNotEmpty) {
          try {
+           // استخدام معدل النقاط من الواجهة
+           final double pointsRate = installerPointsRate;
+           
            await db.updateInstallerPointsFromInvoice(
              savedInvoice!.id!, 
              savedInvoice!.installerName!, 
-             savedInvoice!.totalAmount
+             savedInvoice!.totalAmount,
+             pointsPerHundredThousand: pointsRate,
            );
            
            // Also update the total billed amount for the installer

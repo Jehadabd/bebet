@@ -495,9 +495,6 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                   final provider = context.read<AppProvider>();
                   final currentCustomer = provider.selectedCustomer ?? widget.customer;
                   
-                  // طباعة تشخيصية للتحقق من القيم
-                  print('DEBUG: Updating customer - widget.customer.debt=${widget.customer.currentTotalDebt}, selectedCustomer.debt=${provider.selectedCustomer?.currentTotalDebt}, using=${currentCustomer.currentTotalDebt}');
-                  
                   final updated = currentCustomer.copyWith(
                     name: nameController.text.trim(),
                     phone: normalizedPhone,
@@ -512,7 +509,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                     final db = DatabaseService();
                     await db.updateOldInvoicesWithCustomerIds();
                   } catch (e) {
-                    print('تحذير: فشل في تحديث الفواتير القديمة: $e');
+                    // تجاهل الخطأ
                   }
                   
                   if (mounted) {
@@ -1365,8 +1362,8 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                'التاريخ: ${DateFormat('yyyy/MM/dd HH:mm').format(receipt.createdAt)}',
-                                style: const TextStyle(fontSize: 12),
+                                'رقم السند: ${receipt.receiptNumber} | التاريخ: ${DateFormat('yyyy/MM/dd HH:mm').format(receipt.createdAt)}',
+                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
                               ),
                               Text(
                                 'قبل: ${formatCurrency(receipt.beforePayment)} → بعد: ${formatCurrency(receipt.afterPayment)}',
@@ -1508,25 +1505,15 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
 
       final actualCustomerBalance = widget.customer.currentTotalDebt;
       
-      // التحقق من وجود فرق بين الرصيد المحسوب والمعروض
-      if ((currentBalance - actualCustomerBalance).abs() > 0.01) {
-        print(
-            '⚠️ Warning: Calculated balance ($currentBalance) differs from actual customer balance ($actualCustomerBalance)');
-        print('📊 سيتم استخدام الرصيد المحسوب من المعاملات في كشف الحساب');
-        // ملاحظة: نستخدم الرصيد المحسوب (currentBalance) وليس الرصيد المعروض
-        // لأن الرصيد المحسوب هو الصحيح بناءً على المعاملات الفعلية
-      }
-
-      print('📄 إنشاء PDF لـ ${allTransactionsToShow.length} معاملة...');
+      // ملاحظة: نستخدم الرصيد المحسوب (currentBalance) وليس الرصيد المعروض
+      // لأن الرصيد المحسوب هو الصحيح بناءً على المعاملات الفعلية
       
       // تحديد عدد المعاملات (حد أقصى 500 معاملة لتجنب مشاكل الذاكرة)
       final transactionsForPdf = allTransactionsToShow.length > 500
           ? allTransactionsToShow.sublist(allTransactionsToShow.length - 500)
           : allTransactionsToShow;
       
-      if (allTransactionsToShow.length > 500) {
-        print('⚠️ تحذير: عدد المعاملات كبير (${allTransactionsToShow.length})، سيتم عرض آخر 500 معاملة فقط');
-      }
+
       
       final pdfService = PdfService();
       final pdf = await pdfService.generateAccountStatement(
@@ -1534,8 +1521,6 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         transactions: transactionsForPdf,
         finalBalance: currentBalance, // ✅ دائماً نستخدم الرصيد المحسوب من المعاملات
       );
-
-      print('✅ تم إنشاء PDF بنجاح');
 
       if (mounted) {
         Navigator.pop(context); // Dismiss loading indicator
@@ -1573,9 +1558,6 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         }
       }
     } catch (e, stackTrace) {
-      print('❌ خطأ في إنشاء كشف الحساب: $e');
-      print('❌ Stack trace: $stackTrace');
-      
       if (mounted) {
         Navigator.pop(context); // Dismiss loading indicator
       }

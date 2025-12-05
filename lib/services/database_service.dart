@@ -449,6 +449,22 @@ class DatabaseService {
     } catch (e) {
       print('DEBUG DB: Failed to inspect/add installers columns: $e');
     }
+    
+    // --- تحقق من وجود عمود points_rate في جدول invoices ---
+    try {
+      final invoicesInfo = await _database!.rawQuery('PRAGMA table_info(invoices);');
+      final hasPointsRate = invoicesInfo.any((col) => col['name'] == 'points_rate');
+      if (!hasPointsRate) {
+        try {
+          await _database!.execute('ALTER TABLE invoices ADD COLUMN points_rate REAL DEFAULT 1.0;');
+          print('DEBUG: Added points_rate to invoices');
+        } catch (e) {
+          print('DEBUG: Failed adding points_rate: $e');
+        }
+      }
+    } catch (e) {
+      print('DEBUG DB: Failed to inspect/add invoices points_rate column: $e');
+    }
 
     // --- إنشاء جدول نقاط المؤسسين installer_points ---
     await _database!.execute('''
@@ -1721,7 +1737,15 @@ class DatabaseService {
   }
 
   /// Update points from an invoice (handle create/update)
-  Future<void> updateInstallerPointsFromInvoice(int invoiceId, String installerName, double invoiceTotal) async {
+  /// [customPoints] - إذا تم تحديده، يتم استخدامه بدلاً من الحساب التلقائي
+  /// [pointsPerHundredThousand] - عدد النقاط لكل 100,000 (الافتراضي 1.0)
+  Future<void> updateInstallerPointsFromInvoice(
+    int invoiceId, 
+    String installerName, 
+    double invoiceTotal, {
+    double? customPoints,
+    double pointsPerHundredThousand = 1.0,
+  }) async {
     if (installerName.trim().isEmpty) return;
 
     final db = await database;
@@ -1737,8 +1761,8 @@ class DatabaseService {
     
     final int installerId = installers.first['id'] as int;
     
-    // 2. Calculate points: 100,000 IQD = 1 Point
-    final double newPoints = invoiceTotal / 100000.0;
+    // 2. Calculate points: استخدام النقاط المخصصة أو الحساب التلقائي
+    final double newPoints = customPoints ?? (invoiceTotal / 100000.0) * pointsPerHundredThousand;
     
     await db.transaction((txn) async {
       // 3. Check if points already exist for this invoice
