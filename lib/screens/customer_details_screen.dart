@@ -9,6 +9,7 @@ import 'add_transaction_screen.dart';
 import 'create_invoice_screen.dart';
 import '../services/database_service.dart';
 import '../services/pdf_service.dart'; // Assume PdfService exists
+import '../services/receipt_voucher_pdf_service.dart';
 import '../models/account_statement_item.dart'; // Assume AccountStatementItem exists
 import 'package:printing/printing.dart'; // Assume this is for PDF preview on non-Windows
 import 'dart:io';
@@ -20,6 +21,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart';
 import 'audit_log_screen.dart';
+import 'package:pdf/widgets.dart' as pw;
 
 class CustomerDetailsScreen extends StatefulWidget {
   final Customer customer;
@@ -533,6 +535,12 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                   color: Colors.white), // Color changed
               tooltip: 'كشف الحساب',
               onPressed: () => _generateAccountStatement(),
+            ),
+            // 📄 زر أرشيف سندات القبض
+            IconButton(
+              icon: const Icon(Icons.archive, color: Colors.white),
+              tooltip: 'أرشيف سندات القبض',
+              onPressed: () => _showReceiptVouchersArchive(),
             ),
             // 🛡️ زر فحص السلامة المالية
             IconButton(
@@ -1273,6 +1281,181 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('خطأ في فحص السلامة: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // 📄 دالة عرض أرشيف سندات القبض
+  Future<void> _showReceiptVouchersArchive() async {
+    try {
+      // إظهار مؤشر التحميل
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+
+      final db = DatabaseService();
+      final receipts = await db.getCustomerReceiptVouchers(widget.customer.id!);
+
+      if (mounted) {
+        Navigator.pop(context); // إغلاق مؤشر التحميل
+      }
+
+      if (!mounted) return;
+
+      // عرض قائمة سندات القبض
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Row(
+            children: [
+              const Icon(Icons.archive, color: Color(0xFF3F51B5)),
+              const SizedBox(width: 12),
+              Text('أرشيف سندات القبض (${receipts.length})'),
+            ],
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 400,
+            child: receipts.isEmpty
+                ? const Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.receipt_long, size: 64, color: Colors.grey),
+                        SizedBox(height: 16),
+                        Text(
+                          'لا توجد سندات قبض محفوظة',
+                          style: TextStyle(color: Colors.grey, fontSize: 16),
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.builder(
+                    itemCount: receipts.length,
+                    itemBuilder: (context, index) {
+                      final receipt = receipts[index];
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: Colors.green[100],
+                            child: Text(
+                              '${receipt.receiptNumber}',
+                              style: TextStyle(
+                                color: Colors.green[800],
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          title: Text(
+                            '${formatCurrency(receipt.paidAmount)} دينار',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.green,
+                            ),
+                          ),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'التاريخ: ${DateFormat('yyyy/MM/dd HH:mm').format(receipt.createdAt)}',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                              Text(
+                                'قبل: ${formatCurrency(receipt.beforePayment)} → بعد: ${formatCurrency(receipt.afterPayment)}',
+                                style: const TextStyle(fontSize: 11, color: Colors.grey),
+                              ),
+                            ],
+                          ),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.print, color: Color(0xFF3F51B5)),
+                            tooltip: 'إعادة طباعة السند',
+                            onPressed: () => _reprintReceiptVoucher(receipt),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('إغلاق'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context); // إغلاق مؤشر التحميل إن كان مفتوحاً
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('خطأ في تحميل سندات القبض: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // 📄 دالة إعادة طباعة سند القبض
+  Future<void> _reprintReceiptVoucher(CustomerReceiptVoucher receipt) async {
+    try {
+      final font = pw.Font.ttf(
+          await rootBundle.load('assets/fonts/Amiri-Regular.ttf'));
+      // استخدام نفس خط الفاتورة لكلمة الناصر
+      final alnaserFont = pw.Font.ttf(
+          await rootBundle.load('assets/fonts/PTBLDHAD.TTF'));
+      final logoBytes = await rootBundle.load('assets/icon/alnasser.jpg');
+      final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
+      
+      final pdf = await ReceiptVoucherPdfService.generateReceiptVoucherPdf(
+        customerName: receipt.customerName,
+        beforePayment: receipt.beforePayment,
+        paidAmount: receipt.paidAmount,
+        afterPayment: receipt.afterPayment,
+        dateTime: receipt.createdAt,
+        font: font,
+        alnaserFont: alnaserFont,
+        logoImage: logoImage,
+        receiptNumber: receipt.receiptNumber,
+      );
+
+      // حفظ PDF في ملف مؤقت وفتحه
+      final tempDir = Directory.systemTemp;
+      final filePath =
+          '${tempDir.path}/receipt_voucher_${receipt.receiptNumber}_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      final file = File(filePath);
+      await file.writeAsBytes(await pdf.save());
+
+      if (Platform.isWindows) {
+        await Process.start('cmd', ['/c', 'start', 'msedge', filePath]);
+      } else {
+        await Printing.layoutPdf(
+          onLayout: (format) async => await pdf.save(),
+        );
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('تم فتح سند القبض للطباعة'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('خطأ في طباعة السند: $e'),
             backgroundColor: Colors.red,
           ),
         );

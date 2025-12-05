@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/ai_chat_service.dart';
 import '../services/database_service.dart';
 import 'package:intl/intl.dart';
+import 'transactions_list_dialog.dart';
 
 class WeeklyReportScreen extends StatefulWidget {
   const WeeklyReportScreen({super.key});
@@ -214,22 +215,24 @@ class _WeeklyReportScreenState extends State<WeeklyReportScreen> {
                         Row(
                           children: [
                             Expanded(
-                              child: _buildStatCard(
+                              child: _buildClickableStatCard(
                                 title: 'إضافة دين',
                                 value: '${_fmt(_reportData!['totalManualDebt'])} د.ع',
                                 subtitle: '${_reportData!['manualDebtCount']} معاملة',
                                 icon: Icons.add_circle,
                                 color: const Color(0xFFFF5722),
+                                onTap: () => _showDebtAdditions(),
                               ),
                             ),
                             const SizedBox(width: 12),
                             Expanded(
-                              child: _buildStatCard(
+                              child: _buildClickableStatCard(
                                 title: 'تسديد دين',
                                 value: '${_fmt(_reportData!['totalManualPayment'])} د.ع',
                                 subtitle: '${_reportData!['manualPaymentCount']} معاملة',
                                 icon: Icons.remove_circle,
                                 color: const Color(0xFF4CAF50),
+                                onTap: () => _showDebtPayments(),
                               ),
                             ),
                           ],
@@ -360,6 +363,127 @@ class _WeeklyReportScreenState extends State<WeeklyReportScreen> {
           ],
         ],
       ),
+    );
+  }
+
+  // بطاقة قابلة للضغط لعرض تفاصيل المعاملات
+  Widget _buildClickableStatCard({
+    required String title,
+    required String value,
+    String? subtitle,
+    required IconData icon,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withOpacity(0.3)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(icon, color: color, size: 24),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[600],
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+                Icon(Icons.touch_app, color: color.withOpacity(0.5), size: 16),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              value,
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
+            ),
+            if (subtitle != null) ...[
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey[500],
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    '(اضغط للتفاصيل)',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: color.withOpacity(0.7),
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  // عرض معاملات إضافة الدين
+  void _showDebtAdditions() {
+    final today = DateTime.now();
+    final startOfWeek = today.subtract(Duration(days: today.weekday - 1));
+    final startOfWeekDay = DateTime(startOfWeek.year, startOfWeek.month, startOfWeek.day);
+    final endOfWeek = startOfWeekDay.add(const Duration(days: 7));
+    
+    TransactionsListDialog.showDebtAdditions(
+      context: context,
+      startDate: startOfWeekDay,
+      endDate: endOfWeek,
+      periodTitle: 'الأسبوع',
+    );
+  }
+
+  // عرض معاملات تسديد الدين
+  void _showDebtPayments() {
+    final today = DateTime.now();
+    final startOfWeek = today.subtract(Duration(days: today.weekday - 1));
+    final startOfWeekDay = DateTime(startOfWeek.year, startOfWeek.month, startOfWeek.day);
+    final endOfWeek = startOfWeekDay.add(const Duration(days: 7));
+    
+    TransactionsListDialog.showDebtPayments(
+      context: context,
+      startDate: startOfWeekDay,
+      endDate: endOfWeek,
+      periodTitle: 'الأسبوع',
     );
   }
 }

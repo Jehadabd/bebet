@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../services/database_service.dart'; // Assumed DatabaseService exists
 import '../models/monthly_overview.dart';
 import 'package:intl/intl.dart'; // For formatting dates and currency
+import 'transactions_list_dialog.dart';
 
 class InventoryScreen extends StatefulWidget {
   const InventoryScreen({super.key});
@@ -388,24 +389,26 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                 Row(
                                   children: [
                                     Expanded(
-                                      child: _buildInfoItemWithSubtitle(
+                                      child: _buildClickableInfoItemWithSubtitle(
                                         icon: Icons.add_circle,
                                         title: 'إضافة دين',
                                         value:
                                             '${formatCurrency(summary.totalManualDebt)} د.ع',
                                         subtitle: '${summary.manualDebtCount} معاملة',
                                         color: const Color(0xFFFF5722),
+                                        onTap: () => _showDebtAdditions(monthYear),
                                       ),
                                     ),
                                     const SizedBox(width: 12),
                                     Expanded(
-                                      child: _buildInfoItemWithSubtitle(
+                                      child: _buildClickableInfoItemWithSubtitle(
                                         icon: Icons.remove_circle,
                                         title: 'تسديد دين',
                                         value:
                                             '${formatCurrency(summary.totalDebtPayments)} د.ع',
                                         subtitle: '${summary.manualPaymentCount} معاملة',
                                         color: const Color(0xFF4CAF50),
+                                        onTap: () => _showDebtPayments(monthYear),
                                       ),
                                     ),
                                   ],
@@ -569,6 +572,117 @@ class _InventoryScreenState extends State<InventoryScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  // دالة لعرض معلومات مع عنوان فرعي قابلة للضغط
+  Widget _buildClickableInfoItemWithSubtitle({
+    required IconData icon,
+    required String title,
+    required String value,
+    required String subtitle,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withOpacity(0.3)),
+        ),
+        child: Column(
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(icon, color: color, size: 20),
+                const SizedBox(width: 4),
+                Icon(Icons.touch_app, color: color.withOpacity(0.5), size: 12),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 12,
+                color: color,
+                fontWeight: FontWeight.w500,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 2),
+            Text(
+              value,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 2),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: Colors.grey[600],
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(width: 2),
+                Text(
+                  '↗',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: color,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // عرض معاملات إضافة الدين للشهر
+  void _showDebtAdditions(String monthYear) {
+    final year = int.parse(monthYear.split('-')[0]);
+    final month = int.parse(monthYear.split('-')[1]);
+    final startDate = DateTime(year, month, 1);
+    final endDate = month == 12 
+        ? DateTime(year + 1, 1, 1) 
+        : DateTime(year, month + 1, 1);
+    
+    TransactionsListDialog.showDebtAdditions(
+      context: context,
+      startDate: startDate,
+      endDate: endDate,
+      periodTitle: '$year-${month.toString().padLeft(2, '0')}',
+    );
+  }
+
+  // عرض معاملات تسديد الدين للشهر
+  void _showDebtPayments(String monthYear) {
+    final year = int.parse(monthYear.split('-')[0]);
+    final month = int.parse(monthYear.split('-')[1]);
+    final startDate = DateTime(year, month, 1);
+    final endDate = month == 12 
+        ? DateTime(year + 1, 1, 1) 
+        : DateTime(year, month + 1, 1);
+    
+    TransactionsListDialog.showDebtPayments(
+      context: context,
+      startDate: startDate,
+      endDate: endDate,
+      periodTitle: '$year-${month.toString().padLeft(2, '0')}',
     );
   }
 }

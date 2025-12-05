@@ -169,24 +169,43 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
             ),
           );
           if (shouldPrint == true) {
+            // الحصول على رقم سند القبض التالي
+            final db = DatabaseService();
+            final receiptNumber = await db.getNextCustomerReceiptNumber();
+            
             final font = pw.Font.ttf(
                 await rootBundle.load('assets/fonts/Amiri-Regular.ttf'));
+            // استخدام نفس خط الفاتورة لكلمة الناصر
             final alnaserFont = pw.Font.ttf(await rootBundle
-                .load('assets/fonts/Old Antic Outline Shaded.ttf'));
+                .load('assets/fonts/PTBLDHAD.TTF'));
             final logoBytes = await rootBundle
                 .load('assets/icon/alnasser.jpg');
             final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
             final pdf =
                 await ReceiptVoucherPdfService.generateReceiptVoucherPdf(
               customerName: widget.customer.name,
-              beforePayment: widget.customer.currentTotalDebt,
+              beforePayment: balanceBefore,
               paidAmount: amount,
               afterPayment: newBalance,
               dateTime: DateTime.now(),
               font: font,
               alnaserFont: alnaserFont,
               logoImage: logoImage,
+              receiptNumber: receiptNumber,
             );
+            
+            // حفظ سند القبض في قاعدة البيانات
+            final receipt = CustomerReceiptVoucher(
+              receiptNumber: receiptNumber,
+              customerId: widget.customer.id!,
+              customerName: widget.customer.name,
+              beforePayment: balanceBefore,
+              paidAmount: amount,
+              afterPayment: newBalance,
+              createdAt: DateTime.now(),
+            );
+            await db.insertCustomerReceiptVoucher(receipt);
+            
             // حفظ PDF في ملف مؤقت وفتحه في Microsoft Edge
             final tempDir = Directory.systemTemp;
             final filePath =

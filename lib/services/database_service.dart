@@ -464,6 +464,25 @@ class DatabaseService {
       )
     ''');
     
+    // --- إنشاء جدول أرشيف سندات القبض للعملاء ---
+    await _database!.execute('''
+      CREATE TABLE IF NOT EXISTS customer_receipt_vouchers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        receipt_number INTEGER NOT NULL,
+        customer_id INTEGER NOT NULL,
+        customer_name TEXT NOT NULL,
+        before_payment REAL NOT NULL,
+        paid_amount REAL NOT NULL,
+        after_payment REAL NOT NULL,
+        transaction_id INTEGER,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE,
+        FOREIGN KEY (transaction_id) REFERENCES transactions (id) ON DELETE SET NULL
+      )
+    ''');
+    print('DEBUG DB: customer_receipt_vouchers table ensured');
+    
     // --- نهاية التحقق ---
 
     // التحقق من حالة FTS5 وإعادة بناء الفهرس إذا لزم الأمر
@@ -4162,6 +4181,50 @@ class DatabaseService {
     return maps.map((m) => DebtTransaction.fromMap(m)).toList();
   }
 
+  /// جلب المعاملات حسب الفترة والنوع مع اسم العميل
+  /// [transactionTypes] قائمة أنواع المعاملات مثل ['manual_debt', 'opening_balance'] أو ['manual_payment']
+  /// [startDate] و [endDate] نطاق التاريخ
+  Future<List<Map<String, dynamic>>> getTransactionsWithCustomerName({
+    required List<String> transactionTypes,
+    required DateTime startDate,
+    required DateTime endDate,
+  }) async {
+    final db = await database;
+    try {
+      final startStr = startDate.toIso8601String();
+      final endStr = endDate.toIso8601String();
+      
+      // بناء شرط الأنواع
+      final typePlaceholders = transactionTypes.map((_) => '?').join(', ');
+      
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT 
+          t.id,
+          t.customer_id,
+          t.transaction_date,
+          t.amount_changed,
+          t.balance_before_transaction,
+          t.new_balance_after_transaction,
+          t.transaction_note,
+          t.transaction_type,
+          t.description,
+          c.name as customer_name,
+          c.phone as customer_phone
+        FROM transactions t
+        LEFT JOIN customers c ON t.customer_id = c.id
+        WHERE t.transaction_type IN ($typePlaceholders)
+          AND t.transaction_date >= ?
+          AND t.transaction_date < ?
+        ORDER BY t.transaction_date DESC
+      ''', [...transactionTypes, startStr, endStr]);
+      
+      return maps;
+    } catch (e) {
+      print('Error in getTransactionsWithCustomerName: $e');
+      return [];
+    }
+  }
+
   Future<void> markTransactionsUploaded(List<String> transactionUuids) async {
     if (transactionUuids.isEmpty) return;
     final db = await database;
@@ -7116,6 +7179,74 @@ class DatabaseService {
       );
     }
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📄 دوال أرشيف سندات القبض للعملاء
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// الحصول على رقم سند القبض التالي للعميل
+  Future<int> getNextCustomerReceiptNumber() async {
+    final db = await database;
+    final result = await db.rawQuery(
+      'SELECT MAX(receipt_number) as max_num FROM customer_receipt_vouchers'
+    );
+    final maxNum = result.first['max_num'] as int?;
+    return (maxNum ?? 0) + 1;
+  }
+
+  /// حفظ سند قبض جديد للعميل
+  Future<int> insertCustomerReceiptVoucher(CustomerReceiptVoucher receipt) async {
+    final db = await database;
+    final map = receipt.toMap();
+    map.remove('id'); // إزالة id لأنه auto-increment
+    return await db.insert('customer_receipt_vouchers', map);
+  }
+
+  /// الحصول على جميع سندات القبض لعميل معين
+  Future<List<CustomerReceiptVoucher>> getCustomerReceiptVouchers(int customerId) async {
+    final db = await database;
+    final results = await db.query(
+      'customer_receipt_vouchers',
+      where: 'customer_id = ?',
+      whereArgs: [customerId],
+      orderBy: 'created_at DESC',
+    );
+    return results.map((map) => CustomerReceiptVoucher.fromMap(map)).toList();
+  }
+
+  /// الحصول على سند قبض بواسطة ID
+  Future<CustomerReceiptVoucher?> getCustomerReceiptVoucherById(int id) async {
+    final db = await database;
+    final results = await db.query(
+      'customer_receipt_vouchers',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (results.isEmpty) return null;
+    return CustomerReceiptVoucher.fromMap(results.first);
+  }
+
+  /// حذف سند قبض
+  Future<int> deleteCustomerReceiptVoucher(int id) async {
+    final db = await database;
+    return await db.delete(
+      'customer_receipt_vouchers',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// الحصول على عدد سندات القبض لعميل معين
+  Future<int> getCustomerReceiptVouchersCount(int customerId) async {
+    final db = await database;
+    final result = await db.rawQuery(
+      'SELECT COUNT(*) as count FROM customer_receipt_vouchers WHERE customer_id = ?',
+      [customerId],
+    );
+    return (result.first['count'] as int?) ?? 0;
+  }
+
 } // نهاية كلاس DatabaseService
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -7327,5 +7458,67 @@ class QuickIntegrityCheckResult {
   @override
   String toString() {
     return 'QuickIntegrityCheckResult(healthy: $isHealthy, warnings: ${warnings.length}, dbIntegrity: $databaseIntegrity)';
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 📄 دوال أرشيف سندات القبض للعملاء
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// نموذج سند القبض للعميل
+class CustomerReceiptVoucher {
+  final int? id;
+  final int receiptNumber;
+  final int customerId;
+  final String customerName;
+  final double beforePayment;
+  final double paidAmount;
+  final double afterPayment;
+  final int? transactionId;
+  final String? notes;
+  final DateTime createdAt;
+
+  CustomerReceiptVoucher({
+    this.id,
+    required this.receiptNumber,
+    required this.customerId,
+    required this.customerName,
+    required this.beforePayment,
+    required this.paidAmount,
+    required this.afterPayment,
+    this.transactionId,
+    this.notes,
+    required this.createdAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'receipt_number': receiptNumber,
+      'customer_id': customerId,
+      'customer_name': customerName,
+      'before_payment': beforePayment,
+      'paid_amount': paidAmount,
+      'after_payment': afterPayment,
+      'transaction_id': transactionId,
+      'notes': notes,
+      'created_at': createdAt.toIso8601String(),
+    };
+  }
+
+  factory CustomerReceiptVoucher.fromMap(Map<String, dynamic> map) {
+    return CustomerReceiptVoucher(
+      id: map['id'] as int?,
+      receiptNumber: map['receipt_number'] as int,
+      customerId: map['customer_id'] as int,
+      customerName: map['customer_name'] as String,
+      beforePayment: (map['before_payment'] as num).toDouble(),
+      paidAmount: (map['paid_amount'] as num).toDouble(),
+      afterPayment: (map['after_payment'] as num).toDouble(),
+      transactionId: map['transaction_id'] as int?,
+      notes: map['notes'] as String?,
+      createdAt: DateTime.parse(map['created_at'] as String),
+    );
   }
 }

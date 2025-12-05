@@ -9,6 +9,8 @@ import 'package:flutter/services.dart' show rootBundle;
 import '../models/customer.dart';
 import '../models/account_statement_item.dart';
 import 'dart:convert';
+import 'settings_manager.dart';
+import 'pdf_header.dart';
 
 class PdfService {
   static final PdfService _instance = PdfService._internal();
@@ -185,16 +187,18 @@ class PdfService {
     // تحميل الخط العربي Amiri
     final fontData = await rootBundle.load('assets/fonts/Amiri-Regular.ttf');
     final ttf = pw.Font.ttf(fontData);
-    // تحميل خط Old Antic Outline Shaded لكلمة الناصر
+    // تحميل خط الناصر الصحيح (نفس خط الفاتورة)
     final alnaserFont = pw.Font.ttf(
-        await rootBundle.load('assets/fonts/Old Antic Outline Shaded.ttf'));
+        await rootBundle.load('assets/fonts/PTBLDHAD.TTF'));
+    // تحميل الشعار
+    final logoBytes = await rootBundle.load('assets/icon/alnasser.jpg');
+    final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
+    // تحميل الإعدادات
+    final appSettings = await SettingsManager.getAppSettings();
 
+    // دالة تنسيق الأرقام مع فاصلة كل 3 خانات
     String formatNumber(num value) {
-      if (value % 1 == 0) {
-        return value.toInt().toString();
-      } else {
-        return value.toStringAsFixed(2);
-      }
+      return NumberFormat('#,##0', 'en_US').format(value);
     }
 
     String formatDescription(AccountStatementItem item) {
@@ -219,47 +223,11 @@ class PdfService {
     final statementId =
         '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}';
 
-    // دالة مساعدة لبناء رأس الصفحة
+    // دالة مساعدة لبناء رأس الصفحة - نفس تصميم الفاتورة
     pw.Widget _buildHeader() {
       return pw.Column(
         children: [
-          pw.Container(
-            padding: const pw.EdgeInsets.all(1),
-            child: pw.Column(
-              children: [
-                pw.Center(
-                  child: pw.Text(
-                    'الــــــنــــــاصــــــر',
-                    style: pw.TextStyle(
-                      font: alnaserFont,
-                      fontSize: 28,
-                      height: 0,
-                      fontWeight: pw.FontWeight.bold,
-                      color: PdfColors.black,
-                    ),
-                  ),
-                ),
-                pw.Center(
-                  child: pw.Text(
-                      'لتجارة المواد الصحية والعدد اليدوية والانشائية',
-                      style: pw.TextStyle(font: ttf, fontSize: 10)),
-                ),
-                pw.Center(
-                  child: pw.Text(
-                    'الموصل - الجدعة - مقابل البرج',
-                    style: pw.TextStyle(font: ttf, fontSize: 8),
-                  ),
-                ),
-                pw.Center(
-                  child: pw.Text('0771 406 3064  |  0770 305 1353',
-                      style: pw.TextStyle(
-                          font: ttf,
-                          fontSize: 8,
-                          color: PdfColors.black)),
-                ),
-              ],
-            ),
-          ),
+          buildPdfHeader(ttf, alnaserFont, logoImage, appSettings: appSettings, logoSize: 100),
           pw.SizedBox(height: 1),
           pw.Row(
             mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
@@ -298,8 +266,8 @@ class PdfService {
       );
     }
 
-    // تقسيم المعاملات إلى صفحات (15 معاملة في كل صفحة)
-    const int transactionsPerPage = 15;
+    // تقسيم المعاملات إلى صفحات (30 معاملة في كل صفحة)
+    const int transactionsPerPage = 30;
     final int totalPages = (transactions.length / transactionsPerPage).ceil();
     
     print('📊 عدد المعاملات الكلي: ${transactions.length}');
