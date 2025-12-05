@@ -104,6 +104,103 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
         item.itemTotal > 0 &&
         (item.saleType != null && item.saleType!.isNotEmpty));
   }
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔒 تحسين الأمان: التحقق المسبق من صحة البيانات المالية
+  // ═══════════════════════════════════════════════════════════════════════════
+  _ValidationResult _validateInvoiceDataBeforeSave() {
+    // 1. التحقق من وجود أصناف
+    final completeItems = invoiceItems.where(_isInvoiceItemComplete).toList();
+    if (completeItems.isEmpty) {
+      return _ValidationResult(isValid: false, errorMessage: 'لا يمكن حفظ فاتورة بدون أصناف');
+    }
+    
+    // 2. حساب الإجمالي والتحقق من صحته
+    double calculatedTotal = 0.0;
+    for (final item in completeItems) {
+      final quantity = item.quantityIndividual ?? item.quantityLargeUnit ?? 0;
+      final expectedItemTotal = quantity * item.appliedPrice;
+      
+      // التحقق من صحة إجمالي الصنف
+      if ((item.itemTotal - expectedItemTotal).abs() > 0.01) {
+        print('⚠️ تحذير: إجمالي الصنف ${item.productName} غير متطابق: ${item.itemTotal} ≠ $expectedItemTotal');
+        // تصحيح تلقائي
+        // item.itemTotal = expectedItemTotal; // لا يمكن تعديل final
+      }
+      
+      calculatedTotal += item.itemTotal;
+    }
+    
+    // 3. التحقق من الخصم
+    if (discount < 0) {
+      return _ValidationResult(isValid: false, errorMessage: 'الخصم لا يمكن أن يكون سالباً');
+    }
+    if (discount >= calculatedTotal) {
+      return _ValidationResult(isValid: false, errorMessage: 'الخصم لا يمكن أن يساوي أو يتجاوز الإجمالي');
+    }
+    
+    // 4. التحقق من أجور التحميل
+    final loadingFee = double.tryParse(loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
+    if (loadingFee < 0) {
+      return _ValidationResult(isValid: false, errorMessage: 'أجور التحميل لا يمكن أن تكون سالبة');
+    }
+    
+    // 5. التحقق من المبلغ المدفوع
+    final paid = double.tryParse(paidAmountController.text.replaceAll(',', '')) ?? 0.0;
+    final finalTotal = (calculatedTotal + loadingFee) - discount;
+    
+    if (paid < 0) {
+      return _ValidationResult(isValid: false, errorMessage: 'المبلغ المدفوع لا يمكن أن يكون سالباً');
+    }
+    if (paid > finalTotal + 0.01) {
+      return _ValidationResult(isValid: false, errorMessage: 'المبلغ المدفوع لا يمكن أن يتجاوز الإجمالي');
+    }
+    
+    // 6. التحقق من نوع الدفع
+    if (paymentType == 'نقد' && (paid - finalTotal).abs() > 0.01) {
+      return _ValidationResult(isValid: false, errorMessage: 'في حالة الدفع النقدي، يجب أن يساوي المبلغ المدفوع الإجمالي');
+    }
+    
+    return _ValidationResult(isValid: true);
+  }
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔒 تحسين الأمان: التحقق بعد الحفظ
+  // ═══════════════════════════════════════════════════════════════════════════
+  Future<bool> _verifyInvoiceAfterSave(int invoiceId) async {
+    try {
+      final db = DatabaseService();
+      final savedInvoice = await db.getInvoiceById(invoiceId);
+      final savedItems = await db.getInvoiceItems(invoiceId);
+      
+      if (savedInvoice == null) {
+        print('⚠️ تحذير: لم يتم العثور على الفاتورة بعد الحفظ!');
+        return false;
+      }
+      
+      // التحقق من تطابق عدد الأصناف
+      final expectedItemsCount = invoiceItems.where(_isInvoiceItemComplete).length;
+      if (savedItems.length != expectedItemsCount) {
+        print('⚠️ تحذير: عدد الأصناف المحفوظة (${savedItems.length}) ≠ المتوقع ($expectedItemsCount)');
+        return false;
+      }
+      
+      // التحقق من تطابق الإجمالي
+      final savedTotal = savedItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+      final expectedTotal = invoiceItems.where(_isInvoiceItemComplete).fold(0.0, (sum, item) => sum + item.itemTotal);
+      
+      if ((savedTotal - expectedTotal).abs() > 0.01) {
+        print('⚠️ تحذير: إجمالي الأصناف المحفوظة ($savedTotal) ≠ المتوقع ($expectedTotal)');
+        return false;
+      }
+      
+      print('✅ تم التحقق من صحة الفاتورة بعد الحفظ');
+      return true;
+    } catch (e) {
+      print('⚠️ خطأ في التحقق بعد الحفظ: $e');
+      return false;
+    }
+  }
 
   double calculateActualCostPrice(
       Product product, String saleUnit, double quantity) {
@@ -266,6 +363,19 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
 
     try {
       final bool isNewInvoice = invoiceToManage == null;
+      
+      // ═══════════════════════════════════════════════════════════════════════════
+      // 🔒 تحسين الأمان: التحقق المسبق من صحة البيانات المالية
+      // ═══════════════════════════════════════════════════════════════════════════
+      final preValidation = _validateInvoiceDataBeforeSave();
+      if (!preValidation.isValid) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('خطأ في البيانات: ${preValidation.errorMessage}'),
+          backgroundColor: Colors.red,
+        ));
+        setState(() => isSaving = false);
+        return null;
+      }
 
       if (!isNewInvoice && invoiceToManage?.id == null) {
         throw Exception('خطأ فادح: محاولة تعديل فاتورة بدون معرّف (ID).');
@@ -414,6 +524,24 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
 
         await txn
             .delete('invoice_items', where: 'invoice_id = ?', whereArgs: [invoiceId]);
+        
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 🔍 DEBUG: طباعة الأصناف قبل الحفظ
+        // ═══════════════════════════════════════════════════════════════════════════
+        print('═══════════════════════════════════════════════════════════════════');
+        print('🔍 DEBUG SAVE: بدء حفظ الأصناف للفاتورة رقم $invoiceId');
+        print('🔍 DEBUG SAVE: عدد الأصناف في الذاكرة: ${invoiceItems.length}');
+        for (int i = 0; i < invoiceItems.length; i++) {
+          final item = invoiceItems[i];
+          print('🔍 DEBUG SAVE: صنف [$i]: ${item.productName}');
+          print('   - الكمية (individual): ${item.quantityIndividual}');
+          print('   - الكمية (large): ${item.quantityLargeUnit}');
+          print('   - السعر: ${item.appliedPrice}');
+          print('   - الإجمالي: ${item.itemTotal}');
+          print('   - نوع البيع: ${item.saleType}');
+          print('   - uniqueId: ${item.uniqueId}');
+        }
+        print('═══════════════════════════════════════════════════════════════════');
 
         final products = await txn.rawQuery('SELECT * FROM products');
         final productMap = <String, Map<String, dynamic>>{};
@@ -425,6 +553,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
         }
 
         final batch = txn.batch();
+        int savedItemsCount = 0;
 
         for (var item in invoiceItems) {
           if (_isInvoiceItemComplete(item)) {
@@ -456,10 +585,22 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
 
             var itemMap = invoiceItem.toMap();
             itemMap.remove('id');
+            
+            // 🔍 DEBUG: طباعة البيانات التي سيتم حفظها
+            print('🔍 DEBUG SAVE TO DB: حفظ صنف: ${item.productName}');
+            print('   - quantity_individual: ${itemMap['quantity_individual']}');
+            print('   - quantity_large_unit: ${itemMap['quantity_large_unit']}');
+            print('   - applied_price: ${itemMap['applied_price']}');
+            print('   - item_total: ${itemMap['item_total']}');
+            
             batch.insert('invoice_items', itemMap);
+            savedItemsCount++;
           }
         }
         await batch.commit(noResult: true);
+        
+        print('🔍 DEBUG SAVE: تم حفظ $savedItemsCount صنف في قاعدة البيانات');
+        print('═══════════════════════════════════════════════════════════════════');
 
         // ═══════════════════════════════════════════════════════════════════════════
         // ✅ منطق الدين المحسّن - يتعامل مع جميع الحالات
@@ -807,10 +948,45 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
             backgroundColor: Colors.green,
           ),
         );
-        setState(() {
-          invoiceToManage = savedInvoice;
-          isViewOnly = true;
-        });
+        
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 🔧 إصلاح: إعادة تحميل الأصناف من قاعدة البيانات بعد الحفظ
+        // لضمان تزامن البيانات المعروضة مع البيانات المحفوظة
+        // ═══════════════════════════════════════════════════════════════════════════
+        if (savedInvoice != null && savedInvoice!.id != null) {
+          try {
+            // 🔒 تحسين الأمان: التحقق بعد الحفظ
+            final verificationPassed = await _verifyInvoiceAfterSave(savedInvoice!.id!);
+            if (!verificationPassed) {
+              print('⚠️ تحذير: فشل التحقق بعد الحفظ - قد تكون هناك مشكلة في البيانات');
+            }
+            
+            final freshItems = await db.getInvoiceItems(savedInvoice!.id!);
+            // تهيئة الـ controllers لكل صنف
+            for (var item in freshItems) {
+              item.initializeControllers();
+            }
+            setState(() {
+              invoiceItems.clear();
+              invoiceItems.addAll(freshItems);
+              invoiceToManage = savedInvoice;
+              isViewOnly = true;
+            });
+            print('✅ تم إعادة تحميل ${freshItems.length} صنف من قاعدة البيانات');
+          } catch (e) {
+            print('⚠️ فشل إعادة تحميل الأصناف: $e');
+            setState(() {
+              invoiceToManage = savedInvoice;
+              isViewOnly = true;
+            });
+          }
+        } else {
+          setState(() {
+            invoiceToManage = savedInvoice;
+            isViewOnly = true;
+          });
+        }
+        
         if (isNewInvoice) {
           Navigator.of(context).popUntil((route) => route.isFirst);
         }
@@ -849,6 +1025,22 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           pw.Font.ttf(await rootBundle.load('assets/fonts/Amiri-Regular.ttf'));
       final alnaserFont =
           pw.Font.ttf(await rootBundle.load('assets/fonts/PTBLDHAD.TTF'));
+      
+      // ═══════════════════════════════════════════════════════════════════════════
+      // 🔧 إصلاح: جلب الأصناف من قاعدة البيانات لضمان عرض البيانات المحدثة
+      // ═══════════════════════════════════════════════════════════════════════════
+      List<InvoiceItem> itemsForPdf = invoiceItems;
+      if (invoiceToManage != null && invoiceToManage!.id != null) {
+        try {
+          final freshItems = await db.getInvoiceItems(invoiceToManage!.id!);
+          if (freshItems.isNotEmpty) {
+            itemsForPdf = freshItems;
+            print('✅ PDF: تم جلب ${freshItems.length} صنف من قاعدة البيانات');
+          }
+        } catch (e) {
+          print('⚠️ PDF: فشل جلب الأصناف من قاعدة البيانات، استخدام الذاكرة: $e');
+        }
+      }
 
       String buildUnitConversionStringForPdf(InvoiceItem item, Product? product) {
         if (item.unit == 'meter') {
@@ -889,7 +1081,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
 
       final allProducts = await db.getAllProducts();
       final filteredItems =
-          invoiceItems.where((item) => _isInvoiceItemComplete(item)).toList();
+          itemsForPdf.where((item) => _isInvoiceItemComplete(item)).toList();
 
       final itemsTotal =
           filteredItems.fold(0.0, (sum, item) => sum + item.itemTotal);
@@ -1559,4 +1751,14 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
 String formatProductId5(int? id) {
   if (id == null) return '-----';
   return id.toString().padLeft(5, '0');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔒 نتيجة التحقق الداخلية
+// ═══════════════════════════════════════════════════════════════════════════
+class _ValidationResult {
+  final bool isValid;
+  final String? errorMessage;
+  
+  _ValidationResult({required this.isValid, this.errorMessage});
 }

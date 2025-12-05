@@ -297,6 +297,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                 ],
                               ),
                               const SizedBox(height: 16),
+                              // المبيعات والأرباح
                               Row(
                                 children: [
                                   Expanded(
@@ -321,15 +322,40 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                 ],
                               ),
                               const SizedBox(height: 12),
+                              // التكلفة وعدد الفواتير
                               Row(
                                 children: [
                                   Expanded(
                                     child: _buildInfoItem(
-                                      icon: Icons.money,
+                                      icon: Icons.money_off,
+                                      title: 'إجمالي التكلفة',
+                                      value:
+                                          '${formatCurrency(summary.totalCost)} د.ع',
+                                      color: const Color(0xFFF44336),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: _buildInfoItem(
+                                      icon: Icons.receipt_long,
+                                      title: 'عدد الفواتير',
+                                      value: '${summary.invoiceCount} فاتورة',
+                                      color: const Color(0xFF607D8B),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              // تصنيف المبيعات
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: _buildInfoItem(
+                                      icon: Icons.payments,
                                       title: 'البيع بالنقد',
                                       value:
                                           '${formatCurrency(summary.cashSales)} د.ع',
-                                      color: const Color(0xFF9C27B0),
+                                      color: const Color(0xFF4CAF50),
                                     ),
                                   ),
                                   const SizedBox(width: 12),
@@ -344,46 +370,72 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                   ),
                                 ],
                               ),
-                              // إزالة قسم "إجمالي الراجع" واستبداله بتسويات الشهر
-                              if (summary.settlementAdditions > 0 ||
-                                  summary.settlementReturns > 0 ||
+                              // إجمالي الراجع
+                              if (summary.totalReturns > 0) ...[
+                                const SizedBox(height: 12),
+                                _buildInfoItem(
+                                  icon: Icons.keyboard_return,
+                                  title: 'إجمالي الراجع',
+                                  value:
+                                      '${formatCurrency(summary.totalReturns)} د.ع',
+                                  color: const Color(0xFF9C27B0),
+                                ),
+                              ],
+                              // المعاملات المالية
+                              if (summary.totalManualDebt > 0 ||
                                   summary.totalDebtPayments > 0) ...[
                                 const SizedBox(height: 12),
                                 Row(
                                   children: [
-                                    if (summary.settlementAdditions > 0) ...[
-                                      Expanded(
-                                        child: _buildInfoItem(
-                                          icon: Icons.add_circle,
-                                          title: 'تسوية الإضافة',
-                                          value:
-                                              '${formatCurrency(summary.settlementAdditions)} د.ع',
-                                          color: const Color(0xFF2E7D32),
-                                        ),
+                                    Expanded(
+                                      child: _buildInfoItemWithSubtitle(
+                                        icon: Icons.add_circle,
+                                        title: 'إضافة دين',
+                                        value:
+                                            '${formatCurrency(summary.totalManualDebt)} د.ع',
+                                        subtitle: '${summary.manualDebtCount} معاملة',
+                                        color: const Color(0xFFFF5722),
                                       ),
-                                      const SizedBox(width: 12),
-                                      Expanded(
-                                        child: _buildInfoItem(
-                                          icon: Icons.remove_circle,
-                                          title: 'تسوية الإرجاع',
-                                          value:
-                                              '${formatCurrency(summary.settlementReturns)} د.ع',
-                                          color: const Color(0xFFC62828),
-                                        ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: _buildInfoItemWithSubtitle(
+                                        icon: Icons.remove_circle,
+                                        title: 'تسديد دين',
+                                        value:
+                                            '${formatCurrency(summary.totalDebtPayments)} د.ع',
+                                        subtitle: '${summary.manualPaymentCount} معاملة',
+                                        color: const Color(0xFF4CAF50),
                                       ),
-                                      if (summary.totalDebtPayments > 0) ...[
-                                        const SizedBox(width: 12),
-                                        Expanded(
-                                          child: _buildInfoItem(
-                                            icon: Icons.account_balance_wallet,
-                                            title: 'تسديد الديون',
-                                            value:
-                                                '${formatCurrency(summary.totalDebtPayments)} د.ع',
-                                            color: const Color(0xFF4CAF50),
-                                          ),
-                                        ),
-                                      ],
-                                    ],
+                                    ),
+                                  ],
+                                ),
+                              ],
+                              // تسويات الشهر
+                              if (summary.settlementAdditions > 0 ||
+                                  summary.settlementReturns > 0) ...[
+                                const SizedBox(height: 12),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: _buildInfoItem(
+                                        icon: Icons.add_box,
+                                        title: 'تسوية الإضافة',
+                                        value:
+                                            '${formatCurrency(summary.settlementAdditions)} د.ع',
+                                        color: const Color(0xFF2E7D32),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: _buildInfoItem(
+                                        icon: Icons.indeterminate_check_box,
+                                        title: 'تسوية الإرجاع',
+                                        value:
+                                            '${formatCurrency(summary.settlementReturns)} د.ع',
+                                        color: const Color(0xFFC62828),
+                                      ),
+                                    ),
                                   ],
                                 ),
                               ],
@@ -460,6 +512,58 @@ class _InventoryScreenState extends State<InventoryScreen> {
               fontSize: 14,
               fontWeight: FontWeight.bold,
               color: color,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // دالة لعرض معلومات مع عنوان فرعي (مثل عدد المعاملات)
+  Widget _buildInfoItemWithSubtitle({
+    required IconData icon,
+    required String title,
+    required String value,
+    required String subtitle,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: color, size: 20),
+          const SizedBox(height: 4),
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 12,
+              color: color,
+              fontWeight: FontWeight.w500,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            subtitle,
+            style: TextStyle(
+              fontSize: 10,
+              color: Colors.grey[600],
             ),
             textAlign: TextAlign.center,
           ),

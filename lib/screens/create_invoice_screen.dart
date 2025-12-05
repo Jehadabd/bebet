@@ -40,6 +40,7 @@ import '../services/drive_service.dart';
 import 'invoice_actions.dart';
 import 'invoice_history_screen.dart';
 import '../services/password_service.dart'; // Added for password protection
+import '../utils/money_calculator.dart'; // Added for profit calculation fix
 
 // Helper: format product ID - show raw value without zero-padding
 String formatProductId5(int? id) {
@@ -177,6 +178,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         // Priority 4: Selling in base units (Piece, Meter)
         // Use item's stored cost if available, otherwise product's base cost
         costPerSaleUnit = itemBaseCost > 0 ? itemBaseCost : productBaseCost;
+      }
+
+      // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+      if (costPerSaleUnit <= 0 && sellingPrice > 0) {
+        costPerSaleUnit = MoneyCalculator.getEffectiveCost(0, sellingPrice);
       }
 
       final double lineAmount = sellingPrice * saleUnitsCount;
@@ -687,9 +693,26 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
   }
 
   Future<void> _loadInvoiceItems() async {
+    // 🔍 DEBUG: طباعة عند تحميل الأصناف
+    print('═══════════════════════════════════════════════════════════════════');
+    print('🔍 DEBUG LOAD ITEMS: بدء تحميل أصناف الفاتورة');
+    print('   - invoiceToManage: ${invoiceToManage?.id}');
+    
     try {
       if (invoiceToManage != null && invoiceToManage!.id != null) {
         final items = await db.getInvoiceItems(invoiceToManage!.id!);
+        
+        print('🔍 DEBUG LOAD ITEMS: تم جلب ${items.length} صنف');
+        for (int i = 0; i < items.length; i++) {
+          final item = items[i];
+          print('   [$i] ${item.productName}:');
+          print('       - quantity_individual: ${item.quantityIndividual}');
+          print('       - quantity_large_unit: ${item.quantityLargeUnit}');
+          print('       - applied_price: ${item.appliedPrice}');
+          print('       - item_total: ${item.itemTotal}');
+          print('       - uniqueId: ${item.uniqueId}');
+        }
+        
         // تهيئة الـ controllers لكل صنف
         for (var item in items) {
           item.initializeControllers();
@@ -705,10 +728,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
           final double loadingFee = double.tryParse(loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
           _totalAmountController.text = (itemsTotal + loadingFee).toStringAsFixed(2);
         });
+        
+        print('🔍 DEBUG LOAD ITEMS: تم تحميل الأصناف في invoiceItems');
+        print('   - عدد الأصناف في invoiceItems: ${invoiceItems.length}');
+        print('═══════════════════════════════════════════════════════════════════');
+        
         _scheduleLiveDebtSync();
       }
     } catch (e) {
-      print('Error loading invoice items: $e');
+      print('❌ Error loading invoice items: $e');
+      print('═══════════════════════════════════════════════════════════════════');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('حدث خطأ أثناء تحميل أصناف الفاتورة: $e')),
@@ -3409,6 +3438,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                     currentCustomerName: customerNameController.text.trim(),
                     currentCustomerPhone: customerPhoneController.text.trim().isEmpty ? null : customerPhoneController.text.trim(),
                       onItemUpdated: (updatedItem) {
+                        // 🔍 DEBUG: طباعة تحديث الصنف في الشاشة الرئيسية
+                        print('═══════════════════════════════════════════════════════════════════');
+                        print('🔍 DEBUG SCREEN UPDATE: استلام تحديث صنف');
+                        print('   - الصنف: ${updatedItem.productName}');
+                        print('   - الكمية (individual): ${updatedItem.quantityIndividual}');
+                        print('   - الكمية (large): ${updatedItem.quantityLargeUnit}');
+                        print('   - السعر: ${updatedItem.appliedPrice}');
+                        print('   - الإجمالي: ${updatedItem.itemTotal}');
+                        print('   - uniqueId: ${updatedItem.uniqueId}');
+                        
                         // تحديد أن هناك تغييرات غير محفوظة
                         if (invoiceToManage != null && !isViewOnly) {
                           hasUnsavedChanges = true;
@@ -3417,9 +3456,17 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                         setState(() {
                           final i = invoiceItems.indexWhere(
                               (it) => it.uniqueId == updatedItem.uniqueId);
+                          
+                          print('🔍 DEBUG SCREEN UPDATE: موقع الصنف في القائمة: $i');
+                          
                           if (i != -1) {
+                            print('🔍 DEBUG SCREEN UPDATE: قبل التحديث - الكمية: ${invoiceItems[i].quantityIndividual ?? invoiceItems[i].quantityLargeUnit}');
                             invoiceItems[i] = updatedItem;
+                            print('🔍 DEBUG SCREEN UPDATE: بعد التحديث - الكمية: ${invoiceItems[i].quantityIndividual ?? invoiceItems[i].quantityLargeUnit}');
+                          } else {
+                            print('🔍 DEBUG SCREEN UPDATE: ⚠️ لم يتم العثور على الصنف في القائمة!');
                           }
+                          
                           _recalculateTotals();
                           _calculateProfit(); // Update profit on item update
                           final lastIndex = invoiceItems.length - 1;
@@ -3441,6 +3488,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                             });
                           }
                         });
+                        
+                        print('🔍 DEBUG SCREEN UPDATE: حالة القائمة بعد التحديث:');
+                        for (int idx = 0; idx < invoiceItems.length; idx++) {
+                          final itm = invoiceItems[idx];
+                          if (itm.productName.isNotEmpty) {
+                            print('   [$idx] ${itm.productName}: ${itm.quantityIndividual ?? itm.quantityLargeUnit} × ${itm.appliedPrice} = ${itm.itemTotal}');
+                          }
+                        }
+                        print('═══════════════════════════════════════════════════════════════════');
+                        
         _scheduleLiveDebtSync();
                       },
                       onItemRemovedByUid: _removeInvoiceItemByUid,

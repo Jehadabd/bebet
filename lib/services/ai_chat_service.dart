@@ -5,6 +5,7 @@ import 'gemini_service.dart';
 import 'huggingface_service.dart';
 import 'sambanova_service.dart';
 import 'openrouter_service.dart';
+import '../utils/money_calculator.dart'; // 🔧 إضافة استيراد MoneyCalculator
 import 'dart:convert';
 import 'dart:io';
 
@@ -628,10 +629,28 @@ class AIChatService {
         double invoiceCost = 0.0;
         for (var item in items) {
           final qty = (item['quantity_individual'] as num?)?.toDouble() ?? 0.0;
-          final costPrice = (item['cost_price'] as num?)?.toDouble() ?? 0.0;
+          final qtyLarge = (item['quantity_large_unit'] as num?)?.toDouble() ?? 0.0;
+          final unitsInLarge = (item['units_in_large_unit'] as num?)?.toDouble() ?? 1.0;
+          final appliedPrice = (item['applied_price'] as num?)?.toDouble() ?? 0.0;
+          double costPrice = (item['cost_price'] as num?)?.toDouble() ?? 0.0;
+          final actualCostPrice = (item['actual_cost_price'] as num?)?.toDouble();
           
-          // حساب التكلفة الفعلية
-          invoiceCost += (qty * costPrice);
+          // استخدام التكلفة الفعلية إذا كانت متوفرة
+          if (actualCostPrice != null && actualCostPrice > 0) {
+            costPrice = actualCostPrice;
+          }
+          
+          // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+          if (costPrice <= 0 && appliedPrice > 0) {
+            costPrice = MoneyCalculator.getEffectiveCost(0, appliedPrice);
+          }
+          
+          // حساب التكلفة الفعلية مع مراعاة الوحدات الكبيرة
+          if (qtyLarge > 0) {
+            invoiceCost += (qtyLarge * costPrice);
+          } else {
+            invoiceCost += (qty * costPrice);
+          }
         }
         
         totalCost += invoiceCost;
@@ -841,10 +860,27 @@ class AIChatService {
         double invoiceCost = 0.0;
         for (var item in items) {
           final qty = (item['quantity_individual'] as num?)?.toDouble() ?? 0.0;
-          final costPrice = (item['cost_price'] as num?)?.toDouble() ?? 0.0;
+          final qtyLarge = (item['quantity_large_unit'] as num?)?.toDouble() ?? 0.0;
+          final appliedPrice = (item['applied_price'] as num?)?.toDouble() ?? 0.0;
+          double costPrice = (item['cost_price'] as num?)?.toDouble() ?? 0.0;
+          final actualCostPrice = (item['actual_cost_price'] as num?)?.toDouble();
           
-          // حساب التكلفة الفعلية
-          invoiceCost += (qty * costPrice);
+          // استخدام التكلفة الفعلية إذا كانت متوفرة
+          if (actualCostPrice != null && actualCostPrice > 0) {
+            costPrice = actualCostPrice;
+          }
+          
+          // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+          if (costPrice <= 0 && appliedPrice > 0) {
+            costPrice = MoneyCalculator.getEffectiveCost(0, appliedPrice);
+          }
+          
+          // حساب التكلفة الفعلية مع مراعاة الوحدات الكبيرة
+          if (qtyLarge > 0) {
+            invoiceCost += (qtyLarge * costPrice);
+          } else {
+            invoiceCost += (qty * costPrice);
+          }
         }
         
         // حساب الربح = المبيعات - التكلفة
@@ -1493,6 +1529,7 @@ class AIChatService {
             ii.item_total AS item_total,
             ii.cost_price AS item_cost_total,
             ii.actual_cost_price AS actual_cost_per_unit,
+            ii.applied_price AS selling_price,
             ii.sale_type AS sale_type,
             p.unit AS product_unit,
             p.cost_price AS product_cost_price,
@@ -1539,6 +1576,7 @@ class AIChatService {
           final double productCost = (row['product_cost_price'] as num?)?.toDouble() ?? 0.0;
           final double? lengthPerUnit = (row['length_per_unit'] as num?)?.toDouble();
           final double? actualCostPerUnit = (row['actual_cost_per_unit'] as num?)?.toDouble();
+          final double sellingPrice = (row['selling_price'] as num?)?.toDouble() ?? 0.0;
           final String? unitCostsJson = row['unit_costs'] as String?;
           final String productName = (row['product_name'] as String?) ?? '';
           
@@ -1672,6 +1710,8 @@ class AIChatService {
   }
 
   /// تقرير اليوم - حساب دقيق للأرباح والمبيعات
+  /// تقرير اليوم - حساب دقيق للأرباح والمبيعات
+  /// 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط (مصاريف كهرباء/تشغيل)
   Future<Map<String, dynamic>> getDailyReport() async {
     print('📊 AI Chat: بدء إنشاء تقرير اليوم...');
     
@@ -1721,6 +1761,7 @@ class AIChatService {
             ii.units_in_large_unit AS uilu,
             ii.cost_price AS item_cost_total,
             ii.actual_cost_price AS actual_cost_per_unit,
+            ii.applied_price AS selling_price,
             ii.sale_type AS sale_type,
             p.unit AS product_unit,
             p.cost_price AS product_cost_price,
@@ -1740,6 +1781,7 @@ class AIChatService {
           final double productCost = (row['product_cost_price'] as num?)?.toDouble() ?? 0.0;
           final double? lengthPerUnit = (row['length_per_unit'] as num?)?.toDouble();
           final double? actualCostPerUnit = (row['actual_cost_per_unit'] as num?)?.toDouble();
+          final double sellingPrice = (row['selling_price'] as num?)?.toDouble() ?? 0.0;
           final String? unitCostsJson = row['unit_costs'] as String?;
           Map<String, dynamic> unitCosts = const {};
           if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
@@ -1749,15 +1791,13 @@ class AIChatService {
           final bool soldAsLargeUnit = ql > 0;
           final double soldUnitsCount = soldAsLargeUnit ? ql : qi;
           
-          if (actualCostPerUnit != null) {
-            totalCost += actualCostPerUnit * soldUnitsCount;
-            continue;
-          }
-          
+          // حساب التكلفة لكل وحدة مباعة
           double costPerSoldUnit;
-          if (soldAsLargeUnit) {
+          if (actualCostPerUnit != null && actualCostPerUnit > 0) {
+            costPerSoldUnit = actualCostPerUnit;
+          } else if (soldAsLargeUnit) {
             final dynamic stored = unitCosts[saleType];
-            if (stored is num) {
+            if (stored is num && stored > 0) {
               costPerSoldUnit = stored.toDouble();
             } else {
               final bool isMeterRoll = productUnit == 'meter' && lengthPerUnit != null && (saleType == 'لفة');
@@ -1768,6 +1808,12 @@ class AIChatService {
           } else {
             costPerSoldUnit = productCost;
           }
+          
+          // إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+          if (costPerSoldUnit <= 0 && sellingPrice > 0) {
+            costPerSoldUnit = MoneyCalculator.getEffectiveCost(0, sellingPrice);
+          }
+          
           totalCost += costPerSoldUnit * soldUnitsCount;
         }
       }
@@ -1884,6 +1930,7 @@ class AIChatService {
             ii.units_in_large_unit AS uilu,
             ii.cost_price AS item_cost_total,
             ii.actual_cost_price AS actual_cost_per_unit,
+            ii.applied_price AS selling_price,
             ii.sale_type AS sale_type,
             p.unit AS product_unit,
             p.cost_price AS product_cost_price,
@@ -1903,6 +1950,7 @@ class AIChatService {
           final double productCost = (row['product_cost_price'] as num?)?.toDouble() ?? 0.0;
           final double? lengthPerUnit = (row['length_per_unit'] as num?)?.toDouble();
           final double? actualCostPerUnit = (row['actual_cost_per_unit'] as num?)?.toDouble();
+          final double sellingPrice = (row['selling_price'] as num?)?.toDouble() ?? 0.0;
           final String? unitCostsJson = row['unit_costs'] as String?;
           Map<String, dynamic> unitCosts = const {};
           if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
@@ -1912,15 +1960,13 @@ class AIChatService {
           final bool soldAsLargeUnit = ql > 0;
           final double soldUnitsCount = soldAsLargeUnit ? ql : qi;
           
-          if (actualCostPerUnit != null) {
-            totalCost += actualCostPerUnit * soldUnitsCount;
-            continue;
-          }
-          
+          // حساب التكلفة لكل وحدة مباعة
           double costPerSoldUnit;
-          if (soldAsLargeUnit) {
+          if (actualCostPerUnit != null && actualCostPerUnit > 0) {
+            costPerSoldUnit = actualCostPerUnit;
+          } else if (soldAsLargeUnit) {
             final dynamic stored = unitCosts[saleType];
-            if (stored is num) {
+            if (stored is num && stored > 0) {
               costPerSoldUnit = stored.toDouble();
             } else {
               final bool isMeterRoll = productUnit == 'meter' && lengthPerUnit != null && (saleType == 'لفة');
@@ -1931,6 +1977,12 @@ class AIChatService {
           } else {
             costPerSoldUnit = productCost;
           }
+          
+          // إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+          if (costPerSoldUnit <= 0 && sellingPrice > 0) {
+            costPerSoldUnit = MoneyCalculator.getEffectiveCost(0, sellingPrice);
+          }
+          
           totalCost += costPerSoldUnit * soldUnitsCount;
         }
       }

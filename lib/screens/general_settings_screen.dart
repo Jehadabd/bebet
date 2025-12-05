@@ -736,21 +736,34 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                   const SizedBox(height: 16),
                   const Text('العملاء الذين لديهم مشاكل:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
                   const SizedBox(height: 8),
-                  ...reports.where((r) => !r.isHealthy).take(15).map((r) => Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('• ${r.customerName}', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.red)),
-                        Text('  ${r.issues.first}', style: TextStyle(fontSize: 11, color: Colors.grey[700])),
-                      ],
-                    ),
-                  )),
+                  // عرض العملاء غير السليمين (سواء لديهم issues أو لا)
+                  ...reports.where((r) => !r.isHealthy).take(15).map((r) {
+                    // تحديد نص المشكلة
+                    String issueText = '';
+                    if (r.issues.isNotEmpty) {
+                      issueText = r.issues.first;
+                    } else if (r.calculatedBalance != r.recordedBalance) {
+                      issueText = 'الرصيد المسجل (${r.recordedBalance.toStringAsFixed(0)}) ≠ المحسوب (${r.calculatedBalance.toStringAsFixed(0)})';
+                    } else {
+                      issueText = 'مشكلة في البيانات';
+                    }
+                    
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('• ${r.customerName}', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.red)),
+                          Text('  $issueText', style: TextStyle(fontSize: 11, color: Colors.grey[700])),
+                        ],
+                      ),
+                    );
+                  }),
                   if (issueCount > 15)
                     Text('... و ${issueCount - 15} عملاء آخرين', style: TextStyle(color: Colors.grey[600], fontSize: 11)),
                 ],
                 
-                // عرض العملاء الذين لديهم تحذيرات
+                // عرض العملاء الذين لديهم تحذيرات (فقط إذا لم تكن هناك مشاكل)
                 if (warningCount > 0 && issueCount == 0) ...[
                   const SizedBox(height: 16),
                   const Text('عملاء لديهم تحذيرات:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),

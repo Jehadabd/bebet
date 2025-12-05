@@ -370,7 +370,7 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
                       icon: Icons.trending_up,
                       title: 'الربح',
                       value:
-                          '${yearData.totalProfit >= 0 ? yearData.totalProfit.toStringAsFixed(2) : (-yearData.totalProfit).toStringAsFixed(2)} د.ع',
+                          '${yearData.totalProfit >= 0 ? _fmt(yearData.totalProfit) : _fmt(-yearData.totalProfit)} د.ع',
                       color: const Color(0xFF4CAF50),
                     ),
                   ),
@@ -379,7 +379,7 @@ class _PersonDetailsScreenState extends State<PersonDetailsScreen> {
                     child: _buildInfoItem(
                       icon: Icons.shopping_cart,
                       title: 'المبيعات',
-                      value: '${yearData.totalSales.toStringAsFixed(2)} د.ع',
+                      value: '${_fmt(yearData.totalSales)} د.ع',
                       color: const Color(0xFF2196F3),
                     ),
                   ),

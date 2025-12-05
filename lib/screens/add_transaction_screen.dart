@@ -19,6 +19,7 @@ import '../services/database_service.dart';
 import '../services/drive_service.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:flutter/services.dart' show rootBundle;
+import '../utils/money_calculator.dart'; // 🔒 إضافة MoneyCalculator للأمان المالي
 
 class AddTransactionScreen extends StatefulWidget {
   final Customer customer;
@@ -76,12 +77,47 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     if (_formKey.currentState!.validate()) {
       final amount = double.parse(_amountController.text.replaceAll(',', ''));
       final amountChanged = _isDebt ? amount : -amount;
-      final newBalance = widget.customer.currentTotalDebt + amountChanged;
+      
+      // ═══════════════════════════════════════════════════════════════════════════
+      // 🔒 تحسين الأمان: استخدام MoneyCalculator لضمان دقة الحسابات
+      // ═══════════════════════════════════════════════════════════════════════════
+      final balanceBefore = widget.customer.currentTotalDebt;
+      final newBalance = MoneyCalculator.add(balanceBefore, amountChanged);
+      
+      // 🔒 التحقق المزدوج من صحة الحساب
+      final verification = MoneyCalculator.verifyTransaction(
+        balanceBefore: balanceBefore,
+        amountChanged: amountChanged,
+        expectedBalanceAfter: newBalance,
+      );
+      
+      if (!verification.isValid) {
+        print('⚠️ تحذير أمني في المعاملة: ${verification.errorMessage}');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('خطأ في الحساب: ${verification.errorMessage}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+      
+      // 🔒 التحقق من أن التسديد لا يجعل الرصيد سالباً بشكل غير منطقي
+      if (!_isDebt && newBalance < -0.01) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('خطأ: التسديد سيجعل الرصيد سالباً (${newBalance.toStringAsFixed(2)})'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+      
       final uuid = await DriveService().generateTransactionUuid();
       final transaction = DebtTransaction(
         customerId: widget.customer.id!,
         amountChanged: amountChanged,
-        balanceBeforeTransaction: widget.customer.currentTotalDebt, // تعيين الرصيد قبل المعاملة
+        balanceBeforeTransaction: balanceBefore, // تعيين الرصيد قبل المعاملة
         newBalanceAfterTransaction: newBalance,
         transactionNote:
             _noteController.text.isEmpty ? null : _noteController.text,
@@ -92,6 +128,18 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
         audioNotePath: _audioNotePath,
         transactionUuid: uuid,
       );
+      
+      // 🔒 طباعة تفاصيل المعاملة للتدقيق
+      print('═══════════════════════════════════════════════════════════════════');
+      print('🔒 معاملة جديدة:');
+      print('   - العميل: ${widget.customer.name} (ID: ${widget.customer.id})');
+      print('   - النوع: ${_isDebt ? "إضافة دين" : "تسديد"}');
+      print('   - المبلغ: $amount');
+      print('   - الرصيد قبل: $balanceBefore');
+      print('   - الرصيد بعد: $newBalance');
+      print('   - التحقق: ${verification.isValid ? "✅ صحيح" : "❌ خطأ"}');
+      print('═══════════════════════════════════════════════════════════════════');
+      
       await context.read<AppProvider>().addTransaction(transaction);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -509,7 +557,8 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
               Builder(builder: (ctx) {
                 final entered = double.tryParse(_amountController.text.replaceAll(',', '')) ?? 0.0;
                 final signed = _isDebt ? entered : -entered;
-                final newBalance = widget.customer.currentTotalDebt + signed;
+                // 🔒 استخدام MoneyCalculator للمعاينة أيضاً
+                final newBalance = MoneyCalculator.add(widget.customer.currentTotalDebt, signed);
                 final color = newBalance > widget.customer.currentTotalDebt
                     ? Theme.of(ctx).colorScheme.error
                     : Theme.of(ctx).colorScheme.tertiary;

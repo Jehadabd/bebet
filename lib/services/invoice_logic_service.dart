@@ -22,6 +22,7 @@ import 'package:get_storage/get_storage.dart';
 import '../services/drive_service.dart';
 import '../services/financial_validation_service.dart';
 import '../services/financial_audit_service.dart';
+import '../utils/money_calculator.dart'; // Added import
 
 class InvoiceLogicService {
   // هنا يتم نقل جميع الدوال المنطقية من شاشة الفاتورة
@@ -192,7 +193,7 @@ class InvoiceLogicService {
       }
       
       // 2. حساب المبالغ
-      double currentTotalAmount = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+      double currentTotalAmount = invoiceItems.fold(0.0, (sum, item) => MoneyCalculator.add(sum, item.itemTotal));
       double paid = double.tryParse(paidAmountController.text.replaceAll(',', '')) ?? 0.0;
       final double loadingFee = double.tryParse(loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
       
@@ -209,7 +210,7 @@ class InvoiceLogicService {
       }
       
       // 5. حساب الإجمالي النهائي
-      double totalAmount = (currentTotalAmount + loadingFee) - discount;
+      double totalAmount = MoneyCalculator.subtract(MoneyCalculator.add(currentTotalAmount, loadingFee), discount);
       
       // 6. التحقق من المبلغ المدفوع
       final paidValidation = FinancialValidationService.validatePaidAmount(paid, totalAmount, paymentType);
@@ -234,18 +235,16 @@ class InvoiceLogicService {
       // حفظ الفاتورة (بعد التحقق من صحة البيانات)
       // ═══════════════════════════════════════════════════════════════════════════
       
-    try {
-      Customer? customer;
-      if (customerNameController.text.trim().isNotEmpty) {
-        customer = await db.findCustomerByNormalizedName(
-          customerNameController.text.trim(),
-          phone: customerPhoneController.text.trim().isEmpty
-              ? null
-              : customerPhoneController.text.trim(),
-        );
-        if (customer == null) {
-          customer = Customer(
-            id: null,
+      // ═══════════════════════════════════════════════════════════════════════════
+      // حفظ الفاتورة (بعد التحقق من صحة البيانات)
+      // ═══════════════════════════════════════════════════════════════════════════
+      
+      try {
+        // تحضير بيانات العميل
+        Customer? customerData;
+        if (customerNameController.text.trim().isNotEmpty) {
+          customerData = Customer(
+            id: null, // سيتم تحديده أو إنشاؤه داخل الترانزاكشن
             name: customerNameController.text.trim(),
             phone: customerPhoneController.text.trim().isEmpty
                 ? null
@@ -255,166 +254,63 @@ class InvoiceLogicService {
             lastModifiedAt: DateTime.now(),
             currentTotalDebt: 0.0,
           );
-          final insertedId = await db.insertCustomer(customer);
-          customer = customer.copyWith(id: insertedId);
         }
-      }
-      double currentTotalAmount =
-          invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-      // إزالة فواصل الآلاف قبل تحويل النص إلى رقم لضمان دقة الحساب
-      double paid =
-          double.tryParse(paidAmountController.text.replaceAll(',', '')) ??
-              0.0;
-      final double loadingFee =
-          double.tryParse(loadingFeeController.text.replaceAll(',', '')) ??
-              0.0;
-      double debt = ((currentTotalAmount + loadingFee) - discount) - paid;
-      double totalAmount = (currentTotalAmount + loadingFee) - discount;
-      // تحقق من نسبة الخصم
-      final totalAmountForDiscount =
-          invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-      if (discount >= totalAmountForDiscount) {
-        return null;
-      }
-      // تحديد الحالة الجديدة
-      String newStatus = 'محفوظة';
-      bool newIsLocked = invoiceToManage?.isLocked ?? false;
-      if (invoiceToManage != null) {
-        if (invoiceToManage.status == 'معلقة') {
-          newStatus = 'محفوظة';
+
+        // تحديد الحالة الجديدة
+        String newStatus = 'محفوظة';
+        bool newIsLocked = invoiceToManage?.isLocked ?? false;
+        if (invoiceToManage != null) {
+          if (invoiceToManage.status == 'معلقة') {
+            newStatus = 'محفوظة';
+            newIsLocked = false;
+          }
+        } else {
           newIsLocked = false;
         }
-      } else {
-        newIsLocked = false;
-      }
-      Invoice invoice = Invoice(
-        id: invoiceToManage?.id,
-        customerName: customerNameController.text,
-        customerPhone: customerPhoneController.text,
-        customerAddress: customerAddressController.text,
-        installerName: installerNameController.text.isEmpty
-            ? null
-            : installerNameController.text,
-        invoiceDate: selectedDate,
-        paymentType: paymentType,
-        totalAmount: totalAmount,
-        discount: discount,
-        amountPaidOnInvoice: paid,
-        loadingFee: loadingFee,
-        createdAt: invoiceToManage?.createdAt ?? DateTime.now(),
-        lastModifiedAt: DateTime.now(),
-        customerId: customer?.id,
-        status: newStatus,
-        returnAmount: returnAmountController.text.isNotEmpty
-            ? double.parse(returnAmountController.text)
-            : 0.0,
-        isLocked: false,
-      );
-      if (invoice.installerName != null && invoice.installerName!.isNotEmpty) {
-        final existingInstaller =
-            await db.getInstallerByName(invoice.installerName!);
-        if (existingInstaller == null) {
-          final newInstaller = Installer(
-            id: null,
-            name: invoice.installerName!,
-            totalBilledAmount: 0.0,
-          );
-          await db.insertInstaller(newInstaller);
-        }
-      }
-      int invoiceId;
-      if (invoiceToManage != null) {
-        invoiceId = invoiceToManage.id!;
-        final oldItems = await db.getInvoiceItems(invoiceId);
-        for (var oldItem in oldItems) {
-          await db.deleteInvoiceItem(oldItem.id!);
-        }
-        for (var item in invoiceItems) {
-          item.invoiceId = invoiceId;
-          await db.insertInvoiceItem(item);
-        }
-        await db.updateInvoice(invoice);
-      } else {
-        invoiceId = await db.insertInvoice(invoice);
-        final savedInvoice = await db.getInvoiceById(invoiceId);
-        if (savedInvoice != null) {
-          invoice = savedInvoice;
-        }
-        for (var item in invoiceItems) {
-          item.invoiceId = invoiceId;
-          await db.insertInvoiceItem(item);
-        }
-      }
-      if (paymentType == 'دين' && customer != null && debt > 0) {
-        // جلب الرصيد الفعلي قبل العملية
-        final beforeDebt = (await db.getCustomerById(customer.id!))?.currentTotalDebt ?? 0.0;
-        final afterDebt = beforeDebt + debt;
-        final updatedCustomer = customer.copyWith(
-          currentTotalDebt: afterDebt,
+
+        // تحضير كائن الفاتورة
+        Invoice invoice = Invoice(
+          id: invoiceToManage?.id,
+          customerName: customerNameController.text,
+          customerPhone: customerPhoneController.text,
+          customerAddress: customerAddressController.text,
+          installerName: installerNameController.text.isEmpty
+              ? null
+              : installerNameController.text,
+          invoiceDate: selectedDate,
+          paymentType: paymentType,
+          totalAmount: totalAmount,
+          discount: discount,
+          amountPaidOnInvoice: paid,
+          loadingFee: loadingFee,
+          createdAt: invoiceToManage?.createdAt ?? DateTime.now(),
           lastModifiedAt: DateTime.now(),
+          customerId: invoiceToManage?.customerId, // سيتم تحديثه داخل الترانزاكشن إذا لزم الأمر
+          status: newStatus,
+          returnAmount: returnAmountController.text.isNotEmpty
+              ? double.parse(returnAmountController.text)
+              : 0.0,
+          isLocked: false,
         );
-        await db.updateCustomer(updatedCustomer);
-        final txUuid = await DriveService().generateTransactionUuid();
-        final debtTransaction = DebtTransaction(
-          id: null,
-          customerId: customer.id!,
-          amountChanged: debt,
-          transactionType: 'invoice_debt',
-          description: 'دين فاتورة رقم ${invoiceId ?? invoiceToManage?.id}',
-          balanceBeforeTransaction: beforeDebt,
-          newBalanceAfterTransaction: afterDebt,
-          invoiceId: invoiceId,
-          transactionUuid: txUuid,
+
+        // استدعاء الحفظ الآمن (Transaction)
+        final savedInvoice = await db.saveCompleteInvoice(
+          invoice: invoice,
+          items: invoiceItems,
+          customerData: customerData,
+          isUpdate: invoiceToManage != null,
+          oldInvoice: invoiceToManage,
+          createdBy: 'System', // يمكن تحسينه لاحقاً لإضافة اسم المستخدم
         );
-        await db.insertDebtTransaction(debtTransaction);
+
+        storage.remove('temp_invoice_data');
+        return savedInvoice;
+
+      } catch (e) {
+        // إعادة رمي الاستثناء مع رسالة واضحة
+        print('خطأ في حفظ الفاتورة: $e');
+        rethrow;
       }
-      
-      // ═══════════════════════════════════════════════════════════════════════════
-      // تسجيل العملية في سجل التدقيق
-      // ═══════════════════════════════════════════════════════════════════════════
-      try {
-        final auditService = FinancialAuditService();
-        if (invoiceToManage != null) {
-          // تعديل فاتورة موجودة
-          await auditService.logInvoiceUpdate(
-            invoiceId,
-            {
-              'total_amount': invoiceToManage.totalAmount,
-              'discount': invoiceToManage.discount,
-              'payment_type': invoiceToManage.paymentType,
-              'paid_amount': invoiceToManage.amountPaidOnInvoice,
-            },
-            {
-              'total_amount': totalAmount,
-              'discount': discount,
-              'payment_type': paymentType,
-              'paid_amount': paid,
-            },
-            customerId: customer?.id,
-          );
-        } else {
-          // إنشاء فاتورة جديدة
-          await auditService.logInvoiceCreation(invoiceId, {
-            'total_amount': totalAmount,
-            'discount': discount,
-            'payment_type': paymentType,
-            'paid_amount': paid,
-            'customer_name': customerNameController.text,
-            'items_count': invoiceItems.length,
-          }, customerId: customer?.id);
-        }
-      } catch (auditError) {
-        print('تحذير: فشل تسجيل التدقيق: $auditError');
-        // لا نوقف العملية إذا فشل التسجيل
-      }
-      
-      storage.remove('temp_invoice_data');
-      return await db.getInvoiceById(invoiceId);
-    } catch (e) {
-      // إعادة رمي الاستثناء مع رسالة واضحة
-      print('خطأ في حفظ الفاتورة: $e');
-      rethrow;
-    }
     } catch (validationError) {
       // خطأ في التحقق من البيانات
       print('خطأ في التحقق من البيانات: $validationError');
@@ -440,22 +336,22 @@ class InvoiceLogicService {
     if (invoiceToManage == null ||
         invoiceToManage.status != 'معلقة' ||
         (invoiceToManage.isLocked)) return null;
-    Customer? customer;
+    // تحضير بيانات العميل
+    Customer? customerData;
     if (customerNameController.text.trim().isNotEmpty) {
-      final customers = await db.getAllCustomers();
-      try {
-        customer = customers.firstWhere(
-          (c) =>
-              c.name.trim() == customerNameController.text.trim() &&
-              (c.phone == null ||
-                  c.phone!.isEmpty ||
-                  customerPhoneController.text.trim().isEmpty ||
-                  c.phone == customerPhoneController.text.trim()),
-        );
-      } catch (e) {
-        customer = null;
-      }
+      customerData = Customer(
+        id: null, // سيتم التعامل معه في الترانزاكشن
+        name: customerNameController.text.trim(),
+        phone: customerPhoneController.text.trim().isEmpty
+            ? null
+            : customerPhoneController.text.trim(),
+        address: customerAddressController.text.trim(),
+        createdAt: DateTime.now(),
+        lastModifiedAt: DateTime.now(),
+        currentTotalDebt: 0.0,
+      );
     }
+
     double currentTotalAmount =
         invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
     // إزالة فواصل الآلاف قبل التحويل
@@ -466,6 +362,7 @@ class InvoiceLogicService {
         double.tryParse(loadingFeeController.text.replaceAll(',', '')) ??
             0.0;
     double totalAmount = (currentTotalAmount + loadingFee) - discount;
+    
     Invoice invoice = invoiceToManage.copyWith(
       customerName: customerNameController.text,
       customerPhone: customerPhoneController.text,
@@ -480,22 +377,23 @@ class InvoiceLogicService {
       amountPaidOnInvoice: paid,
       loadingFee: loadingFee,
       lastModifiedAt: DateTime.now(),
-      customerId: customer?.id,
+      customerId: invoiceToManage.customerId, // سيتم تحديثه في الترانزاكشن
       returnAmount: returnAmountController.text.isNotEmpty
           ? double.parse(returnAmountController.text)
           : 0.0,
       isLocked: false,
     );
-    int invoiceId = invoiceToManage.id!;
-    final oldItems = await db.getInvoiceItems(invoiceId);
-    for (var oldItem in oldItems) {
-      await db.deleteInvoiceItem(oldItem.id!);
-    }
-    for (var item in invoiceItems) {
-      item.invoiceId = invoiceId;
-      await db.insertInvoiceItem(item);
-    }
-    await db.updateInvoice(invoice);
-    return invoice;
+
+    // استدعاء الحفظ الآمن
+    final savedInvoice = await db.saveCompleteInvoice(
+      invoice: invoice,
+      items: invoiceItems,
+      customerData: customerData,
+      isUpdate: true,
+      oldInvoice: invoiceToManage,
+      createdBy: 'AutoSave',
+    );
+    
+    return savedInvoice;
   }
 }

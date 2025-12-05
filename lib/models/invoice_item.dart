@@ -101,6 +101,29 @@ class InvoiceItem {
 
   // Extract an InvoiceItem object from a Map object
   factory InvoiceItem.fromMap(Map<String, dynamic> map) {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔧 إصلاح: تنظيف البيانات - استخدام الكمية الصحيحة بناءً على نوع البيع
+    // ═══════════════════════════════════════════════════════════════════════════
+    final String? saleType = map['sale_type'] as String?;
+    double? quantityIndividual = map['quantity_individual'] as double?;
+    double? quantityLargeUnit = map['quantity_large_unit'] as double?;
+    
+    // إذا كان نوع البيع قطعة أو متر، استخدم quantityIndividual فقط
+    // وإلا استخدم quantityLargeUnit فقط
+    if (saleType == 'قطعة' || saleType == 'متر') {
+      // للوحدات الصغيرة: استخدم quantityIndividual، وإذا كانت null استخدم quantityLargeUnit
+      if (quantityIndividual == null && quantityLargeUnit != null) {
+        quantityIndividual = quantityLargeUnit;
+      }
+      quantityLargeUnit = null; // مسح القيمة الأخرى
+    } else if (saleType != null && saleType.isNotEmpty) {
+      // للوحدات الكبيرة (لفة، كرتون، إلخ): استخدم quantityLargeUnit
+      if (quantityLargeUnit == null && quantityIndividual != null) {
+        quantityLargeUnit = quantityIndividual;
+      }
+      quantityIndividual = null; // مسح القيمة الأخرى
+    }
+    
     return InvoiceItem(
       id: map['id'] as int?,
       invoiceId: map['invoice_id'] ?? 0,
@@ -109,17 +132,22 @@ class InvoiceItem {
       unit: map['unit'] ?? '',
       unitPrice: map['unit_price'] as double,
       costPrice: map['cost_price'] as double?,
-      actualCostPrice: map['actual_cost_price'] as double?, // التكلفة الفعلية للمنتج في وقت البيع
-      quantityIndividual: map['quantity_individual'] as double?,
-      quantityLargeUnit: map['quantity_large_unit'] as double?,
+      actualCostPrice: map['actual_cost_price'] as double?,
+      quantityIndividual: quantityIndividual,
+      quantityLargeUnit: quantityLargeUnit,
       appliedPrice: map['applied_price'] ?? 0.0,
       itemTotal: map['item_total'] ?? 0.0,
-      saleType: map['sale_type'] as String?,
+      saleType: saleType,
       unitsInLargeUnit: map['units_in_large_unit'] as double?,
       uniqueId: map['unique_id'] ?? 'item_${DateTime.now().microsecondsSinceEpoch}',
     );
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔧 إصلاح: استخدام Object? sentinel pattern للسماح بتمرير null بشكل صريح
+  // ═══════════════════════════════════════════════════════════════════════════
+  static const _sentinel = Object();
+  
   InvoiceItem copyWith({
     int? id,
     int? invoiceId,
@@ -127,15 +155,15 @@ class InvoiceItem {
     String? productName,
     String? unit,
     double? unitPrice,
-    double? costPrice, // Made nullable in copyWith
-    double? actualCostPrice, // التكلفة الفعلية للمنتج في وقت البيع
-    double? quantityIndividual,
-    double? quantityLargeUnit,
+    double? costPrice,
+    double? actualCostPrice,
+    Object? quantityIndividual = _sentinel, // استخدام Object? للسماح بـ null
+    Object? quantityLargeUnit = _sentinel,  // استخدام Object? للسماح بـ null
     double? appliedPrice,
     double? itemTotal,
-    String? saleType, // أضف هذا
+    String? saleType,
     double? unitsInLargeUnit,
-    String? uniqueId, // أضف هذا
+    String? uniqueId,
   }) {
     return InvoiceItem(
       id: id ?? this.id,
@@ -145,14 +173,19 @@ class InvoiceItem {
       unit: unit ?? this.unit,
       unitPrice: unitPrice ?? this.unitPrice,
       costPrice: costPrice ?? this.costPrice,
-      actualCostPrice: actualCostPrice ?? this.actualCostPrice, // التكلفة الفعلية للمنتج في وقت البيع
-      quantityIndividual: quantityIndividual ?? this.quantityIndividual,
-      quantityLargeUnit: quantityLargeUnit ?? this.quantityLargeUnit,
+      actualCostPrice: actualCostPrice ?? this.actualCostPrice,
+      // 🔧 إصلاح: السماح بتمرير null لمسح القيمة القديمة
+      quantityIndividual: quantityIndividual == _sentinel 
+          ? this.quantityIndividual 
+          : quantityIndividual as double?,
+      quantityLargeUnit: quantityLargeUnit == _sentinel 
+          ? this.quantityLargeUnit 
+          : quantityLargeUnit as double?,
       appliedPrice: appliedPrice ?? this.appliedPrice,
       itemTotal: itemTotal ?? this.itemTotal,
-      saleType: saleType ?? this.saleType, // أضف هذا
+      saleType: saleType ?? this.saleType,
       unitsInLargeUnit: unitsInLargeUnit ?? this.unitsInLargeUnit,
-      uniqueId: uniqueId ?? this.uniqueId, // أضف هذا
+      uniqueId: uniqueId ?? this.uniqueId,
     );
   }
 }

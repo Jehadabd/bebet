@@ -1703,7 +1703,7 @@ class TransactionListTile extends StatelessWidget {
   }
 
   String _formatDate(DateTime date) {
-    return DateFormat('yyyy/MM/dd').format(date); // Consistent date format
+    return DateFormat('yyyy/MM/dd HH:mm').format(date); // التاريخ مع الوقت (ساعة:دقيقة)
   }
 
   void _navigateToInvoiceDetails(

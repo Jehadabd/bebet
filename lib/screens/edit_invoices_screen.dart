@@ -469,9 +469,25 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                                       ],
                                     ),
                                     onTap: () async {
-                                      // جلب أصناف الفاتورة بدون طباعة
+                                      // 🔍 DEBUG: طباعة عند فتح الفاتورة للتعديل
+                                      print('═══════════════════════════════════════════════════════════════════');
+                                      print('🔍 DEBUG OPEN: فتح الفاتورة رقم ${invoice.id} للتعديل/العرض');
+                                      print('   - العميل: ${invoice.customerName}');
+                                      print('   - الإجمالي: ${invoice.totalAmount}');
+                                      print('   - الحالة: ${invoice.status}');
+                                      print('   - isViewOnly: ${invoice.status == 'محفوظة'}');
+                                      
+                                      // جلب أصناف الفاتورة مع طباعة
                                       final items = await DatabaseService()
                                           .getInvoiceItems(invoice.id!);
+                                      
+                                      print('🔍 DEBUG OPEN: تم جلب ${items.length} صنف من قاعدة البيانات');
+                                      for (int i = 0; i < items.length; i++) {
+                                        final item = items[i];
+                                        print('   [$i] ${item.productName}: ${item.quantityIndividual ?? item.quantityLargeUnit} × ${item.appliedPrice} = ${item.itemTotal}');
+                                      }
+                                      print('═══════════════════════════════════════════════════════════════════');
+                                      
                                       Navigator.push(
                                         context,
                                         MaterialPageRoute(

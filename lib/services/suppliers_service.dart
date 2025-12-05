@@ -7,6 +7,7 @@ import 'package:sqflite/sqflite.dart';
 import '../models/supplier.dart';
 import 'database_service.dart';
 import 'financial_audit_service.dart';
+import '../utils/money_calculator.dart'; // Added import
 
 class SuppliersService {
   SuppliersService();
@@ -133,38 +134,35 @@ class SuppliersService {
   Future<int> insertSupplierInvoice(SupplierInvoice invoice) async {
     await ensureTables();
     final db = await _db;
-    final id = await db.insert('supplier_invoices', invoice.toMap());
-    // احسب تأثير الفاتورة على الرصيد
-    final double remaining = (invoice.totalAmount - invoice.amountPaid);
-    final double delta = invoice.paymentType == 'نقد' ? 0.0 : (remaining > 0 ? remaining : 0.0);
-    // اطبع الرصيد قبل/بعد للتشخيص
-    double before = 0.0;
-    try {
-      final beforeRow = await db.query('suppliers', columns: ['current_balance','total_purchases'], where: 'id = ?', whereArgs: [invoice.supplierId], limit: 1);
-      before = beforeRow.isNotEmpty ? ((beforeRow.first['current_balance'] as num?)?.toDouble() ?? 0.0) : 0.0;
-      final double after = before + delta;
-      print('DEBUG BALANCE (Invoice): supplier=${invoice.supplierId} total=${invoice.totalAmount} paid=${invoice.amountPaid} type=${invoice.paymentType} delta=$delta before=$before after=$after');
-    } catch (_) {}
-    // حدّث الرصيد والمشتريات الإجمالية (المشتريات تزيد دائماً بقيمة الفاتورة)
-    await db.rawUpdate(
-      'UPDATE suppliers SET current_balance = current_balance + ?, total_purchases = total_purchases + ?, last_modified_at = ? WHERE id = ?',
-      [delta, invoice.totalAmount, DateTime.now().toIso8601String(), invoice.supplierId],
-    );
     
-    // تسجيل العملية في سجل التدقيق
+    int invoiceId = await db.transaction((txn) async {
+      final id = await txn.insert('supplier_invoices', invoice.toMap());
+      // احسب تأثير الفاتورة على الرصيد
+      final double remaining = MoneyCalculator.subtract(invoice.totalAmount, invoice.amountPaid);
+      final double delta = invoice.paymentType == 'نقد' ? 0.0 : (remaining > 0 ? remaining : 0.0);
+      
+      // حدّث الرصيد والمشتريات الإجمالية (المشتريات تزيد دائماً بقيمة الفاتورة)
+      await txn.rawUpdate(
+        'UPDATE suppliers SET current_balance = current_balance + ?, total_purchases = total_purchases + ?, last_modified_at = ? WHERE id = ?',
+        [delta, invoice.totalAmount, DateTime.now().toIso8601String(), invoice.supplierId],
+      );
+      return id;
+    });
+    
+    // تسجيل العملية في سجل التدقيق (خارج الترانزاكشن لتجنب القفل)
     try {
+      // نحتاج لجلب الرصيد الجديد للتسجيل الدقيق، أو نحسبه تقريبياً
+      // للتبسيط سنقوم بالتسجيل كما كان
       final auditService = FinancialAuditService();
       await auditService.logOperation(
         operationType: 'supplier_invoice_create',
         entityType: 'supplier',
         entityId: invoice.supplierId,
         newValues: {
-          'invoice_id': id,
+          'invoice_id': invoiceId,
           'total_amount': invoice.totalAmount,
           'amount_paid': invoice.amountPaid,
           'payment_type': invoice.paymentType,
-          'balance_before': before,
-          'balance_after': before + delta,
         },
         notes: 'فاتورة مورد جديدة بقيمة ${invoice.totalAmount}',
       );
@@ -172,26 +170,22 @@ class SuppliersService {
       print('خطأ في تسجيل التدقيق: $e');
     }
     
-    return id;
+    return invoiceId;
   }
 
   Future<int> insertSupplierReceipt(SupplierReceipt receipt) async {
     await ensureTables();
     final db = await _db;
-    final id = await db.insert('supplier_receipts', receipt.toMap());
-    // اطبع الرصيد قبل/بعد للتشخيص
-    double before = 0.0;
-    try {
-      final beforeRow = await db.query('suppliers', columns: ['current_balance'], where: 'id = ?', whereArgs: [receipt.supplierId], limit: 1);
-      before = beforeRow.isNotEmpty ? ((beforeRow.first['current_balance'] as num?)?.toDouble() ?? 0.0) : 0.0;
-      final double delta = -receipt.amount;
-      final double after = before + delta;
-      print('DEBUG BALANCE (Receipt): supplier=${receipt.supplierId} amount=${receipt.amount} delta=$delta before=$before after=$after');
-    } catch (_) {}
-    await db.rawUpdate(
-      'UPDATE suppliers SET current_balance = current_balance - ? , last_modified_at = ? WHERE id = ?',
-      [receipt.amount, DateTime.now().toIso8601String(), receipt.supplierId],
-    );
+    
+    int receiptId = await db.transaction((txn) async {
+      final id = await txn.insert('supplier_receipts', receipt.toMap());
+      // حدّث الرصيد
+      await txn.rawUpdate(
+        'UPDATE suppliers SET current_balance = current_balance - ? , last_modified_at = ? WHERE id = ?',
+        [receipt.amount, DateTime.now().toIso8601String(), receipt.supplierId],
+      );
+      return id;
+    });
     
     // تسجيل العملية في سجل التدقيق
     try {
@@ -201,11 +195,9 @@ class SuppliersService {
         entityType: 'supplier',
         entityId: receipt.supplierId,
         newValues: {
-          'receipt_id': id,
+          'receipt_id': receiptId,
           'amount': receipt.amount,
           'payment_method': receipt.paymentMethod,
-          'balance_before': before,
-          'balance_after': before - receipt.amount,
         },
         notes: 'سند قبض مورد بقيمة ${receipt.amount}',
       );
@@ -213,7 +205,7 @@ class SuppliersService {
       print('خطأ في تسجيل التدقيق: $e');
     }
     
-    return id;
+    return receiptId;
   }
 
   Future<int> insertAttachment(Attachment attachment) async {

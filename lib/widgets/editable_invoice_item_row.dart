@@ -54,8 +54,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     super.initState();
     _currentItem = widget.item;
     
-    // إنشاء متحكمات جديدة مع القيم المنسقة
-    final quantity = widget.item.quantityIndividual ?? widget.item.quantityLargeUnit ?? 0;
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔧 إصلاح: تحديد الكمية الصحيحة بناءً على نوع البيع
+    // ═══════════════════════════════════════════════════════════════════════════
+    final quantity = _getCorrectQuantity(widget.item);
     final price = widget.item.appliedPrice;
     
     _quantityController = TextEditingController(
@@ -69,6 +71,60 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     _quantityFocusNode = widget.quantityFocusNode ?? FocusNode();
     _priceFocusNode = widget.priceFocusNode ?? FocusNode();
     _saleTypeFocusNode = FocusNode();
+  }
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔧 دالة مساعدة: الحصول على الكمية الصحيحة بناءً على نوع البيع
+  // ═══════════════════════════════════════════════════════════════════════════
+  double _getCorrectQuantity(InvoiceItem item) {
+    // إذا كان نوع البيع قطعة أو متر، استخدم quantityIndividual
+    // وإلا استخدم quantityLargeUnit (للفة، كرتون، إلخ)
+    if (item.saleType == 'قطعة' || item.saleType == 'متر') {
+      return item.quantityIndividual ?? item.quantityLargeUnit ?? 0;
+    } else {
+      // للوحدات الكبيرة (لفة، كرتون، إلخ) استخدم quantityLargeUnit أولاً
+      return item.quantityLargeUnit ?? item.quantityIndividual ?? 0;
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant EditableInvoiceItemRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔧 إصلاح مشكلة عدم تزامن البيانات عند التعديلات المتكررة
+    // ═══════════════════════════════════════════════════════════════════════════
+    // إذا تغير الـ item من الخارج (مثلاً بعد إعادة جلب البيانات من قاعدة البيانات)
+    // يجب تحديث الـ _currentItem والمتحكمات
+    if (widget.item.uniqueId != oldWidget.item.uniqueId ||
+        widget.item.quantityIndividual != oldWidget.item.quantityIndividual ||
+        widget.item.quantityLargeUnit != oldWidget.item.quantityLargeUnit ||
+        widget.item.appliedPrice != oldWidget.item.appliedPrice ||
+        widget.item.saleType != oldWidget.item.saleType ||
+        widget.item.productName != oldWidget.item.productName) {
+      
+      _currentItem = widget.item;
+      
+      // 🔧 إصلاح: استخدام الدالة المساعدة للحصول على الكمية الصحيحة
+      final newQuantity = _getCorrectQuantity(widget.item);
+      final newPrice = widget.item.appliedPrice;
+      
+      // تحديث الكمية
+      if (!_quantityFocusNode.hasFocus) {
+        final newQuantityText = newQuantity > 0 ? NumberFormat('#,##0.##', 'en_US').format(newQuantity) : '';
+        if (_quantityController.text != newQuantityText) {
+          _quantityController.text = newQuantityText;
+        }
+      }
+      
+      // تحديث السعر
+      if (!_priceFocusNode.hasFocus) {
+        final newPriceText = newPrice > 0 ? NumberFormat('#,##0.##', 'en_US').format(newPrice) : '';
+        if (_priceController.text != newPriceText) {
+          _priceController.text = newPriceText;
+        }
+      }
+    }
   }
 
   @override
@@ -134,6 +190,17 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   void _updateQuantity(String value) {
     double? newQuantity = double.tryParse(value.replaceAll(',', ''));
     if (newQuantity == null || newQuantity <= 0) return;
+    
+    // 🔍 DEBUG: طباعة تحديث الكمية
+    print('═══════════════════════════════════════════════════════════════════');
+    print('🔍 DEBUG UPDATE QTY: تحديث كمية الصنف: ${_currentItem.productName}');
+    print('   - الكمية القديمة (individual): ${_currentItem.quantityIndividual}');
+    print('   - الكمية القديمة (large): ${_currentItem.quantityLargeUnit}');
+    print('   - الكمية الجديدة: $newQuantity');
+    print('   - نوع البيع: ${_currentItem.saleType}');
+    print('   - uniqueId: ${_currentItem.uniqueId}');
+    print('═══════════════════════════════════════════════════════════════════');
+    
     setState(() {
       if (_currentItem.saleType == 'قطعة' || _currentItem.saleType == 'متر') {
         _currentItem = _currentItem.copyWith(
@@ -248,6 +315,11 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
 
   @override
   Widget build(BuildContext context) {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔧 إصلاح: استخدام _currentItem دائماً لضمان عرض البيانات المحدثة
+    // ═══════════════════════════════════════════════════════════════════════════
+    final displayItem = _currentItem;
+    
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 0.0),
       elevation: 2,
@@ -265,7 +337,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 flex: 2,
                 child: widget.isViewOnly
                     ? Text(
-                        NumberFormat('#,##0.##', 'en_US').format(widget.item.itemTotal),
+                        NumberFormat('#,##0.##', 'en_US').format(displayItem.itemTotal),
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             fontWeight: FontWeight.bold,
@@ -281,7 +353,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
                 child: widget.isViewOnly
-                    ? Text(widget.item.productName,
+                    ? Text(displayItem.productName,
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodyMedium)
                     : Builder(
@@ -348,10 +420,8 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
                 child: widget.isViewOnly
                     ? Text(
-                        NumberFormat('#,##0.##', 'en_US').format(
-                            (widget.item.quantityIndividual ??
-                                    widget.item.quantityLargeUnit) ??
-                                0),
+                        // 🔧 إصلاح: استخدام الدالة المساعدة للحصول على الكمية الصحيحة
+                        NumberFormat('#,##0.##', 'en_US').format(_getCorrectQuantity(displayItem)),
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodyMedium,
                       )
@@ -388,7 +458,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
                 child: widget.isViewOnly
                     ? Text(
-                        widget.item.saleType ?? '',
+                        displayItem.saleType ?? '',
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodyMedium,
                       )
@@ -420,7 +490,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
                 child: widget.isViewOnly
                     ? Text(
-                        NumberFormat('#,##0.##', 'en_US').format(widget.item.appliedPrice),
+                        NumberFormat('#,##0.##', 'en_US').format(displayItem.appliedPrice),
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodyMedium,
                       )
@@ -453,11 +523,11 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
             Expanded(
               flex: 2,
               child: widget.isViewOnly
-                  ? ((widget.item.saleType == 'قطعة' ||
-                          widget.item.saleType == 'متر')
+                  ? ((displayItem.saleType == 'قطعة' ||
+                          displayItem.saleType == 'متر')
                       ? const SizedBox.shrink()
                       : Text(
-                          widget.item.unitsInLargeUnit?.toStringAsFixed(0) ??
+                          displayItem.unitsInLargeUnit?.toStringAsFixed(0) ??
                               '',
                           textAlign: TextAlign.center,
                           style: Theme.of(context).textTheme.bodyMedium))

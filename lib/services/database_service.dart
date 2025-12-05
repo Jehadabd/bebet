@@ -13,6 +13,7 @@ import '../models/invoice_adjustment.dart';
 import '../models/person_data.dart';
 import '../models/inventory_data.dart';
 import '../models/monthly_overview.dart';
+import '../utils/money_calculator.dart'; // Added import
 import 'package:pdf/widgets.dart' as pw;
 import 'package:pdf/pdf.dart';
 import 'package:path_provider/path_provider.dart';
@@ -24,9 +25,10 @@ import 'dart:convert';
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
   static Database? _database;
-  static const int _databaseVersion = 33;
+  static const int _databaseVersion = 34;
   // تحكم بالطباعات التشخيصية من مصدر واحد
-  static const bool _verboseLogs = false;
+  // تم تفعيله للتحقق من سلامة قاعدة البيانات عند البدء
+  static const bool _verboseLogs = true;
 
   factory DatabaseService() => _instance;
 
@@ -1297,7 +1299,7 @@ class DatabaseService {
               whereArgs: [transactionId]
             );
             // تحديث الرصيد الجاري للمعاملة التالية
-            runningBalance += (transactions[i]['amount_changed'] as num).toDouble();
+            runningBalance = MoneyCalculator.add(runningBalance, (transactions[i]['amount_changed'] as num).toDouble());
           }
         }
         print('تم تحديث قيم الرصيد قبل المعاملة لجميع المعاملات بنجاح');
@@ -1641,7 +1643,7 @@ class DatabaseService {
       
       if (installerMaps.isNotEmpty) {
         double currentPoints = (installerMaps.first['total_points'] as num?)?.toDouble() ?? 0.0;
-        double newTotal = currentPoints + points;
+        double newTotal = MoneyCalculator.add(currentPoints, points);
         
         await txn.update(
           'installers',
@@ -1676,7 +1678,7 @@ class DatabaseService {
       
       if (installerMaps.isNotEmpty) {
         double currentPoints = (installerMaps.first['total_points'] as num?)?.toDouble() ?? 0.0;
-        double newTotal = currentPoints - points; // Subtract the points
+        double newTotal = MoneyCalculator.subtract(currentPoints, points); // Subtract the points
         
         await txn.update(
           'installers',
@@ -1730,7 +1732,7 @@ class DatabaseService {
       if (existingPoints.isNotEmpty) {
         // Update existing entry
         final double oldPoints = (existingPoints.first['points'] as num).toDouble();
-        final double diff = newPoints - oldPoints;
+        final double diff = MoneyCalculator.subtract(newPoints, oldPoints);
         
         if (diff.abs() > 0.001) {
           await txn.update(
@@ -1897,7 +1899,22 @@ class DatabaseService {
         }
         
         // 3. حساب الرصيد الجديد
-        double newBalanceAfterTransaction = verifiedBalanceBefore + transaction.amountChanged;
+        double newBalanceAfterTransaction = MoneyCalculator.add(verifiedBalanceBefore, transaction.amountChanged);
+        
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 🔒 تحسين الأمان: التحقق المزدوج (Double-entry verification)
+        // ═══════════════════════════════════════════════════════════════════════════
+        final verification = MoneyCalculator.verifyTransaction(
+          balanceBefore: verifiedBalanceBefore,
+          amountChanged: transaction.amountChanged,
+          expectedBalanceAfter: newBalanceAfterTransaction,
+        );
+        
+        if (!verification.isValid) {
+          print('⚠️ تحذير أمني: ${verification.errorMessage}');
+          // في حالة عدم التطابق، نستخدم القيمة المحسوبة
+          newBalanceAfterTransaction = verification.calculatedBalance;
+        }
         
         // 4. تجهيز المعاملة بالأرصدة الصحيحة
         final updatedTransaction = transaction.copyWith(
@@ -1918,6 +1935,24 @@ class DatabaseService {
           where: 'id = ?',
           whereArgs: [transaction.customerId],
         );
+        
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 🔒 تحسين الأمان: التحقق بعد الحفظ (Post-save verification)
+        // ═══════════════════════════════════════════════════════════════════════════
+        final List<Map<String, dynamic>> verifyCustomer = await txn.query(
+          'customers',
+          columns: ['current_total_debt'],
+          where: 'id = ?',
+          whereArgs: [transaction.customerId],
+          limit: 1,
+        );
+        
+        if (verifyCustomer.isNotEmpty) {
+          final savedBalance = (verifyCustomer.first['current_total_debt'] as num).toDouble();
+          if (!MoneyCalculator.areEqual(savedBalance, newBalanceAfterTransaction)) {
+            print('⚠️ تحذير أمني: الرصيد المحفوظ ($savedBalance) ≠ الرصيد المتوقع ($newBalanceAfterTransaction)');
+          }
+        }
 
         return id;
       } catch (e) {
@@ -1988,7 +2023,7 @@ class DatabaseService {
           : 'manual_payment';
           
       // حساب الرصيد الجديد بعد المعاملة بناءً على الرصيد قبلها
-      final double newBalanceAfter = balanceBeforeTransaction + updated.amountChanged;
+      final double newBalanceAfter = MoneyCalculator.add(balanceBeforeTransaction, updated.amountChanged);
       
       // تحديث المعاملة بالبيانات الجديدة
       int updatedRows = await db.update(
@@ -2014,7 +2049,7 @@ class DatabaseService {
         double runningBalance = newBalanceAfter;
         for (int i = currentIndex + 1; i < transactions.length; i++) {
           // تحديث الرصيد قبل المعاملة والرصيد بعد المعاملة في عملية واحدة
-          double newBalance = runningBalance + transactions[i].amountChanged;
+          double newBalance = MoneyCalculator.add(runningBalance, transactions[i].amountChanged);
           int updatedSubRows = await db.update(
             'transactions',
             {
@@ -2096,7 +2131,7 @@ class DatabaseService {
       final String newType = newAmount >= 0 ? 'manual_debt' : 'manual_payment';
       
       // حساب الرصيد الجديد بعد المعاملة بناءً على الرصيد قبلها
-      final double newBalanceAfter = balanceBeforeTransaction + newAmount;
+      final double newBalanceAfter = MoneyCalculator.add(balanceBeforeTransaction, newAmount);
       
       // تحديث المعاملة بالمبلغ والنوع الجديد
       await db.update(
@@ -2120,14 +2155,14 @@ class DatabaseService {
             'transactions',
             {
               'balance_before_transaction': runningBalance,
-              'new_balance_after_transaction': runningBalance + transactions[i].amountChanged,
+              'new_balance_after_transaction': MoneyCalculator.add(runningBalance, transactions[i].amountChanged),
             },
             where: 'id = ?',
             whereArgs: [transactions[i].id],
           );
           
           // تحديث الرصيد الجاري للمعاملة التالية
-          runningBalance += transactions[i].amountChanged;
+          runningBalance = MoneyCalculator.add(runningBalance, transactions[i].amountChanged);
         }
       }
       
@@ -2178,7 +2213,7 @@ class DatabaseService {
     // تحديث الرصيد بعد كل معاملة
     for (final transaction in transactions) {
       final double balanceBefore = runningBalance;
-      runningBalance += transaction.amountChanged;
+      runningBalance = MoneyCalculator.add(runningBalance, transaction.amountChanged);
       
       await db.update(
         'transactions',
@@ -2329,6 +2364,241 @@ class DatabaseService {
     }
   }
 
+  /// حفظ الفاتورة بشكل كامل وآمن (Transaction)
+  /// هذه الدالة تضمن حفظ كل البيانات أو عدم حفظ أي شيء في حال حدوث خطأ
+  Future<Invoice> saveCompleteInvoice({
+    required Invoice invoice,
+    required List<InvoiceItem> items,
+    required Customer? customerData, // بيانات العميل (للبحث أو الإنشاء)
+    required bool isUpdate,
+    Invoice? oldInvoice, // الفاتورة القديمة في حالة التعديل
+    String? createdBy, // للمراقبة
+  }) async {
+    final db = await database;
+    
+    return await db.transaction((txn) async {
+      try {
+        // 1. معالجة العميل (Customer Handling)
+        int? customerId = invoice.customerId;
+        Customer? customer;
+        
+        // إذا تم تمرير بيانات عميل، نتأكد من وجوده أو ننشئه
+        if (customerData != null) {
+          // محاولة البحث عن العميل
+          customer = await _findCustomer(txn, customerData.name, customerData.phone);
+          
+          if (customer == null) {
+            // إنشاء عميل جديد
+            final newCustomer = customerData.copyWith(
+              createdAt: DateTime.now(),
+              lastModifiedAt: DateTime.now(),
+              currentTotalDebt: 0.0, // الدين سيتم تحديثه لاحقاً
+            );
+            final newId = await txn.insert('customers', newCustomer.toMap());
+            customer = newCustomer.copyWith(id: newId);
+            customerId = newId;
+          } else {
+            customerId = customer.id;
+          }
+        }
+
+        // تحديث معرف العميل في الفاتورة
+        var invoiceToSave = invoice.copyWith(customerId: customerId);
+
+        // 2. معالجة الفني (Installer Handling)
+        if (invoiceToSave.installerName != null && invoiceToSave.installerName!.isNotEmpty) {
+          // التحقق من وجود الفني
+          final List<Map<String, dynamic>> installers = await txn.query(
+            'installers',
+            where: 'name = ?',
+            whereArgs: [invoiceToSave.installerName],
+          );
+          
+          if (installers.isEmpty) {
+            await txn.insert('installers', {
+              'name': invoiceToSave.installerName,
+              'total_billed_amount': 0.0,
+            });
+          }
+          
+          // تحديث مجاميع الفني
+          // خصم المبلغ القديم (إذا كان تعديل)
+          if (isUpdate && oldInvoice != null && oldInvoice.installerName != null) {
+             await _updateInstallerTotal(txn, oldInvoice.installerName, -oldInvoice.totalAmount);
+          }
+          // إضافة المبلغ الجديد
+          await _updateInstallerTotal(txn, invoiceToSave.installerName, invoiceToSave.totalAmount);
+        } else if (isUpdate && oldInvoice != null && oldInvoice.installerName != null) {
+          // إذا تم حذف الفني من الفاتورة، نخصم المبلغ من الفني القديم
+          await _updateInstallerTotal(txn, oldInvoice.installerName, -oldInvoice.totalAmount);
+        }
+
+        // 3. حفظ الفاتورة (Invoice Saving)
+        int invoiceId;
+        if (isUpdate) {
+          invoiceId = invoiceToSave.id!;
+          await txn.update(
+            'invoices', 
+            invoiceToSave.toMap(), 
+            where: 'id = ?', 
+            whereArgs: [invoiceId]
+          );
+          
+          // حذف العناصر القديمة
+          await txn.delete('invoice_items', where: 'invoice_id = ?', whereArgs: [invoiceId]);
+        } else {
+          invoiceId = await txn.insert('invoices', invoiceToSave.toMap());
+          invoiceToSave = invoiceToSave.copyWith(id: invoiceId);
+        }
+
+        // 4. حفظ العناصر (Items Saving)
+        for (var item in items) {
+          var itemMap = item.toMap();
+          itemMap['invoice_id'] = invoiceId;
+          itemMap.remove('id'); // لتوليد معرف جديد
+          await txn.insert('invoice_items', itemMap);
+        }
+        
+        // تحديث final_total
+        await txn.rawUpdate('UPDATE invoices SET final_total = total_amount WHERE id = ?', [invoiceId]);
+
+        // 5. معالجة الديون والمعاملات (Debt & Transactions)
+        // يتم تطبيق الديون فقط إذا كانت الفاتورة "محفوظة" وليست "معلقة" أو "مسودة"
+        bool shouldApplyDebt = invoiceToSave.status == 'محفوظة';
+        
+        if (customer != null && shouldApplyDebt) {
+          double oldDebtContribution = 0.0;
+          double newDebtContribution = 0.0;
+          
+          // حساب المساهمة القديمة في الدين
+          // فقط إذا كانت الفاتورة القديمة أيضاً "محفوظة" (ليست معلقة سابقاً)
+          // إذا كانت معلقة سابقاً، فهي لم تساهم في الدين، لذا oldDebtContribution = 0
+          bool oldWasApplied = false;
+          if (isUpdate && oldInvoice != null) {
+             // نفترض أن الفواتير القديمة المحفوظة فقط هي التي أثرت في الدين
+             // (يمكن التحقق من status القديم إذا كان متوفراً، أو نفترض ذلك بناءً على وجود معاملة)
+             // للسلامة، نتحقق من status القديم
+             if (oldInvoice.status == 'محفوظة' && oldInvoice.paymentType == 'دين') {
+               oldDebtContribution = MoneyCalculator.subtract(oldInvoice.totalAmount, oldInvoice.amountPaidOnInvoice);
+               oldWasApplied = true;
+             }
+          }
+          
+          // حساب المساهمة الجديدة في الدين
+          if (invoiceToSave.paymentType == 'دين') {
+            newDebtContribution = MoneyCalculator.subtract(invoiceToSave.totalAmount, invoiceToSave.amountPaidOnInvoice);
+          }
+          
+          final double debtChange = MoneyCalculator.subtract(newDebtContribution, oldDebtContribution);
+          
+          if (debtChange.abs() > 0.001) { // استخدام هامش صغير لمشاكل الـ double
+            // تحديث رصيد العميل
+            final currentCustomerData = await txn.query('customers', where: 'id = ?', whereArgs: [customer.id]);
+            if (currentCustomerData.isNotEmpty) {
+               double currentDebt = (currentCustomerData.first['current_total_debt'] as num).toDouble();
+               double newTotalDebt = MoneyCalculator.add(currentDebt, debtChange);
+
+               
+               await txn.update(
+                 'customers', 
+                 {
+                   'current_total_debt': newTotalDebt,
+                   'last_modified_at': DateTime.now().toIso8601String(),
+                 },
+                 where: 'id = ?',
+                 whereArgs: [customer.id]
+               );
+               
+               // معالجة سجل المعاملات (Transactions)
+               if (isUpdate && oldWasApplied) {
+                 // محاولة العثور على المعاملة المرتبطة بهذه الفاتورة
+                 final existingTx = await txn.query(
+                   'transactions',
+                   where: 'invoice_id = ? AND transaction_type = ?',
+                   whereArgs: [invoiceId, 'invoice_debt'],
+                 );
+                 
+                 if (existingTx.isNotEmpty) {
+                   if (newDebtContribution > 0) {
+                     // تحديث المعاملة الموجودة
+                     await txn.update(
+                       'transactions',
+                       {
+                         'amount_changed': newDebtContribution,
+                         'new_balance_after_transaction': newTotalDebt, 
+                       },
+                       where: 'id = ?',
+                       whereArgs: [existingTx.first['id']]
+                     );
+                   } else {
+                     // إذا لم يعد هناك دين (تحولت لنقد)، نحذف المعاملة
+                     await txn.delete('transactions', where: 'id = ?', whereArgs: [existingTx.first['id']]);
+                   }
+                 } else if (newDebtContribution > 0) {
+                   // إنشاء معاملة جديدة (ربما كانت نقد وأصبحت دين)
+                   await txn.insert('transactions', {
+                      'customer_id': customer.id,
+                      'transaction_date': invoiceToSave.invoiceDate.toIso8601String(),
+                      'amount_changed': newDebtContribution,
+                      'new_balance_after_transaction': newTotalDebt,
+                      'transaction_note': 'دين فاتورة رقم $invoiceId',
+                      'transaction_type': 'invoice_debt',
+                      'description': 'فاتورة مبيعات (تعديل)',
+                      'created_at': DateTime.now().toIso8601String(),
+                      'invoice_id': invoiceId,
+                   });
+                 }
+               } else {
+                 // فاتورة جديدة أو كانت معلقة وأصبحت محفوظة
+                 if (newDebtContribution > 0) {
+                   await txn.insert('transactions', {
+                      'customer_id': customer.id,
+                      'transaction_date': invoiceToSave.invoiceDate.toIso8601String(),
+                      'amount_changed': newDebtContribution,
+                      'new_balance_after_transaction': newTotalDebt,
+                      'transaction_note': 'دين فاتورة رقم $invoiceId',
+                      'transaction_type': 'invoice_debt',
+                      'description': 'فاتورة مبيعات',
+                      'created_at': DateTime.now().toIso8601String(),
+                      'invoice_id': invoiceId,
+                   });
+                 }
+               }
+            }
+          }
+        }
+
+        // 6. سجل التدقيق (Audit Log)
+        if (isUpdate && oldInvoice != null) {
+          await txn.insert('invoice_logs', {
+            'invoice_id': invoiceId,
+            'action': 'updated_transactional',
+            'details': 'تم التحديث بنجاح عبر المعاملات الآمنة',
+            'created_at': DateTime.now().toIso8601String(),
+            'created_by': createdBy,
+          });
+        } else {
+          await txn.insert('invoice_logs', {
+            'invoice_id': invoiceId,
+            'action': 'created_transactional',
+            'details': 'تم الإنشاء بنجاح عبر المعاملات الآمنة',
+            'created_at': DateTime.now().toIso8601String(),
+            'created_by': createdBy,
+          });
+        }
+
+        // إرجاع الفاتورة المحفوظة
+        final savedInvoiceMaps = await txn.query('invoices', where: 'id = ?', whereArgs: [invoiceId]);
+        return Invoice.fromMap(savedInvoiceMaps.first);
+        
+      } catch (e) {
+        print('Transaction Error: $e');
+        throw e; // سيقوم الترانزاكشن بإلغاء كل التغييرات تلقائياً
+      }
+    });
+  }
+
+
   // --- Adjustments (Settlements) ---
   Future<int> insertInvoiceAdjustment(InvoiceAdjustment adjustment) async {
     final db = await database;
@@ -2350,7 +2620,7 @@ class DatabaseService {
                 final customer = await getCustomerByIdUsingTransaction(txn, invoice.customerId!);
                 if (customer != null) {
                   final double currentDebt = customer.currentTotalDebt;
-                  double intendedNewDebt = currentDebt + debtDelta;
+                  double intendedNewDebt = MoneyCalculator.add(currentDebt, debtDelta);
                   double appliedDelta = debtDelta;
                   double refundCash = 0.0;
                   // لا نسمح بأن يصبح الدين سالباً؛ الفائض يُعاد نقداً
@@ -2403,7 +2673,7 @@ class DatabaseService {
                     final customer = await getCustomerByIdUsingTransaction(txn, invoice.customerId!);
                     if (customer != null) {
                       final double currentDebt = customer.currentTotalDebt;
-                      double intendedNewDebt = currentDebt + debtDelta;
+                      double intendedNewDebt = MoneyCalculator.add(currentDebt, debtDelta);
                       double appliedDelta = debtDelta;
                       double refundCash = 0.0;
                       if (intendedNewDebt < 0) {
@@ -2459,7 +2729,7 @@ class DatabaseService {
       if (invoice == null) return;
 
       // Update final_total = total_amount + sum(adjustments)
-      final double newFinal = invoice.totalAmount + sumAdj;
+      final double newFinal = MoneyCalculator.add(invoice.totalAmount, sumAdj);
       await txn.update('invoices', {'final_total': newFinal, 'last_modified_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [invoiceId]);
       // NOTE: لا نقوم بتعديل دين العميل أو إنشاء حركة هنا.
       // يتم ذلك حصراً داخل insertInvoiceAdjustment وفق طريقة دفع التسوية.
@@ -2512,16 +2782,16 @@ class DatabaseService {
     double oldDebtContribution = 0.0;
     if (oldInvoice.paymentType == 'دين') {
       oldDebtContribution =
-          oldInvoice.totalAmount - oldInvoice.amountPaidOnInvoice;
+          MoneyCalculator.subtract(oldInvoice.totalAmount, oldInvoice.amountPaidOnInvoice);
     }
 
     double newDebtContribution = 0.0;
     if (invoice.paymentType == 'دين') {
-      newDebtContribution = invoice.totalAmount - invoice.amountPaidOnInvoice;
+      newDebtContribution = MoneyCalculator.subtract(invoice.totalAmount, invoice.amountPaidOnInvoice);
     }
 
     // Calculate the change in debt
-    final debtChange = newDebtContribution - oldDebtContribution;
+    final debtChange = MoneyCalculator.subtract(newDebtContribution, oldDebtContribution);
 
     // Note: Debt transaction handling is now done in create_invoice_screen.dart
     // to avoid duplicate transactions. This method only updates the invoice.
@@ -2586,18 +2856,18 @@ class DatabaseService {
       // So, when deleting the invoice, we reverse the *initial* debt amount recorded.
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔧 إصلاح: تحديث رصيد العميل عبر insertTransaction فقط (لتجنب التحديث المزدوج)
+    // ═══════════════════════════════════════════════════════════════════════════
     // Update customer's debt if a customer is linked and there was initial debt from this invoice
     if (invoice.customerId != null && debtToReverse > 0) {
       final customer = await getCustomerById(
           invoice.customerId!); // Use the customerId from the invoice
       if (customer != null) {
-        final updatedCustomer = customer.copyWith(
-          currentTotalDebt: customer.currentTotalDebt - debtToReverse,
-          lastModifiedAt: DateTime.now(),
-        );
-        await updateCustomer(updatedCustomer);
-
-        // Record the debt reversal transaction
+        // 🔧 إصلاح: لا نقوم بتحديث العميل مباشرة لأن insertTransaction ستفعل ذلك
+        // هذا يمنع التحديث المزدوج للرصيد
+        
+        // Record the debt reversal transaction (هذه الدالة تحدث رصيد العميل تلقائياً)
         await insertTransaction(
           DebtTransaction(
             id: null,
@@ -2605,8 +2875,7 @@ class DatabaseService {
             invoiceId: id,
             amountChanged: -debtToReverse, // Negative to reverse the debt
             transactionDate: DateTime.now(),
-            newBalanceAfterTransaction: customer.currentTotalDebt -
-                debtToReverse, // Balance AFTER reversal
+            newBalanceAfterTransaction: 0, // سيتم حسابها تلقائياً في insertTransaction
             transactionNote: 'حذف الفاتورة رقم $id (عكس دين الفاتورة)',
             transactionType: 'Invoice_Debt_Reversal',
             createdAt: DateTime.now(),
@@ -2785,7 +3054,7 @@ class DatabaseService {
         currentContribution += (v ?? 0).toDouble();
       }
 
-      final double delta = newContribution - currentContribution;
+      final double delta = MoneyCalculator.subtract(newContribution, currentContribution);
       const double eps = 1e-6;
       if (delta.abs() < eps) {
         return; // لا حاجة لتغيير
@@ -2794,7 +3063,7 @@ class DatabaseService {
       // حدّث رصيد العميل
       final customer = await getCustomerByIdUsingTransaction(txn, customerId);
       if (customer == null) return;
-      final double newBalance = (customer.currentTotalDebt + delta);
+      final double newBalance = MoneyCalculator.add(customer.currentTotalDebt, delta);
       await txn.update(
         'customers',
         {
@@ -2880,6 +3149,26 @@ class DatabaseService {
       where: 'invoice_id = ?',
       whereArgs: [invoiceId],
     );
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔍 DEBUG: طباعة الأصناف المجلوبة من قاعدة البيانات
+    // ═══════════════════════════════════════════════════════════════════════════
+    print('═══════════════════════════════════════════════════════════════════');
+    print('🔍 DEBUG DB READ: جلب أصناف الفاتورة رقم $invoiceId');
+    print('🔍 DEBUG DB READ: عدد الأصناف في قاعدة البيانات: ${maps.length}');
+    for (int i = 0; i < maps.length; i++) {
+      final map = maps[i];
+      print('🔍 DEBUG DB READ: صنف [$i]: ${map['product_name']}');
+      print('   - id: ${map['id']}');
+      print('   - quantity_individual: ${map['quantity_individual']}');
+      print('   - quantity_large_unit: ${map['quantity_large_unit']}');
+      print('   - applied_price: ${map['applied_price']}');
+      print('   - item_total: ${map['item_total']}');
+      print('   - sale_type: ${map['sale_type']}');
+      print('   - unique_id: ${map['unique_id']}');
+    }
+    print('═══════════════════════════════════════════════════════════════════');
+    
     return List.generate(maps.length, (i) => InvoiceItem.fromMap(maps[i]));
   }
 
@@ -3014,12 +3303,17 @@ class DatabaseService {
 
         double totalSales = 0.0;
         double netProfit = 0.0;
+        double totalCostSum = 0.0; // إجمالي التكلفة للشهر
         double cashSales = 0.0;
         double creditSalesValue = 0.0;
         double totalReturns = 0.0; // إجمالي الراجع
         double totalDebtPayments = 0.0; // إجمالي تسديد الديون
+        double totalManualDebt = 0.0; // إضافة دين يدوية
         double settlementAdditions = 0.0; // تسوية الإضافة (مبلغ + ملاحظة)
         double settlementReturns = 0.0; // تسوية الإرجاع (مبلغ + ملاحظة)
+        int invoiceCount = 0; // عدد الفواتير
+        int manualDebtCount = 0; // عدد معاملات إضافة الدين
+        int manualPaymentCount = 0; // عدد معاملات تسديد الدين
 
         for (var invoice in invoicesInMonth) {
           if (invoice.status == 'محفوظة') {
@@ -3033,6 +3327,7 @@ class DatabaseService {
             }
 
             // احسب تكلفة البنود في الفاتورة بمنطق مطابق لتقارير البضاعة عبر JOIN لضمان توافر بيانات المنتج
+            // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط (مصاريف كهرباء/تشغيل)
             double totalCost = 0.0;
             final List<Map<String, dynamic>> itemRows = await db.rawQuery('''
               SELECT 
@@ -3041,6 +3336,7 @@ class DatabaseService {
                 ii.units_in_large_unit AS uilu,
                 ii.cost_price AS item_cost_total,
                 ii.actual_cost_price AS actual_cost_per_unit,
+                ii.applied_price AS selling_price,
                 ii.sale_type AS sale_type,
                 p.unit AS product_unit,
                 p.cost_price AS product_cost_price,
@@ -3060,6 +3356,7 @@ class DatabaseService {
               final double productCost = (row['product_cost_price'] as num?)?.toDouble() ?? 0.0;
               final double? lengthPerUnit = (row['length_per_unit'] as num?)?.toDouble();
               final double? actualCostPerUnit = (row['actual_cost_per_unit'] as num?)?.toDouble();
+              final double sellingPrice = (row['selling_price'] as num?)?.toDouble() ?? 0.0;
               final String? unitCostsJson = row['unit_costs'] as String?;
               Map<String, dynamic> unitCosts = const {};
               if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
@@ -3069,16 +3366,14 @@ class DatabaseService {
               final bool soldAsLargeUnit = ql > 0;
               final double soldUnitsCount = soldAsLargeUnit ? ql : qi;
 
-              if (actualCostPerUnit != null) {
-                totalCost += actualCostPerUnit * soldUnitsCount;
-                continue;
-              }
-
+              // حساب التكلفة لكل وحدة مباعة
               double costPerSoldUnit;
-              if (soldAsLargeUnit) {
+              if (actualCostPerUnit != null && actualCostPerUnit > 0) {
+                costPerSoldUnit = actualCostPerUnit;
+              } else if (soldAsLargeUnit) {
                 // أولاً: إن كانت تكلفة الوحدة الكبيرة مخزنة استخدمها مباشرة
                 final dynamic stored = unitCosts[saleType];
-                if (stored is num) {
+                if (stored is num && stored > 0) {
                   costPerSoldUnit = stored.toDouble();
                 } else {
                   final bool isMeterRoll = productUnit == 'meter' && lengthPerUnit != null && (saleType == 'لفة');
@@ -3089,13 +3384,21 @@ class DatabaseService {
               } else {
                 costPerSoldUnit = productCost;
               }
+
+              // 🔧 إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+              if (costPerSoldUnit <= 0 && sellingPrice > 0) {
+                costPerSoldUnit = MoneyCalculator.getEffectiveCost(0, sellingPrice);
+              }
+
               totalCost += costPerSoldUnit * soldUnitsCount;
             }
 
             // صافي المبيعات بعد الراجع مطروحاً منه التكلفة الفعلية
-            final netSaleAmount = invoice.totalAmount - (invoice.returnAmount ?? 0);
-            final profit = netSaleAmount - totalCost;
+            final netSaleAmount = MoneyCalculator.subtract(invoice.totalAmount, (invoice.returnAmount ?? 0));
+            final profit = MoneyCalculator.subtract(netSaleAmount, totalCost);
             netProfit += profit;
+            totalCostSum += totalCost; // تجميع التكلفة للشهر
+            invoiceCount++; // عد الفواتير
           }
         }
 
@@ -3117,8 +3420,11 @@ class DatabaseService {
           whereArgs: [start, end],
         );
         for (final tx in manualDebtTx) {
-          creditSalesValue += (tx['amount_changed'] as num).toDouble();
+          final amount = (tx['amount_changed'] as num).toDouble();
+          creditSalesValue += amount;
+          totalManualDebt += amount; // تجميع إضافة الدين اليدوية
         }
+        manualDebtCount = manualDebtTx.length; // عدد معاملات إضافة الدين
 
         // جمع معاملات تسديد الديون لهذا الشهر (manual_payment)
         final List<Map<String, dynamic>> debtTxMaps = await db.query(
@@ -3131,6 +3437,7 @@ class DatabaseService {
         for (final tx in debtTxMaps) {
           totalDebtPayments += (tx['amount_changed'] as num).toDouble().abs();
         }
+        manualPaymentCount = debtTxMaps.length; // عدد معاملات تسديد الدين
 
         // جمع تسويات الشهر من جدول التسويات المرتبطة بالفواتير (مبلغ + ملاحظة فقط)
         try {
@@ -3217,12 +3524,17 @@ class DatabaseService {
           monthYear: monthYear,
           totalSales: totalSales,
           netProfit: netProfit,
+          totalCost: totalCostSum, // إجمالي التكلفة
           cashSales: cashSales,
           creditSales: creditSalesValue,
           totalReturns: totalReturns, // إضافة إجمالي الراجع
           totalDebtPayments: totalDebtPayments, // إضافة إجمالي تسديد الديون
+          totalManualDebt: totalManualDebt, // إضافة دين يدوية
           settlementAdditions: settlementAdditions,
           settlementReturns: settlementReturns,
+          invoiceCount: invoiceCount, // عدد الفواتير
+          manualDebtCount: manualDebtCount, // عدد معاملات إضافة الدين
+          manualPaymentCount: manualPaymentCount, // عدد معاملات تسديد الدين
         );
       }
       //  فرز الملخصات حسب الشهر تنازليًا
@@ -3893,7 +4205,7 @@ class DatabaseService {
       
       // حساب الرصيد قبل وبعد المعاملة
       final double balanceBefore = customer.currentTotalDebt;
-      final double newBalance = balanceBefore + amount;
+      final double newBalance = MoneyCalculator.add(balanceBefore, amount);
       
       // تحديث رصيد العميل
       await txn.update('customers', {
@@ -4104,25 +4416,34 @@ class DatabaseService {
         // 3) احسب التكلفة بإتباع نفس منطق السنة/الشهر
         final double? actualCostPrice = item['actual_cost_price'] as double?; // قد تكون تكلفة للوحدة المباعة
         final double baseCostPrice = (item['cost_price'] ?? item['product_cost_price'] ?? 0.0) as double; // تكلفة للوحدة الأساسية غالبًا
+        final double appliedPrice = (item['applied_price'] ?? 0.0) as double; // سعر البيع للوحدة
 
         double itemCostTotal = 0.0;
         if (quantityLargeUnit > 0) {
           // بيع بوحدة كبيرة
-          final double costPerLargeUnit = actualCostPrice != null
+          double costPerLargeUnit = actualCostPrice != null && actualCostPrice > 0
               ? actualCostPrice
               : baseCostPrice * unitsInLargeUnit;
+          // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+          if (costPerLargeUnit <= 0 && appliedPrice > 0) {
+            costPerLargeUnit = MoneyCalculator.getEffectiveCost(0, appliedPrice);
+          }
           itemCostTotal = costPerLargeUnit * quantityLargeUnit;
         } else {
           // بيع بالوحدة الأساسية
-          final double costPerUnit = actualCostPrice != null
+          double costPerUnit = actualCostPrice != null && actualCostPrice > 0
               ? actualCostPrice
               : baseCostPrice;
+          // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+          if (costPerUnit <= 0 && appliedPrice > 0) {
+            costPerUnit = MoneyCalculator.getEffectiveCost(0, appliedPrice);
+          }
           itemCostTotal = costPerUnit * quantityIndividual;
         }
 
         totalSales += itemSales;
         totalCost += itemCostTotal;
-        totalProfit += (itemSales - itemCostTotal);
+        totalProfit = MoneyCalculator.add(totalProfit, MoneyCalculator.subtract(itemSales, itemCostTotal));
 
         // 4) للمعدل لكل وحدة أساس: مجموع المبيعات ÷ مجموع الكمية الأساسية
         averageSellingPrice += itemSales; // سيقسم لاحقاً على totalQuantity
@@ -4183,7 +4504,7 @@ class DatabaseService {
           totalSales += salesContribution;
           totalQuantity += signedBaseQty;
           totalCost += costContribution.abs();
-          totalProfit += (salesContribution - costContribution);
+          totalProfit = MoneyCalculator.add(totalProfit, MoneyCalculator.subtract(salesContribution, costContribution));
         }
 
         if (totalQuantity > 0) {
@@ -4364,16 +4685,24 @@ class DatabaseService {
           // حساب المبيعات والتكلفة مع مراعاة الوحدات الكبيرة (لفة/كرتون ...)
           if (quantityLargeUnit > 0) {
             // البيع بوحدة كبيرة: actual_cost_price إن وُجد فهو تكلفة للوحدة الكبيرة بالفعل
-            final double costPerLargeUnit = actualCostPrice != null
+            double costPerLargeUnit = actualCostPrice != null && actualCostPrice > 0
                 ? actualCostPrice
                 : baseCostPrice * unitsInLargeUnit;
+            // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+            if (costPerLargeUnit <= 0 && sellingPrice > 0) {
+              costPerLargeUnit = MoneyCalculator.getEffectiveCost(0, sellingPrice);
+            }
             totalSelling += sellingPrice * quantityLargeUnit;
             totalCost += costPerLargeUnit * quantityLargeUnit;
           } else {
             // البيع بالوحدة الأساسية
-            final double costPerUnit = actualCostPrice != null
+            double costPerUnit = actualCostPrice != null && actualCostPrice > 0
                 ? actualCostPrice
                 : baseCostPrice;
+            // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+            if (costPerUnit <= 0 && sellingPrice > 0) {
+              costPerUnit = MoneyCalculator.getEffectiveCost(0, sellingPrice);
+            }
             totalSelling += sellingPrice * quantityIndividual;
             totalCost += costPerUnit * quantityIndividual;
           }
@@ -4383,7 +4712,7 @@ class DatabaseService {
             totalQuantity > 0 ? (totalSelling / totalQuantity) : 0.0;
         final double avgUnitCost =
             totalQuantity > 0 ? (totalCost / totalQuantity) : 0.0;
-        final double profit = totalSelling - totalCost;
+        final double profit = MoneyCalculator.subtract(totalSelling, totalCost);
 
         invoices.add(InvoiceWithProductData(
           invoice: invoice,
@@ -4491,12 +4820,19 @@ class DatabaseService {
       ''', [customerId]);
  
       // حساب الأرباح من الفواتير (المحفوظة فقط) وبمعادلة كمية مصححة
+      // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط من سعر البيع
       final List<Map<String, dynamic>> profitMaps = await db.rawQuery('''
         SELECT 
-          SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
-              (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_profit,
+          SUM(
+            CASE 
+              WHEN COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0) > 0 
+              THEN (ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0))
+              ELSE ii.applied_price * 0.10
+            END * 
+            (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                  THEN ii.quantity_large_unit
+                  ELSE COALESCE(ii.quantity_individual, 0.0) END)
+          ) as total_profit,
           SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
                     THEN ii.quantity_large_unit
                     ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_selling_price,
@@ -4532,8 +4868,14 @@ class DatabaseService {
       double adjAverageSellingPrice = averageSellingPrice;
  
       // دمج تسويات البنود الخاصة بهذا العميل في إجمالياته (اعتماداً على الفواتير المرتبطة به)
+      // 🔧 إصلاح: تضمين الفواتير القديمة التي ليس لها customer_id (بالاسم)
       try {
-        final List<Map<String, dynamic>> invIds = await db.rawQuery('SELECT id FROM invoices WHERE customer_id = ? AND status = "محفوظة"', [customerId]);
+        final List<Map<String, dynamic>> invIds = await db.rawQuery('''
+          SELECT id FROM invoices 
+          WHERE (customer_id = ? OR (customer_id IS NULL AND customer_name = (
+            SELECT name FROM customers WHERE id = ?
+          ))) AND status = 'محفوظة'
+        ''', [customerId, customerId]);
         if (invIds.isNotEmpty) {
           final ids = invIds.map((e) => (e['id'] as int)).toList();
           final placeholders = List.filled(ids.length, '?').join(',');
@@ -4599,37 +4941,89 @@ class DatabaseService {
   Future<Map<int, PersonYearData>> getCustomerYearlyData(int customerId) async {
     final db = await database;
     try {
-      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+      // ═══════════════════════════════════════════════════════════════════════════
+      // 🔧 إصلاح: فصل استعلام الفواتير عن المعاملات لتجنب تكرار الصفوف
+      // 🔧 إصلاح 2: تضمين الفواتير القديمة التي ليس لها customer_id (بالاسم)
+      // 🔧 إصلاح 3: فصل استعلام المبيعات عن الأرباح لتجنب تكرار total_amount
+      // ═══════════════════════════════════════════════════════════════════════════
+      
+      // 1. جلب بيانات المبيعات وعدد الفواتير (بدون JOIN مع الأصناف لتجنب التكرار)
+      final List<Map<String, dynamic>> salesMaps = await db.rawQuery('''
+        SELECT 
+          strftime('%Y', invoice_date) as year,
+          SUM(total_amount) as total_sales,
+          COUNT(*) as total_invoices
+        FROM invoices
+        WHERE (customer_id = ? OR (customer_id IS NULL AND customer_name = (
+          SELECT name FROM customers WHERE id = ?
+        ))) AND status = 'محفوظة'
+        GROUP BY strftime('%Y', invoice_date)
+        ORDER BY year DESC
+      ''', [customerId, customerId]);
+      
+      // 2. جلب بيانات الأرباح من الأصناف (نفس طريقة getCustomerProfitData)
+      // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط من سعر البيع
+      final List<Map<String, dynamic>> profitMaps = await db.rawQuery('''
         SELECT 
           strftime('%Y', i.invoice_date) as year,
-          SUM(i.total_amount) as total_sales,
-          SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
-              (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit
-                    ELSE ii.quantity_individual END)) as total_profit,
-          COUNT(DISTINCT i.id) as total_invoices,
-          COUNT(DISTINCT t.id) as total_transactions,
+          SUM(
+            CASE 
+              WHEN COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0) > 0 
+              THEN (ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0))
+              ELSE ii.applied_price * 0.10
+            END * 
+            (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                  THEN ii.quantity_large_unit
+                  ELSE COALESCE(ii.quantity_individual, 0.0) END)
+          ) as total_profit,
           SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
                     THEN ii.quantity_large_unit
-                    ELSE ii.quantity_individual END)) as total_selling_price,
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_selling_price,
           SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
                     THEN ii.quantity_large_unit
-                    ELSE ii.quantity_individual END) as total_quantity
+                    ELSE COALESCE(ii.quantity_individual, 0.0) END) as total_quantity
         FROM invoices i
-        LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
-        LEFT JOIN products p ON ii.product_name = p.name
-        LEFT JOIN transactions t ON i.customer_id = t.customer_id 
-          AND strftime('%Y', i.invoice_date) = strftime('%Y', t.transaction_date)
-        WHERE i.customer_id = ? AND i.status = 'محفوظة'
+        JOIN invoice_items ii ON i.id = ii.invoice_id
+        JOIN products p ON ii.product_name = p.name
+        WHERE (i.customer_id = ? OR (i.customer_id IS NULL AND i.customer_name = (
+          SELECT name FROM customers WHERE id = ?
+        ))) AND i.status = 'محفوظة'
         GROUP BY strftime('%Y', i.invoice_date)
-        ORDER BY year DESC
+      ''', [customerId, customerId]);
+      
+      // تحويل بيانات الأرباح إلى map للوصول السريع
+      final Map<int, Map<String, dynamic>> profitByYear = {};
+      for (final p in profitMaps) {
+        final year = int.parse(p['year'] as String);
+        profitByYear[year] = p;
+      }
+      
+      // 2. جلب عدد المعاملات لكل سنة بشكل منفصل
+      final List<Map<String, dynamic>> txMaps = await db.rawQuery('''
+        SELECT 
+          strftime('%Y', transaction_date) as year,
+          COUNT(*) as total_transactions
+        FROM transactions
+        WHERE customer_id = ?
+        GROUP BY strftime('%Y', transaction_date)
       ''', [customerId]);
  
       final Map<int, PersonYearData> yearlyData = {};
-      for (final map in maps) {
+      // 4. تحويل المعاملات إلى map للوصول السريع
+      final Map<int, int> txByYear = {};
+      for (final tx in txMaps) {
+        final year = int.parse(tx['year'] as String);
+        txByYear[year] = (tx['total_transactions'] ?? 0) as int;
+      }
+      
+      // 5. دمج بيانات المبيعات والأرباح
+      for (final map in salesMaps) {
         final year = int.parse(map['year'] as String);
-        final totalSellingPrice = (map['total_selling_price'] ?? 0.0) as double;
-        final totalQuantity = (map['total_quantity'] ?? 0.0) as double;
+        final profitData = profitByYear[year];
+        
+        final totalSellingPrice = (profitData?['total_selling_price'] ?? 0.0) as double;
+        final totalQuantity = (profitData?['total_quantity'] ?? 0.0) as double;
+        final totalProfit = (profitData?['total_profit'] ?? 0.0) as double;
         
         // حساب متوسط سعر البيع
         double averageSellingPrice = 0.0;
@@ -4638,22 +5032,24 @@ class DatabaseService {
         }
         
         yearlyData[year] = PersonYearData(
-          totalProfit: (map['total_profit'] ?? 0.0) as double,
+          totalProfit: totalProfit,
           totalSales: (map['total_sales'] ?? 0.0) as double,
           totalInvoices: (map['total_invoices'] ?? 0) as int,
-          totalTransactions: (map['total_transactions'] ?? 0) as int,
+          totalTransactions: txByYear[year] ?? 0,
           averageSellingPrice: averageSellingPrice,
           totalQuantity: totalQuantity,
         );
       }
  
-      // دمج تسويات البنود سنوياً لهذا العميل
+      // دمج تسويات البنود سنوياً لهذا العميل (تشمل الفواتير القديمة والجديدة)
       try {
         final invIds = await db.rawQuery('''
           SELECT id, strftime('%Y', invoice_date) as y 
           FROM invoices 
-          WHERE customer_id = ? AND status = 'محفوظة'
-        ''', [customerId]);
+          WHERE (customer_id = ? OR (customer_id IS NULL AND customer_name = (
+            SELECT name FROM customers WHERE id = ?
+          ))) AND status = 'محفوظة'
+        ''', [customerId, customerId]);
         if (invIds.isNotEmpty) {
           final ids = invIds.map((e) => (e['id'] as int)).toList();
           final placeholders = List.filled(ids.length, '?').join(',');
@@ -4737,6 +5133,7 @@ class DatabaseService {
     final db = await database;
     try {
       // الخطوة 1: إحضار مجاميع المبيعات وعدد الفواتير والمعاملات شهرياً (بدون أرباح)
+      // 🔧 إصلاح: تضمين الفواتير القديمة التي ليس لها customer_id (بالاسم)
       final List<Map<String, dynamic>> maps = await db.rawQuery('''
         SELECT 
           m.month AS month,
@@ -4749,7 +5146,9 @@ class DatabaseService {
             SUM(total_amount) AS total_sales,
             COUNT(DISTINCT id) AS total_invoices
           FROM invoices
-          WHERE customer_id = ? AND strftime('%Y', invoice_date) = ? AND status = 'محفوظة'
+          WHERE (customer_id = ? OR (customer_id IS NULL AND customer_name = (
+            SELECT name FROM customers WHERE id = ?
+          ))) AND strftime('%Y', invoice_date) = ? AND status = 'محفوظة'
           GROUP BY strftime('%m', invoice_date)
         ) m
         LEFT JOIN (
@@ -4759,7 +5158,7 @@ class DatabaseService {
           GROUP BY strftime('%m', transaction_date)
         ) t ON t.month = m.month
         ORDER BY m.month ASC
-      ''', [customerId, year.toString(), customerId, year.toString()]);
+      ''', [customerId, customerId, year.toString(), customerId, year.toString()]);
  
       final Map<int, PersonMonthData> monthlyData = {};
       for (final map in maps) {
@@ -4773,72 +5172,40 @@ class DatabaseService {
         );
       }
  
-      // الخطوة 2: حساب الربح بدقة لكل بند بيع وفق منطق تقارير البضاعة (على مستوى وحدة البيع)
-      final List<Map<String, dynamic>> itemRows = await db.rawQuery('''
+      // الخطوة 2: حساب الربح بنفس طريقة getCustomerProfitData و getCustomerYearlyData
+      // 🔧 إصلاح: تضمين الفواتير القديمة التي ليس لها customer_id (بالاسم)
+      // 🔧 إصلاح 2: توحيد طريقة حساب الربح مع الدوال الأخرى
+      // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط من سعر البيع
+      final List<Map<String, dynamic>> profitRows = await db.rawQuery('''
         SELECT 
           strftime('%m', i.invoice_date) AS month,
-          ii.applied_price AS applied_price,
-          ii.quantity_individual AS qi,
-          ii.quantity_large_unit AS ql,
-          ii.units_in_large_unit AS uilu,
-          ii.actual_cost_price AS acp,
-          ii.cost_price AS item_cost,
-          ii.sale_type AS sale_type,
-          p.unit AS product_unit,
-          p.cost_price AS product_cost,
-          p.length_per_unit AS length_per_unit,
-          p.unit_costs AS unit_costs
+          SUM(
+            CASE 
+              WHEN COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0) > 0 
+              THEN (ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0))
+              ELSE ii.applied_price * 0.10
+            END * 
+            (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                  THEN ii.quantity_large_unit
+                  ELSE COALESCE(ii.quantity_individual, 0.0) END)
+          ) as total_profit
         FROM invoices i
         JOIN invoice_items ii ON i.id = ii.invoice_id
-        LEFT JOIN products p ON ii.product_name = p.name
-        WHERE i.customer_id = ? AND strftime('%Y', i.invoice_date) = ? AND i.status = 'محفوظة'
-      ''', [customerId, year.toString()]);
+        JOIN products p ON ii.product_name = p.name
+        WHERE (i.customer_id = ? OR (i.customer_id IS NULL AND i.customer_name = (
+          SELECT name FROM customers WHERE id = ?
+        ))) AND strftime('%Y', i.invoice_date) = ? AND i.status = 'محفوظة'
+        GROUP BY strftime('%m', i.invoice_date)
+      ''', [customerId, customerId, year.toString()]);
 
-      for (final r in itemRows) {
+      for (final r in profitRows) {
         final int month = int.parse((r['month'] as String));
-        final double applied = ((r['applied_price'] as num?) ?? 0).toDouble();
-        final double qi = ((r['qi'] as num?) ?? 0).toDouble();
-        final double ql = ((r['ql'] as num?) ?? 0).toDouble();
-        final double uilu = ((r['uilu'] as num?) ?? 0).toDouble();
-        final double? acp = (r['acp'] as num?)?.toDouble();
-        final double itemCost = ((r['item_cost'] as num?) ?? 0).toDouble();
-        final String saleType = (r['sale_type'] as String?) ?? '';
-        final String productUnit = (r['product_unit'] as String?) ?? '';
-        final double productCost = ((r['product_cost'] as num?) ?? 0).toDouble();
-        final double? lengthPerUnit = (r['length_per_unit'] as num?)?.toDouble();
-        final String? unitCostsJson = r['unit_costs'] as String?;
-        Map<String, dynamic> unitCosts = const {};
-        if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
-          try { unitCosts = jsonDecode(unitCostsJson) as Map<String, dynamic>; } catch (_) {}
-        }
-
-        final bool soldAsLargeUnit = ql > 0;
-        final double saleUnitsCount = soldAsLargeUnit ? ql : qi;
-
-        double costPerSaleUnit;
-        if (acp != null && acp > 0) {
-          // التكلفة الفعلية للوحدة المباعة
-          costPerSaleUnit = acp;
-        } else if (soldAsLargeUnit) {
-          // بيع بوحدة كبيرة: حاول استخدام التكلفة المخزنة للوحدة مباشرة إن وُجدت
-          final dynamic stored = unitCosts[saleType];
-          if (stored is num) {
-            costPerSaleUnit = stored.toDouble();
-          } else if (productUnit == 'meter' && saleType == 'لفة') {
-            costPerSaleUnit = productCost * ((lengthPerUnit ?? 1.0));
-          } else {
-            costPerSaleUnit = productCost * (uilu > 0 ? uilu : 1.0);
-          }
-        } else {
-          // بيع بالوحدة الأساسية (قطعة/متر)
-          costPerSaleUnit = itemCost > 0 ? itemCost : productCost;
-        }
-
-        final double profitContribution = (applied - costPerSaleUnit) * saleUnitsCount;
+        final double totalProfit = ((r['total_profit'] as num?) ?? 0).toDouble();
+        
         final existing = monthlyData[month];
         if (existing != null) {
           monthlyData[month] = PersonMonthData(
-            totalProfit: existing.totalProfit + profitContribution,
+            totalProfit: totalProfit,
             totalSales: existing.totalSales,
             totalInvoices: existing.totalInvoices,
             totalTransactions: existing.totalTransactions,
@@ -4846,7 +5213,7 @@ class DatabaseService {
           );
         } else {
           monthlyData[month] = PersonMonthData(
-            totalProfit: profitContribution,
+            totalProfit: totalProfit,
             totalSales: 0.0,
             totalInvoices: 0,
             totalTransactions: 0,
@@ -4856,12 +5223,15 @@ class DatabaseService {
       }
 
       // الخطوة 3: دمج تسويات البنود شهرياً لهذا العميل (debit/credit) كمساهمات إضافية في المبيعات والربح
+      // 🔧 إصلاح: تضمين الفواتير القديمة التي ليس لها customer_id (بالاسم)
       try {
         final invIds = await db.rawQuery('''
           SELECT id 
           FROM invoices 
-          WHERE customer_id = ? AND status = 'محفوظة' AND strftime('%Y', invoice_date) = ?
-        ''', [customerId, year.toString()]);
+          WHERE (customer_id = ? OR (customer_id IS NULL AND customer_name = (
+            SELECT name FROM customers WHERE id = ?
+          ))) AND status = 'محفوظة' AND strftime('%Y', invoice_date) = ?
+        ''', [customerId, customerId, year.toString()]);
         if (invIds.isNotEmpty) {
           final ids = invIds.map((e) => (e['id'] as int)).toList();
           final placeholders = List.filled(ids.length, '?').join(',');
@@ -5034,9 +5404,9 @@ class DatabaseService {
 
         final double lineAmount = applied * saleUnitsCount;
         final double lineCostTotal = costPerSaleUnit * saleUnitsCount;
-        final double lineProfit = lineAmount - lineCostTotal;
+        final double lineProfit = MoneyCalculator.subtract(lineAmount, lineCostTotal);
         totalSales += lineAmount;
-        totalProfit += lineProfit;
+        totalProfit = MoneyCalculator.add(totalProfit, lineProfit);
         print('[InvoiceDebug][Item] prod="$prod" type=$saleType qty=$saleUnitsCount price=$applied amount=$lineAmount costPerUnit=$costPerSaleUnit costTotal=$lineCostTotal profit=$lineProfit');
       }
 
@@ -5071,7 +5441,7 @@ class DatabaseService {
         final double signedBaseQty = (type == 'debit' ? 1 : -1) * baseQty;
         final double costContribution = baseCost * signedBaseQty;
         totalSales += salesContribution;
-        totalProfit += (salesContribution - costContribution);
+        totalProfit = MoneyCalculator.add(totalProfit, MoneyCalculator.subtract(salesContribution, costContribution));
         print('[InvoiceDebug][Adj] type=$type saleType=$saleType baseQty=$signedBaseQty price=$pricePerSaleUnit baseCost=$baseCost sales=$salesContribution profit=${salesContribution - costContribution}');
       }
 
@@ -5209,13 +5579,20 @@ class DatabaseService {
   Future<Map<int, double>> getProductYearlyProfit(int productId) async {
     final db = await database;
     try {
+      // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط من سعر البيع
       final List<Map<String, dynamic>> maps = await db.rawQuery('''
         SELECT 
           strftime('%Y', i.invoice_date) as year,
-          SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
-              (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit
-                    ELSE ii.quantity_individual END)) as total_profit,
+          SUM(
+            CASE 
+              WHEN COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0) > 0 
+              THEN (ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0))
+              ELSE ii.applied_price * 0.10
+            END * 
+            (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                  THEN ii.quantity_large_unit
+                  ELSE ii.quantity_individual END)
+          ) as total_profit,
           SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
                     THEN ii.quantity_large_unit
                     ELSE ii.quantity_individual END)) as total_selling_price,
@@ -5284,6 +5661,11 @@ class DatabaseService {
                 }
               }
               
+              // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+              if (costPrice <= 0 && sellingPrice > 0) {
+                costPrice = MoneyCalculator.getEffectiveCost(0, sellingPrice);
+              }
+              
               if (quantityLargeUnit > 0) {
                 correctedProfit += (sellingPrice - costPrice) * quantityLargeUnit;
               } else {
@@ -5348,13 +5730,20 @@ class DatabaseService {
       int productId, int year) async {
     final db = await database;
     try {
+      // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط من سعر البيع
       final List<Map<String, dynamic>> maps = await db.rawQuery('''
         SELECT 
           strftime('%m', i.invoice_date) as month,
-          SUM((ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0)) * 
-              (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit
-                    ELSE ii.quantity_individual END)) as total_profit,
+          SUM(
+            CASE 
+              WHEN COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0) > 0 
+              THEN (ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0))
+              ELSE ii.applied_price * 0.10
+            END * 
+            (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
+                  THEN ii.quantity_large_unit
+                  ELSE ii.quantity_individual END)
+          ) as total_profit,
           SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
                     THEN ii.quantity_large_unit
                     ELSE ii.quantity_individual END)) as total_selling_price,
@@ -5421,6 +5810,11 @@ class DatabaseService {
                   final lengthPerUnit = (map['length_per_unit'] ?? 1.0) as double;
                   costPrice = productCostPrice * lengthPerUnit;
                 }
+              }
+              
+              // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+              if (costPrice <= 0 && sellingPrice > 0) {
+                costPrice = MoneyCalculator.getEffectiveCost(0, sellingPrice);
               }
               
               if (quantityLargeUnit > 0) {
@@ -5572,14 +5966,19 @@ class DatabaseService {
             costPerSaleUnit = itemCostPrice > 0 ? itemCostPrice : productCostPrice;
           }
 
+          // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+          if (costPerSaleUnit <= 0 && sellingPrice > 0) {
+            costPerSaleUnit = MoneyCalculator.getEffectiveCost(0, sellingPrice);
+          }
+
           if (quantityLargeUnit > 0) {
             totalSelling += sellingPrice * quantityLargeUnit;
             totalCost += costPerSaleUnit * quantityLargeUnit;
-            totalProfit += (sellingPrice - costPerSaleUnit) * quantityLargeUnit;
+            totalProfit = MoneyCalculator.add(totalProfit, MoneyCalculator.multiply(MoneyCalculator.subtract(sellingPrice, costPerSaleUnit), quantityLargeUnit));
           } else {
             totalSelling += sellingPrice * quantityIndividual;
             totalCost += costPerSaleUnit * quantityIndividual;
-            totalProfit += (sellingPrice - costPerSaleUnit) * quantityIndividual;
+            totalProfit = MoneyCalculator.add(totalProfit, MoneyCalculator.multiply(MoneyCalculator.subtract(sellingPrice, costPerSaleUnit), quantityIndividual));
           }
 
           totalQuantity += currentItemTotalQuantity;
@@ -5659,12 +6058,12 @@ class DatabaseService {
                               item['cost_price'] ?? 
                               costPrice) as double;
         
-        final profit = (sellingPrice - itemCostPrice) * currentItemTotalQuantity;
+        final profit = MoneyCalculator.multiply(MoneyCalculator.subtract(sellingPrice, itemCostPrice), currentItemTotalQuantity);
         final sales = sellingPrice * currentItemTotalQuantity;
         final cost = itemCostPrice * currentItemTotalQuantity;
         
         totalQuantity += currentItemTotalQuantity;
-        totalProfit += profit;
+        totalProfit = MoneyCalculator.add(totalProfit, profit);
         totalSales += sales;
         totalCost += cost;
         
@@ -5729,7 +6128,7 @@ class DatabaseService {
         }
         
         // المجموع الصحيح = مجموع البنود - الخصم + أجور التحميل
-        final correctTotal = calculatedTotal - discount + loadingFee;
+        final correctTotal = MoneyCalculator.add(MoneyCalculator.subtract(calculatedTotal, discount), loadingFee);
         
         // مقارنة المجموع (مع هامش خطأ صغير للأرقام العشرية)
         if ((displayedTotal - correctTotal).abs() > 0.01) {
@@ -5819,7 +6218,7 @@ class DatabaseService {
       double runningBalance = 0.0;
       for (int i = 0; i < transactions.length; i++) {
         final tx = transactions[i];
-        final expectedBalanceAfter = runningBalance + tx.amountChanged;
+        final expectedBalanceAfter = MoneyCalculator.add(runningBalance, tx.amountChanged);
         
         // التحقق من الرصيد قبل المعاملة
         if (tx.balanceBeforeTransaction != null) {
@@ -6408,6 +6807,315 @@ class DatabaseService {
       return 0;
     }
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔐 نظام Checksums للتحقق من سلامة البيانات
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// حساب checksum لفاتورة معينة
+  String calculateInvoiceChecksum(Map<String, dynamic> invoice, List<Map<String, dynamic>> items) {
+    // بناء سلسلة من البيانات الحرجة
+    final buffer = StringBuffer();
+    buffer.write(invoice['id'] ?? 0);
+    buffer.write('|');
+    buffer.write(invoice['total_amount'] ?? 0);
+    buffer.write('|');
+    buffer.write(invoice['discount'] ?? 0);
+    buffer.write('|');
+    buffer.write(invoice['amount_paid_on_invoice'] ?? 0);
+    buffer.write('|');
+    buffer.write(invoice['customer_id'] ?? 0);
+    buffer.write('|');
+    
+    // إضافة مجموع الأصناف
+    double itemsTotal = 0;
+    for (final item in items) {
+      itemsTotal += (item['item_total'] as num?)?.toDouble() ?? 0;
+    }
+    buffer.write(itemsTotal.toStringAsFixed(2));
+    
+    // حساب hash بسيط
+    final data = buffer.toString();
+    int hash = 0;
+    for (int i = 0; i < data.length; i++) {
+      hash = ((hash << 5) - hash) + data.codeUnitAt(i);
+      hash = hash & 0xFFFFFFFF; // تحويل إلى 32-bit
+    }
+    return hash.toRadixString(16).padLeft(8, '0');
+  }
+
+  /// التحقق من صحة checksum لفاتورة
+  Future<bool> verifyInvoiceChecksum(int invoiceId) async {
+    final db = await database;
+    try {
+      final invoiceMaps = await db.query('invoices', where: 'id = ?', whereArgs: [invoiceId]);
+      if (invoiceMaps.isEmpty) return false;
+      
+      final items = await db.query('invoice_items', where: 'invoice_id = ?', whereArgs: [invoiceId]);
+      
+      // حساب checksum الحالي
+      final currentChecksum = calculateInvoiceChecksum(invoiceMaps.first, items);
+      
+      // التحقق من تطابق المجاميع
+      final invoice = invoiceMaps.first;
+      final totalAmount = (invoice['total_amount'] as num?)?.toDouble() ?? 0;
+      
+      double itemsTotal = 0;
+      for (final item in items) {
+        itemsTotal += (item['item_total'] as num?)?.toDouble() ?? 0;
+      }
+      
+      // السماح بفرق بسيط بسبب أجور التحميل
+      final loadingFee = (invoice['loading_fee'] as num?)?.toDouble() ?? 0;
+      final discount = (invoice['discount'] as num?)?.toDouble() ?? 0;
+      final expectedTotal = itemsTotal + loadingFee - discount;
+      
+      // التحقق من التطابق (مع هامش صغير للأخطاء العشرية)
+      return (totalAmount - expectedTotal).abs() < 0.01;
+    } catch (e) {
+      print('خطأ في التحقق من checksum: $e');
+      return false;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📊 نظام المطابقة اليومية التلقائية (Daily Reconciliation)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// تنفيذ المطابقة اليومية الشاملة
+  Future<DailyReconciliationResult> performDailyReconciliation() async {
+    final startTime = DateTime.now();
+    final List<String> issues = [];
+    final List<String> fixes = [];
+    int customersChecked = 0;
+    int invoicesChecked = 0;
+    int issuesFound = 0;
+    int issuesFixed = 0;
+    
+    try {
+      final db = await database;
+      
+      // 1. التحقق من أرصدة العملاء
+      print('🔍 بدء المطابقة اليومية...');
+      final customers = await getAllCustomers();
+      customersChecked = customers.length;
+      
+      for (final customer in customers) {
+        if (customer.id == null) continue;
+        
+        // حساب الرصيد من المعاملات
+        final transactions = await getCustomerTransactions(customer.id!, orderBy: 'id ASC');
+        double calculatedBalance = 0;
+        for (final tx in transactions) {
+          calculatedBalance += tx.amountChanged;
+        }
+        
+        // مقارنة مع الرصيد المسجل
+        if ((calculatedBalance - customer.currentTotalDebt).abs() > 0.01) {
+          issuesFound++;
+          issues.add('العميل ${customer.name}: الرصيد المسجل (${customer.currentTotalDebt.toStringAsFixed(2)}) لا يتطابق مع المحسوب (${calculatedBalance.toStringAsFixed(2)})');
+          
+          // إصلاح تلقائي
+          await recalculateAndApplyCustomerDebt(customer.id!);
+          issuesFixed++;
+          fixes.add('تم إصلاح رصيد العميل ${customer.name}');
+        }
+      }
+      
+      // 2. التحقق من الفواتير
+      final invoices = await db.query('invoices', where: "status = 'محفوظة'");
+      invoicesChecked = invoices.length;
+      
+      for (final invoice in invoices) {
+        final invoiceId = invoice['id'] as int;
+        final isValid = await verifyInvoiceChecksum(invoiceId);
+        
+        if (!isValid) {
+          issuesFound++;
+          issues.add('الفاتورة رقم $invoiceId: مجموع الأصناف لا يتطابق مع الإجمالي');
+          // لا نصلح الفواتير تلقائياً، فقط نسجل المشكلة
+        }
+      }
+      
+      // 3. التحقق من تسلسل المعاملات
+      for (final customer in customers) {
+        if (customer.id == null) continue;
+        
+        final transactions = await getCustomerTransactions(customer.id!, orderBy: 'transaction_date ASC, id ASC');
+        double runningBalance = 0;
+        
+        for (int i = 0; i < transactions.length; i++) {
+          final tx = transactions[i];
+          final expectedBalanceAfter = MoneyCalculator.add(runningBalance, tx.amountChanged);
+          
+          if (tx.newBalanceAfterTransaction != null && 
+              (tx.newBalanceAfterTransaction! - expectedBalanceAfter).abs() > 0.01) {
+            issuesFound++;
+            issues.add('معاملة ${tx.id} للعميل ${customer.name}: الرصيد بعد المعاملة غير صحيح');
+            
+            // إصلاح تلقائي
+            await recalculateCustomerTransactionBalances(customer.id!);
+            issuesFixed++;
+            fixes.add('تم إصلاح تسلسل معاملات العميل ${customer.name}');
+            break; // الإصلاح يشمل كل المعاملات
+          }
+          
+          runningBalance = expectedBalanceAfter;
+        }
+      }
+      
+      final duration = DateTime.now().difference(startTime);
+      print('✅ انتهت المطابقة اليومية في ${duration.inSeconds} ثانية');
+      print('   - العملاء: $customersChecked');
+      print('   - الفواتير: $invoicesChecked');
+      print('   - المشاكل: $issuesFound');
+      print('   - الإصلاحات: $issuesFixed');
+      
+      // تسجيل في سجل التدقيق
+      await insertAuditLog(
+        operationType: 'daily_reconciliation',
+        entityType: 'system',
+        entityId: 0,
+        notes: 'المطابقة اليومية: $customersChecked عميل، $invoicesChecked فاتورة، $issuesFound مشكلة، $issuesFixed إصلاح',
+      );
+      
+      return DailyReconciliationResult(
+        date: startTime,
+        duration: duration,
+        customersChecked: customersChecked,
+        invoicesChecked: invoicesChecked,
+        issuesFound: issuesFound,
+        issuesFixed: issuesFixed,
+        issues: issues,
+        fixes: fixes,
+        success: true,
+      );
+    } catch (e) {
+      print('❌ خطأ في المطابقة اليومية: $e');
+      return DailyReconciliationResult(
+        date: startTime,
+        duration: DateTime.now().difference(startTime),
+        customersChecked: customersChecked,
+        invoicesChecked: invoicesChecked,
+        issuesFound: issuesFound,
+        issuesFixed: issuesFixed,
+        issues: [...issues, 'خطأ: $e'],
+        fixes: fixes,
+        success: false,
+      );
+    }
+  }
+
+  /// التحقق السريع من سلامة البيانات (للاستخدام عند بدء التطبيق)
+  Future<QuickIntegrityCheckResult> performQuickIntegrityCheck() async {
+    final startTime = DateTime.now();
+    bool isHealthy = true;
+    final List<String> warnings = [];
+    
+    try {
+      final db = await database;
+      
+      // 1. التحقق من سلامة قاعدة البيانات
+      final integrityCheck = await db.rawQuery('PRAGMA integrity_check;');
+      final dbIntegrity = integrityCheck.first.values.first == 'ok';
+      if (!dbIntegrity) {
+        isHealthy = false;
+        warnings.add('قاعدة البيانات تحتاج إصلاح');
+      }
+      
+      // 2. التحقق من وجود عملاء بأرصدة غير منطقية
+      final negativeDebtCustomers = await db.rawQuery(
+        'SELECT COUNT(*) as cnt FROM customers WHERE current_total_debt < -1000000'
+      );
+      final negativeCount = (negativeDebtCustomers.first['cnt'] as int?) ?? 0;
+      if (negativeCount > 0) {
+        warnings.add('يوجد $negativeCount عميل برصيد سالب كبير');
+      }
+      
+      // 3. التحقق من وجود فواتير بدون أصناف
+      final emptyInvoices = await db.rawQuery('''
+        SELECT COUNT(*) as cnt FROM invoices i 
+        WHERE status = 'محفوظة' 
+        AND NOT EXISTS (SELECT 1 FROM invoice_items ii WHERE ii.invoice_id = i.id)
+      ''');
+      final emptyCount = (emptyInvoices.first['cnt'] as int?) ?? 0;
+      if (emptyCount > 0) {
+        warnings.add('يوجد $emptyCount فاتورة محفوظة بدون أصناف');
+      }
+      
+      // 4. التحقق من وجود معاملات يتيمة (بدون عميل)
+      final orphanTransactions = await db.rawQuery('''
+        SELECT COUNT(*) as cnt FROM transactions t 
+        WHERE NOT EXISTS (SELECT 1 FROM customers c WHERE c.id = t.customer_id)
+      ''');
+      final orphanCount = (orphanTransactions.first['cnt'] as int?) ?? 0;
+      if (orphanCount > 0) {
+        warnings.add('يوجد $orphanCount معاملة بدون عميل');
+      }
+      
+      // ═══════════════════════════════════════════════════════════════════════════
+      // 🔒 تحسين الأمان: التحقق من تسلسل المعاملات (Chain Verification)
+      // ═══════════════════════════════════════════════════════════════════════════
+      // 5. التحقق من أن رصيد كل عميل يتطابق مع آخر معاملة له
+      final balanceMismatch = await db.rawQuery('''
+        SELECT c.id, c.name, c.current_total_debt as recorded_balance,
+               (SELECT new_balance_after_transaction 
+                FROM transactions 
+                WHERE customer_id = c.id 
+                ORDER BY transaction_date DESC, id DESC 
+                LIMIT 1) as last_tx_balance
+        FROM customers c
+        WHERE c.current_total_debt != 0
+        AND EXISTS (SELECT 1 FROM transactions WHERE customer_id = c.id)
+        AND ABS(c.current_total_debt - 
+               COALESCE((SELECT new_balance_after_transaction 
+                         FROM transactions 
+                         WHERE customer_id = c.id 
+                         ORDER BY transaction_date DESC, id DESC 
+                         LIMIT 1), 0)) > 0.01
+        LIMIT 10
+      ''');
+      
+      if (balanceMismatch.isNotEmpty) {
+        isHealthy = false;
+        for (final row in balanceMismatch) {
+          final name = row['name'] as String? ?? 'غير معروف';
+          final recorded = (row['recorded_balance'] as num?)?.toDouble() ?? 0;
+          final lastTx = (row['last_tx_balance'] as num?)?.toDouble() ?? 0;
+          warnings.add('عدم تطابق رصيد العميل "$name": مسجل=$recorded، آخر معاملة=$lastTx');
+        }
+      }
+      
+      // 6. التحقق من وجود معاملات بأرصدة غير منطقية
+      final brokenChain = await db.rawQuery('''
+        SELECT COUNT(*) as cnt FROM transactions 
+        WHERE balance_before_transaction IS NULL 
+           OR new_balance_after_transaction IS NULL
+      ''');
+      final brokenCount = (brokenChain.first['cnt'] as int?) ?? 0;
+      if (brokenCount > 0) {
+        warnings.add('يوجد $brokenCount معاملة بدون أرصدة مسجلة');
+      }
+      
+      final duration = DateTime.now().difference(startTime);
+      
+      return QuickIntegrityCheckResult(
+        checkDate: startTime,
+        duration: duration,
+        isHealthy: isHealthy && warnings.isEmpty,
+        warnings: warnings,
+        databaseIntegrity: dbIntegrity,
+      );
+    } catch (e) {
+      return QuickIntegrityCheckResult(
+        checkDate: startTime,
+        duration: DateTime.now().difference(startTime),
+        isHealthy: false,
+        warnings: ['خطأ في الفحص: $e'],
+        databaseIntegrity: false,
+      );
+    }
+  }
 } // نهاية كلاس DatabaseService
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -6559,3 +7267,65 @@ class PersonYearData {
 }
 
 // إزالة تعريفات مكررة للـ PersonMonthData و MonthlySalesSummary لاستخدام نماذج المجلد models
+
+/// نتيجة المطابقة اليومية
+class DailyReconciliationResult {
+  final DateTime date;
+  final Duration duration;
+  final int customersChecked;
+  final int invoicesChecked;
+  final int issuesFound;
+  final int issuesFixed;
+  final List<String> issues;
+  final List<String> fixes;
+  final bool success;
+
+  DailyReconciliationResult({
+    required this.date,
+    required this.duration,
+    required this.customersChecked,
+    required this.invoicesChecked,
+    required this.issuesFound,
+    required this.issuesFixed,
+    required this.issues,
+    required this.fixes,
+    required this.success,
+  });
+
+  @override
+  String toString() {
+    return 'DailyReconciliationResult(date: $date, customers: $customersChecked, invoices: $invoicesChecked, issues: $issuesFound, fixed: $issuesFixed, success: $success)';
+  }
+  
+  /// هل البيانات سليمة 100%؟
+  bool get isFullyHealthy => issuesFound == 0;
+  
+  /// نسبة الأمان
+  double get healthPercentage {
+    final total = customersChecked + invoicesChecked;
+    if (total == 0) return 100.0;
+    return ((total - issuesFound) / total) * 100;
+  }
+}
+
+/// نتيجة الفحص السريع
+class QuickIntegrityCheckResult {
+  final DateTime checkDate;
+  final Duration duration;
+  final bool isHealthy;
+  final List<String> warnings;
+  final bool databaseIntegrity;
+
+  QuickIntegrityCheckResult({
+    required this.checkDate,
+    required this.duration,
+    required this.isHealthy,
+    required this.warnings,
+    required this.databaseIntegrity,
+  });
+
+  @override
+  String toString() {
+    return 'QuickIntegrityCheckResult(healthy: $isHealthy, warnings: ${warnings.length}, dbIntegrity: $databaseIntegrity)';
+  }
+}
