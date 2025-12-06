@@ -414,6 +414,17 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                   ],
                                 ),
                               ],
+                              // ربح المعاملات اليدوية (15% من إضافة الدين اليدوية)
+                              if (summary.manualDebtProfit > 0) ...[
+                                const SizedBox(height: 12),
+                                _buildInfoItem(
+                                  icon: Icons.account_balance_wallet,
+                                  title: 'ربح المعاملات اليدوية',
+                                  value:
+                                      '${formatCurrency(summary.manualDebtProfit)} د.ع',
+                                  color: const Color(0xFF00BCD4),
+                                ),
+                              ],
                               // تسويات الشهر
                               if (summary.settlementAdditions > 0 ||
                                   summary.settlementReturns > 0) ...[

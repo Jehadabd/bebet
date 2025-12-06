@@ -203,19 +203,31 @@ class PdfService {
 
     String formatDescription(AccountStatementItem item) {
       final hasInvoice = item.transaction?.invoiceId != null;
-      final invoicePart =
-          hasInvoice ? ' (فاتورة #${item.transaction?.invoiceId})' : '';
+      final invoicePart = hasInvoice ? 'فاتورة #${item.transaction?.invoiceId}' : '';
+      
+      // جلب الملاحظة النصية إن وجدت
+      final note = item.transaction?.transactionNote?.trim() ?? '';
+      final hasNote = note.isNotEmpty;
+      
+      String baseDescription = '';
       if (item.type == 'transaction' && item.transaction != null) {
         if (item.transaction!.amountChanged > 0) {
-          return 'معاملة مالية - إضافة دين$invoicePart';
+          baseDescription = 'إضافة دين';
         } else if (item.transaction!.amountChanged < 0) {
-          return 'معاملة مالية - تسديد دين$invoicePart';
+          baseDescription = 'تسديد دين';
+        } else {
+          baseDescription = 'معاملة مالية';
         }
+      } else {
+        baseDescription = item.description.replaceAll('(', '').replaceAll(')', '');
       }
-      if (hasInvoice) {
-        return 'معاملة مالية$invoicePart';
-      }
-      return item.description.replaceAll('(', '').replaceAll(')', '');
+      
+      // بناء النص النهائي: البيان + الملاحظة + رقم الفاتورة
+      List<String> parts = [baseDescription];
+      if (hasNote) parts.add(note);
+      if (hasInvoice) parts.add(invoicePart);
+      
+      return parts.join(' - ');
     }
 
     final pdf = pw.Document();
@@ -335,15 +347,16 @@ class PdfService {
                       pw.SizedBox(height: 5),
                     ],
                     // جدول المعاملات - ترتيب الأعمدة من اليمين لليسار (RTL)
+                    // تم تصغير أعمدة الأرقام والتاريخ وتوسيع عمود البيان
                     pw.Table(
                       border: pw.TableBorder.all(width: 0.2),
                       columnWidths: {
-                        0: const pw.FixedColumnWidth(80), // الدين بعد
-                        1: const pw.FixedColumnWidth(80), // الدين قبل
-                        2: const pw.FixedColumnWidth(80), // المبلغ
-                        3: const pw.FlexColumnWidth(2), // البيان
-                        4: const pw.FixedColumnWidth(80), // التاريخ
-                        5: const pw.FixedColumnWidth(30), // تسلسل
+                        0: const pw.FixedColumnWidth(58), // الدين بعد - مصغر
+                        1: const pw.FixedColumnWidth(58), // الدين قبل - مصغر
+                        2: const pw.FixedColumnWidth(58), // المبلغ - مصغر
+                        3: const pw.FlexColumnWidth(3), // البيان - موسع
+                        4: const pw.FixedColumnWidth(55), // التاريخ - مصغر
+                        5: const pw.FixedColumnWidth(22), // تسلسل - مصغر
                       },
                       defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
                       children: [
@@ -530,19 +543,31 @@ class PdfService {
 
     String formatDescription(AccountStatementItem item) {
       final hasInvoice = item.transaction?.invoiceId != null;
-      final invoicePart =
-          hasInvoice ? ' (فاتورة #${item.transaction?.invoiceId})' : '';
+      final invoicePart = hasInvoice ? 'فاتورة #${item.transaction?.invoiceId}' : '';
+      
+      // جلب الملاحظة النصية إن وجدت
+      final note = item.transaction?.transactionNote?.trim() ?? '';
+      final hasNote = note.isNotEmpty;
+      
+      String baseDescription = '';
       if (item.type == 'transaction' && item.transaction != null) {
         if (item.transaction!.amountChanged > 0) {
-          return 'معاملة مالية - إضافة دين$invoicePart';
+          baseDescription = 'إضافة دين';
         } else if (item.transaction!.amountChanged < 0) {
-          return 'معاملة مالية - تسديد دين$invoicePart';
+          baseDescription = 'تسديد دين';
+        } else {
+          baseDescription = 'معاملة مالية';
         }
+      } else {
+        baseDescription = item.description.replaceAll('(', '').replaceAll(')', '');
       }
-      if (hasInvoice) {
-        return 'معاملة مالية$invoicePart';
-      }
-      return item.description.replaceAll('(', '').replaceAll(')', '');
+      
+      // بناء النص النهائي: البيان + الملاحظة + رقم الفاتورة
+      List<String> parts = [baseDescription];
+      if (hasNote) parts.add(note);
+      if (hasInvoice) parts.add(invoicePart);
+      
+      return parts.join(' - ');
     }
 
     final pdf = pw.Document();
@@ -721,15 +746,16 @@ class PdfService {
                         pw.Text('سجل المعاملات المالية:', style: pw.TextStyle(font: ttf, fontSize: 10, fontWeight: pw.FontWeight.bold)),
                       pw.SizedBox(height: 3),
                       // جدول المعاملات - RTL
+                      // تم تصغير أعمدة الأرقام والتاريخ وتوسيع عمود البيان
                       pw.Table(
                         border: pw.TableBorder.all(width: 0.2),
                         columnWidths: {
-                          0: const pw.FixedColumnWidth(65),
-                          1: const pw.FixedColumnWidth(65),
-                          2: const pw.FixedColumnWidth(65),
-                          3: const pw.FlexColumnWidth(2),
-                          4: const pw.FixedColumnWidth(65),
-                          5: const pw.FixedColumnWidth(25),
+                          0: const pw.FixedColumnWidth(58), // الدين بعد - مصغر
+                          1: const pw.FixedColumnWidth(58), // الدين قبل - مصغر
+                          2: const pw.FixedColumnWidth(58), // المبلغ - مصغر
+                          3: const pw.FlexColumnWidth(3), // البيان - موسع
+                          4: const pw.FixedColumnWidth(55), // التاريخ - مصغر
+                          5: const pw.FixedColumnWidth(22), // تسلسل - مصغر
                         },
                         defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
                         children: [

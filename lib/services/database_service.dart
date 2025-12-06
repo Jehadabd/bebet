@@ -3504,6 +3504,21 @@ class DatabaseService {
           totalManualDebt += amount; // تجميع إضافة الدين اليدوية
         }
         manualDebtCount = manualDebtTx.length; // عدد معاملات إضافة الدين
+        
+        // حساب ربح المعاملات اليدوية (15% من إضافة الدين اليدوية فقط - بدون الدين المبدئي)
+        // الشرط: manual_debt فقط + غير مرتبطة بفاتورة (invoice_id IS NULL)
+        double manualDebtProfitValue = 0.0;
+        final List<Map<String, dynamic>> manualDebtOnlyTx = await db.query(
+          'transactions',
+          columns: ['amount_changed'],
+          where:
+              "transaction_type = 'manual_debt' AND invoice_id IS NULL AND transaction_date >= ? AND transaction_date < ?",
+          whereArgs: [start, end],
+        );
+        for (final tx in manualDebtOnlyTx) {
+          final amount = (tx['amount_changed'] as num).toDouble();
+          manualDebtProfitValue += amount * 0.15; // 15% ربح
+        }
 
         // جمع معاملات تسديد الديون لهذا الشهر (manual_payment)
         final List<Map<String, dynamic>> debtTxMaps = await db.query(
@@ -3609,6 +3624,7 @@ class DatabaseService {
           totalReturns: totalReturns, // إضافة إجمالي الراجع
           totalDebtPayments: totalDebtPayments, // إضافة إجمالي تسديد الديون
           totalManualDebt: totalManualDebt, // إضافة دين يدوية
+          manualDebtProfit: manualDebtProfitValue, // ربح المعاملات اليدوية (15%)
           settlementAdditions: settlementAdditions,
           settlementReturns: settlementReturns,
           invoiceCount: invoiceCount, // عدد الفواتير

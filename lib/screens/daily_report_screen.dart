@@ -236,6 +236,19 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
                         ),
                         const SizedBox(height: 20),
 
+                        // ربح المعاملات اليدوية
+                        if ((_reportData!['manualDebtProfit'] as num? ?? 0) > 0) ...[
+                          _buildSectionTitle('أرباح إضافية'),
+                          const SizedBox(height: 12),
+                          _buildStatCard(
+                            title: 'ربح المعاملات اليدوية',
+                            value: '${_fmt(_reportData!['manualDebtProfit'])} د.ع',
+                            icon: Icons.account_balance_wallet,
+                            color: const Color(0xFF00BCD4),
+                          ),
+                          const SizedBox(height: 20),
+                        ],
+
                         // إحصائيات إضافية
                         _buildSectionTitle('إحصائيات إضافية'),
                         const SizedBox(height: 12),

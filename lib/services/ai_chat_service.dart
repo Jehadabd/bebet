@@ -1744,6 +1744,19 @@ class AIChatService {
         totalManualDebt += (trans['amount_changed'] as num?)?.toDouble() ?? 0.0;
       }
       
+      // حساب ربح المعاملات اليدوية (15% من إضافة الدين اليدوية فقط - بدون الدين المبدئي)
+      // الشرط: manual_debt فقط + غير مرتبطة بفاتورة (invoice_id IS NULL)
+      double manualDebtProfit = 0.0;
+      final manualDebtOnlyTransactions = await db.query(
+        'transactions',
+        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL',
+        whereArgs: [startStr, endStr, 'manual_debt'],
+      );
+      for (var trans in manualDebtOnlyTransactions) {
+        final amount = (trans['amount_changed'] as num?)?.toDouble() ?? 0.0;
+        manualDebtProfit += amount * 0.15; // 15% ربح
+      }
+      
       // صافي الربح = (المبيعات - الراجع) - التكلفة
       final netSaleAmount = totalSales - totalReturns;
       final netProfit = netSaleAmount - totalCost;
@@ -1756,6 +1769,7 @@ class AIChatService {
         'totalReturns': totalReturns,
         'totalManualDebt': totalManualDebt,
         'totalManualPayment': totalManualPayment,
+        'manualDebtProfit': manualDebtProfit,
         'invoiceCount': invoices.length,
         'manualDebtCount': manualDebtTransactions.length + openingBalanceTransactions.length,
         'manualPaymentCount': manualPaymentTransactions.length,
@@ -1906,6 +1920,19 @@ class AIChatService {
         totalManualDebt += (trans['amount_changed'] as num?)?.toDouble() ?? 0.0;
       }
       
+      // حساب ربح المعاملات اليدوية (15% من إضافة الدين اليدوية فقط - بدون الدين المبدئي)
+      // الشرط: manual_debt فقط + غير مرتبطة بفاتورة (invoice_id IS NULL)
+      double manualDebtProfit = 0.0;
+      final manualDebtOnlyTransactions = await db.query(
+        'transactions',
+        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL',
+        whereArgs: [startStr, endStr, 'manual_debt'],
+      );
+      for (var trans in manualDebtOnlyTransactions) {
+        final amount = (trans['amount_changed'] as num?)?.toDouble() ?? 0.0;
+        manualDebtProfit += amount * 0.15; // 15% ربح
+      }
+      
       // صافي الربح = (المبيعات - الراجع) - التكلفة
       final netSaleAmount = totalSales - totalReturns;
       final netProfit = netSaleAmount - totalCost;
@@ -1918,6 +1945,7 @@ class AIChatService {
         'totalReturns': totalReturns,
         'totalManualDebt': totalManualDebt,
         'totalManualPayment': totalManualPayment,
+        'manualDebtProfit': manualDebtProfit,
         'invoiceCount': invoices.length,
         'manualDebtCount': manualDebtTransactions.length + openingBalanceTransactions.length,
         'manualPaymentCount': manualPaymentTransactions.length,

@@ -8,6 +8,7 @@ class MonthlyOverview {
   final double totalReturns;
   final double totalDebtPayments;
   final double totalManualDebt; // إضافة دين يدوية
+  final double manualDebtProfit; // ربح المعاملات اليدوية (15%)
   final double settlementAdditions;
   final double settlementReturns;
   final int invoiceCount; // عدد الفواتير
@@ -24,6 +25,7 @@ class MonthlyOverview {
     required this.totalReturns,
     required this.totalDebtPayments,
     this.totalManualDebt = 0.0,
+    this.manualDebtProfit = 0.0,
     required this.settlementAdditions,
     required this.settlementReturns,
     this.invoiceCount = 0,
