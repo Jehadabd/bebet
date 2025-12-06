@@ -3491,8 +3491,67 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                       isViewOnly: isViewOnly,
                       isPlaceholder: item.productName.isEmpty,
                       databaseService: db, // إضافة DatabaseService للبحث الذكي
-                    currentCustomerName: customerNameController.text.trim(),
-                    currentCustomerPhone: customerPhoneController.text.trim().isEmpty ? null : customerPhoneController.text.trim(),
+                      currentCustomerName: customerNameController.text.trim(),
+                      currentCustomerPhone: customerPhoneController.text.trim().isEmpty ? null : customerPhoneController.text.trim(),
+                      detailsFocusNode: focusNodesList[index].details, // تمرير FocusNode للتفاصيل
+                      quantityFocusNode: focusNodesList[index].quantity, // تمرير FocusNode للعدد
+                      priceFocusNode: focusNodesList[index].price, // تمرير FocusNode للسعر
+                      // عند الضغط على Enter في حقل السعر، انتقل إلى حقل التفاصيل في الصف التالي
+                      onPriceSubmitted: () {
+                        // استخدم البيانات المحدثة من invoiceItems بدلاً من item الأصلي
+                        final currentItem = invoiceItems[index];
+                        final isComplete = _isInvoiceItemComplete(currentItem);
+                        print('🔍 DEBUG onPriceSubmitted: index=$index, item=${currentItem.productName}, complete=$isComplete');
+                        
+                        // تحقق من اكتمال جميع الحقول قبل الانتقال
+                        if (!isComplete) {
+                          // إظهار رسالة تنبيه إذا كانت الحقول غير مكتملة
+                          List<String> missingFields = [];
+                          if (currentItem.productName.isEmpty) missingFields.add('التفاصيل');
+                          if ((currentItem.quantityIndividual == null || currentItem.quantityIndividual == 0) &&
+                              (currentItem.quantityLargeUnit == null || currentItem.quantityLargeUnit == 0)) {
+                            missingFields.add('العدد');
+                          }
+                          if (currentItem.saleType == null || currentItem.saleType!.isEmpty) missingFields.add('نوع البيع');
+                          if (currentItem.appliedPrice <= 0) missingFields.add('السعر');
+                          
+                          if (missingFields.isNotEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('يرجى إكمال: ${missingFields.join('، ')}'),
+                                backgroundColor: Colors.orange,
+                                duration: const Duration(seconds: 2),
+                              ),
+                            );
+                          }
+                          return; // لا تنتقل إذا كانت الحقول غير مكتملة
+                        }
+                        
+                        // أضف صف جديد إذا لم يكن موجوداً
+                        final needsNewRow = index >= invoiceItems.length - 1;
+                        if (needsNewRow) {
+                          setState(() {
+                            invoiceItems.add(InvoiceItem(
+                              invoiceId: 0,
+                              productName: '',
+                              unit: '',
+                              unitPrice: 0.0,
+                              appliedPrice: 0.0,
+                              itemTotal: 0.0,
+                              uniqueId: 'placeholder_${DateTime.now().microsecondsSinceEpoch}',
+                            ));
+                            focusNodesList.add(LineItemFocusNodes());
+                          });
+                        }
+                        
+                        // انتقل إلى حقل التفاصيل في الصف التالي بعد تأخير قصير للسماح ببناء الـ widget
+                        Future.delayed(const Duration(milliseconds: 100), () {
+                          if (mounted && focusNodesList.length > index + 1) {
+                            print('🔍 DEBUG: نقل التركيز إلى الصف ${index + 1}');
+                            focusNodesList[index + 1].details.requestFocus();
+                          }
+                        });
+                      },
                       onItemUpdated: (updatedItem) {
                         // 🔍 DEBUG: طباعة تحديث الصنف في الشاشة الرئيسية
                         print('═══════════════════════════════════════════════════════════════════');
@@ -3525,24 +3584,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                           
                           _recalculateTotals();
                           _calculateProfit(); // Update profit on item update
-                          final lastIndex = invoiceItems.length - 1;
-                          if (i == lastIndex &&
-                              _isInvoiceItemComplete(updatedItem)) {
-                            invoiceItems.add(InvoiceItem(
-                                invoiceId: 0,
-                                productName: '',
-                                unit: '',
-                                unitPrice: 0.0,
-                                appliedPrice: 0.0,
-                                itemTotal: 0.0,
-                                uniqueId: 'placeholder_${DateTime.now().microsecondsSinceEpoch}'));
-                            focusNodesList.add(LineItemFocusNodes());
-                            SchedulerBinding.instance.addPostFrameCallback((_) {
-                              if (mounted && focusNodesList.isNotEmpty) {
-                                focusNodesList.last.details.requestFocus();
-                              }
-                            });
-                          }
+                          // ملاحظة: لا نضيف صف جديد هنا ولا ننقل التركيز
+                          // نقل التركيز يحدث فقط عند الضغط على Enter في حقل السعر (عبر onPriceSubmitted)
                         });
                         
                         print('🔍 DEBUG SCREEN UPDATE: حالة القائمة بعد التحديث:');
@@ -4245,6 +4288,7 @@ class EditableInvoiceItemRow extends StatefulWidget {
   final DatabaseService? databaseService; // جديد: للبحث الذكي
   final String currentCustomerName; // اسم العميل الحالي لقراءة سجل أسعاره
   final String? currentCustomerPhone; // هاتف العميل لتحسين المطابقة
+  final VoidCallback? onPriceSubmitted; // جديد: للانتقال إلى الصف التالي عند الضغط على Enter في السعر
 
   const EditableInvoiceItemRow({
     Key? key,
@@ -4261,6 +4305,7 @@ class EditableInvoiceItemRow extends StatefulWidget {
     this.databaseService, // جديد: للبحث الذكي
     required this.currentCustomerName,
     this.currentCustomerPhone,
+    this.onPriceSubmitted, // جديد: للانتقال إلى الصف التالي
   }) : super(key: key);
 
   @override
@@ -4281,12 +4326,19 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   Timer? _rowIdDebounce;
   List<Product> _rowIdOptions = [];
   TextEditingController? _detailsController; // reference to details field controller
+  TextEditingController? _ownedDetailsController; // controller نملكه للـ RawAutocomplete
   bool _hasShownLowPriceWarning = false;
   double? _lowestRecentPrice; // أدنى سعر خلال آخر 3 فواتير
   String? _lowestRecentInfo; // وصف مختصر: التاريخ ونوع البيع
 
   String _formatNumber(num value) {
     return NumberFormat('#,##0.##', 'en_US').format(value);
+  }
+  
+  // دالة للحصول على أو إنشاء TextEditingController للتفاصيل
+  TextEditingController _getOrCreateDetailsController() {
+    _ownedDetailsController ??= TextEditingController(text: widget.item.productName);
+    return _ownedDetailsController!;
   }
 
   @override
@@ -4305,6 +4357,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     _quantityFocusNode = widget.quantityFocusNode ?? FocusNode();
     _priceFocusNode = widget.priceFocusNode ?? FocusNode();
     _saleTypeFocusNode = FocusNode();
+    
+    // إضافة listener لنقل التركيز إلى Autocomplete عند طلب التركيز على _detailsFocusNode
+    _detailsFocusNode.addListener(_onDetailsFocusChanged);
+    
     // Initialize ID controller from current product if resolvable
     final prod = widget.allProducts.firstWhere(
       (p) => p.name == _currentItem.productName,
@@ -4324,9 +4380,20 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
       _fetchLowestRecentPrice();
     });
   }
+  
+  // دالة للتعامل مع تغيير التركيز على حقل التفاصيل (للـ debug فقط)
+  void _onDetailsFocusChanged() {
+    print('🔍 DEBUG _onDetailsFocusChanged: _detailsFocusNode.hasFocus=${_detailsFocusNode.hasFocus}');
+  }
 
   @override
   void dispose() {
+    // إزالة الـ listener قبل التخلص من FocusNode
+    _detailsFocusNode.removeListener(_onDetailsFocusChanged);
+    
+    // تنظيف الـ controller الذي نملكه
+    _ownedDetailsController?.dispose();
+    
     if (widget.detailsFocusNode == null) {
       _detailsFocusNode.dispose();
     }
@@ -4802,131 +4869,103 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                     ? Text(widget.item.productName,
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodyMedium)
-                    : Builder(
-                        builder: (context) {
-                          TextEditingController detailsController = TextEditingController(text: widget.item.productName);
-                          // استخدام البحث الذكي إذا كان DatabaseService متوفر
-                          if (widget.databaseService != null) {
-                            return Autocomplete<String>(
-                              initialValue: TextEditingValue(text: widget.item.productName),
-                              optionsBuilder: (TextEditingValue textEditingValue) async {
-                                if (textEditingValue.text.isEmpty) {
-                                  return const Iterable<String>.empty();
-                                }
-                                try {
-                                  // استخدام البحث الذكي
-                                  final products = await widget.databaseService!.searchProductsSmart(textEditingValue.text);
-                                  return products.map((p) => p.name);
-                                } catch (e) {
-                                  print('Error in smart search: $e');
-                                  // Fallback إلى البحث العادي
-                                  return widget.allProducts
-                                      .map((p) => p.name)
-                                      .where((option) =>
-                                          option.contains(textEditingValue.text));
-                                }
-                              },
-                              fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
-                                detailsController = controller;
-                                _detailsController = controller; // keep reference to update on ID selection
-                                return TextField(
-                                  controller: controller,
-                                  focusNode: focusNode,
-                                  enabled: !widget.isViewOnly,
-                                  decoration: const InputDecoration(
-                                    border: InputBorder.none,
-                                    contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-                                    isDense: true,
-                                    filled: true,
-                                    fillColor: Color(0xFFF3F3F3),
-                                  ),
-                                  style: Theme.of(context).textTheme.bodyMedium,
-                                  onChanged: (val) {
-                                    _currentItem =
-                                        _currentItem.copyWith(productName: val);
-                                  },
-                                  onSubmitted: (val) {
-                                    onFieldSubmitted();
-                                    widget.onItemUpdated(_currentItem);
-                                    FocusScope.of(context)
-                                        .requestFocus(_quantityFocusNode);
-                                  },
-                                );
-                              },
-                              onSelected: (String selection) {
-                                setState(() {
-                                  _currentItem = _currentItem.copyWith(
-                                      productName: selection);
-                                  widget.onItemUpdated(_currentItem);
-                                });
-                                detailsController.text = selection;
-                                try {
-                                  final p = widget.allProducts.firstWhere(
-                                      (pr) => pr.name == selection);
-                                  _idController.text = p.id?.toString() ?? '';
-                                } catch (e) {}
-                                FocusScope.of(context)
-                                    .requestFocus(_quantityFocusNode);
-                              },
-                            );
-                          } else {
-                            // Fallback إلى البحث العادي إذا لم يكن DatabaseService متوفر
-                            return Autocomplete<String>(
-                              initialValue:
-                                  TextEditingValue(text: widget.item.productName),
-                              optionsBuilder: (TextEditingValue textEditingValue) {
-                                if (textEditingValue.text.isEmpty) {
-                                  return const Iterable<String>.empty();
-                                }
-                                return widget.allProducts.map((p) => p.name).where(
-                                    (option) =>
-                                        option.contains(textEditingValue.text));
-                              },
-                              onSelected: (String selection) {
-                                _currentItem =
-                                    _currentItem.copyWith(productName: selection);
-                                widget.onItemUpdated(_currentItem);
-                                try {
-                                  final p = widget.allProducts
-                                      .firstWhere((pr) => pr.name == selection);
-                                  _idController.text = p.id?.toString() ?? '';
-                                } catch (e) {}
-                                FocusScope.of(context)
-                                    .requestFocus(_quantityFocusNode);
-                              },
-                              fieldViewBuilder: (context, textEditingController,
-                                  focusNode, onFieldSubmitted) {
-                                return TextField(
-                                  controller: textEditingController,
-                                  focusNode: focusNode,
-                                  enabled: !widget.isViewOnly,
-                                  decoration: const InputDecoration(
-                                    border: InputBorder.none,
-                                    contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-                                    isDense: true,
-                                    filled: true,
-                                    fillColor: Color(0xFFF3F3F3),
-                                  ),
-                                  style: Theme.of(context).textTheme.bodyMedium,
-                                  onChanged: (val) {
-                                    _currentItem =
-                                        _currentItem.copyWith(productName: val);
-                                  },
-                                  onSubmitted: (val) {
-                                    onFieldSubmitted();
-                                    widget.onItemUpdated(_currentItem);
-                                    try {
-                                      final p = widget.allProducts
-                                          .firstWhere((pr) => pr.name == val);
-                                      _idController.text = p.id?.toString() ?? '';
-                                    } catch (e) {}
-                                    FocusScope.of(context)
-                                        .requestFocus(_quantityFocusNode);
-                                  },
-                                );
-                              },
-                            );
+                    : RawAutocomplete<String>(
+                        textEditingController: _getOrCreateDetailsController(),
+                        focusNode: _detailsFocusNode, // استخدام FocusNode الممرر من الخارج مباشرة
+                        optionsBuilder: (TextEditingValue textEditingValue) async {
+                          if (textEditingValue.text.isEmpty) {
+                            return const Iterable<String>.empty();
                           }
+                          try {
+                            if (widget.databaseService != null) {
+                              final products = await widget.databaseService!.searchProductsSmart(textEditingValue.text);
+                              return products.map((p) => p.name);
+                            } else {
+                              return widget.allProducts
+                                  .map((p) => p.name)
+                                  .where((option) => option.contains(textEditingValue.text));
+                            }
+                          } catch (e) {
+                            print('Error in smart search: $e');
+                            return widget.allProducts
+                                .map((p) => p.name)
+                                .where((option) => option.contains(textEditingValue.text));
+                          }
+                        },
+                        fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                          _detailsController = controller;
+                          return TextField(
+                            controller: controller,
+                            focusNode: focusNode,
+                            enabled: !widget.isViewOnly,
+                            decoration: const InputDecoration(
+                              border: InputBorder.none,
+                              contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                              isDense: true,
+                              filled: true,
+                              fillColor: Color(0xFFF3F3F3),
+                            ),
+                            style: Theme.of(context).textTheme.bodyMedium,
+                            onChanged: (val) {
+                              _currentItem = _currentItem.copyWith(productName: val);
+                            },
+                            onSubmitted: (val) {
+                              onFieldSubmitted();
+                              widget.onItemUpdated(_currentItem);
+                              FocusScope.of(context).requestFocus(_quantityFocusNode);
+                            },
+                          );
+                        },
+                        optionsViewBuilder: (context, onSelected, options) {
+                          // استخدام AutocompleteHighlightedOption لتتبع العنصر المحدد
+                          return Align(
+                            alignment: Alignment.topLeft,
+                            child: Material(
+                              elevation: 4.0,
+                              borderRadius: BorderRadius.circular(8),
+                              child: ConstrainedBox(
+                                constraints: const BoxConstraints(maxHeight: 200, maxWidth: 300),
+                                child: ListView.builder(
+                                  padding: EdgeInsets.zero,
+                                  shrinkWrap: true,
+                                  itemCount: options.length,
+                                  itemBuilder: (context, index) {
+                                    final option = options.elementAt(index);
+                                    // تتبع العنصر المحدد حالياً باستخدام AutocompleteHighlightedOption
+                                    final bool isHighlighted = AutocompleteHighlightedOption.of(context) == index;
+                                    return Container(
+                                      color: isHighlighted ? Colors.blue.shade100 : null,
+                                      child: ListTile(
+                                        dense: true,
+                                        title: Text(
+                                          option,
+                                          style: TextStyle(
+                                            color: isHighlighted ? Colors.blue.shade900 : null,
+                                            fontWeight: isHighlighted ? FontWeight.bold : null,
+                                          ),
+                                        ),
+                                        selected: isHighlighted,
+                                        selectedTileColor: Colors.blue.shade100,
+                                        onTap: () => onSelected(option),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                        onSelected: (String selection) {
+                          setState(() {
+                            _currentItem = _currentItem.copyWith(productName: selection);
+                            widget.onItemUpdated(_currentItem);
+                          });
+                          _detailsController?.text = selection;
+                          try {
+                            final p = widget.allProducts.firstWhere((pr) => pr.name == selection);
+                            _idController.text = p.id?.toString() ?? '';
+                          } catch (e) {}
+                          FocusScope.of(context).requestFocus(_quantityFocusNode);
                         },
                       ),
               ),
@@ -5038,6 +5077,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                         focusNode: _priceFocusNode,
                         onFieldSubmitted: (val) {
                           widget.onItemUpdated(_currentItem);
+                          // عند الضغط على Enter في حقل السعر، انتقل إلى حقل التفاصيل في الصف التالي
+                          if (widget.onPriceSubmitted != null) {
+                            widget.onPriceSubmitted!();
+                          }
                         },
                         style: Theme.of(context).textTheme.bodyMedium,
                         decoration: const InputDecoration(
