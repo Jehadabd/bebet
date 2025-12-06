@@ -50,6 +50,8 @@ dependencies:
   archive: ^3.6.1
   flutter_colorpicker: ^1.1.0
   decimal: ^3.2.4
+  crypto: ^3.0.3
+  googleapis_auth: ^1.4.1
 
 dev_dependencies:
   flutter_test:

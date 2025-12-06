@@ -168,6 +168,11 @@ class DriveService {
     }
   }
 
+  /// الحصول على HTTP Client مصادق للاستخدام الخارجي (مثل SyncEngine)
+  Future<http.Client> getAuthenticatedHttpClient({bool forceRefresh = false}) async {
+    return _getAuthenticatedClient(forceRefresh: forceRefresh);
+  }
+
   Future<http.Client> _getAuthenticatedClient({bool forceRefresh = false}) async {
     if (Platform.isAndroid || Platform.isIOS) {
       final authClient = await _googleSignIn.authenticatedClient();

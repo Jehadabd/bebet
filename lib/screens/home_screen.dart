@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../providers/app_provider.dart';
 import '../models/customer.dart';
+import '../services/sync/sync_service.dart';
 import 'customer_details_screen.dart';
 import 'add_customer_screen.dart';
 import 'saved_invoices_screen.dart';
@@ -34,6 +35,8 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  final SyncService _syncService = SyncService();
+  
   @override
   void initState() {
     super.initState();
@@ -45,6 +48,114 @@ class _HomeScreenState extends State<HomeScreen> {
       app.setSearchQuery('');
       app.initialize();
     });
+  }
+  
+  /// عرض حوار المزامنة المحسّن
+  Future<void> _showSyncDialog(BuildContext context) async {
+    // متغيرات الحالة
+    final ValueNotifier<String> statusMessage = ValueNotifier('جاري التحضير...');
+    final ValueNotifier<bool> isComplete = ValueNotifier(false);
+    final ValueNotifier<SyncResult?> result = ValueNotifier(null);
+    
+    // الاستماع لتحديثات الحالة
+    final subscription = _syncService.messageStream.listen((msg) {
+      if (!isComplete.value) {
+        statusMessage.value = msg;
+      }
+    });
+    
+    // عرض الـ Dialog
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => ValueListenableBuilder<bool>(
+        valueListenable: isComplete,
+        builder: (context, complete, _) => ValueListenableBuilder<String>(
+          valueListenable: statusMessage,
+          builder: (context, message, _) => ValueListenableBuilder<SyncResult?>(
+            valueListenable: result,
+            builder: (context, syncResult, _) => AlertDialog(
+              title: Row(
+                children: [
+                  if (!complete) ...[
+                    const SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 12),
+                  ] else ...[
+                    Icon(
+                      syncResult?.success == true ? Icons.check_circle : Icons.error,
+                      color: syncResult?.success == true ? Colors.green : Colors.red,
+                    ),
+                    const SizedBox(width: 12),
+                  ],
+                  Expanded(
+                    child: Text(
+                      complete 
+                        ? (syncResult?.success == true ? 'تمت المزامنة' : 'فشلت المزامنة')
+                        : 'جاري المزامنة...',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(message),
+                  if (complete && syncResult != null) ...[
+                    const SizedBox(height: 16),
+                    if (syncResult.success) ...[
+                      Text('📥 تنزيل: ${syncResult.downloaded} عملية'),
+                      Text('📤 رفع: ${syncResult.uploaded} عملية'),
+                      Text('⏱️ المدة: ${syncResult.duration.inSeconds} ثانية'),
+                    ] else ...[
+                      Text('❌ ${syncResult.error ?? syncResult.message}',
+                        style: const TextStyle(color: Colors.red)),
+                    ],
+                  ],
+                ],
+              ),
+              actions: complete ? [
+                TextButton(
+                  onPressed: () {
+                    subscription.cancel();
+                    Navigator.pop(dialogContext);
+                  },
+                  child: const Text('إغلاق'),
+                ),
+              ] : null,
+            ),
+          ),
+        ),
+      ),
+    );
+    
+    // تنفيذ المزامنة
+    SyncResult syncResult;
+    try {
+      await _syncService.initialize();
+      syncResult = await _syncService.sync();
+    } catch (e) {
+      syncResult = SyncResult(
+        success: false,
+        message: 'حدث خطأ',
+        error: e.toString(),
+      );
+    }
+    
+    // تحديث الحالة - سيتم تحديث الـ Dialog تلقائياً
+    result.value = syncResult;
+    isComplete.value = true;
+    
+    // تحديث البيانات إذا نجحت المزامنة
+    if (syncResult.success && context.mounted) {
+      final app = context.read<AppProvider>();
+      await app.initialize(); // إعادة تحميل البيانات
+    }
   }
 
   // Helper to format currency consistently
@@ -633,29 +744,7 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(width: 16),
             FloatingActionButton(
               heroTag: 'sync_debts',
-              onPressed: () async {
-                final app = Provider.of<AppProvider>(context, listen: false);
-                try {
-                  await app.syncDebts();
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('تمت المزامنة بنجاح'),
-                        backgroundColor: Theme.of(context).colorScheme.tertiary,
-                      ),
-                    );
-                  }
-                } catch (e) {
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('فشلت المزامنة: $e'),
-                        backgroundColor: Theme.of(context).colorScheme.error,
-                      ),
-                    );
-                  }
-                }
-              },
+              onPressed: () => _showSyncDialog(context),
               tooltip: 'مزامنة',
               child: const Icon(Icons.sync),
             ),

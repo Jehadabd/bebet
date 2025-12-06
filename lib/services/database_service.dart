@@ -528,8 +528,8 @@ class DatabaseService {
     // إصلاح قاعدة البيانات بعد الفتح مباشرة
     await repairDatabase(db);
     
-    // تنظيف المعاملات اليتيمة (بدون عميل)
-    await _cleanupOrphanedTransactions(db);
+    // ملاحظة: تم إلغاء تنظيف المعاملات اليتيمة - نتركها كما هي
+    // await _cleanupOrphanedTransactions(db);
     
     return db;
   }
