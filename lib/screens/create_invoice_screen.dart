@@ -2374,6 +2374,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         _searchResults = [];
         quantityAutofocus = true;
       });
+      
+      // 🔧 نقل التركيز إلى حقل الكمية العلوي بعد اختيار المنتج
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _quantityFocusNode.requestFocus();
+        }
+      });
     } catch (e) {
       print('Error selecting product: $e');
       if (mounted) {
@@ -3133,9 +3140,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                           flex: 2,
                           child: TextFormField(
                             controller: _quantityController,
-                            focusNode: focusNodesList.length > 0
-                                ? focusNodesList[0].quantity
-                                : null,
+                            focusNode: _quantityFocusNode, // استخدام FocusNode الخاص بحقل الكمية العلوي
                             autofocus: quantityAutofocus, // ربط autofocus
                             decoration: InputDecoration(
                               labelText: 'الكمية (${selectedUnitForItem})',

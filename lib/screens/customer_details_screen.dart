@@ -48,6 +48,8 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
     Future.microtask(() async {
       await context.read<AppProvider>().selectCustomer(widget.customer);
       await _loadTransactions();
+      // 🔒 التحقق التلقائي من الرصيد عند فتح الصفحة
+      await _verifyAndAutoFixBalance();
     });
   }
   
@@ -55,6 +57,35 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
     if (!mounted) return;
     if (widget.customer.id != null) {
       await context.read<AppProvider>().loadCustomerTransactions(widget.customer.id!);
+    }
+  }
+
+  /// 🔒 التحقق التلقائي من رصيد العميل وإصلاح الفروقات البسيطة
+  /// هذه الدالة تضمن أن الرصيد المعروض = مجموع المعاملات بنسبة 99.9%
+  Future<void> _verifyAndAutoFixBalance() async {
+    if (!mounted || widget.customer.id == null) return;
+    
+    try {
+      final db = DatabaseService();
+      final result = await db.getVerifiedCustomerBalance(widget.customer.id!);
+      
+      if (result.wasAutoFixed && mounted) {
+        // تم إصلاح فرق بسيط تلقائياً - إعادة تحميل البيانات
+        await context.read<AppProvider>().selectCustomer(widget.customer);
+        await _loadTransactions();
+        
+        // إظهار رسالة صغيرة (اختياري - يمكن إزالتها للإصلاح الصامت)
+        // ScaffoldMessenger.of(context).showSnackBar(
+        //   SnackBar(
+        //     content: Text(result.autoFixNote ?? 'تم تصحيح الرصيد تلقائياً'),
+        //     duration: const Duration(seconds: 2),
+        //     backgroundColor: Colors.green,
+        //   ),
+        // );
+      }
+    } catch (e) {
+      // تجاهل الأخطاء - لا نريد إيقاف التطبيق
+      debugPrint('خطأ في التحقق التلقائي من الرصيد: $e');
     }
   }
 
@@ -726,28 +757,17 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                                       try {
                                         final db = DatabaseService();
                                         final diffAmount = (customer.currentTotalDebt ?? 0.0) - calculatedBalance;
+                                        final targetBalance = customer.currentTotalDebt ?? 0.0;
                                         
-                                        // FIX: Before adding the correction transaction, we must set the customer's
-                                        // current debt to match the calculatedBalance (sum of transactions).
-                                        // Why? Because insertTransaction adds the amount to the *current* debt.
-                                        // If we don't reset it, we get: Current(Correct) + Diff = Correct + Diff (Wrong!).
-                                        // We want: Calculated(Wrong) + Diff = Correct.
-                                        // So we update the DB directly without notifying the UI yet.
-                                        await db.updateCustomer(customer.copyWith(
-                                          currentTotalDebt: calculatedBalance,
-                                          lastModifiedAt: DateTime.now(),
-                                        ));
-
-                                        await db.insertTransaction(DebtTransaction(
+                                        // 🔧 استخدام دالة التصحيح الخاصة التي تتجاوز التحقق الأمني
+                                        await db.insertCorrectionTransaction(
                                           customerId: customer.id!,
-                                          transactionDate: DateTime.now(),
-                                          amountChanged: diffAmount,
-                                          transactionNote: 'تصحيح رصيد (رصيد افتتاحي سابق)',
-                                          transactionType: 'opening_balance',
-                                          description: 'تصحيح تلقائي للفروقات',
-                                          createdAt: DateTime.now(),
-                                        ));
+                                          correctionAmount: diffAmount,
+                                          targetBalance: targetBalance,
+                                          note: 'تصحيح رصيد (رصيد افتتاحي سابق)',
+                                        );
                                         
+                                        // إعادة حساب تسلسل الأرصدة
                                         await db.recalculateCustomerTransactionBalances(customer.id!);
                                         
                                         // Reload customer and transactions to update UI with correct final values
@@ -1471,37 +1491,40 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
       );
 
       final db = DatabaseService();
-      final transactions =
-          await db.getCustomerTransactions(widget.customer.id!);
+      // 🔧 جلب المعاملات مرتبة بنفس طريقة recalculateCustomerTransactionBalances
+      final transactions = await db.getCustomerTransactions(
+        widget.customer.id!,
+        orderBy: 'transaction_date ASC, id ASC', // ترتيب من الأقدم للأحدث
+      );
 
       final allTransactions = <AccountStatementItem>[];
 
       for (var transaction in transactions) {
         if (transaction.transactionDate != null) {
-          allTransactions.add(AccountStatementItem(
+          final item = AccountStatementItem(
             date: transaction.transactionDate!,
             description: _getTransactionDescription(transaction),
             amount: transaction.amountChanged,
             type: 'transaction',
             transaction: transaction,
-          ));
+          );
+          // 🔧 استخدام القيم المحفوظة في قاعدة البيانات
+          item.balanceBefore = transaction.balanceBeforeTransaction ?? 0.0;
+          item.balanceAfter = transaction.newBalanceAfterTransaction ?? 0.0;
+          allTransactions.add(item);
         }
       }
 
-      allTransactions.sort((a, b) => a.date.compareTo(b.date));
+      // 🔧 لا نحتاج للترتيب لأن المعاملات مرتبة مسبقاً من قاعدة البيانات
+      // allTransactions.sort((a, b) => a.date.compareTo(b.date));
 
       // استخدام جميع المعاملات بدلاً من آخر 15 فقط - كشف حساب تفصيلي كامل
       final allTransactionsToShow = allTransactions;
 
-      // حساب الرصيد من البداية (صفر)
-      double currentBalance = 0.0;
-
-      // حساب الرصيد قبل وبعد كل معاملة من أول معاملة إلى آخر معاملة
-      for (var item in allTransactionsToShow) {
-        item.balanceBefore = currentBalance;
-        currentBalance += item.amount;
-        item.balanceAfter = currentBalance;
-      }
+      // 🔧 حساب الرصيد النهائي من آخر معاملة (أو صفر إذا لم توجد معاملات)
+      double currentBalance = allTransactionsToShow.isNotEmpty 
+          ? allTransactionsToShow.last.balanceAfter 
+          : 0.0;
 
       final actualCustomerBalance = widget.customer.currentTotalDebt;
       

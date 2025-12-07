@@ -9,6 +9,7 @@ class Customer {
   final DateTime createdAt;
   final DateTime lastModifiedAt;
   final String? audioNotePath;
+  final String? syncUuid; // 🔄 معرف المزامنة الفريد
 
   Customer({
     this.id,
@@ -20,6 +21,7 @@ class Customer {
     DateTime? createdAt,
     DateTime? lastModifiedAt,
     this.audioNotePath,
+    this.syncUuid,
   })  : createdAt = createdAt ?? DateTime.now(),
         lastModifiedAt = lastModifiedAt ?? DateTime.now();
 
@@ -34,6 +36,7 @@ class Customer {
       'created_at': createdAt.toIso8601String(),
       'last_modified_at': lastModifiedAt.toIso8601String(),
       'audio_note_path': audioNotePath,
+      'sync_uuid': syncUuid,
     };
   }
 
@@ -48,6 +51,7 @@ class Customer {
       createdAt: DateTime.parse(map['created_at'] as String),
       lastModifiedAt: DateTime.parse(map['last_modified_at'] as String),
       audioNotePath: map['audio_note_path'] as String?,
+      syncUuid: map['sync_uuid'] as String?,
     );
   }
 
@@ -61,6 +65,7 @@ class Customer {
     DateTime? createdAt,
     DateTime? lastModifiedAt,
     String? audioNotePath,
+    String? syncUuid,
   }) {
     return Customer(
       id: id ?? this.id,
@@ -72,6 +77,7 @@ class Customer {
       createdAt: createdAt ?? this.createdAt,
       lastModifiedAt: lastModifiedAt ?? this.lastModifiedAt,
       audioNotePath: audioNotePath ?? this.audioNotePath,
+      syncUuid: syncUuid ?? this.syncUuid,
     );
   }
 }

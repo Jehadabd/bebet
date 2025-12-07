@@ -75,6 +75,7 @@ class MoneyCalculator {
   
   /// حساب Checksum للمعاملة المالية
   /// يُستخدم للتحقق من سلامة البيانات
+  /// 🔒 مُفعّل ومستخدم في جميع العمليات المالية الحساسة
   static String calculateTransactionChecksum({
     required int customerId,
     required double amount,
@@ -105,6 +106,34 @@ class MoneyCalculator {
       date: date,
     );
     return calculated == checksum;
+  }
+  
+  /// حساب Checksum لرصيد العميل
+  /// يُستخدم للتحقق من سلامة رصيد العميل
+  static String calculateCustomerBalanceChecksum({
+    required int customerId,
+    required double balance,
+    required DateTime lastModified,
+  }) {
+    final data = 'customer|$customerId|${balance.toStringAsFixed(3)}|${lastModified.millisecondsSinceEpoch}';
+    final bytes = utf8.encode(data);
+    final digest = sha256.convert(bytes);
+    return digest.toString().substring(0, 16);
+  }
+  
+  /// حساب Checksum للفاتورة
+  /// يُستخدم للتحقق من سلامة بيانات الفاتورة
+  static String calculateInvoiceChecksum({
+    required int invoiceId,
+    required double totalAmount,
+    required double discount,
+    required double amountPaid,
+    required DateTime date,
+  }) {
+    final data = 'invoice|$invoiceId|${totalAmount.toStringAsFixed(3)}|${discount.toStringAsFixed(3)}|${amountPaid.toStringAsFixed(3)}|${date.millisecondsSinceEpoch}';
+    final bytes = utf8.encode(data);
+    final digest = sha256.convert(bytes);
+    return digest.toString().substring(0, 16);
   }
   
   /// التحقق المزدوج من صحة العملية الحسابية

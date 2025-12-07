@@ -1520,6 +1520,15 @@ class OptimizedSyncEngine {
       }
     }
     
+    // 🔒 التحقق من صحة البيانات المالية قبل الإدراج
+    final amountChanged = (data['amount_changed'] as num?)?.toDouble() ?? 0;
+    if (amountChanged.abs() > 1000000000) {
+      throw SyncException(
+        type: SyncErrorType.rollbackRequired,
+        message: 'مبلغ المعاملة غير منطقي: $amountChanged',
+      );
+    }
+    
     await txn.insert('transactions', {
       ...data,
       'transaction_uuid': op.entityUuid,

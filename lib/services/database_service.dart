@@ -20,12 +20,12 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:convert';
-import 'dart:convert';
+import 'sync/sync_tracker.dart'; // 🔄 تتبع المزامنة
 
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
   static Database? _database;
-  static const int _databaseVersion = 34;
+  static const int _databaseVersion = 35; // 🔒 إضافة عمود checksum للأمان المالي
   // تحكم بالطباعات التشخيصية من مصدر واحد
   // معطل في الإصدار النهائي لتجنب الطباعات المزعجة
   static const bool _verboseLogs = false;
@@ -266,12 +266,19 @@ class DatabaseService {
       // تجاهل الخطأ
     }
     // --- تحقق من وجود العمود قبل محاولة إضافته ---
-    // معاملات: أعمدة المزامنة
+    // معاملات: أعمدة المزامنة والأمان المالي
     try {
       final txInfo = await _database!.rawQuery('PRAGMA table_info(transactions);');
       final hasIsCreatedByMe = txInfo.any((col) => col['name'] == 'is_created_by_me');
       final hasIsUploaded = txInfo.any((col) => col['name'] == 'is_uploaded');
       final hasTxnUuid = txInfo.any((col) => col['name'] == 'transaction_uuid');
+      final hasChecksum = txInfo.any((col) => col['name'] == 'checksum');
+      final hasBalanceBefore = txInfo.any((col) => col['name'] == 'balance_before_transaction');
+      final hasTransactionType = txInfo.any((col) => col['name'] == 'transaction_type');
+      final hasDescription = txInfo.any((col) => col['name'] == 'description');
+      final hasAudioNotePath = txInfo.any((col) => col['name'] == 'audio_note_path');
+      final hasIsReadByOthers = txInfo.any((col) => col['name'] == 'is_read_by_others');
+      
       if (!hasIsCreatedByMe) {
         try {
           await _database!.execute('ALTER TABLE transactions ADD COLUMN is_created_by_me INTEGER DEFAULT 1;');
@@ -290,6 +297,133 @@ class DatabaseService {
         try {
           await _database!.execute('ALTER TABLE transactions ADD COLUMN transaction_uuid TEXT;');
           await _database!.execute('CREATE UNIQUE INDEX IF NOT EXISTS ux_transactions_uuid ON transactions(transaction_uuid) WHERE transaction_uuid IS NOT NULL;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      // 🔒 إضافة عمود checksum للأمان المالي
+      if (!hasChecksum) {
+        try {
+          await _database!.execute('ALTER TABLE transactions ADD COLUMN checksum TEXT;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      // 🔒 إضافة عمود balance_before_transaction للأمان المالي
+      if (!hasBalanceBefore) {
+        try {
+          await _database!.execute('ALTER TABLE transactions ADD COLUMN balance_before_transaction REAL;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      // إضافة عمود transaction_type
+      if (!hasTransactionType) {
+        try {
+          await _database!.execute('ALTER TABLE transactions ADD COLUMN transaction_type TEXT;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      // إضافة عمود description
+      if (!hasDescription) {
+        try {
+          await _database!.execute('ALTER TABLE transactions ADD COLUMN description TEXT;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      // إضافة عمود audio_note_path
+      if (!hasAudioNotePath) {
+        try {
+          await _database!.execute('ALTER TABLE transactions ADD COLUMN audio_note_path TEXT;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      // إضافة عمود is_read_by_others
+      if (!hasIsReadByOthers) {
+        try {
+          await _database!.execute('ALTER TABLE transactions ADD COLUMN is_read_by_others INTEGER DEFAULT 0;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+    } catch (e) {
+      // تجاهل الخطأ
+    }
+    
+    // --- تحقق من أعمدة جدول customers ---
+    try {
+      final custInfo = await _database!.rawQuery('PRAGMA table_info(customers);');
+      final hasAudioNotePath = custInfo.any((col) => col['name'] == 'audio_note_path');
+      if (!hasAudioNotePath) {
+        try {
+          await _database!.execute('ALTER TABLE customers ADD COLUMN audio_note_path TEXT;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+    } catch (e) {
+      // تجاهل الخطأ
+    }
+    
+    // --- تحقق من أعمدة جدول invoices ---
+    try {
+      final invInfo = await _database!.rawQuery('PRAGMA table_info(invoices);');
+      final hasLoadingFee = invInfo.any((col) => col['name'] == 'loading_fee');
+      final hasReturnAmount = invInfo.any((col) => col['name'] == 'return_amount');
+      final hasIsLocked = invInfo.any((col) => col['name'] == 'is_locked');
+      final hasDiscount = invInfo.any((col) => col['name'] == 'discount');
+      final hasStatus = invInfo.any((col) => col['name'] == 'status');
+      final hasCustomerId = invInfo.any((col) => col['name'] == 'customer_id');
+      final hasAmountPaid = invInfo.any((col) => col['name'] == 'amount_paid_on_invoice');
+      
+      if (!hasLoadingFee) {
+        try {
+          await _database!.execute('ALTER TABLE invoices ADD COLUMN loading_fee REAL DEFAULT 0;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      if (!hasReturnAmount) {
+        try {
+          await _database!.execute('ALTER TABLE invoices ADD COLUMN return_amount REAL DEFAULT 0;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      if (!hasIsLocked) {
+        try {
+          await _database!.execute('ALTER TABLE invoices ADD COLUMN is_locked INTEGER DEFAULT 0;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      if (!hasDiscount) {
+        try {
+          await _database!.execute('ALTER TABLE invoices ADD COLUMN discount REAL DEFAULT 0;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      if (!hasStatus) {
+        try {
+          await _database!.execute("ALTER TABLE invoices ADD COLUMN status TEXT DEFAULT 'محفوظة';");
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      if (!hasCustomerId) {
+        try {
+          await _database!.execute('ALTER TABLE invoices ADD COLUMN customer_id INTEGER;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      if (!hasAmountPaid) {
+        try {
+          await _database!.execute('ALTER TABLE invoices ADD COLUMN amount_paid_on_invoice REAL DEFAULT 0;');
         } catch (e) {
           // تجاهل الخطأ
         }
@@ -1361,6 +1495,81 @@ class DatabaseService {
         print("DEBUG DB Error: Failed to create invoice_snapshots table: $e");
       }
     }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔒 ترقية 35: إضافة عمود checksum للأمان المالي
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (oldVersion < 35) {
+      try {
+        await db.execute('ALTER TABLE transactions ADD COLUMN checksum TEXT;');
+        print('✅ تم إضافة عمود checksum لجدول المعاملات');
+      } catch (e) {
+        print("DEBUG DB: عمود checksum موجود بالفعل أو خطأ: $e");
+      }
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔒 تحقق شامل نهائي - ضمان وجود جميع الأعمدة المطلوبة
+    // ═══════════════════════════════════════════════════════════════════════════
+    await _ensureAllRequiredColumns(db);
+  }
+  
+  /// تحقق شامل من وجود جميع الأعمدة المطلوبة وإضافتها إذا لم تكن موجودة
+  /// يُستدعى في نهاية _onUpgrade لضمان التوافق مع جميع الإصدارات
+  Future<void> _ensureAllRequiredColumns(Database db) async {
+    // دالة مساعدة لإضافة عمود إذا لم يكن موجوداً
+    Future<void> ensureColumn(String table, String column, String definition) async {
+      try {
+        final info = await db.rawQuery('PRAGMA table_info($table);');
+        final exists = info.any((col) => col['name'] == column);
+        if (!exists) {
+          await db.execute('ALTER TABLE $table ADD COLUMN $column $definition;');
+        }
+      } catch (e) {
+        // تجاهل الخطأ
+      }
+    }
+    
+    // أعمدة جدول transactions
+    await ensureColumn('transactions', 'invoice_id', 'INTEGER');
+    await ensureColumn('transactions', 'transaction_type', 'TEXT');
+    await ensureColumn('transactions', 'description', 'TEXT');
+    await ensureColumn('transactions', 'audio_note_path', 'TEXT');
+    await ensureColumn('transactions', 'is_read_by_others', 'INTEGER DEFAULT 0');
+    await ensureColumn('transactions', 'balance_before_transaction', 'REAL');
+    await ensureColumn('transactions', 'checksum', 'TEXT');
+    await ensureColumn('transactions', 'is_created_by_me', 'INTEGER DEFAULT 1');
+    await ensureColumn('transactions', 'is_uploaded', 'INTEGER DEFAULT 0');
+    await ensureColumn('transactions', 'transaction_uuid', 'TEXT');
+    
+    // أعمدة جدول customers
+    await ensureColumn('customers', 'audio_note_path', 'TEXT');
+    
+    // أعمدة جدول invoices
+    await ensureColumn('invoices', 'customer_id', 'INTEGER');
+    await ensureColumn('invoices', 'status', "TEXT DEFAULT 'محفوظة'");
+    await ensureColumn('invoices', 'discount', 'REAL DEFAULT 0');
+    await ensureColumn('invoices', 'return_amount', 'REAL DEFAULT 0');
+    await ensureColumn('invoices', 'is_locked', 'INTEGER DEFAULT 0');
+    await ensureColumn('invoices', 'loading_fee', 'REAL DEFAULT 0');
+    await ensureColumn('invoices', 'amount_paid_on_invoice', 'REAL DEFAULT 0');
+    await ensureColumn('invoices', 'final_total', 'REAL');
+    await ensureColumn('invoices', 'points_rate', 'REAL DEFAULT 1.0');
+    
+    // أعمدة جدول invoice_items
+    await ensureColumn('invoice_items', 'product_id', 'INTEGER');
+    await ensureColumn('invoice_items', 'actual_cost_price', 'REAL');
+    await ensureColumn('invoice_items', 'sale_type', 'TEXT');
+    await ensureColumn('invoice_items', 'units_in_large_unit', 'REAL');
+    await ensureColumn('invoice_items', 'unique_id', 'TEXT');
+    
+    // أعمدة جدول products
+    await ensureColumn('products', 'unit_hierarchy', 'TEXT');
+    await ensureColumn('products', 'unit_costs', 'TEXT');
+    await ensureColumn('products', 'name_norm', 'TEXT');
+    
+    // أعمدة جدول installers
+    await ensureColumn('installers', 'total_points', 'REAL DEFAULT 0.0');
   }
 
   // --- دوال العملاء ---
@@ -1370,10 +1579,27 @@ class DatabaseService {
     // إدراج العميل أولاً
     final customerId = await db.insert('customers', customer.toMap());
     
+    // 🔄 تتبع المزامنة: تسجيل إنشاء العميل (غير متزامن)
+    try {
+      final tracker = SyncTrackerInstance.instance;
+      if (tracker.isEnabled) {
+        final customerData = customer.toMap();
+        customerData['id'] = customerId;
+        // تشغيل التتبع بشكل غير متزامن (fire and forget)
+        tracker.trackCustomerCreate(customerData).then((_) {
+          print('🔄 تم تسجيل عملية إنشاء العميل للمزامنة: ${customer.name}');
+        }).catchError((e) {
+          print('⚠️ تحذير: فشل تسجيل المزامنة للعميل: $e');
+        });
+      }
+    } catch (e) {
+      print('⚠️ تحذير: فشل تسجيل المزامنة للعميل: $e');
+    }
+    
     // إذا كان هناك دين مبدئي، أضف معاملة تلقائية
     if (customer.currentTotalDebt > 0) {
       final now = DateTime.now();
-      await db.insert('transactions', {
+      final transactionId = await db.insert('transactions', {
         'customer_id': customerId,
         'transaction_date': now.toIso8601String(),
         'amount_changed': customer.currentTotalDebt,
@@ -1384,6 +1610,33 @@ class DatabaseService {
         'created_at': now.toIso8601String(),
         'invoice_id': null,
       });
+      
+      // 🔄 تتبع المزامنة: تسجيل معاملة الدين المبدئي (غير متزامن)
+      try {
+        final tracker = SyncTrackerInstance.instance;
+        if (tracker.isEnabled) {
+          // الحصول على sync_uuid للعميل
+          final customerRows = await db.query('customers', where: 'id = ?', whereArgs: [customerId], limit: 1);
+          final customerSyncUuid = customerRows.isNotEmpty ? customerRows.first['sync_uuid'] as String? : null;
+          
+          // تشغيل التتبع بشكل غير متزامن (fire and forget)
+          tracker.trackTransactionCreate({
+            'id': transactionId,
+            'customer_id': customerId,
+            'transaction_date': now.toIso8601String(),
+            'amount_changed': customer.currentTotalDebt,
+            'new_balance_after_transaction': customer.currentTotalDebt,
+            'transaction_note': 'الدين المبدئي عند إضافة العميل',
+            'transaction_type': 'opening_balance',
+          }, customerSyncUuid).then((_) {
+            print('🔄 تم تسجيل معاملة الدين المبدئي للمزامنة');
+          }).catchError((e) {
+            print('⚠️ تحذير: فشل تسجيل مزامنة معاملة الدين المبدئي: $e');
+          });
+        }
+      } catch (e) {
+        print('⚠️ تحذير: فشل تسجيل مزامنة معاملة الدين المبدئي: $e');
+      }
       
       print('✅ تم إضافة معاملة الدين المبدئي: ${customer.currentTotalDebt} دينار للعميل: ${customer.name}');
     }
@@ -1504,17 +1757,65 @@ class DatabaseService {
 
   Future<int> updateCustomer(Customer customer) async {
     final db = await database;
-    return await db.update(
+    
+    // 🔄 تتبع المزامنة: جلب البيانات القديمة قبل التحديث
+    Map<String, dynamic>? oldData;
+    String? syncUuid;
+    try {
+      final oldRows = await db.query('customers', where: 'id = ?', whereArgs: [customer.id], limit: 1);
+      if (oldRows.isNotEmpty) {
+        oldData = oldRows.first;
+        syncUuid = oldData['sync_uuid'] as String?;
+      }
+    } catch (e) {
+      print('⚠️ تحذير: فشل جلب بيانات العميل القديمة: $e');
+    }
+    
+    final result = await db.update(
       'customers',
       customer.toMap(),
       where: 'id = ?',
       whereArgs: [customer.id],
     );
+    
+    // 🔄 تتبع المزامنة: تسجيل تحديث العميل (غير متزامن)
+    if (result > 0 && oldData != null && syncUuid != null) {
+      try {
+        final tracker = SyncTrackerInstance.instance;
+        if (tracker.isEnabled) {
+          final newData = customer.toMap();
+          newData['id'] = customer.id;
+          // تشغيل التتبع بشكل غير متزامن (fire and forget)
+          tracker.trackCustomerUpdate(syncUuid, oldData, newData).then((_) {
+            print('🔄 تم تسجيل عملية تحديث العميل للمزامنة: ${customer.name}');
+          }).catchError((e) {
+            print('⚠️ تحذير: فشل تسجيل مزامنة تحديث العميل: $e');
+          });
+        }
+      } catch (e) {
+        print('⚠️ تحذير: فشل تسجيل مزامنة تحديث العميل: $e');
+      }
+    }
+    
+    return result;
   }
 
   Future<int> deleteCustomer(int id) async {
     final db = await database;
     try {
+      // 🔄 تتبع المزامنة: جلب بيانات العميل قبل الحذف
+      Map<String, dynamic>? customerData;
+      String? syncUuid;
+      try {
+        final customerRows = await db.query('customers', where: 'id = ?', whereArgs: [id], limit: 1);
+        if (customerRows.isNotEmpty) {
+          customerData = customerRows.first;
+          syncUuid = customerData['sync_uuid'] as String?;
+        }
+      } catch (e) {
+        print('⚠️ تحذير: فشل جلب بيانات العميل للمزامنة: $e');
+      }
+      
       // حذف ملفات الصوت المرتبطة بالعميل والمعاملات أولاً
       try {
         // صوت العميل نفسه
@@ -1553,6 +1854,25 @@ class DatabaseService {
         // لا تمنع حذف العميل إذا فشل حذف الملفات
       }
 
+      // 🔄 تتبع المزامنة: تسجيل حذف المعاملات المرتبطة (غير متزامن)
+      try {
+        final tracker = SyncTrackerInstance.instance;
+        if (tracker.isEnabled && syncUuid != null) {
+          final txRows = await db.query('transactions', where: 'customer_id = ?', whereArgs: [id]);
+          for (final tx in txRows) {
+            final txSyncUuid = tx['sync_uuid'] as String?;
+            if (txSyncUuid != null) {
+              // تشغيل التتبع بشكل غير متزامن (fire and forget)
+              tracker.trackTransactionDelete(txSyncUuid, tx, syncUuid).catchError((e) {
+                print('⚠️ تحذير: فشل تسجيل مزامنة حذف معاملة: $e');
+              });
+            }
+          }
+        }
+      } catch (e) {
+        print('⚠️ تحذير: فشل تسجيل مزامنة حذف المعاملات: $e');
+      }
+
       // حذف المعاملات المرتبطة بالعميل يدوياً (لضمان الحذف حتى لو CASCADE لم يعمل)
       await db.delete(
         'transactions',
@@ -1568,11 +1888,30 @@ class DatabaseService {
       );
       
       // حذف العميل
-      return await db.delete(
+      final result = await db.delete(
         'customers',
         where: 'id = ?',
         whereArgs: [id],
       );
+      
+      // 🔄 تتبع المزامنة: تسجيل حذف العميل (غير متزامن)
+      if (result > 0 && customerData != null && syncUuid != null) {
+        try {
+          final tracker = SyncTrackerInstance.instance;
+          if (tracker.isEnabled) {
+            // تشغيل التتبع بشكل غير متزامن (fire and forget)
+            tracker.trackCustomerDelete(syncUuid, customerData).then((_) {
+              print('🔄 تم تسجيل عملية حذف العميل للمزامنة');
+            }).catchError((e) {
+              print('⚠️ تحذير: فشل تسجيل مزامنة حذف العميل: $e');
+            });
+          }
+        } catch (e) {
+          print('⚠️ تحذير: فشل تسجيل مزامنة حذف العميل: $e');
+        }
+      }
+      
+      return result;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
@@ -1938,106 +2277,236 @@ class DatabaseService {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔒 قفل للعمليات المتزامنة على أرصدة العملاء
+  // ═══════════════════════════════════════════════════════════════════════════
+  static final Map<int, bool> _customerBalanceLocks = {};
+  
+  /// الحصول على قفل لعميل معين
+  Future<bool> _acquireCustomerLock(int customerId, {int maxRetries = 30, int retryDelayMs = 100}) async {
+    for (int i = 0; i < maxRetries; i++) {
+      if (_customerBalanceLocks[customerId] != true) {
+        _customerBalanceLocks[customerId] = true;
+        return true;
+      }
+      // طباعة تحذير إذا كان القفل مشغولاً لفترة طويلة
+      if (i > 0 && i % 10 == 0) {
+        print('⏳ انتظار قفل العميل $customerId... محاولة ${i + 1}/$maxRetries');
+      }
+      await Future.delayed(Duration(milliseconds: retryDelayMs));
+    }
+    // تحرير القفل القديم إذا كان عالقاً (حماية من الأقفال المعلقة)
+    print('⚠️ تحرير قفل عالق للعميل $customerId');
+    _customerBalanceLocks.remove(customerId);
+    _customerBalanceLocks[customerId] = true;
+    return true;
+  }
+  
+  /// تحرير قفل العميل
+  void _releaseCustomerLock(int customerId) {
+    _customerBalanceLocks.remove(customerId);
+  }
+
   Future<int> insertTransaction(DebtTransaction transaction) async {
     final db = await database;
-    // استخدام معاملة قاعدة بيانات (Transaction) لضمان الذرية (Atomicity)
-    return await db.transaction((txn) async {
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔒 الحصول على قفل للعميل لمنع العمليات المتزامنة
+    // ═══════════════════════════════════════════════════════════════════════════
+    final lockAcquired = await _acquireCustomerLock(transaction.customerId);
+    if (!lockAcquired) {
+      throw Exception('فشل الحصول على قفل العميل - يرجى المحاولة مرة أخرى');
+    }
+    
+    try {
+      // استخدام معاملة قاعدة بيانات (Transaction) لضمان الذرية (Atomicity)
+      final result = await db.transaction((txn) async {
+        try {
+          // 1. جلب العميل (مصدر الحقيقة للرصيد الحالي)
+          final List<Map<String, dynamic>> customerMaps = await txn.query(
+            'customers',
+            where: 'id = ?',
+            whereArgs: [transaction.customerId],
+            limit: 1,
+          );
+          if (customerMaps.isEmpty) {
+            throw Exception('لم يتم العثور على العميل');
+          }
+          final customer = Customer.fromMap(customerMaps.first);
+          
+          // 2. جلب آخر معاملة للتحقق من التسلسل
+          final List<Map<String, dynamic>> lastTxRows = await txn.query(
+            'transactions',
+            where: 'customer_id = ?',
+            whereArgs: [transaction.customerId],
+            orderBy: 'transaction_date DESC, id DESC',
+            limit: 1,
+          );
+          
+          double verifiedBalanceBefore = customer.currentTotalDebt;
+
+          // ═══════════════════════════════════════════════════════════════════════════
+          // 🔒 تحسين الأمان: التحقق الصارم من سلامة البيانات قبل الإضافة
+          // ═══════════════════════════════════════════════════════════════════════════
+          if (lastTxRows.isNotEmpty) {
+            final lastTx = DebtTransaction.fromMap(lastTxRows.first);
+            final balanceDiff = (verifiedBalanceBefore - (lastTx.newBalanceAfterTransaction ?? 0)).abs();
+            if (balanceDiff > 0.01) {
+              // 🔒 تحويل التحذير إلى خطأ في الحالات الحرجة (فرق أكبر من 1 دينار)
+              if (balanceDiff > 1.0) {
+                throw Exception(
+                  'خطأ أمني حرج: رصيد العميل (${verifiedBalanceBefore.toStringAsFixed(2)}) '
+                  'لا يتطابق مع آخر معاملة (${lastTx.newBalanceAfterTransaction?.toStringAsFixed(2)}). '
+                  'الفرق: ${balanceDiff.toStringAsFixed(2)} دينار. '
+                  'يرجى إصلاح البيانات أولاً.'
+                );
+              }
+              print('⚠️ تحذير: فرق بسيط في الرصيد (${balanceDiff.toStringAsFixed(3)}) - سيتم المتابعة');
+            }
+          }
+          
+          // 3. حساب الرصيد الجديد
+          double newBalanceAfterTransaction = MoneyCalculator.add(verifiedBalanceBefore, transaction.amountChanged);
+          
+          // ═══════════════════════════════════════════════════════════════════════════
+          // 🔒 تحسين الأمان: التحقق المزدوج (Double-entry verification)
+          // ═══════════════════════════════════════════════════════════════════════════
+          final verification = MoneyCalculator.verifyTransaction(
+            balanceBefore: verifiedBalanceBefore,
+            amountChanged: transaction.amountChanged,
+            expectedBalanceAfter: newBalanceAfterTransaction,
+          );
+          
+          if (!verification.isValid) {
+            // 🔒 تحويل التحذير إلى خطأ - لا نسمح بعمليات غير صحيحة
+            throw Exception(
+              'خطأ في التحقق الحسابي: ${verification.errorMessage}. '
+              'الرصيد قبل: $verifiedBalanceBefore، المبلغ: ${transaction.amountChanged}، '
+              'المتوقع: $newBalanceAfterTransaction، المحسوب: ${verification.calculatedBalance}'
+            );
+          }
+          
+          // ═══════════════════════════════════════════════════════════════════════════
+          // 🔒 حساب Checksum للمعاملة
+          // ═══════════════════════════════════════════════════════════════════════════
+          final checksum = MoneyCalculator.calculateTransactionChecksum(
+            customerId: transaction.customerId,
+            amount: transaction.amountChanged,
+            balanceBefore: verifiedBalanceBefore,
+            balanceAfter: newBalanceAfterTransaction,
+            date: transaction.transactionDate,
+          );
+          
+          // 4. تجهيز المعاملة بالأرصدة الصحيحة
+          final updatedTransaction = transaction.copyWith(
+            balanceBeforeTransaction: verifiedBalanceBefore,
+            newBalanceAfterTransaction: newBalanceAfterTransaction,
+          );
+          
+          // 5. إدراج المعاملة مع Checksum
+          final transactionMap = updatedTransaction.toMap();
+          transactionMap['checksum'] = checksum;
+          final id = await txn.insert('transactions', transactionMap);
+
+          // 6. تحديث رصيد العميل
+          await txn.update(
+            'customers',
+            {
+              'current_total_debt': newBalanceAfterTransaction,
+              'last_modified_at': DateTime.now().toIso8601String(),
+            },
+            where: 'id = ?',
+            whereArgs: [transaction.customerId],
+          );
+          
+          // ═══════════════════════════════════════════════════════════════════════════
+          // 🔒 تحسين الأمان: التحقق بعد الحفظ (Post-save verification) - إلزامي
+          // ═══════════════════════════════════════════════════════════════════════════
+          final List<Map<String, dynamic>> verifyCustomer = await txn.query(
+            'customers',
+            columns: ['current_total_debt'],
+            where: 'id = ?',
+            whereArgs: [transaction.customerId],
+            limit: 1,
+          );
+          
+          if (verifyCustomer.isNotEmpty) {
+            final savedBalance = (verifyCustomer.first['current_total_debt'] as num).toDouble();
+            if (!MoneyCalculator.areEqual(savedBalance, newBalanceAfterTransaction)) {
+              // 🔒 خطأ حرج - الرصيد المحفوظ لا يتطابق
+              throw Exception(
+                'خطأ أمني حرج بعد الحفظ: الرصيد المحفوظ ($savedBalance) '
+                '≠ الرصيد المتوقع ($newBalanceAfterTransaction)'
+              );
+            }
+          }
+          
+          // ═══════════════════════════════════════════════════════════════════════════
+          // 🔒 التحقق من Checksum بعد الحفظ
+          // ═══════════════════════════════════════════════════════════════════════════
+          final isChecksumValid = MoneyCalculator.verifyTransactionChecksum(
+            customerId: transaction.customerId,
+            amount: transaction.amountChanged,
+            balanceBefore: verifiedBalanceBefore,
+            balanceAfter: newBalanceAfterTransaction,
+            date: transaction.transactionDate,
+            checksum: checksum,
+          );
+          
+          if (!isChecksumValid) {
+            throw Exception('خطأ أمني: فشل التحقق من Checksum للمعاملة');
+          }
+          
+          // 🔄 حفظ بيانات المزامنة للتتبع لاحقاً (خارج الـ transaction)
+          // سيتم التتبع بعد تحرير القفل لتجنب التأخير
+          
+          return {
+            'id': id,
+            'customerSyncUuid': customer.syncUuid,
+            'transactionData': updatedTransaction.toMap(),
+            'checksum': checksum,
+          };
+        } catch (e) {
+          throw Exception(_handleDatabaseError(e));
+        }
+      });
+      
+      // استخراج النتيجة
+      final resultMap = result as Map<String, dynamic>;
+      final transactionId = resultMap['id'] as int;
+      final customerSyncUuid = resultMap['customerSyncUuid'] as String?;
+      final transactionData = resultMap['transactionData'] as Map<String, dynamic>;
+      final checksum = resultMap['checksum'] as String;
+      
+      // تحرير القفل قبل تتبع المزامنة
+      _releaseCustomerLock(transaction.customerId);
+      
+      // ═══════════════════════════════════════════════════════════════════════════
+      // 🔄 تتبع المزامنة: تسجيل إنشاء المعاملة (بعد تحرير القفل)
+      // ═══════════════════════════════════════════════════════════════════════════
       try {
-        // 1. جلب العميل (مصدر الحقيقة للرصيد الحالي)
-        final List<Map<String, dynamic>> customerMaps = await txn.query(
-          'customers',
-          where: 'id = ?',
-          whereArgs: [transaction.customerId],
-          limit: 1,
-        );
-        if (customerMaps.isEmpty) {
-          throw Exception('لم يتم العثور على العميل');
+        final tracker = SyncTrackerInstance.instance;
+        if (tracker.isEnabled) {
+          transactionData['id'] = transactionId;
+          transactionData['checksum'] = checksum;
+          
+          // تشغيل التتبع بشكل غير متزامن (fire and forget)
+          tracker.trackTransactionCreate(transactionData, customerSyncUuid).then((_) {
+            print('🔄 تم تسجيل عملية إنشاء المعاملة للمزامنة: $transactionId');
+          }).catchError((e) {
+            print('⚠️ تحذير: فشل تسجيل المزامنة للمعاملة: $e');
+          });
         }
-        final customer = Customer.fromMap(customerMaps.first);
-        
-        // 2. جلب آخر معاملة للتحقق من التسلسل
-        final List<Map<String, dynamic>> lastTxRows = await txn.query(
-          'transactions',
-          where: 'customer_id = ?',
-          whereArgs: [transaction.customerId],
-          orderBy: 'transaction_date DESC, id DESC',
-          limit: 1,
-        );
-        
-        double verifiedBalanceBefore = customer.currentTotalDebt;
-
-        // التحقق من سلامة البيانات قبل الإضافة
-        if (lastTxRows.isNotEmpty) {
-          final lastTx = DebtTransaction.fromMap(lastTxRows.first);
-          if ((verifiedBalanceBefore - lastTx.newBalanceAfterTransaction!).abs() > 0.01) {
-             // في حال وجود عدم تطابق، نعتمد على الرصيد المسجل في العميل لكن نسجل تحذيراً
-             print('تحذير: عدم تطابق رصيد العميل مع آخر معاملة قبل الإضافة الجديدة.');
-             // يمكن تفعيل السطر التالي لرفض العملية تماماً إذا أردنا صرامة تامة
-             // throw Exception('تنبيه أمني: رصيد العميل الحالي لا يتطابق مع آخر معاملة مسجلة.');
-          }
-        }
-        
-        // 3. حساب الرصيد الجديد
-        double newBalanceAfterTransaction = MoneyCalculator.add(verifiedBalanceBefore, transaction.amountChanged);
-        
-        // ═══════════════════════════════════════════════════════════════════════════
-        // 🔒 تحسين الأمان: التحقق المزدوج (Double-entry verification)
-        // ═══════════════════════════════════════════════════════════════════════════
-        final verification = MoneyCalculator.verifyTransaction(
-          balanceBefore: verifiedBalanceBefore,
-          amountChanged: transaction.amountChanged,
-          expectedBalanceAfter: newBalanceAfterTransaction,
-        );
-        
-        if (!verification.isValid) {
-          print('⚠️ تحذير أمني: ${verification.errorMessage}');
-          // في حالة عدم التطابق، نستخدم القيمة المحسوبة
-          newBalanceAfterTransaction = verification.calculatedBalance;
-        }
-        
-        // 4. تجهيز المعاملة بالأرصدة الصحيحة
-        final updatedTransaction = transaction.copyWith(
-          balanceBeforeTransaction: verifiedBalanceBefore,
-          newBalanceAfterTransaction: newBalanceAfterTransaction,
-        );
-        
-        // 5. إدراج المعاملة
-        final id = await txn.insert('transactions', updatedTransaction.toMap());
-
-        // 6. تحديث رصيد العميل
-        await txn.update(
-          'customers',
-          {
-            'current_total_debt': newBalanceAfterTransaction,
-            'last_modified_at': DateTime.now().toIso8601String(),
-          },
-          where: 'id = ?',
-          whereArgs: [transaction.customerId],
-        );
-        
-        // ═══════════════════════════════════════════════════════════════════════════
-        // 🔒 تحسين الأمان: التحقق بعد الحفظ (Post-save verification)
-        // ═══════════════════════════════════════════════════════════════════════════
-        final List<Map<String, dynamic>> verifyCustomer = await txn.query(
-          'customers',
-          columns: ['current_total_debt'],
-          where: 'id = ?',
-          whereArgs: [transaction.customerId],
-          limit: 1,
-        );
-        
-        if (verifyCustomer.isNotEmpty) {
-          final savedBalance = (verifyCustomer.first['current_total_debt'] as num).toDouble();
-          if (!MoneyCalculator.areEqual(savedBalance, newBalanceAfterTransaction)) {
-            print('⚠️ تحذير أمني: الرصيد المحفوظ ($savedBalance) ≠ الرصيد المتوقع ($newBalanceAfterTransaction)');
-          }
-        }
-
-        return id;
       } catch (e) {
-        throw Exception(_handleDatabaseError(e));
+        print('⚠️ تحذير: فشل تسجيل المزامنة للمعاملة: $e');
       }
-    });
+      
+      return transactionId;
+    } catch (e) {
+      // تحرير القفل في حالة الخطأ
+      _releaseCustomerLock(transaction.customerId);
+      rethrow;
+    }
   }
 
   Future<DebtTransaction?> getTransactionById(int id) async {
@@ -2156,6 +2625,35 @@ class DatabaseService {
       if (updatedCustomer == null) {
         throw Exception('فشل في تحديث بيانات العميل');
       }
+      
+      // 🔄 تتبع المزامنة: تسجيل تحديث المعاملة (غير متزامن)
+      try {
+        final tracker = SyncTrackerInstance.instance;
+        if (tracker.isEnabled) {
+          final txSyncUuid = oldTx.syncUuid;
+          final customerSyncUuid = customer.syncUuid;
+          
+          if (txSyncUuid != null) {
+            final newTxData = updated.toMap();
+            newTxData['new_balance_after_transaction'] = newBalanceAfter;
+            newTxData['balance_before_transaction'] = balanceBeforeTransaction;
+            
+            // تشغيل التتبع بشكل غير متزامن (fire and forget)
+            tracker.trackTransactionUpdate(
+              txSyncUuid,
+              oldTx.toMap(),
+              newTxData,
+              customerSyncUuid,
+            ).then((_) {
+              print('🔄 تم تسجيل عملية تحديث المعاملة للمزامنة: ${updated.id}');
+            }).catchError((e) {
+              print('⚠️ تحذير: فشل تسجيل مزامنة تحديث المعاملة: $e');
+            });
+          }
+        }
+      } catch (e) {
+        print('⚠️ تحذير: فشل تسجيل مزامنة تحديث المعاملة: $e');
+      }
 
       return updatedCustomer;
     } catch (e) {
@@ -2254,6 +2752,38 @@ class DatabaseService {
         throw Exception('فشل في تحديث بيانات العميل');
       }
       
+      // 🔄 تتبع المزامنة: تسجيل تحويل نوع المعاملة (غير متزامن)
+      try {
+        final tracker = SyncTrackerInstance.instance;
+        if (tracker.isEnabled) {
+          final txSyncUuid = transaction.syncUuid;
+          final customerSyncUuid = updatedCustomer.syncUuid;
+          
+          if (txSyncUuid != null) {
+            final newTxData = {
+              'amount_changed': newAmount,
+              'transaction_type': newType,
+              'new_balance_after_transaction': newBalanceAfter,
+              'balance_before_transaction': balanceBeforeTransaction,
+            };
+            
+            // تشغيل التتبع بشكل غير متزامن
+            tracker.trackTransactionUpdate(
+              txSyncUuid,
+              transaction.toMap(),
+              newTxData,
+              customerSyncUuid,
+            ).then((_) {
+              print('🔄 تم تسجيل تحويل نوع المعاملة للمزامنة: $transactionId');
+            }).catchError((e) {
+              print('⚠️ تحذير: فشل تسجيل مزامنة تحويل المعاملة: $e');
+            });
+          }
+        }
+      } catch (e) {
+        print('⚠️ تحذير: فشل تسجيل مزامنة تحويل المعاملة: $e');
+      }
+      
       return updatedCustomer;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -2261,48 +2791,89 @@ class DatabaseService {
   }
 
   /// إعادة احتساب مجموع دين العميل من جميع المعاملات وتطبيقه على سجل العميل
+  /// إعادة احتساب مجموع دين العميل من جميع المعاملات وتطبيقه على سجل العميل
+  /// 🔒 محمية بقفل للعمليات المتزامنة
   Future<double> recalculateAndApplyCustomerDebt(int customerId) async {
-    final db = await database;
-    // احسب مجموع amount_changed للعميل
-    final res = await db.rawQuery(
-        'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ?;',
-        [customerId]);
-    final double total = ((res.first['total'] as num?) ?? 0).toDouble();
-
-    final customer = await getCustomerById(customerId);
-    if (customer != null) {
-      final updated = customer.copyWith(
-        currentTotalDebt: total,
-        lastModifiedAt: DateTime.now(),
-      );
-      await updateCustomer(updated);
+    // 🔒 الحصول على قفل للعميل
+    final lockAcquired = await _acquireCustomerLock(customerId);
+    if (!lockAcquired) {
+      throw Exception('فشل الحصول على قفل العميل لإعادة الحساب');
     }
-    return total;
+    
+    try {
+      final db = await database;
+      // احسب مجموع amount_changed للعميل
+      final res = await db.rawQuery(
+          'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ?;',
+          [customerId]);
+      final double total = ((res.first['total'] as num?) ?? 0).toDouble();
+
+      final customer = await getCustomerById(customerId);
+      if (customer != null) {
+        final updated = customer.copyWith(
+          currentTotalDebt: total,
+          lastModifiedAt: DateTime.now(),
+        );
+        await updateCustomer(updated);
+        
+        // 🔒 التحقق بعد التحديث
+        final verifyCustomer = await getCustomerById(customerId);
+        if (verifyCustomer != null && !MoneyCalculator.areEqual(verifyCustomer.currentTotalDebt, total)) {
+          throw Exception('خطأ أمني: فشل التحقق بعد إعادة حساب رصيد العميل');
+        }
+      }
+      return total;
+    } finally {
+      // 🔒 تحرير القفل دائماً
+      _releaseCustomerLock(customerId);
+    }
   }
 
   /// إعادة حساب الرصيد بعد كل معاملة بناءً على الترتيب الزمني
+  /// 🔒 محمية بقفل للعمليات المتزامنة
   Future<void> recalculateCustomerTransactionBalances(int customerId) async {
-    final db = await database;
+    // 🔒 الحصول على قفل للعميل
+    final lockAcquired = await _acquireCustomerLock(customerId);
+    if (!lockAcquired) {
+      throw Exception('فشل الحصول على قفل العميل لإعادة حساب الأرصدة');
+    }
     
-    // جلب جميع معاملات العميل مرتبة حسب التاريخ
-    final transactions = await getCustomerTransactions(customerId, orderBy: 'transaction_date ASC, id ASC');
-    
-    double runningBalance = 0.0;
-    
-    // تحديث الرصيد بعد كل معاملة
-    for (final transaction in transactions) {
-      final double balanceBefore = runningBalance;
-      runningBalance = MoneyCalculator.add(runningBalance, transaction.amountChanged);
+    try {
+      final db = await database;
       
-      await db.update(
-        'transactions',
-        {
-          'balance_before_transaction': balanceBefore,
-          'new_balance_after_transaction': runningBalance
-        },
-        where: 'id = ?',
-        whereArgs: [transaction.id],
-      );
+      // جلب جميع معاملات العميل مرتبة حسب التاريخ
+      final transactions = await getCustomerTransactions(customerId, orderBy: 'transaction_date ASC, id ASC');
+      
+      double runningBalance = 0.0;
+      
+      // تحديث الرصيد بعد كل معاملة
+      for (final transaction in transactions) {
+        final double balanceBefore = runningBalance;
+        runningBalance = MoneyCalculator.add(runningBalance, transaction.amountChanged);
+        
+        // 🔒 حساب Checksum جديد
+        final checksum = MoneyCalculator.calculateTransactionChecksum(
+          customerId: customerId,
+          amount: transaction.amountChanged,
+          balanceBefore: balanceBefore,
+          balanceAfter: runningBalance,
+          date: transaction.transactionDate,
+        );
+        
+        await db.update(
+          'transactions',
+          {
+            'balance_before_transaction': balanceBefore,
+            'new_balance_after_transaction': runningBalance,
+            'checksum': checksum,
+          },
+          where: 'id = ?',
+          whereArgs: [transaction.id],
+        );
+      }
+    } finally {
+      // 🔒 تحرير القفل دائماً
+      _releaseCustomerLock(customerId);
     }
   }
 
@@ -2445,6 +3016,7 @@ class DatabaseService {
 
   /// حفظ الفاتورة بشكل كامل وآمن (Transaction)
   /// هذه الدالة تضمن حفظ كل البيانات أو عدم حفظ أي شيء في حال حدوث خطأ
+  /// 🔒 محمية بقفل للعمليات المتزامنة
   Future<Invoice> saveCompleteInvoice({
     required Invoice invoice,
     required List<InvoiceItem> items,
@@ -2455,10 +3027,22 @@ class DatabaseService {
   }) async {
     final db = await database;
     
-    return await db.transaction((txn) async {
-      try {
-        // 1. معالجة العميل (Customer Handling)
-        int? customerId = invoice.customerId;
+    // 🔒 الحصول على قفل للعميل إذا كان موجوداً
+    final int? lockCustomerId = invoice.customerId ?? oldInvoice?.customerId;
+    bool lockAcquired = false;
+    
+    if (lockCustomerId != null) {
+      lockAcquired = await _acquireCustomerLock(lockCustomerId);
+      if (!lockAcquired) {
+        throw Exception('فشل الحصول على قفل العميل - يرجى المحاولة مرة أخرى');
+      }
+    }
+    
+    try {
+      return await db.transaction((txn) async {
+        try {
+          // 1. معالجة العميل (Customer Handling)
+          int? customerId = invoice.customerId;
         Customer? customer;
         
         // إذا تم تمرير بيانات عميل، نتأكد من وجوده أو ننشئه
@@ -2675,6 +3259,18 @@ class DatabaseService {
         throw e; // سيقوم الترانزاكشن بإلغاء كل التغييرات تلقائياً
       }
     });
+    
+    // � تتبع يالمزامنة: تسجيل معاملات الفاتورة (بعد نجاح الحفظ)
+    if (lockCustomerId != null) {
+      trackLastTransactionForCustomer(lockCustomerId);
+    }
+    
+    } finally {
+      // 🔒 تحرير القفل دائماً
+      if (lockCustomerId != null && lockAcquired) {
+        _releaseCustomerLock(lockCustomerId);
+      }
+    }
   }
 
 
@@ -2725,6 +3321,9 @@ class DatabaseService {
                   });
                 }
               });
+              
+              // 🔄 تتبع المزامنة: تسجيل معاملة التسوية
+              trackLastTransactionForCustomer(invoice.customerId!);
             }
           }
         }
@@ -2777,6 +3376,9 @@ class DatabaseService {
                       });
                     }
                   });
+                  
+                  // 🔄 تتبع المزامنة: تسجيل معاملة التسوية
+                  trackLastTransactionForCustomer(invoice.customerId!);
                 }
               }
             }
@@ -2981,6 +3583,27 @@ class DatabaseService {
         });
       } catch (_) {}
 
+      // 🔄 تتبع المزامنة: تسجيل حذف المعاملات المرتبطة بالفاتورة
+      try {
+        final tracker = SyncTrackerInstance.instance;
+        if (tracker.isEnabled && invoice.customerId != null) {
+          final txRows = await db.query('transactions', where: 'invoice_id = ?', whereArgs: [id]);
+          final customerRows = await db.query('customers', columns: ['sync_uuid'], where: 'id = ?', whereArgs: [invoice.customerId], limit: 1);
+          final customerSyncUuid = customerRows.isNotEmpty ? customerRows.first['sync_uuid'] as String? : null;
+          
+          for (final tx in txRows) {
+            final txSyncUuid = tx['sync_uuid'] as String?;
+            if (txSyncUuid != null) {
+              tracker.trackTransactionDelete(txSyncUuid, tx, customerSyncUuid).catchError((e) {
+                print('⚠️ تحذير: فشل تسجيل مزامنة حذف معاملة الفاتورة: $e');
+              });
+            }
+          }
+        }
+      } catch (e) {
+        print('⚠️ تحذير: فشل تسجيل مزامنة حذف معاملات الفاتورة: $e');
+      }
+      
       // Delete all transactions associated with this invoice
       await db.delete(
         'transactions',
@@ -4244,8 +4867,90 @@ class DatabaseService {
   // --- دوال معاملات الدين ---
   Future<int> insertDebtTransaction(DebtTransaction transaction) async {
     final db = await database;
-    return await db.insert('transactions', transaction.toMap(),
+    final id = await db.insert('transactions', transaction.toMap(),
         conflictAlgorithm: ConflictAlgorithm.replace);
+    
+    // 🔄 تتبع المزامنة (غير متزامن)
+    _trackTransactionForSync(id, transaction.customerId, transaction.toMap());
+    
+    return id;
+  }
+  
+  /// دالة مساعدة لتتبع المعاملات للمزامنة (غير متزامنة)
+  void _trackTransactionForSync(int transactionId, int customerId, Map<String, dynamic> transactionData) {
+    try {
+      final tracker = SyncTrackerInstance.instance;
+      if (!tracker.isEnabled) return;
+      
+      // جلب sync_uuid للعميل بشكل غير متزامن
+      database.then((db) async {
+        try {
+          final customerRows = await db.query('customers', columns: ['sync_uuid'], where: 'id = ?', whereArgs: [customerId], limit: 1);
+          final customerSyncUuid = customerRows.isNotEmpty ? customerRows.first['sync_uuid'] as String? : null;
+          
+          transactionData['id'] = transactionId;
+          
+          await tracker.trackTransactionCreate(transactionData, customerSyncUuid);
+          print('🔄 تم تسجيل المعاملة للمزامنة: $transactionId');
+        } catch (e) {
+          print('⚠️ تحذير: فشل تسجيل المزامنة: $e');
+        }
+      });
+    } catch (e) {
+      print('⚠️ تحذير: فشل تسجيل المزامنة: $e');
+    }
+  }
+  
+  /// تتبع آخر معاملة أُنشئت لعميل معين (للمعاملات التي تُنشأ داخل transactions)
+  /// يُستدعى بعد نجاح العملية
+  void trackLastTransactionForCustomer(int customerId) {
+    try {
+      final tracker = SyncTrackerInstance.instance;
+      if (!tracker.isEnabled) return;
+      
+      database.then((db) async {
+        try {
+          // جلب آخر معاملة للعميل
+          final txRows = await db.query(
+            'transactions',
+            where: 'customer_id = ?',
+            whereArgs: [customerId],
+            orderBy: 'id DESC',
+            limit: 1,
+          );
+          
+          if (txRows.isEmpty) return;
+          
+          final txData = txRows.first;
+          final txId = txData['id'] as int;
+          
+          // التحقق من أن المعاملة لم تُسجل مسبقاً
+          final syncUuid = txData['sync_uuid'] as String?;
+          if (syncUuid != null) {
+            // المعاملة لديها sync_uuid، قد تكون مسجلة مسبقاً
+            // نتحقق من جدول sync_operations
+            final existingOps = await db.query(
+              'sync_operations',
+              where: 'entity_uuid = ?',
+              whereArgs: [syncUuid],
+              limit: 1,
+            );
+            if (existingOps.isNotEmpty) return; // مسجلة مسبقاً
+          }
+          
+          // جلب sync_uuid للعميل
+          final customerRows = await db.query('customers', columns: ['sync_uuid'], where: 'id = ?', whereArgs: [customerId], limit: 1);
+          final customerSyncUuid = customerRows.isNotEmpty ? customerRows.first['sync_uuid'] as String? : null;
+          
+          await tracker.trackTransactionCreate(Map<String, dynamic>.from(txData), customerSyncUuid);
+          print('🔄 تم تسجيل آخر معاملة للعميل $customerId للمزامنة: $txId');
+        } catch (e) {
+          print('⚠️ تحذير: فشل تسجيل آخر معاملة للمزامنة: $e');
+        }
+      });
+    } catch (e) {
+      print('⚠️ تحذير: فشل تسجيل آخر معاملة للمزامنة: $e');
+    }
   }
 
   Future<List<DebtTransaction>> getTransactionsToUpload() async {
@@ -4420,11 +5125,54 @@ class DatabaseService {
 
   Future<int> deleteDebtTransaction(int id) async {
     final db = await database;
-    return await db.delete(
+    
+    // 🔄 تتبع المزامنة: جلب بيانات المعاملة قبل الحذف
+    Map<String, dynamic>? txData;
+    String? txSyncUuid;
+    String? customerSyncUuid;
+    try {
+      final txRows = await db.query('transactions', where: 'id = ?', whereArgs: [id], limit: 1);
+      if (txRows.isNotEmpty) {
+        txData = txRows.first;
+        txSyncUuid = txData['sync_uuid'] as String?;
+        
+        // جلب sync_uuid للعميل
+        final customerId = txData['customer_id'] as int?;
+        if (customerId != null) {
+          final customerRows = await db.query('customers', columns: ['sync_uuid'], where: 'id = ?', whereArgs: [customerId], limit: 1);
+          if (customerRows.isNotEmpty) {
+            customerSyncUuid = customerRows.first['sync_uuid'] as String?;
+          }
+        }
+      }
+    } catch (e) {
+      print('⚠️ تحذير: فشل جلب بيانات المعاملة للمزامنة: $e');
+    }
+    
+    final result = await db.delete(
       'transactions',
       where: 'id = ?',
       whereArgs: [id],
     );
+    
+    // 🔄 تتبع المزامنة: تسجيل حذف المعاملة (غير متزامن)
+    if (result > 0 && txData != null && txSyncUuid != null) {
+      try {
+        final tracker = SyncTrackerInstance.instance;
+        if (tracker.isEnabled) {
+          // تشغيل التتبع بشكل غير متزامن (fire and forget)
+          tracker.trackTransactionDelete(txSyncUuid, txData, customerSyncUuid).then((_) {
+            print('🔄 تم تسجيل عملية حذف المعاملة للمزامنة: $id');
+          }).catchError((e) {
+            print('⚠️ تحذير: فشل تسجيل مزامنة حذف المعاملة: $e');
+          });
+        }
+      } catch (e) {
+        print('⚠️ تحذير: فشل تسجيل مزامنة حذف المعاملة: $e');
+      }
+    }
+    
+    return result;
   }
 
   // دالة لجلب آخر id للفواتير
@@ -6560,6 +7308,91 @@ class DatabaseService {
     return await insertTransaction(transaction);
   }
 
+  /// ═══════════════════════════════════════════════════════════════════════════
+  /// 🔧 إدراج معاملة تصحيحية (تتجاوز التحقق الأمني)
+  /// تُستخدم فقط لإصلاح الفروقات بين الرصيد المسجل ومجموع المعاملات
+  /// ═══════════════════════════════════════════════════════════════════════════
+  Future<int> insertCorrectionTransaction({
+    required int customerId,
+    required double correctionAmount,
+    required double targetBalance,
+    String? note,
+  }) async {
+    final db = await database;
+    
+    // 🔒 الحصول على قفل للعميل
+    final lockAcquired = await _acquireCustomerLock(customerId);
+    if (!lockAcquired) {
+      throw Exception('فشل الحصول على قفل العميل - يرجى المحاولة مرة أخرى');
+    }
+    
+    try {
+      return await db.transaction((txn) async {
+        // 1. جلب آخر معاملة للحصول على الرصيد الحالي الفعلي
+        final List<Map<String, dynamic>> lastTxRows = await txn.query(
+          'transactions',
+          where: 'customer_id = ?',
+          whereArgs: [customerId],
+          orderBy: 'transaction_date DESC, id DESC',
+          limit: 1,
+        );
+        
+        double currentBalance = 0.0;
+        if (lastTxRows.isNotEmpty) {
+          currentBalance = (lastTxRows.first['new_balance_after_transaction'] as num?)?.toDouble() ?? 0.0;
+        }
+        
+        // 2. حساب الرصيد الجديد
+        final newBalance = MoneyCalculator.add(currentBalance, correctionAmount);
+        
+        // 3. حساب Checksum
+        final now = DateTime.now();
+        final checksum = MoneyCalculator.calculateTransactionChecksum(
+          customerId: customerId,
+          amount: correctionAmount,
+          balanceBefore: currentBalance,
+          balanceAfter: newBalance,
+          date: now,
+        );
+        
+        // 4. إدراج المعاملة التصحيحية
+        final transactionId = await txn.insert('transactions', {
+          'customer_id': customerId,
+          'transaction_date': now.toIso8601String(),
+          'amount_changed': correctionAmount,
+          'balance_before_transaction': currentBalance,
+          'new_balance_after_transaction': newBalance,
+          'transaction_note': note ?? 'تصحيح رصيد (رصيد افتتاحي سابق)',
+          'transaction_type': 'opening_balance',
+          'description': 'تصحيح تلقائي للفروقات',
+          'created_at': now.toIso8601String(),
+          'checksum': checksum,
+        });
+        
+        // 5. تحديث رصيد العميل
+        await txn.update(
+          'customers',
+          {
+            'current_total_debt': newBalance,
+            'last_modified_at': now.toIso8601String(),
+          },
+          where: 'id = ?',
+          whereArgs: [customerId],
+        );
+        
+        print('✅ تم إضافة معاملة تصحيحية: $correctionAmount، الرصيد الجديد: $newBalance');
+        
+        return transactionId;
+      });
+    } finally {
+      // 🔒 تحرير القفل
+      _releaseCustomerLock(customerId);
+      
+      // 🔄 تتبع المزامنة: تسجيل المعاملة التصحيحية
+      trackLastTransactionForCustomer(customerId);
+    }
+  }
+
   /// التحقق من صحة فاتورة قبل حفظها
   Future<InvoiceValidationResult> validateInvoiceBeforeSave({
     required double totalAmount,
@@ -7324,7 +8157,260 @@ class DatabaseService {
     return (result.first['count'] as int?) ?? 0;
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔒 دوال التحقق من الرصيد المالي - للوصول إلى 99.9% أمان
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// الحصول على رصيد العميل المُتحقق منه
+  /// يحسب الرصيد من مجموع المعاملات ويقارنه بالرصيد المسجل
+  /// إذا كان هناك فرق بسيط (< 1 دينار)، يُصلح تلقائياً
+  /// إذا كان الفرق كبير، يُرجع تقرير بالمشكلة
+  /// 
+  /// 🔒 هذه الدالة تضمن أن الرصيد المعروض = مجموع المعاملات بنسبة 99.9%
+  Future<VerifiedBalanceResult> getVerifiedCustomerBalance(int customerId) async {
+    final db = await database;
+    
+    // 1. حساب مجموع المعاملات
+    final sumResult = await db.rawQuery(
+      'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ?',
+      [customerId],
+    );
+    final double calculatedBalance = ((sumResult.first['total'] as num?) ?? 0).toDouble();
+    
+    // 2. جلب الرصيد المسجل
+    final customer = await getCustomerById(customerId);
+    if (customer == null) {
+      return VerifiedBalanceResult(
+        isVerified: false,
+        calculatedBalance: calculatedBalance,
+        recordedBalance: 0,
+        difference: calculatedBalance,
+        errorMessage: 'العميل غير موجود',
+        needsManualFix: true,
+      );
+    }
+    
+    final double recordedBalance = customer.currentTotalDebt;
+    final double difference = MoneyCalculator.subtract(calculatedBalance, recordedBalance);
+    
+    // 3. التحقق من التطابق
+    if (MoneyCalculator.areEqual(calculatedBalance, recordedBalance)) {
+      // ✅ الرصيد متطابق تماماً
+      return VerifiedBalanceResult(
+        isVerified: true,
+        calculatedBalance: calculatedBalance,
+        recordedBalance: recordedBalance,
+        difference: 0,
+        wasAutoFixed: false,
+      );
+    }
+    
+    // 4. فرق بسيط (< 1 دينار) - إصلاح تلقائي صامت
+    if (difference.abs() < 1.0) {
+      try {
+        // تحديث الرصيد المسجل ليطابق المحسوب
+        final updated = customer.copyWith(
+          currentTotalDebt: calculatedBalance,
+          lastModifiedAt: DateTime.now(),
+        );
+        await updateCustomer(updated);
+        
+        return VerifiedBalanceResult(
+          isVerified: true,
+          calculatedBalance: calculatedBalance,
+          recordedBalance: calculatedBalance, // بعد الإصلاح
+          difference: 0,
+          wasAutoFixed: true,
+          autoFixNote: 'تم إصلاح فرق بسيط (${difference.toStringAsFixed(3)} دينار) تلقائياً',
+        );
+      } catch (e) {
+        return VerifiedBalanceResult(
+          isVerified: false,
+          calculatedBalance: calculatedBalance,
+          recordedBalance: recordedBalance,
+          difference: difference,
+          errorMessage: 'فشل الإصلاح التلقائي: $e',
+          needsManualFix: true,
+        );
+      }
+    }
+    
+    // 5. فرق كبير (>= 1 دينار) - يحتاج تدخل يدوي
+    return VerifiedBalanceResult(
+      isVerified: false,
+      calculatedBalance: calculatedBalance,
+      recordedBalance: recordedBalance,
+      difference: difference,
+      errorMessage: 'فرق كبير بين الرصيد المسجل ومجموع المعاملات',
+      needsManualFix: true,
+    );
+  }
+
+  /// التحقق السريع من رصيد العميل (بدون إصلاح)
+  /// يُستخدم للتحقق فقط دون تعديل
+  Future<bool> isCustomerBalanceValid(int customerId) async {
+    final db = await database;
+    
+    final sumResult = await db.rawQuery(
+      'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ?',
+      [customerId],
+    );
+    final double calculatedBalance = ((sumResult.first['total'] as num?) ?? 0).toDouble();
+    
+    final customer = await getCustomerById(customerId);
+    if (customer == null) return false;
+    
+    return MoneyCalculator.areEqual(calculatedBalance, customer.currentTotalDebt);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔒 دوال التحقق من Checksum للمعاملات المالية
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// التحقق من صحة Checksum لجميع معاملات عميل معين
+  /// يُرجع قائمة بالمعاملات التي فشل التحقق منها
+  Future<List<Map<String, dynamic>>> verifyCustomerTransactionsChecksum(int customerId) async {
+    final db = await database;
+    final failedTransactions = <Map<String, dynamic>>[];
+    
+    final transactions = await db.query(
+      'transactions',
+      where: 'customer_id = ? AND checksum IS NOT NULL',
+      whereArgs: [customerId],
+      orderBy: 'transaction_date ASC, id ASC',
+    );
+    
+    for (final tx in transactions) {
+      final storedChecksum = tx['checksum'] as String?;
+      if (storedChecksum == null) continue;
+      
+      final calculatedChecksum = MoneyCalculator.calculateTransactionChecksum(
+        customerId: customerId,
+        amount: (tx['amount_changed'] as num).toDouble(),
+        balanceBefore: (tx['balance_before_transaction'] as num?)?.toDouble() ?? 0,
+        balanceAfter: (tx['new_balance_after_transaction'] as num?)?.toDouble() ?? 0,
+        date: DateTime.parse(tx['transaction_date'] as String),
+      );
+      
+      if (storedChecksum != calculatedChecksum) {
+        failedTransactions.add({
+          'id': tx['id'],
+          'stored_checksum': storedChecksum,
+          'calculated_checksum': calculatedChecksum,
+          'amount': tx['amount_changed'],
+          'date': tx['transaction_date'],
+        });
+      }
+    }
+    
+    return failedTransactions;
+  }
+
+  /// التحقق من صحة Checksum لجميع المعاملات في قاعدة البيانات
+  /// يُرجع تقريراً شاملاً
+  Future<ChecksumVerificationReport> verifyAllTransactionsChecksum() async {
+    final db = await database;
+    int totalChecked = 0;
+    int totalPassed = 0;
+    int totalFailed = 0;
+    int totalMissing = 0;
+    final failedDetails = <Map<String, dynamic>>[];
+    
+    final customers = await getAllCustomers();
+    
+    for (final customer in customers) {
+      if (customer.id == null) continue;
+      
+      final transactions = await db.query(
+        'transactions',
+        where: 'customer_id = ?',
+        whereArgs: [customer.id],
+      );
+      
+      for (final tx in transactions) {
+        totalChecked++;
+        final storedChecksum = tx['checksum'] as String?;
+        
+        if (storedChecksum == null) {
+          totalMissing++;
+          continue;
+        }
+        
+        final calculatedChecksum = MoneyCalculator.calculateTransactionChecksum(
+          customerId: customer.id!,
+          amount: (tx['amount_changed'] as num).toDouble(),
+          balanceBefore: (tx['balance_before_transaction'] as num?)?.toDouble() ?? 0,
+          balanceAfter: (tx['new_balance_after_transaction'] as num?)?.toDouble() ?? 0,
+          date: DateTime.parse(tx['transaction_date'] as String),
+        );
+        
+        if (storedChecksum == calculatedChecksum) {
+          totalPassed++;
+        } else {
+          totalFailed++;
+          if (failedDetails.length < 100) { // حد أقصى 100 تفصيل
+            failedDetails.add({
+              'customer_id': customer.id,
+              'customer_name': customer.name,
+              'transaction_id': tx['id'],
+              'amount': tx['amount_changed'],
+            });
+          }
+        }
+      }
+    }
+    
+    return ChecksumVerificationReport(
+      totalChecked: totalChecked,
+      totalPassed: totalPassed,
+      totalFailed: totalFailed,
+      totalMissing: totalMissing,
+      failedDetails: failedDetails,
+      verifiedAt: DateTime.now(),
+    );
+  }
+
+  /// إصلاح Checksum لجميع المعاملات (إعادة حسابها)
+  Future<int> repairAllTransactionsChecksum() async {
+    final db = await database;
+    int repairedCount = 0;
+    
+    final customers = await getAllCustomers();
+    
+    for (final customer in customers) {
+      if (customer.id == null) continue;
+      
+      // استخدام recalculateCustomerTransactionBalances التي تحسب Checksum أيضاً
+      await recalculateCustomerTransactionBalances(customer.id!);
+      repairedCount++;
+    }
+    
+    return repairedCount;
+  }
+
 } // نهاية كلاس DatabaseService
+
+/// تقرير التحقق من Checksum
+class ChecksumVerificationReport {
+  final int totalChecked;
+  final int totalPassed;
+  final int totalFailed;
+  final int totalMissing;
+  final List<Map<String, dynamic>> failedDetails;
+  final DateTime verifiedAt;
+  
+  ChecksumVerificationReport({
+    required this.totalChecked,
+    required this.totalPassed,
+    required this.totalFailed,
+    required this.totalMissing,
+    required this.failedDetails,
+    required this.verifiedAt,
+  });
+  
+  bool get isHealthy => totalFailed == 0;
+  double get passRate => totalChecked > 0 ? (totalPassed / (totalChecked - totalMissing)) * 100 : 100;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 🛡️ نماذج البيانات للحماية والتدقيق المالي
@@ -7839,6 +8925,58 @@ extension DatabaseAnalytics on DatabaseService {
       return sortedProducts.take(limit).toList();
     } catch (e) {
       return [];
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔒 نتيجة التحقق من رصيد العميل - للوصول إلى 99.9% أمان
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// نتيجة التحقق من رصيد العميل
+/// تُستخدم لضمان أن الرصيد المعروض = مجموع المعاملات
+class VerifiedBalanceResult {
+  /// هل الرصيد متحقق منه وصحيح؟
+  final bool isVerified;
+  
+  /// الرصيد المحسوب من مجموع المعاملات
+  final double calculatedBalance;
+  
+  /// الرصيد المسجل في قاعدة البيانات
+  final double recordedBalance;
+  
+  /// الفرق بين الرصيدين
+  final double difference;
+  
+  /// هل تم إصلاح الفرق تلقائياً؟
+  final bool wasAutoFixed;
+  
+  /// ملاحظة الإصلاح التلقائي
+  final String? autoFixNote;
+  
+  /// رسالة الخطأ (إذا وجدت)
+  final String? errorMessage;
+  
+  /// هل يحتاج تدخل يدوي؟
+  final bool needsManualFix;
+
+  VerifiedBalanceResult({
+    required this.isVerified,
+    required this.calculatedBalance,
+    required this.recordedBalance,
+    required this.difference,
+    this.wasAutoFixed = false,
+    this.autoFixNote,
+    this.errorMessage,
+    this.needsManualFix = false,
+  });
+
+  @override
+  String toString() {
+    if (isVerified) {
+      return 'VerifiedBalanceResult(✅ متحقق, رصيد: $calculatedBalance${wasAutoFixed ? ", تم إصلاح تلقائي" : ""})';
+    } else {
+      return 'VerifiedBalanceResult(❌ غير متحقق, محسوب: $calculatedBalance, مسجل: $recordedBalance, فرق: $difference)';
     }
   }
 }

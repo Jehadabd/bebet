@@ -24,6 +24,7 @@ import 'screens/password_setup_screen.dart';
 import 'screens/general_settings_screen.dart';
 import 'services/printing_service_windows.dart';
 import 'services/printing_service.dart';
+import 'services/sync/sync_tracker.dart'; // 🔄 تتبع المزامنة
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -48,6 +49,15 @@ void main() async {
     await dbService.performQuickIntegrityCheck();
   } catch (e) {
     // تجاهل الخطأ - لا نوقف التطبيق
+  }
+
+  // 🔄 تهيئة نظام تتبع المزامنة
+  try {
+    await SyncTrackerInstance.initialize();
+    print('✅ تم تهيئة نظام تتبع المزامنة');
+  } catch (e) {
+    print('⚠️ تحذير: فشل تهيئة نظام تتبع المزامنة: $e');
+    // لا نوقف التطبيق - المزامنة اختيارية
   }
 
   // Check if passwords are set

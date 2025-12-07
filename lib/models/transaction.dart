@@ -16,6 +16,7 @@ class DebtTransaction {
   final bool isUploaded;
   final String? transactionUuid;
   final bool isReadByOthers;
+  final String? syncUuid; // 🔄 معرف المزامنة الفريد
 
   DebtTransaction({
     this.id,
@@ -34,6 +35,7 @@ class DebtTransaction {
     this.isUploaded = false,
     this.transactionUuid,
     this.isReadByOthers = false,
+    this.syncUuid,
   })  : transactionDate = transactionDate ?? DateTime.now(),
         createdAt = createdAt ?? DateTime.now();
 
@@ -55,6 +57,7 @@ class DebtTransaction {
       'is_uploaded': isUploaded ? 1 : 0,
       'transaction_uuid': transactionUuid,
       'is_read_by_others': isReadByOthers ? 1 : 0,
+      'sync_uuid': syncUuid,
     };
   }
 
@@ -78,6 +81,7 @@ class DebtTransaction {
       isUploaded: ((map['is_uploaded'] as int?) ?? 0) == 1,
       transactionUuid: map['transaction_uuid'] as String?,
       isReadByOthers: ((map['is_read_by_others'] as int?) ?? 0) == 1,
+      syncUuid: map['sync_uuid'] as String?,
     );
   }
 
@@ -98,6 +102,7 @@ class DebtTransaction {
     bool? isUploaded,
     String? transactionUuid,
     bool? isReadByOthers,
+    String? syncUuid,
   }) {
     return DebtTransaction(
       id: id ?? this.id,
@@ -117,6 +122,7 @@ class DebtTransaction {
       isUploaded: isUploaded ?? this.isUploaded,
       transactionUuid: transactionUuid ?? this.transactionUuid,
       isReadByOthers: isReadByOthers ?? this.isReadByOthers,
+      syncUuid: syncUuid ?? this.syncUuid,
     );
   }
 }
