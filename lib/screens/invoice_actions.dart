@@ -101,8 +101,11 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
   }
 
   bool _isInvoiceItemComplete(InvoiceItem item) {
+    // التحقق من أن الكمية موجودة وأكبر من صفر
+    final hasValidQuantity = (item.quantityIndividual != null && item.quantityIndividual! > 0) ||
+                             (item.quantityLargeUnit != null && item.quantityLargeUnit! > 0);
     return (item.productName.isNotEmpty &&
-        (item.quantityIndividual != null || item.quantityLargeUnit != null) &&
+        hasValidQuantity &&
         item.appliedPrice > 0 &&
         item.itemTotal > 0 &&
         (item.saleType != null && item.saleType!.isNotEmpty));

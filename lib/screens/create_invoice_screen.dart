@@ -4326,6 +4326,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   late FocusNode _saleTypeFocusNode;
   bool _openSaleTypeDropdown = false;
   bool _openPriceDropdown = false;
+  final GlobalKey _saleTypeKey = GlobalKey(); // مفتاح لفتح قائمة نوع البيع برمجياً
   late TextEditingController _idController;
   Product? _rowIdSuggestion;
   Timer? _rowIdDebounce;
@@ -4497,6 +4498,87 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
               child: Text(unit, textAlign: TextAlign.center),
             ))
         .toList();
+  }
+
+  // دالة لفتح قائمة نوع البيع برمجياً مع دعم التنقل بالكيبورد
+  Future<void> _showSaleTypeMenu() async {
+    final RenderBox? renderBox = _saleTypeKey.currentContext?.findRenderObject() as RenderBox?;
+    if (renderBox == null) return;
+    
+    final Offset offset = renderBox.localToGlobal(Offset.zero);
+    final Size size = renderBox.size;
+    
+    // الحصول على خيارات نوع البيع
+    final options = _getUnitOptionsStrings();
+    if (options.isEmpty) return;
+    
+    // إذا كان هناك خيار واحد فقط، اختره مباشرة
+    if (options.length == 1) {
+      _updateSaleType(options.first);
+      return;
+    }
+    
+    final String? selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        offset.dx,
+        offset.dy + size.height,
+        offset.dx + size.width,
+        offset.dy + size.height + 200,
+      ),
+      items: options.map((option) => PopupMenuItem<String>(
+        value: option,
+        height: 40,
+        child: Center(child: Text(option, textAlign: TextAlign.center)),
+      )).toList(),
+      elevation: 8,
+    );
+    
+    if (selected != null) {
+      _updateSaleType(selected);
+    } else {
+      // إذا أغلق المستخدم القائمة بدون اختيار، انتقل إلى حقل السعر
+      _priceFocusNode.requestFocus();
+    }
+  }
+  
+  // دالة مساعدة للحصول على خيارات نوع البيع كـ List<String>
+  List<String> _getUnitOptionsStrings() {
+    Product? product = widget.allProducts.firstWhere(
+      (p) => p.name == _currentItem.productName,
+      orElse: () => Product(
+        id: null,
+        name: '',
+        unit: 'piece',
+        unitPrice: 0,
+        price1: 0,
+        createdAt: DateTime.now(),
+        lastModifiedAt: DateTime.now(),
+      ),
+    );
+    List<String> options = ['قطعة'];
+    if (product.unit == 'piece' &&
+        product.unitHierarchy != null &&
+        product.unitHierarchy!.isNotEmpty) {
+      try {
+        List<dynamic> hierarchy =
+            json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+        options.addAll(
+            hierarchy.map((e) => (e['unit_name'] ?? e['name']).toString()));
+      } catch (e) {}
+    } else if (product.unit == 'meter' && product.lengthPerUnit != null) {
+      options = ['متر'];
+      options.add('لفة');
+    } else if (product.unit != 'piece' && product.unit != 'meter') {
+      options = [product.unit];
+    }
+    options = options.where((e) => e != null && e.isNotEmpty).toSet().toList();
+    if (_currentItem.saleType != null &&
+        _currentItem.saleType!.isNotEmpty &&
+        !options.contains(_currentItem.saleType)) {
+      options.add(_currentItem.saleType!);
+    }
+    return options;
   }
 
   void _updateQuantity(String value) {
@@ -5003,10 +5085,8 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                         focusNode: _quantityFocusNode,
                         onFieldSubmitted: (val) {
                           widget.onItemUpdated(_currentItem);
-                          _saleTypeFocusNode.requestFocus();
-                          setState(() {
-                            _openSaleTypeDropdown = true;
-                          });
+                          // فتح قائمة نوع البيع مباشرة بضغطة Enter واحدة
+                          _showSaleTypeMenu();
                         },
                         style: Theme.of(context).textTheme.bodyMedium,
                         decoration: const InputDecoration(
@@ -5023,6 +5103,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
             Expanded(
               flex: 2,
               child: Container(
+                key: _saleTypeKey, // مفتاح لتحديد موقع القائمة المنبثقة
                 decoration: BoxDecoration(
                   border: Border(right: BorderSide(color: gridBorderColor, width: 1)),
                 ),
@@ -5161,8 +5242,11 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
 
 // أضف دالة مساعدة للتحقق من اكتمال الصف
 bool _isInvoiceItemComplete(InvoiceItem item) {
+  // التحقق من أن الكمية موجودة وأكبر من صفر
+  final hasValidQuantity = (item.quantityIndividual != null && item.quantityIndividual! > 0) ||
+                           (item.quantityLargeUnit != null && item.quantityLargeUnit! > 0);
   return (item.productName.isNotEmpty &&
-      (item.quantityIndividual != null || item.quantityLargeUnit != null) &&
+      hasValidQuantity &&
       item.appliedPrice > 0 &&
       item.itemTotal > 0 &&
       (item.saleType != null && item.saleType!.isNotEmpty));
