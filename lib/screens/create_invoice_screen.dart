@@ -4336,6 +4336,62 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   bool _hasShownLowPriceWarning = false;
   double? _lowestRecentPrice; // أدنى سعر خلال آخر 3 فواتير
   String? _lowestRecentInfo; // وصف مختصر: التاريخ ونوع البيع
+  
+  // دالة للتحقق مما إذا كان سعر البيع أقل من سعر التكلفة
+  bool _isPriceBelowCost() {
+    if (_currentItem.appliedPrice <= 0) return false;
+    if (_currentItem.productName.isEmpty) return false;
+    
+    double quantity = _currentItem.quantityIndividual ??
+        _currentItem.quantityLargeUnit ?? 1;
+    if (quantity <= 0) quantity = 1;
+    
+    double? effectiveCostPerUnit;
+    
+    // أولاً: جرب من actualCostPrice
+    if (_currentItem.actualCostPrice != null && _currentItem.actualCostPrice! > 0) {
+      effectiveCostPerUnit = _currentItem.actualCostPrice;
+    } 
+    // ثانياً: جرب من costPrice
+    else if (_currentItem.costPrice != null && _currentItem.costPrice! > 0) {
+      effectiveCostPerUnit = _currentItem.costPrice! / quantity;
+    }
+    // ثالثاً: جلب التكلفة من المنتج الأصلي
+    else {
+      final product = widget.allProducts.firstWhere(
+        (p) => p.name == _currentItem.productName,
+        orElse: () => Product(
+          id: null, name: '', unit: 'piece', unitPrice: 0, price1: 0,
+          createdAt: DateTime.now(), lastModifiedAt: DateTime.now(),
+        ),
+      );
+      
+      if (product.name.isNotEmpty) {
+        final String saleType = _currentItem.saleType ?? 'قطعة';
+        final Map<String, double> unitCosts = product.getUnitCostsMap();
+        
+        // جرب من unit_costs أولاً
+        if (unitCosts.containsKey(saleType) && unitCosts[saleType]! > 0) {
+          effectiveCostPerUnit = unitCosts[saleType];
+        }
+        // ثم من costPrice الأساسي للمنتج
+        else if (product.costPrice != null && product.costPrice! > 0) {
+          // إذا كان البيع بوحدة كبيرة، احسب التكلفة
+          final double uilu = _currentItem.unitsInLargeUnit ?? 1;
+          if (saleType != 'قطعة' && saleType != 'متر' && uilu > 1) {
+            effectiveCostPerUnit = product.costPrice! * uilu;
+          } else {
+            effectiveCostPerUnit = product.costPrice;
+          }
+        }
+      }
+    }
+    
+    if (effectiveCostPerUnit == null || effectiveCostPerUnit <= 0) return false;
+    
+    const double eps = 1e-6;
+    return (_currentItem.appliedPrice + eps) < effectiveCostPerUnit;
+  }
 
   String _formatNumber(num value) {
     return NumberFormat('#,##0.##', 'en_US').format(value);
@@ -5203,22 +5259,42 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                           style: Theme.of(context).textTheme.bodyMedium),
               ),
             ),
-            // أيقونة التنبيه في أقصى اليمين
+            // أيقونات التنبيه في أقصى اليمين
             SizedBox(
-              width: 40,
-              child: Builder(builder: (context) {
-                final bool showIcon = _lowestRecentPrice != null &&
-                    !widget.isViewOnly &&
-                    _currentItem.appliedPrice > (_lowestRecentPrice ?? 0);
-                if (!showIcon) return const SizedBox.shrink();
-                return Tooltip(
-                  message:
-                      'سعر أقل سابقاً: ${formatCurrency(_lowestRecentPrice!)}\n${_lowestRecentInfo ?? ''}',
-                  preferBelow: false,
-                  child: Icon(Icons.error_outline,
-                      color: Colors.orange.shade700, size: 22),
-                );
-              }),
+              width: 80, // زيادة العرض لاستيعاب أيقونتين
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // أيقونة تحذير حمراء: سعر البيع أقل من التكلفة
+                  Builder(builder: (context) {
+                    final bool showCostWarning = !widget.isViewOnly && 
+                        !widget.isPlaceholder &&
+                        _isPriceBelowCost();
+                    if (!showCostWarning) return const SizedBox.shrink();
+                    return Tooltip(
+                      message: '⚠️ تحذير: سعر البيع أقل من سعر التكلفة!',
+                      preferBelow: false,
+                      child: const Icon(Icons.warning,
+                          color: Colors.red, size: 22),
+                    );
+                  }),
+                  // أيقونة تنبيه برتقالية: سعر أعلى من سعر سابق
+                  Builder(builder: (context) {
+                    final bool showIcon = _lowestRecentPrice != null &&
+                        !widget.isViewOnly &&
+                        _currentItem.appliedPrice > (_lowestRecentPrice ?? 0);
+                    if (!showIcon) return const SizedBox.shrink();
+                    return Tooltip(
+                      message:
+                          'سعر أقل سابقاً: ${formatCurrency(_lowestRecentPrice!)}\n${_lowestRecentInfo ?? ''}',
+                      preferBelow: false,
+                      child: Icon(Icons.error_outline,
+                          color: Colors.orange.shade700, size: 22),
+                    );
+                  }),
+                ],
+              ),
             ),
             if (!widget.isViewOnly && !widget.isPlaceholder)
               SizedBox(

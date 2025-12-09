@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import '../services/ai_chat_service.dart';
 import '../services/database_service.dart';
+import '../services/reports_service.dart';
 import 'package:intl/intl.dart';
 import 'transactions_list_dialog.dart';
 
@@ -14,7 +15,11 @@ class DailyReportScreen extends StatefulWidget {
 
 class _DailyReportScreenState extends State<DailyReportScreen> {
   late final AIChatService _aiChatService;
+  late final ReportsService _reportsService;
   Map<String, dynamic>? _reportData;
+  List<Map<String, dynamic>> _topProducts = [];
+  List<Map<String, dynamic>> _topCustomers = [];
+  Map<String, dynamic>? _comparison; // مقارنة مع أمس
   bool _isLoading = true;
   late final NumberFormat _nf = NumberFormat('#,##0', 'en_US');
   String _fmt(num v) => _nf.format(v);
@@ -23,6 +28,7 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
   void initState() {
     super.initState();
     _aiChatService = AIChatService(DatabaseService());
+    _reportsService = ReportsService();
     _loadReport();
   }
 
@@ -32,9 +38,37 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
     });
 
     try {
+      final today = DateTime.now();
+      final startOfDay = DateTime(today.year, today.month, today.day);
+      final endOfDay = startOfDay.add(const Duration(days: 1)).subtract(const Duration(seconds: 1));
+      
+      // أمس للمقارنة
+      final yesterday = startOfDay.subtract(const Duration(days: 1));
+      final endOfYesterday = startOfDay.subtract(const Duration(seconds: 1));
+      
       final data = await _aiChatService.getDailyReport();
+      final topProducts = await _reportsService.getTopProductsInPeriod(
+        startDate: startOfDay,
+        endDate: endOfDay,
+        limit: 5,
+      );
+      final topCustomers = await _reportsService.getTopCustomersInPeriod(
+        startDate: startOfDay,
+        endDate: endOfDay,
+        limit: 5,
+      );
+      final comparison = await _reportsService.comparePeriods(
+        currentStart: startOfDay,
+        currentEnd: endOfDay,
+        previousStart: yesterday,
+        previousEnd: endOfYesterday,
+      );
+      
       setState(() {
         _reportData = data;
+        _topProducts = topProducts;
+        _topCustomers = topCustomers;
+        _comparison = comparison;
         _isLoading = false;
       });
     } catch (e) {
@@ -252,17 +286,195 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
                         // إحصائيات إضافية
                         _buildSectionTitle('إحصائيات إضافية'),
                         const SizedBox(height: 12),
-                        _buildStatCard(
-                          title: 'عدد الفواتير',
-                          value: '${_reportData!['invoiceCount']} فاتورة',
-                          icon: Icons.receipt_long,
-                          color: const Color(0xFF607D8B),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildStatCard(
+                                title: 'عدد الفواتير',
+                                value: '${_reportData!['invoiceCount']} فاتورة',
+                                icon: Icons.receipt_long,
+                                color: const Color(0xFF607D8B),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: _buildStatCard(
+                                title: 'نسبة الربح',
+                                value: '${_getProfitPercent().toStringAsFixed(1)}%',
+                                icon: Icons.percent,
+                                color: const Color(0xFF9C27B0),
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 20),
+
+                        // مقارنة مع أمس
+                        if (_comparison != null) ...[
+                          _buildSectionTitle('مقارنة مع أمس'),
+                          const SizedBox(height: 12),
+                          _buildComparisonCard(),
+                          const SizedBox(height: 20),
+                        ],
+
+                        // أفضل 5 منتجات
+                        if (_topProducts.isNotEmpty) ...[
+                          _buildSectionTitle('أفضل 5 منتجات اليوم'),
+                          const SizedBox(height: 12),
+                          _buildTopProductsList(),
+                          const SizedBox(height: 20),
+                        ],
+
+                        // أفضل 5 عملاء
+                        if (_topCustomers.isNotEmpty) ...[
+                          _buildSectionTitle('أفضل 5 عملاء اليوم'),
+                          const SizedBox(height: 12),
+                          _buildTopCustomersList(),
+                          const SizedBox(height: 20),
+                        ],
                       ],
                     ),
                   ),
                 ),
+    );
+  }
+
+  double _getProfitPercent() {
+    if (_reportData == null) return 0.0;
+    final totalSales = (_reportData!['totalSales'] as num?)?.toDouble() ?? 0.0;
+    final netProfit = (_reportData!['netProfit'] as num?)?.toDouble() ?? 0.0;
+    if (totalSales <= 0) return 0.0;
+    return (netProfit / totalSales) * 100;
+  }
+
+  Widget _buildComparisonCard() {
+    final changes = _comparison!['changes'] as Map<String, dynamic>;
+    final salesChange = (changes['salesChange'] as num?)?.toDouble() ?? 0.0;
+    final profitChange = (changes['profitChange'] as num?)?.toDouble() ?? 0.0;
+    
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.withOpacity(0.3)),
+      ),
+      child: Column(
+        children: [
+          _buildComparisonRow('المبيعات', salesChange),
+          const Divider(),
+          _buildComparisonRow('الأرباح', profitChange),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildComparisonRow(String title, double changePercent) {
+    final isPositive = changePercent >= 0;
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: isPositive ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                isPositive ? Icons.arrow_upward : Icons.arrow_downward,
+                size: 16,
+                color: isPositive ? Colors.green : Colors.red,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                '${changePercent.abs().toStringAsFixed(1)}%',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: isPositive ? Colors.green : Colors.red,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTopProductsList() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF2196F3).withOpacity(0.3)),
+      ),
+      child: ListView.separated(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount: _topProducts.length,
+        separatorBuilder: (_, __) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          final product = _topProducts[index];
+          return ListTile(
+            leading: CircleAvatar(
+              backgroundColor: const Color(0xFF2196F3).withOpacity(0.1),
+              child: Text(
+                '${index + 1}',
+                style: const TextStyle(color: Color(0xFF2196F3), fontWeight: FontWeight.bold),
+              ),
+            ),
+            title: Text(
+              product['product_name']?.toString() ?? '',
+              style: const TextStyle(fontWeight: FontWeight.w500),
+            ),
+            subtitle: Text('الكمية: ${_fmt(product['total_quantity'] ?? 0)}'),
+            trailing: Text(
+              '${_fmt(product['total_sales'] ?? 0)} د.ع',
+              style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF2196F3)),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildTopCustomersList() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF4CAF50).withOpacity(0.3)),
+      ),
+      child: ListView.separated(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount: _topCustomers.length,
+        separatorBuilder: (_, __) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          final customer = _topCustomers[index];
+          return ListTile(
+            leading: CircleAvatar(
+              backgroundColor: const Color(0xFF4CAF50).withOpacity(0.1),
+              child: Text(
+                '${index + 1}',
+                style: const TextStyle(color: Color(0xFF4CAF50), fontWeight: FontWeight.bold),
+              ),
+            ),
+            title: Text(
+              customer['customer_name']?.toString() ?? '',
+              style: const TextStyle(fontWeight: FontWeight.w500),
+            ),
+            subtitle: Text('${customer['invoice_count'] ?? 0} فاتورة'),
+            trailing: Text(
+              '${_fmt(customer['total_purchases'] ?? 0)} د.ع',
+              style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF4CAF50)),
+            ),
+          );
+        },
+      ),
     );
   }
 

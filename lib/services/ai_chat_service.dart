@@ -33,6 +33,44 @@ class AIChatService {
         _openRouterService = openRouterService {
   }
 
+  /// 🔧 حساب التكلفة من unit_hierarchy عندما لا تتوفر بيانات أخرى
+  /// نفس منطق _calculateActualCostPrice في create_invoice_screen.dart
+  /// يُستخدم عندما يكون uilu = 0 ولا يوجد actualCostPrice
+  double _calculateCostFromHierarchy({
+    required double productCost,
+    required String saleType,
+    required String? unitHierarchyJson,
+  }) {
+    // إذا لم يكن هناك تسلسل هرمي، نرجع التكلفة الأساسية
+    if (unitHierarchyJson == null || unitHierarchyJson.trim().isEmpty) {
+      return productCost;
+    }
+    
+    try {
+      final List<dynamic> hierarchy = jsonDecode(unitHierarchyJson) as List<dynamic>;
+      double multiplier = 1.0;
+      
+      for (final level in hierarchy) {
+        final String unitName = (level['unit_name'] ?? level['name'] ?? '').toString();
+        final double qty = (level['quantity'] is num)
+            ? (level['quantity'] as num).toDouble()
+            : double.tryParse(level['quantity'].toString()) ?? 1.0;
+        multiplier *= qty;
+        
+        // إذا وصلنا لوحدة البيع المطلوبة، نرجع التكلفة المحسوبة
+        if (unitName == saleType) {
+          return productCost * multiplier;
+        }
+      }
+      
+      // إذا لم نجد الوحدة في التسلسل، نرجع التكلفة الأساسية
+      return productCost;
+    } catch (e) {
+      // في حالة خطأ التحليل، نرجع التكلفة الأساسية
+      return productCost;
+    }
+  }
+
   /// الاقتراحات السريعة الافتراضية
   static const List<String> defaultSuggestions = [
     "تدقيق ذكي للفواتير",
@@ -1605,6 +1643,7 @@ class AIChatService {
   /// تقرير اليوم - حساب دقيق للأرباح والمبيعات
   /// تقرير اليوم - حساب دقيق للأرباح والمبيعات
   /// 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط (مصاريف كهرباء/تشغيل)
+  /// 🔧 إصلاح 2: عند عدم توفر actualCostPrice و uilu = 0، نحسب من unit_hierarchy
   Future<Map<String, dynamic>> getDailyReport() async {
     try {
       final db = await _dbService.database;
@@ -1644,7 +1683,7 @@ class AIChatService {
           creditSales += totalAmount;
         }
         
-        // حساب التكلفة بنفس منطق getMonthlySalesSummary
+        // حساب التكلفة بنفس منطق getMonthlySalesSummary (مع إصلاح unit_hierarchy)
         final List<Map<String, dynamic>> itemRows = await db.rawQuery('''
           SELECT 
             ii.quantity_individual AS qi,
@@ -1657,7 +1696,8 @@ class AIChatService {
             p.unit AS product_unit,
             p.cost_price AS product_cost_price,
             p.length_per_unit AS length_per_unit,
-            p.unit_costs AS unit_costs
+            p.unit_costs AS unit_costs,
+            p.unit_hierarchy AS unit_hierarchy
           FROM invoice_items ii
           JOIN products p ON p.name = ii.product_name
           WHERE ii.invoice_id = ?
@@ -1674,6 +1714,7 @@ class AIChatService {
           final double? actualCostPerUnit = (row['actual_cost_per_unit'] as num?)?.toDouble();
           final double sellingPrice = (row['selling_price'] as num?)?.toDouble() ?? 0.0;
           final String? unitCostsJson = row['unit_costs'] as String?;
+          final String? unitHierarchyJson = row['unit_hierarchy'] as String?;
           Map<String, dynamic> unitCosts = const {};
           if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
             try { unitCosts = jsonDecode(unitCostsJson) as Map<String, dynamic>; } catch (_) {}
@@ -1692,9 +1733,18 @@ class AIChatService {
               costPerSoldUnit = stored.toDouble();
             } else {
               final bool isMeterRoll = productUnit == 'meter' && lengthPerUnit != null && (saleType == 'لفة');
-              costPerSoldUnit = isMeterRoll
-                  ? productCost * (lengthPerUnit ?? 1.0)
-                  : productCost * uilu;
+              if (isMeterRoll) {
+                costPerSoldUnit = productCost * (lengthPerUnit ?? 1.0);
+              } else if (uilu > 0) {
+                costPerSoldUnit = productCost * uilu;
+              } else {
+                // 🔧 إصلاح: إذا كان uilu = 0، نحاول حساب المضاعف من unit_hierarchy
+                costPerSoldUnit = _calculateCostFromHierarchy(
+                  productCost: productCost,
+                  saleType: saleType,
+                  unitHierarchyJson: unitHierarchyJson,
+                );
+              }
             }
           } else {
             costPerSoldUnit = productCost;
@@ -1820,7 +1870,7 @@ class AIChatService {
           creditSales += totalAmount;
         }
         
-        // حساب التكلفة بنفس منطق getMonthlySalesSummary
+        // حساب التكلفة بنفس منطق getMonthlySalesSummary (مع إصلاح unit_hierarchy)
         final List<Map<String, dynamic>> itemRows = await db.rawQuery('''
           SELECT 
             ii.quantity_individual AS qi,
@@ -1833,7 +1883,8 @@ class AIChatService {
             p.unit AS product_unit,
             p.cost_price AS product_cost_price,
             p.length_per_unit AS length_per_unit,
-            p.unit_costs AS unit_costs
+            p.unit_costs AS unit_costs,
+            p.unit_hierarchy AS unit_hierarchy
           FROM invoice_items ii
           JOIN products p ON p.name = ii.product_name
           WHERE ii.invoice_id = ?
@@ -1850,6 +1901,7 @@ class AIChatService {
           final double? actualCostPerUnit = (row['actual_cost_per_unit'] as num?)?.toDouble();
           final double sellingPrice = (row['selling_price'] as num?)?.toDouble() ?? 0.0;
           final String? unitCostsJson = row['unit_costs'] as String?;
+          final String? unitHierarchyJson = row['unit_hierarchy'] as String?;
           Map<String, dynamic> unitCosts = const {};
           if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
             try { unitCosts = jsonDecode(unitCostsJson) as Map<String, dynamic>; } catch (_) {}
@@ -1868,9 +1920,18 @@ class AIChatService {
               costPerSoldUnit = stored.toDouble();
             } else {
               final bool isMeterRoll = productUnit == 'meter' && lengthPerUnit != null && (saleType == 'لفة');
-              costPerSoldUnit = isMeterRoll
-                  ? productCost * (lengthPerUnit ?? 1.0)
-                  : productCost * uilu;
+              if (isMeterRoll) {
+                costPerSoldUnit = productCost * (lengthPerUnit ?? 1.0);
+              } else if (uilu > 0) {
+                costPerSoldUnit = productCost * uilu;
+              } else {
+                // 🔧 إصلاح: إذا كان uilu = 0، نحاول حساب المضاعف من unit_hierarchy
+                costPerSoldUnit = _calculateCostFromHierarchy(
+                  productCost: productCost,
+                  saleType: saleType,
+                  unitHierarchyJson: unitHierarchyJson,
+                );
+              }
             }
           } else {
             costPerSoldUnit = productCost;

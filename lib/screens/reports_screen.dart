@@ -4,6 +4,9 @@ import 'product_reports_screen.dart';
 import 'people_reports_screen.dart';
 import 'daily_report_screen.dart';
 import 'weekly_report_screen.dart';
+import 'monthly_report_screen.dart';
+import 'yearly_report_screen.dart';
+import 'overdue_debts_screen.dart';
 
 class ReportsScreen extends StatelessWidget {
   const ReportsScreen({super.key});
@@ -25,7 +28,7 @@ class ReportsScreen extends StatelessWidget {
           onPressed: () => Navigator.of(context).pop(),
         ),
       ),
-      body: Padding(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(24.0),
         child: Column(
           children: [
@@ -38,80 +41,138 @@ class ReportsScreen extends StatelessWidget {
                 color: Color(0xFF2C3E50),
               ),
             ),
-            const SizedBox(height: 40),
-            Expanded(
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _buildReportCard(
-                          title: 'تقارير البضاعة',
-                          subtitle: 'عرض تقارير متعلقة بالمنتجات والمبيعات',
-                          icon: Icons.inventory,
-                          color: const Color(0xFF4CAF50),
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => const ProductReportsScreen(),
-                            ),
-                          ),
-                        ),
+            const SizedBox(height: 30),
+            
+            // الصف الأول: تقارير البضاعة والأشخاص
+            Row(
+              children: [
+                Expanded(
+                  child: _buildReportCard(
+                    title: 'تقارير البضاعة',
+                    subtitle: 'تقارير المنتجات والمبيعات',
+                    icon: Icons.inventory,
+                    color: const Color(0xFF4CAF50),
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const ProductReportsScreen(),
                       ),
-                      const SizedBox(width: 20),
-                      Expanded(
-                        child: _buildReportCard(
-                          title: 'تقارير الأشخاص',
-                          subtitle: 'عرض تقارير متعلقة بالعملاء والأرباح',
-                          icon: Icons.people,
-                          color: const Color(0xFF2196F3),
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => const PeopleReportsScreen(),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
-                  const SizedBox(height: 20),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _buildReportCard(
-                          title: 'تقرير اليوم',
-                          subtitle: 'عرض تقرير مفصل لمبيعات اليوم',
-                          icon: Icons.today,
-                          color: const Color(0xFFFF9800),
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => const DailyReportScreen(),
-                            ),
-                          ),
-                        ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: _buildReportCard(
+                    title: 'تقارير الأشخاص',
+                    subtitle: 'تقارير العملاء والأرباح',
+                    icon: Icons.people,
+                    color: const Color(0xFF2196F3),
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const PeopleReportsScreen(),
                       ),
-                      const SizedBox(width: 20),
-                      Expanded(
-                        child: _buildReportCard(
-                          title: 'تقرير الأسبوع',
-                          subtitle: 'عرض تقرير مفصل لمبيعات الأسبوع',
-                          icon: Icons.date_range,
-                          color: const Color(0xFF9C27B0),
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => const WeeklyReportScreen(),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
+            const SizedBox(height: 16),
+            
+            // الصف الثاني: تقرير اليوم والأسبوع
+            Row(
+              children: [
+                Expanded(
+                  child: _buildReportCard(
+                    title: 'تقرير اليوم',
+                    subtitle: 'مبيعات وأرباح اليوم',
+                    icon: Icons.today,
+                    color: const Color(0xFFFF9800),
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const DailyReportScreen(),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: _buildReportCard(
+                    title: 'تقرير الأسبوع',
+                    subtitle: 'مبيعات وأرباح الأسبوع',
+                    icon: Icons.date_range,
+                    color: const Color(0xFF9C27B0),
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const WeeklyReportScreen(),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            
+            // الصف الثالث: تقرير الشهر والسنة
+            Row(
+              children: [
+                Expanded(
+                  child: _buildReportCard(
+                    title: 'تقرير الشهر',
+                    subtitle: 'تقرير شهري مفصل',
+                    icon: Icons.calendar_month,
+                    color: const Color(0xFF673AB7),
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const MonthlyReportScreen(),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: _buildReportCard(
+                    title: 'تقرير السنة',
+                    subtitle: 'ملخص سنوي شامل',
+                    icon: Icons.calendar_today,
+                    color: const Color(0xFF3F51B5),
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const YearlyReportScreen(),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            
+            // الصف الرابع: الديون المتأخرة
+            Row(
+              children: [
+                Expanded(
+                  child: _buildReportCard(
+                    title: 'الديون المتأخرة',
+                    subtitle: 'عملاء لم يسددوا منذ فترة',
+                    icon: Icons.warning_amber,
+                    color: const Color(0xFFE91E63),
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const OverdueDebtsScreen(),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                const Expanded(child: SizedBox()), // مكان فارغ للتوازن
+              ],
+            ),
+            const SizedBox(height: 20),
           ],
         ),
       ),

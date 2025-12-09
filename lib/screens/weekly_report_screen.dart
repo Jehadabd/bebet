@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import '../services/ai_chat_service.dart';
 import '../services/database_service.dart';
+import '../services/reports_service.dart';
 import 'package:intl/intl.dart';
 import 'transactions_list_dialog.dart';
 
@@ -14,7 +15,12 @@ class WeeklyReportScreen extends StatefulWidget {
 
 class _WeeklyReportScreenState extends State<WeeklyReportScreen> {
   late final AIChatService _aiChatService;
+  late final ReportsService _reportsService;
   Map<String, dynamic>? _reportData;
+  List<Map<String, dynamic>> _topProducts = [];
+  List<Map<String, dynamic>> _topCustomers = [];
+  Map<String, dynamic>? _comparison; // مقارنة مع الأسبوع الماضي
+  Map<String, dynamic>? _trend; // تحليل الاتجاه
   bool _isLoading = true;
   late final NumberFormat _nf = NumberFormat('#,##0', 'en_US');
   String _fmt(num v) => _nf.format(v);
@@ -23,6 +29,7 @@ class _WeeklyReportScreenState extends State<WeeklyReportScreen> {
   void initState() {
     super.initState();
     _aiChatService = AIChatService(DatabaseService());
+    _reportsService = ReportsService();
     _loadReport();
   }
 
@@ -32,9 +39,43 @@ class _WeeklyReportScreenState extends State<WeeklyReportScreen> {
     });
 
     try {
+      final today = DateTime.now();
+      final startOfWeek = today.subtract(Duration(days: today.weekday - 1));
+      final startOfWeekDay = DateTime(startOfWeek.year, startOfWeek.month, startOfWeek.day);
+      final endOfWeek = startOfWeekDay.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
+      
+      // الأسبوع الماضي للمقارنة
+      final prevWeekStart = startOfWeekDay.subtract(const Duration(days: 7));
+      final prevWeekEnd = startOfWeekDay.subtract(const Duration(seconds: 1));
+      
       final data = await _aiChatService.getWeeklyReport();
+      final topProducts = await _reportsService.getTopProductsInPeriod(
+        startDate: startOfWeekDay,
+        endDate: endOfWeek,
+        limit: 5,
+      );
+      final topCustomers = await _reportsService.getTopCustomersInPeriod(
+        startDate: startOfWeekDay,
+        endDate: endOfWeek,
+        limit: 5,
+      );
+      final comparison = await _reportsService.comparePeriods(
+        currentStart: startOfWeekDay,
+        currentEnd: endOfWeek,
+        previousStart: prevWeekStart,
+        previousEnd: prevWeekEnd,
+      );
+      final trend = await _reportsService.analyzeSalesTrend(
+        startDate: startOfWeekDay,
+        endDate: endOfWeek,
+      );
+      
       setState(() {
         _reportData = data;
+        _topProducts = topProducts;
+        _topCustomers = topCustomers;
+        _comparison = comparison;
+        _trend = trend;
         _isLoading = false;
       });
     } catch (e) {
@@ -255,11 +296,26 @@ class _WeeklyReportScreenState extends State<WeeklyReportScreen> {
                         // إحصائيات إضافية
                         _buildSectionTitle('إحصائيات إضافية'),
                         const SizedBox(height: 12),
-                        _buildStatCard(
-                          title: 'عدد الفواتير',
-                          value: '${_reportData!['invoiceCount']} فاتورة',
-                          icon: Icons.receipt_long,
-                          color: const Color(0xFF607D8B),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildStatCard(
+                                title: 'عدد الفواتير',
+                                value: '${_reportData!['invoiceCount']} فاتورة',
+                                icon: Icons.receipt_long,
+                                color: const Color(0xFF607D8B),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: _buildStatCard(
+                                title: 'نسبة الربح',
+                                value: '${_getProfitPercent().toStringAsFixed(1)}%',
+                                icon: Icons.percent,
+                                color: const Color(0xFF9C27B0),
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 20),
 
@@ -290,10 +346,251 @@ class _WeeklyReportScreenState extends State<WeeklyReportScreen> {
                           ),
                           const SizedBox(height: 20),
                         ],
+
+                        // تحليل الاتجاه
+                        if (_trend != null) ...[
+                          _buildSectionTitle('تحليل الاتجاه'),
+                          const SizedBox(height: 12),
+                          _buildTrendCard(),
+                          const SizedBox(height: 20),
+                        ],
+
+                        // مقارنة مع الأسبوع الماضي
+                        if (_comparison != null) ...[
+                          _buildSectionTitle('مقارنة مع الأسبوع الماضي'),
+                          const SizedBox(height: 12),
+                          _buildComparisonCard(),
+                          const SizedBox(height: 20),
+                        ],
+
+                        // أفضل 5 منتجات
+                        if (_topProducts.isNotEmpty) ...[
+                          _buildSectionTitle('أفضل 5 منتجات هذا الأسبوع'),
+                          const SizedBox(height: 12),
+                          _buildTopProductsList(),
+                          const SizedBox(height: 20),
+                        ],
+
+                        // أفضل 5 عملاء
+                        if (_topCustomers.isNotEmpty) ...[
+                          _buildSectionTitle('أفضل 5 عملاء هذا الأسبوع'),
+                          const SizedBox(height: 12),
+                          _buildTopCustomersList(),
+                          const SizedBox(height: 20),
+                        ],
                       ],
                     ),
                   ),
                 ),
+    );
+  }
+
+  double _getProfitPercent() {
+    if (_reportData == null) return 0.0;
+    final totalSales = (_reportData!['totalSales'] as num?)?.toDouble() ?? 0.0;
+    final netProfit = (_reportData!['netProfit'] as num?)?.toDouble() ?? 0.0;
+    if (totalSales <= 0) return 0.0;
+    return (netProfit / totalSales) * 100;
+  }
+
+  Widget _buildTrendCard() {
+    final trendArabic = _trend!['trendArabic'] as String? ?? 'غير محدد';
+    final changePercent = (_trend!['changePercent'] as num?)?.toDouble() ?? 0.0;
+    final avgDailySales = (_trend!['averageDailySales'] as num?)?.toDouble() ?? 0.0;
+    
+    Color trendColor;
+    IconData trendIcon;
+    if (_trend!['trend'] == 'increasing') {
+      trendColor = Colors.green;
+      trendIcon = Icons.trending_up;
+    } else if (_trend!['trend'] == 'decreasing') {
+      trendColor = Colors.red;
+      trendIcon = Icons.trending_down;
+    } else {
+      trendColor = Colors.orange;
+      trendIcon = Icons.trending_flat;
+    }
+    
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: trendColor.withOpacity(0.3)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: trendColor.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(trendIcon, color: trendColor, size: 32),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'الاتجاه: $trendArabic',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: trendColor),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'متوسط المبيعات اليومية: ${_fmt(avgDailySales)} د.ع',
+                  style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                ),
+                if (changePercent.abs() > 0) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'التغير: ${changePercent >= 0 ? '+' : ''}${changePercent.toStringAsFixed(1)}%',
+                    style: TextStyle(fontSize: 14, color: trendColor),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildComparisonCard() {
+    final changes = _comparison!['changes'] as Map<String, dynamic>;
+    final salesChange = (changes['salesChange'] as num?)?.toDouble() ?? 0.0;
+    final profitChange = (changes['profitChange'] as num?)?.toDouble() ?? 0.0;
+    final invoiceChange = (changes['invoiceCountChange'] as num?)?.toDouble() ?? 0.0;
+    
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.withOpacity(0.3)),
+      ),
+      child: Column(
+        children: [
+          _buildComparisonRow('المبيعات', salesChange),
+          const Divider(),
+          _buildComparisonRow('الأرباح', profitChange),
+          const Divider(),
+          _buildComparisonRow('عدد الفواتير', invoiceChange),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildComparisonRow(String title, double changePercent) {
+    final isPositive = changePercent >= 0;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: isPositive ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  isPositive ? Icons.arrow_upward : Icons.arrow_downward,
+                  size: 16,
+                  color: isPositive ? Colors.green : Colors.red,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  '${changePercent.abs().toStringAsFixed(1)}%',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: isPositive ? Colors.green : Colors.red,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTopProductsList() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF2196F3).withOpacity(0.3)),
+      ),
+      child: ListView.separated(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount: _topProducts.length,
+        separatorBuilder: (_, __) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          final product = _topProducts[index];
+          return ListTile(
+            leading: CircleAvatar(
+              backgroundColor: const Color(0xFF2196F3).withOpacity(0.1),
+              child: Text(
+                '${index + 1}',
+                style: const TextStyle(color: Color(0xFF2196F3), fontWeight: FontWeight.bold),
+              ),
+            ),
+            title: Text(
+              product['product_name']?.toString() ?? '',
+              style: const TextStyle(fontWeight: FontWeight.w500),
+            ),
+            subtitle: Text('الكمية: ${_fmt(product['total_quantity'] ?? 0)}'),
+            trailing: Text(
+              '${_fmt(product['total_sales'] ?? 0)} د.ع',
+              style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF2196F3)),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildTopCustomersList() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF4CAF50).withOpacity(0.3)),
+      ),
+      child: ListView.separated(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount: _topCustomers.length,
+        separatorBuilder: (_, __) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          final customer = _topCustomers[index];
+          return ListTile(
+            leading: CircleAvatar(
+              backgroundColor: const Color(0xFF4CAF50).withOpacity(0.1),
+              child: Text(
+                '${index + 1}',
+                style: const TextStyle(color: Color(0xFF4CAF50), fontWeight: FontWeight.bold),
+              ),
+            ),
+            title: Text(
+              customer['customer_name']?.toString() ?? '',
+              style: const TextStyle(fontWeight: FontWeight.w500),
+            ),
+            subtitle: Text('${customer['invoice_count'] ?? 0} فاتورة'),
+            trailing: Text(
+              '${_fmt(customer['total_purchases'] ?? 0)} د.ع',
+              style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF4CAF50)),
+            ),
+          );
+        },
+      ),
     );
   }
 
