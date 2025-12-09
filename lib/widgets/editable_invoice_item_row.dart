@@ -7,6 +7,7 @@ import '../models/product.dart';
 import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'safe_autocomplete.dart';
+import '../services/database_service.dart';
 
 class EditableInvoiceItemRow extends StatefulWidget {
   final InvoiceItem item;
@@ -19,6 +20,10 @@ class EditableInvoiceItemRow extends StatefulWidget {
   final FocusNode? detailsFocusNode;
   final FocusNode? quantityFocusNode;
   final FocusNode? priceFocusNode;
+  final VoidCallback? onPriceSubmitted;
+  final DatabaseService? databaseService;
+  final String? currentCustomerName;
+  final String? currentCustomerPhone;
 
   const EditableInvoiceItemRow({
     Key? key,
@@ -32,6 +37,10 @@ class EditableInvoiceItemRow extends StatefulWidget {
     this.detailsFocusNode,
     this.quantityFocusNode,
     this.priceFocusNode,
+    this.onPriceSubmitted,
+    this.databaseService,
+    this.currentCustomerName,
+    this.currentCustomerPhone,
   }) : super(key: key);
 
   @override
@@ -313,26 +322,67 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     return NumberFormat('#,##0.##', 'en_US').format(value);
   }
 
+  // الحصول على ID المنتج من قائمة المنتجات
+  int? _getProductId() {
+    if (_currentItem.productName.isEmpty) return null;
+    final product = widget.allProducts.firstWhere(
+      (p) => p.name == _currentItem.productName,
+      orElse: () => Product(
+        id: null,
+        name: '',
+        unit: 'piece',
+        unitPrice: 0,
+        price1: 0,
+        createdAt: DateTime.now(),
+        lastModifiedAt: DateTime.now(),
+      ),
+    );
+    return product.id;
+  }
+
+  // بناء حقل إدخال بحدود مربعة
+  Widget _buildSquareInputField({
+    required Widget child,
+    bool showBorder = true,
+  }) {
+    return Container(
+      decoration: showBorder
+          ? BoxDecoration(
+              border: Border.all(color: Colors.grey.shade400, width: 1),
+              borderRadius: BorderRadius.circular(4),
+            )
+          : null,
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      child: child,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // ═══════════════════════════════════════════════════════════════════════════
     // 🔧 إصلاح: استخدام _currentItem دائماً لضمان عرض البيانات المحدثة
     // ═══════════════════════════════════════════════════════════════════════════
     final displayItem = _currentItem;
+    final productId = _getProductId();
     
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 0.0),
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8.0)),
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 2.0, horizontal: 0.0),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(color: Colors.grey.shade300, width: 1),
+        ),
+      ),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 8.0),
         child: Row(
           children: [
+            // عمود التسلسل (ت)
             Expanded(
                 flex: 1,
                 child: Text((widget.index + 1).toString(),
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodyMedium)),
+            // عمود المبلغ
             Expanded(
                 flex: 2,
                 child: widget.isViewOnly
@@ -348,178 +398,233 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             fontWeight: FontWeight.bold,
                             color: Theme.of(context).colorScheme.primary))),
+            // عمود ID
+            Expanded(
+              flex: 2,
+              child: _buildSquareInputField(
+                child: Text(
+                  productId?.toString() ?? '',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Colors.grey.shade600,
+                  ),
+                ),
+              ),
+            ),
+            // عمود التفاصيل (اسم المنتج)
             Expanded(
               flex: 3,
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                child: widget.isViewOnly
-                    ? Text(displayItem.productName,
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodyMedium)
-                    : Builder(
-                        builder: (context) {
-                          TextEditingController? detailsController;
-                          return SafeAutocomplete<String>(
-                            initialValue:
-                                TextEditingValue(text: widget.item.productName),
-                            optionsBuilder:
-                                (TextEditingValue textEditingValue) {
-                              if (textEditingValue.text == '') {
-                                return const Iterable<String>.empty();
-                              }
-                              return widget.allProducts
-                                  .map((p) => p.name)
-                                  .where((option) =>
-                                      option.contains(textEditingValue.text));
-                            },
-                            fieldViewBuilder: (context, controller, focusNode,
-                                onFieldSubmitted) {
-                              detailsController = controller;
-                              return TextField(
-                                controller: controller,
-                                focusNode: focusNode,
-                                enabled: !widget.isViewOnly,
-                                decoration: const InputDecoration(
-                                  border: InputBorder.none,
-                                  contentPadding: EdgeInsets.symmetric(
-                                      horizontal: 0, vertical: 8),
-                                  isDense: true,
-                                ),
-                                style: Theme.of(context).textTheme.bodyMedium,
-                                onChanged: (val) {
-                                  _currentItem =
-                                      _currentItem.copyWith(productName: val);
-                                },
-                                onSubmitted: (val) {
-                                  onFieldSubmitted();
-                                },
-                              );
-                            },
-                            onSelected: (String selection) {
-                              setState(() {
-                                _currentItem = _currentItem.copyWith(
-                                    productName: selection);
-                                widget.onItemUpdated(_currentItem);
-                              });
-                              detailsController?.text = selection;
-                              WidgetsBinding.instance.addPostFrameCallback((_) {
-                                _quantityFocusNode.requestFocus();
-                                if (widget.quantityFocusNode != null) {
-                                  widget.quantityFocusNode!.requestFocus();
+                child: _buildSquareInputField(
+                  child: widget.isViewOnly
+                      ? Text(displayItem.productName,
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodyMedium)
+                      : Builder(
+                          builder: (context) {
+                            TextEditingController? detailsController;
+                            return SafeAutocomplete<String>(
+                              initialValue:
+                                  TextEditingValue(text: widget.item.productName),
+                              optionsBuilder:
+                                  (TextEditingValue textEditingValue) {
+                                if (textEditingValue.text == '') {
+                                  return const Iterable<String>.empty();
                                 }
-                              });
-                            },
-                          );
-                        },
-                      ),
-              ),
-            ),
-            Expanded(
-              flex: 2,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                child: widget.isViewOnly
-                    ? Text(
-                        // 🔧 إصلاح: استخدام الدالة المساعدة للحصول على الكمية الصحيحة
-                        NumberFormat('#,##0.##', 'en_US').format(_getCorrectQuantity(displayItem)),
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      )
-                    : TextFormField(
-                        controller: _quantityController,
-                        textAlign: TextAlign.center,
-                        keyboardType: const TextInputType.numberWithOptions(
-                            decimal: true),
-                        inputFormatters: [
-                          ThousandSeparatorDecimalInputFormatter(),
-                        ],
-                        enabled: !widget.isViewOnly,
-                        onChanged: _updateQuantity,
-                        focusNode: _quantityFocusNode,
-                        onFieldSubmitted: (val) {
-                          _saleTypeFocusNode.requestFocus();
-                          setState(() {
-                            _openSaleTypeDropdown = true;
-                          });
-                        },
-                        style: Theme.of(context).textTheme.bodyMedium,
-                        decoration: const InputDecoration(
-                          border: InputBorder.none,
-                          contentPadding:
-                              EdgeInsets.symmetric(horizontal: 0, vertical: 8),
-                          isDense: true,
-                        ),
-                      ),
-              ),
-            ),
-            Expanded(
-              flex: 2,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                child: widget.isViewOnly
-                    ? Text(
-                        displayItem.saleType ?? '',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      )
-                    : DropdownButtonHideUnderline(
-                        child: DropdownButton<String>(
-                          value: _currentItem.saleType,
-                          items: _getUnitOptions(),
-                          onChanged: widget.isViewOnly
-                              ? null
-                              : (value) => _updateSaleType(value!),
-                          isExpanded: true,
-                          alignment: AlignmentDirectional.center,
-                          style: Theme.of(context).textTheme.bodyMedium,
-                          itemHeight: 48,
-                          autofocus: _openSaleTypeDropdown,
-                          focusNode: _saleTypeFocusNode,
-                          onTap: () {
-                            setState(() {
-                              _openSaleTypeDropdown = false;
-                            });
+                                return widget.allProducts
+                                    .map((p) => p.name)
+                                    .where((option) =>
+                                        option.contains(textEditingValue.text));
+                              },
+                              fieldViewBuilder: (context, controller, focusNode,
+                                  onFieldSubmitted) {
+                                detailsController = controller;
+                                return TextField(
+                                  controller: controller,
+                                  focusNode: _detailsFocusNode,
+                                  enabled: !widget.isViewOnly,
+                                  decoration: const InputDecoration(
+                                    border: InputBorder.none,
+                                    contentPadding: EdgeInsets.symmetric(
+                                        horizontal: 4, vertical: 8),
+                                    isDense: true,
+                                  ),
+                                  style: Theme.of(context).textTheme.bodyMedium,
+                                  onChanged: (val) {
+                                    _currentItem =
+                                        _currentItem.copyWith(productName: val);
+                                  },
+                                  onSubmitted: (val) {
+                                    onFieldSubmitted();
+                                  },
+                                );
+                              },
+                              onSelected: (String selection) {
+                                // الحصول على المنتج المحدد لتعيين نوع البيع الافتراضي
+                                final selectedProduct = widget.allProducts.firstWhere(
+                                  (p) => p.name == selection,
+                                  orElse: () => Product(
+                                    id: null,
+                                    name: '',
+                                    unit: 'piece',
+                                    unitPrice: 0,
+                                    price1: 0,
+                                    createdAt: DateTime.now(),
+                                    lastModifiedAt: DateTime.now(),
+                                  ),
+                                );
+                                
+                                // تحديد نوع البيع الافتراضي (أصغر وحدة)
+                                String defaultSaleType = 'قطعة';
+                                if (selectedProduct.unit == 'meter') {
+                                  defaultSaleType = 'متر';
+                                }
+                                
+                                setState(() {
+                                  _currentItem = _currentItem.copyWith(
+                                    productName: selection,
+                                    saleType: defaultSaleType,
+                                    appliedPrice: selectedProduct.price1 ?? selectedProduct.unitPrice,
+                                    costPrice: selectedProduct.costPrice,
+                                  );
+                                  widget.onItemUpdated(_currentItem);
+                                });
+                                detailsController?.text = selection;
+                                WidgetsBinding.instance.addPostFrameCallback((_) {
+                                  _quantityFocusNode.requestFocus();
+                                });
+                              },
+                            );
                           },
                         ),
-                      ),
+                ),
               ),
             ),
+            // عمود العدد
             Expanded(
               flex: 2,
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                child: widget.isViewOnly
-                    ? Text(
-                        NumberFormat('#,##0.##', 'en_US').format(displayItem.appliedPrice),
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      )
-                    : TextFormField(
-                        controller: _priceController,
-                        textAlign: TextAlign.center,
-                        keyboardType: const TextInputType.numberWithOptions(
-                            decimal: true),
-                        inputFormatters: [
-                          ThousandSeparatorDecimalInputFormatter(),
-                        ],
-                        enabled: !widget.isViewOnly,
-                        onChanged: _updatePrice,
-                        focusNode: _priceFocusNode,
-                        onFieldSubmitted: (val) {
-                          if (widget.priceFocusNode != null) {
-                            widget.priceFocusNode!.requestFocus();
-                          }
-                        },
-                        style: Theme.of(context).textTheme.bodyMedium,
-                        decoration: const InputDecoration(
-                          border: InputBorder.none,
-                          contentPadding:
-                              EdgeInsets.symmetric(horizontal: 0, vertical: 8),
-                          isDense: true,
+                child: _buildSquareInputField(
+                  child: widget.isViewOnly
+                      ? Text(
+                          // 🔧 إصلاح: استخدام الدالة المساعدة للحصول على الكمية الصحيحة
+                          NumberFormat('#,##0.##', 'en_US').format(_getCorrectQuantity(displayItem)),
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        )
+                      : TextFormField(
+                          controller: _quantityController,
+                          textAlign: TextAlign.center,
+                          keyboardType: const TextInputType.numberWithOptions(
+                              decimal: true),
+                          inputFormatters: [
+                            ThousandSeparatorDecimalInputFormatter(),
+                          ],
+                          enabled: !widget.isViewOnly,
+                          onChanged: _updateQuantity,
+                          focusNode: _quantityFocusNode,
+                          onFieldSubmitted: (val) {
+                            // عند الضغط على Enter في حقل العدد
+                            // اختر أصغر وحدة تلقائياً وانتقل للسعر
+                            _selectDefaultSaleTypeAndMoveToPrice();
+                          },
+                          style: Theme.of(context).textTheme.bodyMedium,
+                          decoration: const InputDecoration(
+                            border: InputBorder.none,
+                            contentPadding:
+                                EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                            isDense: true,
+                          ),
                         ),
-                      ),
+                ),
               ),
             ),
+            // عمود نوع البيع
+            Expanded(
+              flex: 2,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                child: _buildSquareInputField(
+                  child: widget.isViewOnly
+                      ? Text(
+                          displayItem.saleType ?? '',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        )
+                      : Focus(
+                          onKeyEvent: (node, event) {
+                            // عند الضغط على Enter في قائمة نوع البيع
+                            if (event.logicalKey.keyLabel == 'Enter') {
+                              _selectDefaultSaleTypeAndMoveToPrice();
+                              return KeyEventResult.handled;
+                            }
+                            return KeyEventResult.ignored;
+                          },
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              value: _currentItem.saleType,
+                              items: _getUnitOptions(),
+                              onChanged: widget.isViewOnly
+                                  ? null
+                                  : (value) => _updateSaleType(value!),
+                              isExpanded: true,
+                              alignment: AlignmentDirectional.center,
+                              style: Theme.of(context).textTheme.bodyMedium,
+                              itemHeight: 48,
+                              autofocus: _openSaleTypeDropdown,
+                              focusNode: _saleTypeFocusNode,
+                              onTap: () {
+                                setState(() {
+                                  _openSaleTypeDropdown = false;
+                                });
+                              },
+                            ),
+                          ),
+                        ),
+                ),
+              ),
+            ),
+            // عمود السعر
+            Expanded(
+              flex: 2,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                child: _buildSquareInputField(
+                  child: widget.isViewOnly
+                      ? Text(
+                          NumberFormat('#,##0.##', 'en_US').format(displayItem.appliedPrice),
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        )
+                      : TextFormField(
+                          controller: _priceController,
+                          textAlign: TextAlign.center,
+                          keyboardType: const TextInputType.numberWithOptions(
+                              decimal: true),
+                          inputFormatters: [
+                            ThousandSeparatorDecimalInputFormatter(),
+                          ],
+                          enabled: !widget.isViewOnly,
+                          onChanged: _updatePrice,
+                          focusNode: _priceFocusNode,
+                          onFieldSubmitted: (val) {
+                            // عند الضغط على Enter في حقل السعر، انتقل للصف التالي
+                            widget.onPriceSubmitted?.call();
+                          },
+                          style: Theme.of(context).textTheme.bodyMedium,
+                          decoration: const InputDecoration(
+                            border: InputBorder.none,
+                            contentPadding:
+                                EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                            isDense: true,
+                          ),
+                        ),
+                ),
+              ),
+            ),
+            // عمود عدد الوحدات
             Expanded(
               flex: 2,
               child: widget.isViewOnly
@@ -540,6 +645,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                           textAlign: TextAlign.center,
                           style: Theme.of(context).textTheme.bodyMedium),
             ),
+            // زر الحذف
             if (!widget.isViewOnly && !widget.isPlaceholder)
               SizedBox(
                 width: 40,
@@ -556,5 +662,23 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         ),
       ),
     );
+  }
+
+  // دالة لاختيار نوع البيع الافتراضي (أصغر وحدة) والانتقال للسعر
+  void _selectDefaultSaleTypeAndMoveToPrice() {
+    // الحصول على خيارات الوحدات
+    final options = _getUnitOptions();
+    if (options.isEmpty) return;
+    
+    // اختيار أول وحدة (أصغر وحدة) إذا لم يكن هناك نوع بيع محدد
+    final firstOption = options.first.value;
+    if (firstOption != null && (_currentItem.saleType == null || _currentItem.saleType!.isEmpty)) {
+      _updateSaleType(firstOption);
+    }
+    
+    // الانتقال مباشرة إلى حقل السعر
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _priceFocusNode.requestFocus();
+    });
   }
 }

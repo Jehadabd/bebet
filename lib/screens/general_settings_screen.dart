@@ -45,6 +45,9 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
   // إعدادات نقاط المؤسسين
   double _pointsPerHundredThousand = 1.0;
   final TextEditingController _pointsController = TextEditingController();
+  
+  // إعدادات الفاتورة
+  bool _autoScrollInvoice = true;
 
   @override
   void initState() {
@@ -78,6 +81,9 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
     // تحميل إعدادات نقاط المؤسسين
     _pointsPerHundredThousand = _appSettings.pointsPerHundredThousand;
     _pointsController.text = _pointsPerHundredThousand.toString();
+    
+    // تحميل إعدادات الفاتورة
+    _autoScrollInvoice = _appSettings.autoScrollInvoice;
     
     // تحميل وصف الشركة
     _companyDescriptionController.text = _appSettings.companyDescription;
@@ -121,6 +127,7 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
       noticeColor: _noticeColor.value,
       paidAmountColor: _paidAmountColor.value,
       pointsPerHundredThousand: _pointsPerHundredThousand,
+      autoScrollInvoice: _autoScrollInvoice,
     );
     await SettingsManager.saveAppSettings(_appSettings);
     if (mounted) {
@@ -547,6 +554,32 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
             child: Column(
               children: [
                 _buildColorTile('التنويه', _noticeColor, () => _pickColor('notice')),
+              ],
+            ),
+          ),
+          
+          // 📝 إعدادات الفاتورة
+          _buildSettingsCard(
+            icon: Icons.receipt_long,
+            iconColor: Colors.indigo,
+            title: 'إعدادات الفاتورة',
+            child: Column(
+              children: [
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('التمرير التلقائي مع الفاتورة'),
+                  subtitle: Text(
+                    'عند إضافة عنصر جديد، تتمرر الشاشة تلقائياً لإظهار الصف الجديد والمجاميع',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                  ),
+                  value: _autoScrollInvoice,
+                  activeColor: primaryColor,
+                  onChanged: (value) {
+                    setState(() {
+                      _autoScrollInvoice = value;
+                    });
+                  },
+                ),
               ],
             ),
           ),

@@ -128,6 +128,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
 
   // Profit Display State
   bool _isProfitVisible = false;
+  
+  // التمرير التلقائي
+  final ScrollController _scrollController = ScrollController();
+  bool _autoScrollEnabled = true; // سيتم تحميله من الإعدادات
   double _currentInvoiceProfit = 0.0;
 
   void _calculateProfit() {
@@ -358,11 +362,26 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
       setState(() {
         _installerPointsRate = settings.pointsPerHundredThousand;
         _installerPointsRateController.text = _installerPointsRate.toString();
+        _autoScrollEnabled = settings.autoScrollInvoice;
       });
     } catch (e) {
       print('Error loading default points rate: $e');
       _installerPointsRateController.text = '1.0';
     }
+  }
+  
+  // دالة التمرير التلقائي للأسفل
+  void _scrollToBottom() {
+    if (!_autoScrollEnabled) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
   }
 
   final FocusNode _searchFocusNode = FocusNode(); // FocusNode جديد لحقل البحث
@@ -527,11 +546,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         installerNameController.text = invoiceToManage!.installerName ?? '';
         selectedDate = invoiceToManage!.invoiceDate;
         paymentType = invoiceToManage!.paymentType;
-        _totalAmountController.text = invoiceToManage!.totalAmount.toString();
+        _totalAmountController.text = formatNumber(invoiceToManage!.totalAmount);
         paidAmountController.text =
-            invoiceToManage!.amountPaidOnInvoice.toString();
+            formatNumber(invoiceToManage!.amountPaidOnInvoice);
         discount = invoiceToManage!.discount;
-        discountController.text = discount.toStringAsFixed(2);
+        discountController.text = formatNumber(discount);
         // تهيئة قيمة أجور التحميل من الفاتورة الحالية
         try {
           loadingFeeController.text = formatNumber(invoiceToManage!.loadingFee);
@@ -604,7 +623,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
 
         paymentType = data['paymentType'] ?? 'نقد';
         discount = data['discount'] ?? 0;
-        discountController.text = discount.toStringAsFixed(2);
+        discountController.text = formatNumber(discount);
         paidAmountController.text = data['paidAmount'] ?? '';
 
         invoiceItems = (data['invoiceItems'] as List<dynamic>).map((item) {
@@ -626,7 +645,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
 
         double itemsTotal = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
         final double loadingFee = double.tryParse(loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
-        _totalAmountController.text = (itemsTotal + loadingFee).toStringAsFixed(2);
+        _totalAmountController.text = formatNumber(itemsTotal + loadingFee);
         
         // للفواتير النقدية المعدلة: تحديث المبلغ المدفوع تلقائياً
         if (invoiceToManage != null && paymentType == 'نقد' && !isViewOnly) {
@@ -755,7 +774,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
           invoiceItems = items;
           double itemsTotal = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
           final double loadingFee = double.tryParse(loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
-          _totalAmountController.text = (itemsTotal + loadingFee).toStringAsFixed(2);
+          _totalAmountController.text = formatNumber(itemsTotal + loadingFee);
         });
         
         print('🔍 DEBUG LOAD ITEMS: تم تحميل الأصناف في invoiceItems');
@@ -813,6 +832,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
       _searchFocusNode.dispose();
       loadingFeeController.dispose();
       _productIdController.dispose();
+      _scrollController.dispose(); // تنظيف ScrollController
       // --- تخلص من جميع FocusNodes الخاصة بالصفوف ---
       for (final node in focusNodesList) {
         node.dispose();
@@ -1160,6 +1180,33 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
 
   void _removeInvoiceItemByUid(String uid) {
     try {
+      // 🔒 شرط 1: منع حذف جميع الأصناف عند تعديل فاتورة محفوظة
+      // يجب أن يبقى صنف واحد على الأقل
+      final completeItems = invoiceItems.where((item) => 
+        item.productName.isNotEmpty && item.itemTotal > 0
+      ).toList();
+      
+      if (invoiceToManage != null && completeItems.length <= 1) {
+        // تحقق إذا كان الصنف المراد حذفه هو الصنف الوحيد المكتمل
+        final itemToRemove = invoiceItems.firstWhere(
+          (it) => it.uniqueId == uid,
+          orElse: () => InvoiceItem(
+            invoiceId: 0, productName: '', unit: '', unitPrice: 0,
+            appliedPrice: 0, itemTotal: 0, uniqueId: '',
+          ),
+        );
+        if (itemToRemove.productName.isNotEmpty && itemToRemove.itemTotal > 0) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('⚠️ لا يمكن حذف جميع الأصناف! يجب أن يبقى صنف واحد على الأقل'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 3),
+            ),
+          );
+          return;
+        }
+      }
+      
       // تحديد أن هناك تغييرات غير محفوظة
       if (invoiceToManage != null && !isViewOnly) {
         hasUnsavedChanges = true;
@@ -2652,15 +2699,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
               : 'إنشاء فاتورة'),
           centerTitle: true,
           actions: [
-            // زر جديد لإعادة التعيين
-            IconButton(
-              icon: const Icon(Icons.receipt),
-              tooltip: 'فاتورة جديدة',
-              onPressed: invoiceItems.isNotEmpty ||
-                      customerNameController.text.isNotEmpty
-                  ? _resetInvoice
-                  : null,
-            ),
+            // زر جديد لإعادة التعيين - يظهر فقط عند إنشاء فاتورة جديدة (ليس عند التعديل)
+            if (invoiceToManage == null)
+              IconButton(
+                icon: const Icon(Icons.receipt),
+                tooltip: 'فاتورة جديدة',
+                onPressed: invoiceItems.isNotEmpty ||
+                        customerNameController.text.isNotEmpty
+                    ? _resetInvoice
+                    : null,
+              ),
             // زر الطباعة الموجود
             IconButton(
               icon: const Icon(Icons.print),
@@ -2743,6 +2791,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
           child: Form(
             key: formKey,
             child: ListView(
+              controller: _scrollController,
               children: <Widget>[
                 ListTile(
                   title: const Text('تاريخ الفاتورة'),
@@ -3419,65 +3468,80 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8.0),
-                Column(
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                            flex: 1,
-                            child: Center(
-                                child: Text('ت',
-                                    style: TextStyle(
-                                        fontWeight: FontWeight.bold)))),
-                        Expanded(
-                            flex: 2,
-                            child: Center(
-                                child: Text('المبلغ',
-                                    style: TextStyle(
-                                        fontWeight: FontWeight.bold)))),
-                        Expanded(
-                            flex: 2,
-                            child: Center(
-                                child: Text('ID',
-                                    style: TextStyle(
-                                        fontWeight: FontWeight.bold)))),
-                        Expanded(
-                            flex: 3,
-                            child: Center(
-                                child: Text('التفاصيل',
-                                    style: TextStyle(
-                                        fontWeight: FontWeight.bold)))),
-                        Expanded(
-                            flex: 2,
-                            child: Center(
-                                child: Text('العدد',
-                                    style: TextStyle(
-                                        fontWeight: FontWeight.bold)))),
-                        Expanded(
-                            flex: 2,
-                            child: Center(
-                                child: Text('نوع البيع',
-                                    style: TextStyle(
-                                        fontWeight: FontWeight.bold)))),
-                        Expanded(
-                            flex: 2,
-                            child: Center(
-                                child: Text('السعر',
-                                    style: TextStyle(
-                                        fontWeight: FontWeight.bold)))),
-                        Expanded(
-                            flex: 2,
-                            child: Center(
-                                child: Text('عدد الوحدات',
-                                    style: TextStyle(
-                                        fontWeight: FontWeight.bold)))),
-                        SizedBox(width: 40),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    // هنا يأتي ListView.builder كما هو مع نفس توزيع flex للأعمدة
-                    // ... existing ListView.builder code ...
-                  ],
+                Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.grey.shade500, width: 1),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Column(
+                    children: [
+                      // صف العناوين
+                      Container(
+                        padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 8.0),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade100,
+                          borderRadius: const BorderRadius.only(
+                            topLeft: Radius.circular(3),
+                            topRight: Radius.circular(3),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                                flex: 1,
+                                child: Center(
+                                    child: Text('ت',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.bold)))),
+                            Expanded(
+                                flex: 2,
+                                child: Center(
+                                    child: Text('المبلغ',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.bold)))),
+                            Expanded(
+                                flex: 2,
+                                child: Center(
+                                    child: Text('ID',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.bold)))),
+                            Expanded(
+                                flex: 3,
+                                child: Center(
+                                    child: Text('التفاصيل',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.bold)))),
+                            Expanded(
+                                flex: 2,
+                                child: Center(
+                                    child: Text('العدد',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.bold)))),
+                            Expanded(
+                                flex: 2,
+                                child: Center(
+                                    child: Text('نوع البيع',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.bold)))),
+                            Expanded(
+                                flex: 2,
+                                child: Center(
+                                    child: Text('السعر',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.bold)))),
+                            Expanded(
+                                flex: 2,
+                                child: Center(
+                                    child: Text('عدد الوحدات',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.bold)))),
+                            // مساحة للأيقونات (80) + زر الحذف (40) = 120
+                            SizedBox(width: 120),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
                 ListView.builder(
                   shrinkWrap: true,
@@ -3547,6 +3611,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                             ));
                             focusNodesList.add(LineItemFocusNodes());
                           });
+                          // التمرير التلقائي للأسفل عند إضافة صف جديد
+                          _scrollToBottom();
                         }
                         
                         // انتقل إلى حقل التفاصيل في الصف التالي بعد تأخير قصير للسماح ببناء الـ widget
@@ -4018,7 +4084,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                        setState(() {
                          final itemsTotal = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
                          final double loadingFee = double.tryParse(val.replaceAll(',', '')) ?? 0.0;
-                         _totalAmountController.text = (itemsTotal + loadingFee).toStringAsFixed(2);
+                         _totalAmountController.text = formatNumber(itemsTotal + loadingFee);
                          _guardDiscount();
                          _updatePaidAmountIfCash();
                          _calculateProfit(); // Update profit on loading fee change
@@ -4557,23 +4623,35 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   }
 
   // دالة لفتح قائمة نوع البيع برمجياً مع دعم التنقل بالكيبورد
+  // 🔧 تحسين: فتح القائمة مع التركيز على أول خيار، Enter يختار ذلك الخيار
   Future<void> _showSaleTypeMenu() async {
-    final RenderBox? renderBox = _saleTypeKey.currentContext?.findRenderObject() as RenderBox?;
+    final RenderBox? renderBox =
+        _saleTypeKey.currentContext?.findRenderObject() as RenderBox?;
     if (renderBox == null) return;
-    
+
     final Offset offset = renderBox.localToGlobal(Offset.zero);
     final Size size = renderBox.size;
-    
+
     // الحصول على خيارات نوع البيع
     final options = _getUnitOptionsStrings();
     if (options.isEmpty) return;
-    
-    // إذا كان هناك خيار واحد فقط، اختره مباشرة
+
+    // إذا كان هناك خيار واحد فقط، اختره مباشرة وانتقل للسعر
     if (options.length == 1) {
       _updateSaleType(options.first);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _priceFocusNode.requestFocus();
+      });
       return;
     }
-    
+
+    // تعيين أول خيار كقيمة افتراضية قبل فتح القائمة
+    // هذا يجعل الضغط على Enter يختار أول خيار مباشرة
+    if (_currentItem.saleType == null || _currentItem.saleType!.isEmpty) {
+      _updateSaleType(options.first);
+    }
+
+    // فتح القائمة المنبثقة مع دعم التنقل بالكيبورد
     final String? selected = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(
@@ -4582,20 +4660,40 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         offset.dx + size.width,
         offset.dy + size.height + 200,
       ),
-      items: options.map((option) => PopupMenuItem<String>(
-        value: option,
-        height: 40,
-        child: Center(child: Text(option, textAlign: TextAlign.center)),
-      )).toList(),
+      items: options.asMap().entries.map((entry) {
+        final index = entry.key;
+        final option = entry.value;
+        return PopupMenuItem<String>(
+          value: option,
+          height: 40,
+          // أول عنصر يكون محدد افتراضياً
+          child: Container(
+            color: index == 0 ? Colors.blue.shade50 : null,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Center(
+              child: Text(
+                option,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontWeight: index == 0 ? FontWeight.bold : FontWeight.normal,
+                ),
+              ),
+            ),
+          ),
+        );
+      }).toList(),
       elevation: 8,
+      initialValue: options.first, // تحديد أول خيار كقيمة أولية
     );
-    
+
     if (selected != null) {
       _updateSaleType(selected);
-    } else {
-      // إذا أغلق المستخدم القائمة بدون اختيار، انتقل إلى حقل السعر
-      _priceFocusNode.requestFocus();
     }
+    
+    // الانتقال إلى حقل السعر بعد الاختيار أو الإغلاق
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _priceFocusNode.requestFocus();
+    });
   }
   
   // دالة مساعدة للحصول على خيارات نوع البيع كـ List<String>
@@ -4861,7 +4959,8 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   }
   @override
   Widget build(BuildContext context) {
-    final Color gridBorderColor = Colors.grey.shade300;
+    // لون الخطوط الفاصلة بين الأعمدة - أغمق للوضوح
+    final Color gridBorderColor = Colors.grey.shade500;
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -4969,12 +5068,23 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                       focusNode: focusNode,
                       textAlign: TextAlign.center,
                       keyboardType: const TextInputType.numberWithOptions(signed: false, decimal: false),
-                      decoration: const InputDecoration(
-                        border: InputBorder.none,
+                      decoration: InputDecoration(
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(4),
+                          borderSide: BorderSide(color: Colors.grey.shade400, width: 1),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(4),
+                          borderSide: BorderSide(color: Colors.grey.shade400, width: 1),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(4),
+                          borderSide: BorderSide(color: Colors.blue.shade400, width: 1.5),
+                        ),
                         isDense: true,
                         filled: true,
-                        fillColor: Color(0xFFF3F3F3),
-                        contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                        fillColor: const Color(0xFFF5F5F5),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
                       ),
                       onFieldSubmitted: (val) async {
                         final id = int.tryParse(val.trim());
@@ -5041,12 +5151,23 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                             controller: controller,
                             focusNode: focusNode,
                             enabled: !widget.isViewOnly,
-                            decoration: const InputDecoration(
-                              border: InputBorder.none,
-                              contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                            decoration: InputDecoration(
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(4),
+                                borderSide: BorderSide(color: Colors.grey.shade400, width: 1),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(4),
+                                borderSide: BorderSide(color: Colors.grey.shade400, width: 1),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(4),
+                                borderSide: BorderSide(color: Colors.blue.shade400, width: 1.5),
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
                               isDense: true,
                               filled: true,
-                              fillColor: Color(0xFFF3F3F3),
+                              fillColor: const Color(0xFFF5F5F5),
                             ),
                             style: Theme.of(context).textTheme.bodyMedium,
                             onChanged: (val) {
@@ -5067,32 +5188,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                               elevation: 4.0,
                               borderRadius: BorderRadius.circular(8),
                               child: ConstrainedBox(
-                                constraints: const BoxConstraints(maxHeight: 200, maxWidth: 300),
-                                child: ListView.builder(
-                                  padding: EdgeInsets.zero,
-                                  shrinkWrap: true,
-                                  itemCount: options.length,
-                                  itemBuilder: (context, index) {
-                                    final option = options.elementAt(index);
-                                    // تتبع العنصر المحدد حالياً باستخدام AutocompleteHighlightedOption
-                                    final bool isHighlighted = AutocompleteHighlightedOption.of(context) == index;
-                                    return Container(
-                                      color: isHighlighted ? Colors.blue.shade100 : null,
-                                      child: ListTile(
-                                        dense: true,
-                                        title: Text(
-                                          option,
-                                          style: TextStyle(
-                                            color: isHighlighted ? Colors.blue.shade900 : null,
-                                            fontWeight: isHighlighted ? FontWeight.bold : null,
-                                          ),
-                                        ),
-                                        selected: isHighlighted,
-                                        selectedTileColor: Colors.blue.shade100,
-                                        onTap: () => onSelected(option),
-                                      ),
-                                    );
-                                  },
+                                constraints: const BoxConstraints(maxHeight: 250, maxWidth: 350),
+                                child: _AutoScrollListView(
+                                  options: options.toList(),
+                                  onSelected: onSelected,
                                 ),
                               ),
                             ),
@@ -5145,12 +5244,23 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                           _showSaleTypeMenu();
                         },
                         style: Theme.of(context).textTheme.bodyMedium,
-                        decoration: const InputDecoration(
-                          border: InputBorder.none,
-                          contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(4),
+                            borderSide: BorderSide(color: Colors.grey.shade400, width: 1),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(4),
+                            borderSide: BorderSide(color: Colors.grey.shade400, width: 1),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(4),
+                            borderSide: BorderSide(color: Colors.blue.shade400, width: 1.5),
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
                           isDense: true,
                           filled: true,
-                          fillColor: Color(0xFFF3F3F3),
+                          fillColor: const Color(0xFFF5F5F5),
                         ),
                       ),
               ),
@@ -5165,29 +5275,45 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 ),
                 padding: const EdgeInsets.symmetric(horizontal: 4.0),
                 child: widget.isViewOnly
-                    ? Text(
-                        widget.item.saleType ?? '',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      )
-                    : DropdownButtonHideUnderline(
-                        child: DropdownButton<String>(
-                          value: _currentItem.saleType,
-                          items: _getUnitOptions(),
-                          onChanged: widget.isViewOnly
-                              ? null
-                              : (value) => _updateSaleType(value!),
-                          isExpanded: true,
-                          alignment: AlignmentDirectional.center,
+                    ? Container(
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey.shade400, width: 1),
+                          borderRadius: BorderRadius.circular(4),
+                          color: const Color(0xFFF5F5F5),
+                        ),
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                        child: Text(
+                          widget.item.saleType ?? '',
+                          textAlign: TextAlign.center,
                           style: Theme.of(context).textTheme.bodyMedium,
-                          itemHeight: 48,
-                          autofocus: _openSaleTypeDropdown,
-                          focusNode: _saleTypeFocusNode,
-                          onTap: () {
-                            setState(() {
-                              _openSaleTypeDropdown = false;
-                            });
-                          },
+                        ),
+                      )
+                    : Container(
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey.shade400, width: 1),
+                          borderRadius: BorderRadius.circular(4),
+                          color: const Color(0xFFF5F5F5),
+                        ),
+                        padding: const EdgeInsets.symmetric(horizontal: 2),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<String>(
+                            value: _currentItem.saleType,
+                            items: _getUnitOptions(),
+                            onChanged: widget.isViewOnly
+                                ? null
+                                : (value) => _updateSaleType(value!),
+                            isExpanded: true,
+                            alignment: AlignmentDirectional.center,
+                            style: Theme.of(context).textTheme.bodyMedium,
+                            itemHeight: 48,
+                            autofocus: _openSaleTypeDropdown,
+                            focusNode: _saleTypeFocusNode,
+                            onTap: () {
+                              setState(() {
+                                _openSaleTypeDropdown = false;
+                              });
+                            },
+                          ),
                         ),
                       ),
               ),
@@ -5225,12 +5351,23 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                           }
                         },
                         style: Theme.of(context).textTheme.bodyMedium,
-                        decoration: const InputDecoration(
-                          border: InputBorder.none,
-                          contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(4),
+                            borderSide: BorderSide(color: Colors.grey.shade400, width: 1),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(4),
+                            borderSide: BorderSide(color: Colors.grey.shade400, width: 1),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(4),
+                            borderSide: BorderSide(color: Colors.blue.shade400, width: 1.5),
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
                           isDense: true,
                           filled: true,
-                          fillColor: Color(0xFFF3F3F3),
+                          fillColor: const Color(0xFFF5F5F5),
                         ),
                       ),
               ),
@@ -5337,5 +5474,96 @@ class LineItemFocusNodes {
     details.dispose();
     quantity.dispose();
     price.dispose();
+  }
+}
+
+// Widget مساعد للتمرير التلقائي في قائمة الاقتراحات
+class _AutoScrollListView extends StatefulWidget {
+  final List<String> options;
+  final void Function(String) onSelected;
+
+  const _AutoScrollListView({
+    required this.options,
+    required this.onSelected,
+  });
+
+  @override
+  State<_AutoScrollListView> createState() => _AutoScrollListViewState();
+}
+
+class _AutoScrollListViewState extends State<_AutoScrollListView> {
+  final ScrollController _scrollController = ScrollController();
+  static const double _itemHeight = 48.0;
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _scrollToHighlighted(int highlightedIndex) {
+    if (!_scrollController.hasClients) return;
+    
+    final double targetOffset = highlightedIndex * _itemHeight;
+    final double viewportHeight = _scrollController.position.viewportDimension;
+    final double currentOffset = _scrollController.offset;
+    
+    // إذا كان العنصر المحدد خارج نطاق الرؤية، قم بالتمرير إليه
+    if (targetOffset < currentOffset) {
+      // العنصر فوق نطاق الرؤية
+      _scrollController.animateTo(
+        targetOffset,
+        duration: const Duration(milliseconds: 100),
+        curve: Curves.easeOut,
+      );
+    } else if (targetOffset + _itemHeight > currentOffset + viewportHeight) {
+      // العنصر تحت نطاق الرؤية
+      _scrollController.animateTo(
+        targetOffset + _itemHeight - viewportHeight,
+        duration: const Duration(milliseconds: 100),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView.builder(
+      controller: _scrollController,
+      padding: EdgeInsets.zero,
+      shrinkWrap: true,
+      itemCount: widget.options.length,
+      itemExtent: _itemHeight,
+      itemBuilder: (context, index) {
+        final option = widget.options[index];
+        // تتبع العنصر المحدد حالياً
+        final int highlightedIndex = AutocompleteHighlightedOption.of(context);
+        final bool isHighlighted = highlightedIndex == index;
+        
+        // التمرير التلقائي للعنصر المحدد
+        if (isHighlighted) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _scrollToHighlighted(highlightedIndex);
+          });
+        }
+        
+        return Container(
+          color: isHighlighted ? Colors.blue.shade100 : null,
+          child: ListTile(
+            dense: true,
+            title: Text(
+              option,
+              style: TextStyle(
+                color: isHighlighted ? Colors.blue.shade900 : null,
+                fontWeight: isHighlighted ? FontWeight.bold : null,
+              ),
+            ),
+            selected: isHighlighted,
+            selectedTileColor: Colors.blue.shade100,
+            onTap: () => widget.onSelected(option),
+          ),
+        );
+      },
+    );
   }
 }

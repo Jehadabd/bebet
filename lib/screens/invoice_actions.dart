@@ -162,9 +162,121 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
       return _ValidationResult(isValid: false, errorMessage: 'المبلغ المدفوع لا يمكن أن يتجاوز الإجمالي');
     }
     
+    // 🔒 شرط جديد: منع تقليل إجمالي الفاتورة عن المبلغ المسدد الجديد
+    // عند تعديل فاتورة محفوظة، لا يمكن أن يصبح الإجمالي أقل من المبلغ المسدد (الجديد الذي أدخله المستخدم)
+    if (invoiceToManage != null && invoiceToManage!.id != null) {
+      // نستخدم المبلغ المسدد الجديد (paid) وليس الأصلي
+      if (finalTotal < paid - 0.01) {
+        return _ValidationResult(
+          isValid: false, 
+          errorMessage: 'لا يمكن أن يكون إجمالي الفاتورة (${finalTotal.toStringAsFixed(0)}) أقل من المبلغ المسدد (${paid.toStringAsFixed(0)}). يرجى تقليل المبلغ المسدد أولاً.',
+        );
+      }
+    }
+    
+    // 🔒 ملاحظة: التحقق من الرصيد السالب يتم في _validateDebtChangeWontCauseNegativeBalance
+    
     // 6. التحقق من نوع الدفع
     if (paymentType == 'نقد' && (paid - finalTotal).abs() > 0.01) {
       return _ValidationResult(isValid: false, errorMessage: 'في حالة الدفع النقدي، يجب أن يساوي المبلغ المدفوع الإجمالي');
+    }
+    
+    return _ValidationResult(isValid: true);
+  }
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔒 تحسين الأمان: التحقق من أن تعديل الفاتورة لن يسبب رصيد سالب للعميل
+  // ═══════════════════════════════════════════════════════════════════════════
+  Future<_ValidationResult> _validateDebtChangeWontCauseNegativeBalance() async {
+    // هذا التحقق فقط للفواتير المحفوظة (تعديل فاتورة موجودة)
+    if (invoiceToManage == null || invoiceToManage!.id == null) {
+      return _ValidationResult(isValid: true);
+    }
+    
+    final oldInvoice = widget.existingInvoice;
+    if (oldInvoice == null) {
+      return _ValidationResult(isValid: true);
+    }
+    
+    // فقط للفواتير التي كانت بالدين
+    if (oldInvoice.paymentType != 'دين') {
+      return _ValidationResult(isValid: true);
+    }
+    
+    // جلب رصيد العميل القديم
+    final oldCustomerId = oldInvoice.customerId;
+    if (oldCustomerId == null) {
+      return _ValidationResult(isValid: true);
+    }
+    
+    final dbService = DatabaseService();
+    final oldCustomer = await dbService.getCustomerById(oldCustomerId);
+    if (oldCustomer == null) {
+      return _ValidationResult(isValid: true);
+    }
+    
+    final currentCustomerDebt = oldCustomer.currentTotalDebt;
+    
+    // حساب الدين القديم
+    final oldRemaining = oldInvoice.totalAmount - oldInvoice.amountPaidOnInvoice;
+    
+    // حساب الإجمالي الجديد
+    final completeItems = invoiceItems.where(_isInvoiceItemComplete).toList();
+    double calculatedTotal = completeItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+    final loadingFee = double.tryParse(loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
+    final newTotal = (calculatedTotal + loadingFee) - discount;
+    final newPaid = double.tryParse(paidAmountController.text.replaceAll(',', '')) ?? 0.0;
+    
+    // التحقق من تغيير اسم العميل (عميل جديد)
+    final newCustomerName = customerNameController.text.trim();
+    final oldCustomerName = oldInvoice.customerName?.trim() ?? '';
+    final isCustomerChanged = newCustomerName.replaceAll(' ', '').toLowerCase() != 
+                              oldCustomerName.replaceAll(' ', '').toLowerCase();
+    
+    double debtChange = 0.0;
+    
+    // حالة 1: تحويل من دين إلى نقد
+    if (paymentType == 'نقد') {
+      debtChange = -oldRemaining; // سيُخصم كل الدين القديم
+    }
+    // حالة 2: تغيير العميل في فاتورة دين
+    else if (paymentType == 'دين' && isCustomerChanged) {
+      debtChange = -oldRemaining; // سيُخصم كل الدين القديم من العميل القديم
+    }
+    // حالة 3: تعديل فاتورة دين (نفس العميل ونفس نوع الدفع)
+    else if (paymentType == 'دين') {
+      final newRemaining = newTotal - newPaid;
+      debtChange = newRemaining - oldRemaining;
+    }
+    
+    // التحقق: هل سيصبح رصيد العميل القديم سالباً؟
+    final expectedNewBalance = currentCustomerDebt + debtChange;
+    
+    if (expectedNewBalance < -0.01) {
+      final debtToDeduct = (-debtChange).toStringAsFixed(0);
+      String reason = '';
+      String solution = '';
+      
+      if (isCustomerChanged) {
+        reason = 'تم تغيير اسم العميل، وسيُخصم الدين من العميل القديم "${oldCustomer.name}".';
+        solution = 'تأكد من أن العميل القديم لديه رصيد كافٍ، أو عدّل المعاملات أولاً.';
+      } else if (paymentType == 'نقد') {
+        reason = 'تم تحويل الفاتورة من دين إلى نقد.';
+        solution = 'راجع معاملات العميل أو أبقِ الفاتورة بالدين.';
+      } else {
+        reason = 'تم تسديد جزء من هذه الفاتورة من سجل الديون.';
+        solution = 'راجع معاملات العميل أو عدّل المبلغ المسدد.';
+      }
+      
+      return _ValidationResult(
+        isValid: false,
+        errorMessage: 'لا يمكن إتمام هذا التعديل!\n\n'
+            'رصيد العميل "${oldCustomer.name}" الحالي: ${currentCustomerDebt.toStringAsFixed(0)}\n'
+            'المبلغ الذي سيُخصم: $debtToDeduct\n'
+            'الرصيد المتوقع: ${expectedNewBalance.toStringAsFixed(0)} (سالب!)\n\n'
+            'السبب: $reason\n'
+            'الحل: $solution',
+      );
     }
     
     return _ValidationResult(isValid: true);
@@ -379,6 +491,30 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           content: Text('خطأ في البيانات: ${preValidation.errorMessage}'),
           backgroundColor: Colors.red,
         ));
+        setState(() => isSaving = false);
+        return null;
+      }
+      
+      // ═══════════════════════════════════════════════════════════════════════════
+      // 🔒 تحسين الأمان: التحقق من أن التعديل لن يسبب رصيد سالب للعميل
+      // ═══════════════════════════════════════════════════════════════════════════
+      final debtValidation = await _validateDebtChangeWontCauseNegativeBalance();
+      if (!debtValidation.isValid) {
+        if (mounted) {
+          showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('⚠️ تحذير مالي', style: TextStyle(color: Colors.red)),
+              content: Text(debtValidation.errorMessage ?? 'خطأ في التحقق من الرصيد'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('حسناً'),
+                ),
+              ],
+            ),
+          );
+        }
         setState(() => isSaving = false);
         return null;
       }

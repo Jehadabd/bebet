@@ -7,6 +7,30 @@ import '../models/transaction.dart';
 import '../services/drive_service.dart';
 
 class InvoicePaymentService {
+  // دالة تنسيق الأرقام مع فواصل كل ثلاث خانات
+  static String _formatNumber(num value) {
+    // إزالة الأصفار الزائدة بعد الفاصلة العشرية
+    if (value == value.toInt()) {
+      return value.toInt().toString().replaceAllMapped(
+        RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+        (Match m) => '${m[1]},',
+      );
+    }
+    String formatted = value.toStringAsFixed(2);
+    // إزالة الأصفار الزائدة
+    if (formatted.contains('.')) {
+      formatted = formatted.replaceAll(RegExp(r'0+$'), '');
+      formatted = formatted.replaceAll(RegExp(r'\.$'), '');
+    }
+    // إضافة الفواصل
+    final parts = formatted.split('.');
+    parts[0] = parts[0].replaceAllMapped(
+      RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+      (Match m) => '${m[1]},',
+    );
+    return parts.join('.');
+  }
+
   // دالة لإعادة حساب المجاميع
   static void recalculateTotals(
       List<InvoiceItem> invoiceItems,
@@ -16,9 +40,9 @@ class InvoicePaymentService {
       TextEditingController paidAmountController,
       void Function(void Function()) setState) {
     double total = invoiceItems.fold(0, (sum, item) => sum + item.itemTotal);
-    totalAmountController.text = total.toStringAsFixed(2);
+    totalAmountController.text = _formatNumber(total);
     if (paymentType == 'نقد') {
-      paidAmountController.text = (total - discount).toStringAsFixed(2);
+      paidAmountController.text = _formatNumber(total - discount);
     }
     setState(() {});
   }
@@ -37,7 +61,7 @@ class InvoicePaymentService {
     double newDiscount = discount;
     if (discount > maxDiscount) {
       newDiscount = maxDiscount > 0 ? maxDiscount : 0.0;
-      discountController.text = newDiscount.toStringAsFixed(2);
+      discountController.text = _formatNumber(newDiscount);
     }
     if (discount < 0) {
       newDiscount = 0.0;
@@ -58,7 +82,7 @@ class InvoicePaymentService {
           invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
       final total = currentTotalAmount - discount;
       paidAmountController.text =
-          total.clamp(0, double.infinity).toStringAsFixed(2);
+          _formatNumber(total.clamp(0, double.infinity));
     }
   }
 

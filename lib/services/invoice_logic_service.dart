@@ -30,6 +30,11 @@ class InvoiceLogicService {
   // لا تستعمل setState أو ScaffoldMessenger هنا
   // فقط منطق الأعمال (Business Logic)
 
+  // دالة تنسيق الأرقام مع فواصل كل ثلاث خانات
+  static String _formatNumber(num value) {
+    return NumberFormat('#,##0.##', 'en_US').format(value);
+  }
+
   // مثال على دالة: (الباقي يتم نقله بنفس الأسلوب)
   static void loadAutoSavedData({
     required bool isViewOnly,
@@ -61,7 +66,7 @@ class InvoiceLogicService {
     }
     setPaymentType(data['paymentType'] ?? 'نقد');
     setDiscount(data['discount'] ?? 0);
-    discountController.text = (data['discount'] ?? 0).toStringAsFixed(2);
+    discountController.text = _formatNumber(data['discount'] ?? 0);
     paidAmountController.text = data['paidAmount'] ?? '';
     final items = (data['invoiceItems'] as List<dynamic>).map((item) {
       return InvoiceItem(
@@ -79,9 +84,8 @@ class InvoiceLogicService {
       );
     }).toList();
     setInvoiceItems(items);
-    totalAmountController.text = items
-        .fold(0.0, (sum, item) => sum + item.itemTotal)
-        .toStringAsFixed(2);
+    totalAmountController.text = _formatNumber(items
+        .fold(0.0, (sum, item) => sum + item.itemTotal));
   }
 
   // حفظ البيانات تلقائياً
@@ -154,9 +158,9 @@ class InvoiceLogicService {
     required void Function(void Function()) setState,
   }) {
     double total = invoiceItems.fold(0, (sum, item) => sum + item.itemTotal);
-    totalAmountController.text = total.toStringAsFixed(2);
+    totalAmountController.text = _formatNumber(total);
     if (paymentType == 'نقد') {
-      paidAmountController.text = (total - discount).toStringAsFixed(2);
+      paidAmountController.text = _formatNumber(total - discount);
     }
     setState(() {});
   }

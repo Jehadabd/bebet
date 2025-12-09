@@ -5,8 +5,11 @@
 // - النظام يحسب تلقائياً تكلفة الكرتون = تكلفة الباكيت × عدد الباكيتات في الكرتون
 // - وهكذا لكل مستوى في الهيراركي
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
+import '../widgets/formatters.dart';
 import 'dart:convert';
 
 class ProductEntryScreen extends StatefulWidget {
@@ -17,6 +20,12 @@ class ProductEntryScreen extends StatefulWidget {
 }
 
 class _ProductEntryScreenState extends State<ProductEntryScreen> {
+  // دالة تنسيق الأرقام مع فواصل كل ثلاث خانات
+  String _formatNumber(num value) {
+    if (value == 0) return '0';
+    return NumberFormat('#,##0.##', 'en_US').format(value);
+  }
+  
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
   String _selectedUnit = 'piece'; // Default unit
@@ -88,7 +97,7 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
   void _calculateUnitCosts() {
     if (_costPriceController.text.trim().isEmpty) return;
     
-    final baseCost = double.tryParse(_costPriceController.text.trim());
+    final baseCost = double.tryParse(_costPriceController.text.trim().replaceAll(',', ''));
     if (baseCost == null) return;
 
     double currentCost = baseCost;
@@ -102,7 +111,7 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
           // تحديث المتحكم مع التكلفة المحسوبة
           final controller = _unitCostControllers[item['unit_name']];
           if (controller != null) {
-            controller.text = currentCost.toStringAsFixed(2);
+            controller.text = _formatNumber(currentCost);
           }
         }
       }
@@ -114,13 +123,13 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
     
     // إضافة تكلفة الوحدة الأساسية
     if (_costPriceController.text.trim().isNotEmpty) {
-      unitCostsMap['قطعة'] = double.tryParse(_costPriceController.text.trim()) ?? 0.0;
+      unitCostsMap['قطعة'] = double.tryParse(_costPriceController.text.trim().replaceAll(',', '')) ?? 0.0;
     }
 
     // إضافة تكلفة الوحدات الإضافية (المحسوبة تلقائياً)
     for (var entry in _unitCostControllers.entries) {
       if (entry.key != 'قطعة' && entry.value.text.trim().isNotEmpty) {
-        unitCostsMap[entry.key] = double.tryParse(entry.value.text.trim()) ?? 0.0;
+        unitCostsMap[entry.key] = double.tryParse(entry.value.text.trim().replaceAll(',', '')) ?? 0.0;
       }
     }
 
@@ -302,31 +311,34 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
         return;
       }
       
+      // دالة مساعدة لإزالة الفواصل
+      String removeCommas(String text) => text.replaceAll(',', '');
+      
       final newProduct = Product(
         name: inputName,
         unit: _selectedUnit,
-        unitPrice: double.tryParse(_unitPriceController.text.trim()) ?? 0.0,
-        costPrice: double.tryParse(_costPriceController.text.trim()),
+        unitPrice: double.tryParse(removeCommas(_unitPriceController.text.trim())) ?? 0.0,
+        costPrice: double.tryParse(removeCommas(_costPriceController.text.trim())),
         piecesPerUnit: _selectedUnit == 'piece' &&
                 _piecesPerUnitController.text.trim().isNotEmpty
             ? int.tryParse(_piecesPerUnitController.text.trim())
             : null,
         lengthPerUnit: _selectedUnit == 'meter' &&
                 _lengthPerUnitController.text.trim().isNotEmpty
-            ? double.tryParse(_lengthPerUnitController.text.trim())
+            ? double.tryParse(removeCommas(_lengthPerUnitController.text.trim()))
             : null,
-        price1: double.tryParse(_price1Controller.text.trim()) ?? 0.0,
+        price1: double.tryParse(removeCommas(_price1Controller.text.trim())) ?? 0.0,
         price2: _price2Controller.text.trim().isNotEmpty
-            ? double.tryParse(_price2Controller.text.trim())
+            ? double.tryParse(removeCommas(_price2Controller.text.trim()))
             : null,
         price3: _price3Controller.text.trim().isNotEmpty
-            ? double.tryParse(_price3Controller.text.trim())
+            ? double.tryParse(removeCommas(_price3Controller.text.trim()))
             : null,
         price4: _price4Controller.text.trim().isNotEmpty
-            ? double.tryParse(_price4Controller.text.trim())
+            ? double.tryParse(removeCommas(_price4Controller.text.trim()))
             : null,
         price5: _price5Controller.text.trim().isNotEmpty
-            ? double.tryParse(_price5Controller.text.trim())
+            ? double.tryParse(removeCommas(_price5Controller.text.trim()))
             : null,
         createdAt: DateTime.now(),
         lastModifiedAt: DateTime.now(),
@@ -554,11 +566,14 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                       const InputDecoration(labelText: 'سعر التكلفة للوحدة'),
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
+                  inputFormatters: [
+                    ThousandSeparatorDecimalInputFormatter(),
+                  ],
                   validator: (value) {
                     if (value == null || value.isEmpty) {
                       return null; // سعر التكلفة اختياري حسب الفاليجاتور الأصلي
                     }
-                    if (double.tryParse(value) == null) {
+                    if (double.tryParse(value.replaceAll(',', '')) == null) {
                       return 'الرجاء إدخال رقم صحيح';
                     }
                     return null;
@@ -838,12 +853,15 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                       const InputDecoration(labelText: 'سعر 1 (المفرد)'),
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
+                  inputFormatters: [
+                    ThousandSeparatorDecimalInputFormatter(),
+                  ],
                   onChanged: (_) => _checkDuplicatePrices('price1'),
                   validator: (value) {
                     if (value == null || value.isEmpty) {
                       return 'الرجاء إدخال السعر الأول';
                     }
-                    if (double.tryParse(value) == null) {
+                    if (double.tryParse(value.replaceAll(',', '')) == null) {
                       return 'الرجاء إدخال رقم صحيح';
                     }
                     return null;
@@ -856,11 +874,14 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                       const InputDecoration(labelText: 'سعر 2 (الجملة)'),
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
+                  inputFormatters: [
+                    ThousandSeparatorDecimalInputFormatter(),
+                  ],
                   onChanged: (_) => _checkDuplicatePrices('price2'),
                   validator: (value) {
                     if (value != null &&
                         value.isNotEmpty &&
-                        double.tryParse(value) == null) {
+                        double.tryParse(value.replaceAll(',', '')) == null) {
                       return 'الرجاء إدخال رقم صحيح';
                     }
                     return null;
@@ -873,11 +894,14 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                       const InputDecoration(labelText: 'سعر 3 (جملة بيوت)'),
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
+                  inputFormatters: [
+                    ThousandSeparatorDecimalInputFormatter(),
+                  ],
                   onChanged: (_) => _checkDuplicatePrices('price3'),
                   validator: (value) {
                     if (value != null &&
                         value.isNotEmpty &&
-                        double.tryParse(value) == null) {
+                        double.tryParse(value.replaceAll(',', '')) == null) {
                       return 'الرجاء إدخال رقم صحيح';
                     }
                     return null;
@@ -889,11 +913,14 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                   decoration: const InputDecoration(labelText: 'سعر 4 (بيوت)'),
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
+                  inputFormatters: [
+                    ThousandSeparatorDecimalInputFormatter(),
+                  ],
                   onChanged: (_) => _checkDuplicatePrices('price4'),
                   validator: (value) {
                     if (value != null &&
                         value.isNotEmpty &&
-                        double.tryParse(value) == null) {
+                        double.tryParse(value.replaceAll(',', '')) == null) {
                       return 'الرجاء إدخال رقم صحيح';
                     }
                     return null;
@@ -905,11 +932,14 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                   decoration: const InputDecoration(labelText: 'سعر 5 (أخرى)'),
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
+                  inputFormatters: [
+                    ThousandSeparatorDecimalInputFormatter(),
+                  ],
                   onChanged: (_) => _checkDuplicatePrices('price5'),
                   validator: (value) {
                     if (value != null &&
                         value.isNotEmpty &&
-                        double.tryParse(value) == null) {
+                        double.tryParse(value.replaceAll(',', '')) == null) {
                       return 'الرجاء إدخال رقم صحيح';
                     }
                     return null;

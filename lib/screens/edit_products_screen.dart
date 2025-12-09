@@ -2,9 +2,12 @@
 
 // screens/edit_products_screen.dart
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
 import '../services/password_service.dart';
+import '../widgets/formatters.dart';
 import 'dart:convert';
 
 class EditProductsScreen extends StatefulWidget {
@@ -15,6 +18,12 @@ class EditProductsScreen extends StatefulWidget {
 }
 
 class _EditProductsScreenState extends State<EditProductsScreen> {
+  // دالة تنسيق الأرقام مع فواصل كل ثلاث خانات
+  String _formatNumber(num value) {
+    if (value == 0) return '0';
+    return NumberFormat('#,##0.##', 'en_US').format(value);
+  }
+  
   List<Product> _products = [];
   List<Product> _filteredProducts = [];
   bool _loading = true;
@@ -222,7 +231,7 @@ class _EditProductsScreenState extends State<EditProductsScreen> {
                                       product.name,
                                       style: const TextStyle(fontWeight: FontWeight.bold),
                                     ),
-                                    subtitle: Text('الوحدة: ${product.unit} | سعر 1: ${product.price1.toStringAsFixed(2)} | التكلفة: ${product.costPrice != null ? product.costPrice!.toStringAsFixed(2) : '-'}'),
+                                    subtitle: Text('الوحدة: ${product.unit} | سعر 1: ${_formatNumber(product.price1)} | التكلفة: ${product.costPrice != null ? _formatNumber(product.costPrice!) : '-'}'),
                                     trailing: const Icon(Icons.edit),
                                     onTap: () => _editProduct(product),
                                   ),
@@ -247,6 +256,12 @@ class ProductEditScreen extends StatefulWidget {
 }
 
 class _ProductEditScreenState extends State<ProductEditScreen> {
+  // دالة تنسيق الأرقام مع فواصل كل ثلاث خانات
+  String _formatNumber(num value) {
+    if (value == 0) return '0';
+    return NumberFormat('#,##0.##', 'en_US').format(value);
+  }
+  
   late TextEditingController _nameController;
   late TextEditingController _unitPriceController;
   late TextEditingController _price1Controller;
@@ -272,7 +287,7 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
 
   Map<String, double> _computeUnitCostsPreview() {
     final Map<String, double> costs = {};
-    final double baseCost = double.tryParse(_costPriceController.text.trim()) ?? (widget.product.costPrice ?? 0.0);
+    final double baseCost = double.tryParse(_removeCommas(_costPriceController.text.trim())) ?? (widget.product.costPrice ?? 0.0);
     if (baseCost <= 0) return costs;
 
     if (_selectedUnit == 'piece') {
@@ -293,7 +308,7 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
       }
     } else if (_selectedUnit == 'meter') {
       costs['متر'] = baseCost;
-      final double length = double.tryParse(_lengthPerUnitController.text.trim()) ?? (widget.product.lengthPerUnit ?? 0.0);
+      final double length = double.tryParse(_removeCommas(_lengthPerUnitController.text.trim())) ?? (widget.product.lengthPerUnit ?? 0.0);
       if (length > 0) {
         costs['لفة'] = baseCost * length;
       }
@@ -309,19 +324,19 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     super.initState();
     _nameController = TextEditingController(text: widget.product.name);
     _unitPriceController =
-        TextEditingController(text: widget.product.unitPrice.toString());
+        TextEditingController(text: _formatNumber(widget.product.unitPrice));
     _price1Controller =
-        TextEditingController(text: widget.product.price1.toString());
+        TextEditingController(text: _formatNumber(widget.product.price1));
     _price2Controller =
-        TextEditingController(text: widget.product.price2?.toString() ?? '');
+        TextEditingController(text: widget.product.price2 != null ? _formatNumber(widget.product.price2!) : '');
     _price3Controller =
-        TextEditingController(text: widget.product.price3?.toString() ?? '');
+        TextEditingController(text: widget.product.price3 != null ? _formatNumber(widget.product.price3!) : '');
     _price4Controller =
-        TextEditingController(text: widget.product.price4?.toString() ?? '');
+        TextEditingController(text: widget.product.price4 != null ? _formatNumber(widget.product.price4!) : '');
     _price5Controller =
-        TextEditingController(text: widget.product.price5?.toString() ?? '');
+        TextEditingController(text: widget.product.price5 != null ? _formatNumber(widget.product.price5!) : '');
     _costPriceController =
-        TextEditingController(text: widget.product.costPrice?.toString() ?? '');
+        TextEditingController(text: widget.product.costPrice != null ? _formatNumber(widget.product.costPrice!) : '');
     _piecesPerUnitController = TextEditingController(
         text: widget.product.piecesPerUnit?.toString() ?? '');
     _lengthPerUnitController = TextEditingController(
@@ -446,6 +461,11 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     }
   }
 
+  // دالة مساعدة لإزالة الفواصل من النص قبل التحويل لرقم
+  String _removeCommas(String text) {
+    return text.replaceAll(',', '');
+  }
+  
   Future<void> _save() async {
     final db = DatabaseService();
     final inputName = _nameController.text.trim();
@@ -468,7 +488,7 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
             .toList());
         
         // حساب unit_costs تلقائياً
-        final baseCost = double.tryParse(_costPriceController.text.trim()) ?? (widget.product.costPrice ?? 0.0);
+        final baseCost = double.tryParse(_removeCommas(_costPriceController.text.trim())) ?? (widget.product.costPrice ?? 0.0);
         if (baseCost > 0) {
           final Map<String, double> unitCosts = {};
           double currentCost = baseCost;
@@ -490,8 +510,8 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     if (_selectedUnit == 'meter') {
       unitHierarchyJson = null;
       // حساب unit_costs للمنتجات المباعة بالمتر
-      final baseCost = double.tryParse(_costPriceController.text.trim()) ?? (widget.product.costPrice ?? 0.0);
-      final length = double.tryParse(_lengthPerUnitController.text.trim()) ?? (widget.product.lengthPerUnit ?? 0.0);
+      final baseCost = double.tryParse(_removeCommas(_costPriceController.text.trim())) ?? (widget.product.costPrice ?? 0.0);
+      final length = double.tryParse(_removeCommas(_lengthPerUnitController.text.trim())) ?? (widget.product.lengthPerUnit ?? 0.0);
       if (baseCost > 0 && length > 0) {
         unitCostsJson = json.encode({
           'متر': baseCost,
@@ -503,22 +523,22 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     final updatedProduct = widget.product.copyWith(
       name: inputName,
       unit: _selectedUnit,
-      unitPrice: double.tryParse(_unitPriceController.text.trim()) ?? 0.0,
-      price1: double.tryParse(_price1Controller.text.trim()) ?? 0.0,
+      unitPrice: double.tryParse(_removeCommas(_unitPriceController.text.trim())) ?? 0.0,
+      price1: double.tryParse(_removeCommas(_price1Controller.text.trim())) ?? 0.0,
       price2: _price2Controller.text.trim().isNotEmpty
-          ? double.tryParse(_price2Controller.text.trim())
+          ? double.tryParse(_removeCommas(_price2Controller.text.trim()))
           : null,
       price3: _price3Controller.text.trim().isNotEmpty
-          ? double.tryParse(_price3Controller.text.trim())
+          ? double.tryParse(_removeCommas(_price3Controller.text.trim()))
           : null,
       price4: _price4Controller.text.trim().isNotEmpty
-          ? double.tryParse(_price4Controller.text.trim())
+          ? double.tryParse(_removeCommas(_price4Controller.text.trim()))
           : null,
       price5: _price5Controller.text.trim().isNotEmpty
-          ? double.tryParse(_price5Controller.text.trim())
+          ? double.tryParse(_removeCommas(_price5Controller.text.trim()))
           : null,
       costPrice: _showCostPrice && _costPriceController.text.trim().isNotEmpty
-          ? double.tryParse(_costPriceController.text.trim())
+          ? double.tryParse(_removeCommas(_costPriceController.text.trim()))
           : widget.product.costPrice,
       piecesPerUnit: _selectedUnit == 'piece' &&
               _piecesPerUnitController.text.trim().isNotEmpty
@@ -526,7 +546,7 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
           : null,
       lengthPerUnit: _selectedUnit == 'meter' &&
               _lengthPerUnitController.text.trim().isNotEmpty
-          ? double.tryParse(_lengthPerUnitController.text.trim())
+          ? double.tryParse(_removeCommas(_lengthPerUnitController.text.trim()))
           : null,
       lastModifiedAt: DateTime.now(),
       unitHierarchy: unitHierarchyJson,
@@ -741,6 +761,9 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                 decoration: const InputDecoration(labelText: 'سعر التكلفة'),
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [
+                  ThousandSeparatorDecimalInputFormatter(),
+                ],
                 onChanged: (_) => setState(() {}),
               ),
               const SizedBox(height: 16),
@@ -764,7 +787,7 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                         ...preview.entries.map((e) => Row(
                               children: [
                                 Expanded(child: Text('وحدة: ${e.key}')),
-                                Text(e.value.toStringAsFixed(2)),
+                                Text(_formatNumber(e.value)),
                               ],
                             )),
                       ],
@@ -777,6 +800,9 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                 decoration: const InputDecoration(labelText: 'سعر 1 (المفرد)'),
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [
+                  ThousandSeparatorDecimalInputFormatter(),
+                ],
                 onChanged: (_) => _checkDuplicatePrices('price1'),
               ),
               const SizedBox(height: 16),
@@ -785,6 +811,9 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                 decoration: const InputDecoration(labelText: 'سعر 2 (الجملة)'),
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [
+                  ThousandSeparatorDecimalInputFormatter(),
+                ],
                 onChanged: (_) => _checkDuplicatePrices('price2'),
               ),
               const SizedBox(height: 16),
@@ -793,6 +822,9 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                 decoration: const InputDecoration(labelText: 'سعر 3 (جملة بيوت)'),
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [
+                  ThousandSeparatorDecimalInputFormatter(),
+                ],
                 onChanged: (_) => _checkDuplicatePrices('price3'),
               ),
               const SizedBox(height: 16),
@@ -801,6 +833,9 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                 decoration: const InputDecoration(labelText: 'سعر 4 (بيوت)'),
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [
+                  ThousandSeparatorDecimalInputFormatter(),
+                ],
                 onChanged: (_) => _checkDuplicatePrices('price4'),
               ),
               const SizedBox(height: 16),
@@ -809,6 +844,9 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                 decoration: const InputDecoration(labelText: 'سعر 5 (أخرى)'),
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [
+                  ThousandSeparatorDecimalInputFormatter(),
+                ],
                 onChanged: (_) => _checkDuplicatePrices('price5'),
               ),
               const SizedBox(height: 24),

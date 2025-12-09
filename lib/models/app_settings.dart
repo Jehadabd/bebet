@@ -27,6 +27,9 @@ class AppSettings {
   // إعدادات نقاط المؤسسين
   final double pointsPerHundredThousand; // عدد النقاط لكل 100,000
   final bool showPointsConfirmationOnSave; // إظهار رسالة تأكيد النقاط عند الحفظ
+  
+  // إعدادات الفاتورة
+  final bool autoScrollInvoice; // التمرير التلقائي عند إضافة عنصر جديد للفاتورة
 
   AppSettings({
     this.phoneNumbers = const [],
@@ -52,6 +55,7 @@ class AppSettings {
     FontSettings? fontSettings,
     double? pointsPerHundredThousand,
     bool? showPointsConfirmationOnSave,
+    bool? autoScrollInvoice,
   }) : remainingAmountColor = remainingAmountColor ?? Colors.black.value,
        discountColor = discountColor ?? Colors.black.value,
        loadingFeesColor = loadingFeesColor ?? Colors.black.value,
@@ -73,7 +77,8 @@ class AppSettings {
        paidAmountColor = paidAmountColor ?? Colors.black.value,
        fontSettings = fontSettings ?? FontSettings(),
        pointsPerHundredThousand = pointsPerHundredThousand ?? 1.0,
-       showPointsConfirmationOnSave = showPointsConfirmationOnSave ?? false;
+       showPointsConfirmationOnSave = showPointsConfirmationOnSave ?? false,
+       autoScrollInvoice = autoScrollInvoice ?? true;
 
   Map<String, dynamic> toJson() => {
         'phoneNumbers': phoneNumbers,
@@ -99,6 +104,7 @@ class AppSettings {
         'fontSettings': fontSettings.toJson(),
         'pointsPerHundredThousand': pointsPerHundredThousand,
         'showPointsConfirmationOnSave': showPointsConfirmationOnSave,
+        'autoScrollInvoice': autoScrollInvoice,
       };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -125,6 +131,7 @@ class AppSettings {
         fontSettings: FontSettings.fromJson(json['fontSettings'] ?? {}),
         pointsPerHundredThousand: (json['pointsPerHundredThousand'] as num?)?.toDouble() ?? 1.0,
         showPointsConfirmationOnSave: json['showPointsConfirmationOnSave'] ?? false,
+        autoScrollInvoice: json['autoScrollInvoice'] ?? true,
       );
 
   AppSettings copyWith({
@@ -151,6 +158,7 @@ class AppSettings {
     FontSettings? fontSettings,
     double? pointsPerHundredThousand,
     bool? showPointsConfirmationOnSave,
+    bool? autoScrollInvoice,
   }) {
     return AppSettings(
       phoneNumbers: phoneNumbers ?? this.phoneNumbers,
@@ -176,6 +184,7 @@ class AppSettings {
       fontSettings: fontSettings ?? this.fontSettings,
       pointsPerHundredThousand: pointsPerHundredThousand ?? this.pointsPerHundredThousand,
       showPointsConfirmationOnSave: showPointsConfirmationOnSave ?? this.showPointsConfirmationOnSave,
+      autoScrollInvoice: autoScrollInvoice ?? this.autoScrollInvoice,
     );
   }
 }

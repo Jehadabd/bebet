@@ -1,7 +1,12 @@
 // models/invoice_item.dart
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 class InvoiceItem {
+  // دالة تنسيق الأرقام مع فواصل كل ثلاث خانات
+  static String _formatNumber(num value) {
+    return NumberFormat('#,##0.##', 'en_US').format(value);
+  }
   int? id;
   int invoiceId; // Foreign key to Invoice
   int? productId; // Foreign key to Product
@@ -48,24 +53,24 @@ class InvoiceItem {
     String? uniqueId, // أضف هذا
   }) : this.uniqueId =
             uniqueId ?? 'item_${DateTime.now().microsecondsSinceEpoch}' {
-    // Initialize controllers with initial values
+    // Initialize controllers with initial values - مع تنسيق الأرقام بفواصل
     productNameController = TextEditingController(text: productName);
     quantityIndividualController =
-        TextEditingController(text: (quantityIndividual ?? '').toString());
+        TextEditingController(text: quantityIndividual != null ? _formatNumber(quantityIndividual!) : '');
     quantityLargeUnitController =
-        TextEditingController(text: (quantityLargeUnit ?? '').toString());
+        TextEditingController(text: quantityLargeUnit != null ? _formatNumber(quantityLargeUnit!) : '');
     appliedPriceController =
-        TextEditingController(text: appliedPrice.toString());
-    itemTotalController = TextEditingController(text: itemTotal.toString());
+        TextEditingController(text: _formatNumber(appliedPrice));
+    itemTotalController = TextEditingController(text: _formatNumber(itemTotal));
     saleTypeController = TextEditingController(text: saleType ?? '');
   }
 
   void initializeControllers() {
     productNameController.text = productName;
-    quantityIndividualController.text = (quantityIndividual ?? '').toString();
-    quantityLargeUnitController.text = (quantityLargeUnit ?? '').toString();
-    appliedPriceController.text = appliedPrice.toString();
-    itemTotalController.text = itemTotal.toString();
+    quantityIndividualController.text = quantityIndividual != null ? _formatNumber(quantityIndividual!) : '';
+    quantityLargeUnitController.text = quantityLargeUnit != null ? _formatNumber(quantityLargeUnit!) : '';
+    appliedPriceController.text = _formatNumber(appliedPrice);
+    itemTotalController.text = _formatNumber(itemTotal);
     saleTypeController.text = saleType ?? '';
   }
 

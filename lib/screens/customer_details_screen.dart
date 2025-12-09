@@ -644,19 +644,29 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                 );
 
                 if (confirmed == true && mounted) {
-                  await context
-                      .read<AppProvider>()
-                      .deleteCustomer(widget.customer.id!);
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                          content: Text(
-                              'تم حذف العميل ${widget.customer.name} بنجاح!'),
-                          backgroundColor:
-                              Theme.of(context).colorScheme.tertiary),
-                    );
-                    Navigator.pop(
-                        context); // Pop customer details screen after deletion
+                  try {
+                    await context
+                        .read<AppProvider>()
+                        .deleteCustomer(widget.customer.id!);
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                            content: Text(
+                                'تم حذف العميل ${widget.customer.name} بنجاح!'),
+                            backgroundColor:
+                                Theme.of(context).colorScheme.tertiary),
+                      );
+                      Navigator.pop(
+                          context); // Pop customer details screen after deletion
+                    }
+                  } catch (e) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                            content: Text(e.toString().replaceAll('Exception: ', '')),
+                            backgroundColor: Colors.red),
+                      );
+                    }
                   }
                 }
               },
