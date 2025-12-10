@@ -754,20 +754,44 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           final oldPaymentType = oldInvoice.paymentType;
           final oldCustomerId = oldInvoice.customerId;
           final newCustomerId = customer?.id;
-          final oldRemaining = oldInvoice.totalAmount - oldInvoice.amountPaidOnInvoice;
           final newRemaining = totalAmount - paid;
+          
+          // ═══════════════════════════════════════════════════════════════════════
+          // 🔧 إصلاح: جلب الدين الحالي من المعاملات (المصدر الحقيقي للدين)
+          // بدلاً من الاعتماد على widget.existingInvoice الذي قد يكون قديماً
+          // ═══════════════════════════════════════════════════════════════════════
+          double currentDebtFromTx = 0.0;
+          if (oldCustomerId != null) {
+            final txSum = await txn.rawQuery(
+              'SELECT COALESCE(SUM(amount_changed), 0) as total FROM transactions WHERE invoice_id = ?',
+              [invoiceId]
+            );
+            currentDebtFromTx = (txSum.first['total'] as num?)?.toDouble() ?? 0.0;
+            
+            // تحقق إضافي: مقارنة مع الفاتورة المخزنة
+            final dbInvoice = await txn.query('invoices', where: 'id = ?', whereArgs: [invoiceId]);
+            if (dbInvoice.isNotEmpty) {
+              final dbTotal = (dbInvoice.first['total_amount'] as num?)?.toDouble() ?? 0.0;
+              final dbPaid = (dbInvoice.first['paid_amount'] as num?)?.toDouble() ?? 0.0;
+              final expectedDebt = dbTotal - dbPaid;
+              if ((currentDebtFromTx - expectedDebt).abs() > 1) {
+                print('⚠️ تحذير: فرق بين دين المعاملات ($currentDebtFromTx) ودين الفاتورة ($expectedDebt)');
+              }
+            }
+          }
+          print('🔍 DEBUG: الدين الحالي من المعاملات = $currentDebtFromTx');
           
           // ═══════════════════════════════════════════════════════════════════════
           // حالة 1: تغيير من دين إلى نقد - إلغاء الدين القديم
           // ═══════════════════════════════════════════════════════════════════════
           if (oldPaymentType == 'دين' && paymentType == 'نقد' && oldCustomerId != null) {
-            if (oldRemaining > 0.001) {
+            if (currentDebtFromTx.abs() > 0.001) {
               // جلب العميل القديم
               final oldCustomerMaps = await txn.query('customers', where: 'id = ?', whereArgs: [oldCustomerId]);
               if (oldCustomerMaps.isNotEmpty) {
                 final oldCustomer = Customer.fromMap(oldCustomerMaps.first);
                 final balanceBefore = oldCustomer.currentTotalDebt;
-                final balanceAfter = balanceBefore - oldRemaining;
+                final balanceAfter = balanceBefore - currentDebtFromTx;
                 
                 // تحديث رصيد العميل
                 await txn.update('customers', {
@@ -780,7 +804,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                 await txn.insert('transactions', {
                   'customer_id': oldCustomerId,
                   'transaction_date': DateTime.now().toIso8601String(),
-                  'amount_changed': -oldRemaining,
+                  'amount_changed': -currentDebtFromTx,
                   'balance_before_transaction': balanceBefore,
                   'new_balance_after_transaction': balanceAfter,
                   'transaction_type': 'invoice_payment_type_change',
@@ -789,7 +813,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                   'transaction_uuid': txUuid,
                   'created_at': DateTime.now().toIso8601String(),
                 });
-                print('✅ تم إلغاء دين $oldRemaining من العميل $oldCustomerId (تحويل لنقد)');
+                print('✅ تم إلغاء دين $currentDebtFromTx من العميل $oldCustomerId (تحويل لنقد)');
               }
             }
           }
@@ -828,18 +852,19 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           
           // ═══════════════════════════════════════════════════════════════════════
           // حالة 3: تغيير العميل في فاتورة دين
+          // 🔧 إصلاح: استخدام الدين من المعاملات بدلاً من widget.existingInvoice
           // ═══════════════════════════════════════════════════════════════════════
           else if (oldPaymentType == 'دين' && paymentType == 'دين' && 
                    oldCustomerId != null && newCustomerId != null && 
                    oldCustomerId != newCustomerId) {
             
-            // 3.1: خصم الدين من العميل القديم
-            if (oldRemaining > 0.001) {
+            // 3.1: خصم الدين من العميل القديم (استخدام الدين من المعاملات)
+            if (currentDebtFromTx.abs() > 0.001) {
               final oldCustomerMaps = await txn.query('customers', where: 'id = ?', whereArgs: [oldCustomerId]);
               if (oldCustomerMaps.isNotEmpty) {
                 final oldCustomer = Customer.fromMap(oldCustomerMaps.first);
                 final oldBalanceBefore = oldCustomer.currentTotalDebt;
-                final oldBalanceAfter = oldBalanceBefore - oldRemaining;
+                final oldBalanceAfter = oldBalanceBefore - currentDebtFromTx;
                 
                 await txn.update('customers', {
                   'current_total_debt': oldBalanceAfter,
@@ -850,7 +875,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                 await txn.insert('transactions', {
                   'customer_id': oldCustomerId,
                   'transaction_date': DateTime.now().toIso8601String(),
-                  'amount_changed': -oldRemaining,
+                  'amount_changed': -currentDebtFromTx,
                   'balance_before_transaction': oldBalanceBefore,
                   'new_balance_after_transaction': oldBalanceAfter,
                   'transaction_type': 'invoice_customer_change',
@@ -859,7 +884,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                   'transaction_uuid': txUuid1,
                   'created_at': DateTime.now().toIso8601String(),
                 });
-                print('✅ تم خصم دين $oldRemaining من العميل القديم $oldCustomerId');
+                print('✅ تم خصم دين $currentDebtFromTx من العميل القديم $oldCustomerId');
               }
             }
             
@@ -897,13 +922,19 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           
           // ═══════════════════════════════════════════════════════════════════════
           // حالة 4: تعديل فاتورة دين عادي (نفس العميل ونفس نوع الدفع)
+          // 🔧 إصلاح: استخدام الدين من المعاملات بدلاً من widget.existingInvoice
           // ═══════════════════════════════════════════════════════════════════════
           else if (oldPaymentType == 'دين' && paymentType == 'دين' && customer != null &&
                    (oldCustomerId == newCustomerId || oldCustomerId == null)) {
-            final debtChange = newRemaining - oldRemaining;
+            // حساب الفرق بين الدين الجديد والدين الحالي من المعاملات
+            final debtChange = newRemaining - currentDebtFromTx;
+            print('🔍 DEBUG: الدين الجديد = $newRemaining, الدين الحالي من المعاملات = $currentDebtFromTx, الفرق = $debtChange');
             
             if (debtChange.abs() > 0.001) {
-              final balanceBefore = customer.currentTotalDebt;
+              // جلب رصيد العميل الحالي من قاعدة البيانات
+              final customerMaps = await txn.query('customers', where: 'id = ?', whereArgs: [customer.id]);
+              final currentCustomer = Customer.fromMap(customerMaps.first);
+              final balanceBefore = currentCustomer.currentTotalDebt;
               final balanceAfter = balanceBefore + debtChange;
               
               await txn.update('customers', {

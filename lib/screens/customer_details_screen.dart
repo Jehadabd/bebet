@@ -21,6 +21,9 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart';
 import 'audit_log_screen.dart';
+import 'commercial_statement_screen.dart';
+import '../services/commercial_statement_service.dart';
+import '../services/password_service.dart';
 import 'package:pdf/widgets.dart' as pw;
 
 class CustomerDetailsScreen extends StatefulWidget {
@@ -564,6 +567,12 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
               tooltip: 'كشف الحساب',
               onPressed: () => _generateAccountStatement(),
             ),
+            // 📊 زر كشف الحساب التجاري
+            IconButton(
+              icon: const Icon(Icons.analytics, color: Colors.white),
+              tooltip: 'كشف الحساب التجاري',
+              onPressed: () => _showCommercialStatement(),
+            ),
             // 📄 زر أرشيف سندات القبض
             IconButton(
               icon: const Icon(Icons.archive, color: Colors.white),
@@ -614,59 +623,172 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                   color: Colors.white), // Color changed
               tooltip: 'حذف العميل', // Added tooltip
               onPressed: () async {
-                final confirmed = await showDialog<bool>(
-                  context: context,
-                  builder: (context) => AlertDialog(
-                    title: const Text('تأكيد الحذف',
-                        style: TextStyle(
-                            fontWeight: FontWeight.bold)), // Bold title
-                    content: const Text(
-                        'هل أنت متأكد من حذف هذا العميل؟ لا يمكن التراجع عن هذا الإجراء.'), // More informative text
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(context, false),
-                        child: Text('إلغاء',
-                            style: TextStyle(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .primary)), // Themed text button
+                final provider = context.read<AppProvider>();
+                final customer = provider.selectedCustomer ?? widget.customer;
+                final hasDebt = (customer.currentTotalDebt ?? 0) > 0.01;
+                
+                if (hasDebt) {
+                  // العميل عليه دين - عرض تحذير خاص
+                  final warningConfirmed = await showDialog<bool>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: Row(
+                        children: [
+                          Icon(Icons.warning_amber_rounded, color: Colors.orange[700], size: 28),
+                          const SizedBox(width: 8),
+                          const Text('تنبيه!', style: TextStyle(fontWeight: FontWeight.bold)),
+                        ],
                       ),
-                      TextButton(
-                        onPressed: () => Navigator.pop(context, true),
-                        child: Text('حذف',
-                            style: TextStyle(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .error)), // Themed text button
+                      content: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'هذا العميل عليه دين بقيمة:',
+                            style: TextStyle(fontSize: 16),
+                          ),
+                          const SizedBox(height: 8),
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.red[50],
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.red[300]!),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.monetization_on, color: Colors.red[700]),
+                                const SizedBox(width: 8),
+                                Text(
+                                  '${NumberFormat('#,##0', 'en_US').format(customer.currentTotalDebt ?? 0)} دينار',
+                                  style: TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.red[700],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'هل أنت متأكد من حذف هذا العميل؟\nسيتم حذف جميع سجلات الديون والمعاملات المرتبطة به.',
+                            style: TextStyle(fontSize: 14),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
-                );
-
-                if (confirmed == true && mounted) {
-                  try {
-                    await context
-                        .read<AppProvider>()
-                        .deleteCustomer(widget.customer.id!);
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: Text('إلغاء', style: TextStyle(color: Colors.grey[700])),
+                        ),
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.red,
+                          ),
+                          onPressed: () => Navigator.pop(context, true),
+                          child: const Text('تأكيد الحذف', style: TextStyle(color: Colors.white)),
+                        ),
+                      ],
+                    ),
+                  );
+                  
+                  if (warningConfirmed != true || !mounted) return;
+                  
+                  // طلب كلمة السر
+                  final passwordController = TextEditingController();
+                  final passwordService = PasswordService();
+                  final passwordVerified = await showDialog<bool>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: const Text('أدخل كلمة السر للتأكيد', style: TextStyle(fontSize: 18)),
+                      content: TextField(
+                        controller: passwordController,
+                        obscureText: true,
+                        autofocus: true,
+                        decoration: InputDecoration(
+                          labelText: 'كلمة السر',
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          prefixIcon: const Icon(Icons.lock),
+                        ),
+                        onSubmitted: (value) async {
+                          final isCorrect = await passwordService.verifyPassword(value);
+                          Navigator.of(context).pop(isCorrect);
+                        },
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('إلغاء'),
+                        ),
+                        ElevatedButton(
+                          onPressed: () async {
+                            final isCorrect = await passwordService.verifyPassword(passwordController.text);
+                            Navigator.of(context).pop(isCorrect);
+                          },
+                          child: const Text('تأكيد'),
+                        ),
+                      ],
+                    ),
+                  );
+                  
+                  if (passwordVerified != true) {
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                            content: Text(
-                                'تم حذف العميل ${widget.customer.name} بنجاح!'),
-                            backgroundColor:
-                                Theme.of(context).colorScheme.tertiary),
-                      );
-                      Navigator.pop(
-                          context); // Pop customer details screen after deletion
-                    }
-                  } catch (e) {
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                            content: Text(e.toString().replaceAll('Exception: ', '')),
-                            backgroundColor: Colors.red),
+                        const SnackBar(
+                          content: Text('كلمة السر غير صحيحة أو تم الإلغاء'),
+                          backgroundColor: Colors.red,
+                        ),
                       );
                     }
+                    return;
+                  }
+                } else {
+                  // العميل ليس عليه دين - تأكيد عادي
+                  final confirmed = await showDialog<bool>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: const Text('تأكيد الحذف',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
+                      content: const Text(
+                          'هل أنت متأكد من حذف هذا العميل؟ لا يمكن التراجع عن هذا الإجراء.'),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: Text('إلغاء',
+                              style: TextStyle(color: Theme.of(context).colorScheme.primary)),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, true),
+                          child: Text('حذف',
+                              style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                        ),
+                      ],
+                    ),
+                  );
+                  
+                  if (confirmed != true || !mounted) return;
+                }
+                
+                // تنفيذ الحذف
+                try {
+                  await provider.deleteCustomer(widget.customer.id!);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                          content: Text('تم حذف العميل ${widget.customer.name} بنجاح!'),
+                          backgroundColor: Theme.of(context).colorScheme.tertiary),
+                    );
+                    Navigator.pop(context);
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                          content: Text(e.toString().replaceAll('Exception: ', '')),
+                          backgroundColor: Colors.red),
+                    );
                   }
                 }
               },
@@ -1483,6 +1605,73 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('خطأ في طباعة السند: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  /// 📊 عرض كشف الحساب التجاري
+  Future<void> _showCommercialStatement() async {
+    try {
+      // جلب السنوات المتاحة
+      final service = CommercialStatementService();
+      final years = await service.getAvailableYears(widget.customer.id!);
+      
+      if (!mounted) return;
+      
+      // عرض حوار اختيار الفترة
+      final result = await showDialog<Map<String, dynamic>>(
+        context: context,
+        builder: (context) => PeriodSelectionDialog(availableYears: years),
+      );
+      
+      if (result == null || !mounted) return;
+      
+      // تحديد الفترة
+      DateTime? startDate;
+      DateTime? endDate;
+      String periodDescription;
+      
+      switch (result['type']) {
+        case 'all':
+          periodDescription = 'كشف حساب شامل';
+          break;
+        case 'year':
+          final year = result['year'] as int;
+          startDate = DateTime(year, 1, 1);
+          endDate = DateTime(year, 12, 31);
+          periodDescription = 'سنة $year';
+          break;
+        case 'month':
+          final year = result['year'] as int;
+          final month = result['month'] as int;
+          startDate = DateTime(year, month, 1);
+          endDate = DateTime(year, month + 1, 0);
+          periodDescription = 'شهر $month - $year';
+          break;
+        default:
+          return;
+      }
+      
+      // الانتقال لشاشة كشف الحساب التجاري
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => CommercialStatementScreen(
+            customer: widget.customer,
+            startDate: startDate,
+            endDate: endDate,
+            periodDescription: periodDescription,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('خطأ: $e'),
             backgroundColor: Colors.red,
           ),
         );

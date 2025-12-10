@@ -160,7 +160,7 @@ class PdfService {
               ),
             ),
             child: pw.Text(
-              'تم إنشاء هذا التقرير تلقائياً بواسطة تطبيق دفتر ديوني',
+              'تم إنشاء هذا التقرير تلقائياً بواسطة تطبيق الناصر',
               textAlign: pw.TextAlign.center,
               style: const pw.TextStyle(
                 color: PdfColors.grey,
@@ -821,6 +821,201 @@ class PdfService {
         }
       }
     }
+
+    return pdf.save();
+  }
+
+  /// 📊 إنشاء PDF لكشف الحساب التجاري
+  Future<Uint8List> generateCommercialStatement({
+    required Customer customer,
+    required Map<String, dynamic> statementData,
+    required String periodDescription,
+  }) async {
+    // تحميل الخط العربي Amiri
+    final fontData = await rootBundle.load('assets/fonts/Amiri-Regular.ttf');
+    final ttf = pw.Font.ttf(fontData);
+    
+    // تحميل الشعار
+    final logoBytes = await rootBundle.load('assets/icon/alnasser.jpg');
+    final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
+
+    final pdf = pw.Document();
+    
+    String fmt(num v) => NumberFormat('#,##0', 'en_US').format(v);
+    
+    final entries = statementData['entries'] as List<Map<String, dynamic>>;
+    final summary = statementData['summary'] as Map<String, dynamic>;
+    final finalBalance = (statementData['finalBalance'] as num).toDouble();
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageTheme: pw.PageTheme(
+          pageFormat: PdfPageFormat.a4,
+          theme: pw.ThemeData.withFont(base: ttf, bold: ttf),
+          textDirection: pw.TextDirection.rtl,
+        ),
+        build: (context) => [
+          // العنوان مع الشعار
+          pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+            children: [
+              pw.Container(width: 60, height: 60, child: pw.Image(logoImage)),
+              pw.Column(
+                children: [
+                  pw.Text('كشف الحساب التجاري', style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold)),
+                  pw.SizedBox(height: 4),
+                  pw.Text(customer.name, style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
+                ],
+              ),
+              pw.SizedBox(width: 60),
+            ],
+          ),
+          pw.SizedBox(height: 10),
+          pw.Text('الفترة: $periodDescription', style: const pw.TextStyle(fontSize: 12)),
+          pw.Text('تاريخ الطباعة: ${DateFormat('yyyy/MM/dd').format(DateTime.now())}', style: const pw.TextStyle(fontSize: 10)),
+          pw.SizedBox(height: 15),
+          
+          // ملخص الإحصائيات
+          pw.Container(
+            padding: const pw.EdgeInsets.all(10),
+            decoration: pw.BoxDecoration(
+              border: pw.Border.all(color: PdfColors.grey400),
+              borderRadius: pw.BorderRadius.circular(5),
+            ),
+            child: pw.Column(
+              children: [
+                pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceAround,
+                  children: [
+                    pw.Column(children: [
+                      pw.Text('فواتير دين', style: const pw.TextStyle(fontSize: 9)),
+                      pw.Text('${summary['totalDebtInvoices'] ?? 0}', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
+                    ]),
+                    pw.Column(children: [
+                      pw.Text('فواتير نقد', style: const pw.TextStyle(fontSize: 9)),
+                      pw.Text('${summary['totalCashInvoices'] ?? 0}', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
+                    ]),
+                    if ((summary['convertedToCash'] ?? 0) > 0)
+                      pw.Column(children: [
+                        pw.Text('تحولت لنقد', style: const pw.TextStyle(fontSize: 9)),
+                        pw.Text('${summary['convertedToCash']}', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, color: PdfColors.purple)),
+                      ]),
+                    if ((summary['convertedToDebt'] ?? 0) > 0)
+                      pw.Column(children: [
+                        pw.Text('تحولت لدين', style: const pw.TextStyle(fontSize: 9)),
+                        pw.Text('${summary['convertedToDebt']}', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, color: PdfColors.deepOrange)),
+                      ]),
+                  ],
+                ),
+                pw.SizedBox(height: 8),
+                pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceAround,
+                  children: [
+                    pw.Column(children: [
+                      pw.Text('إجمالي الديون', style: const pw.TextStyle(fontSize: 9)),
+                      pw.Text(fmt((summary['totalDebts'] as num?) ?? 0), style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold)),
+                    ]),
+                    pw.Column(children: [
+                      pw.Text('إجمالي المدفوعات', style: const pw.TextStyle(fontSize: 9)),
+                      pw.Text(fmt((summary['totalPayments'] as num?) ?? 0), style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold, color: PdfColors.green700)),
+                    ]),
+                    pw.Column(children: [
+                      pw.Text('الرصيد المتبقي', style: const pw.TextStyle(fontSize: 9)),
+                      pw.Text(fmt((summary['remainingBalance'] as num?) ?? 0), 
+                        style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, 
+                          color: ((summary['remainingBalance'] as num?) ?? 0) > 0 ? PdfColors.red : PdfColors.green700)),
+                    ]),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          pw.SizedBox(height: 15),
+          
+          // جدول السطور - الأعمدة: الدين بعد | الدين قبل | المبلغ | البيان | التاريخ
+          pw.Table(
+            border: pw.TableBorder.all(width: 0.5),
+            columnWidths: {
+              0: const pw.FixedColumnWidth(65),  // الدين بعد
+              1: const pw.FixedColumnWidth(65),  // الدين قبل
+              2: const pw.FixedColumnWidth(65),  // المبلغ
+              3: const pw.FlexColumnWidth(2),    // البيان
+              4: const pw.FixedColumnWidth(65),  // التاريخ
+            },
+            children: [
+              pw.TableRow(
+                decoration: const pw.BoxDecoration(color: PdfColors.grey300),
+                children: [
+                  pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text('الدين بعد', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold), textAlign: pw.TextAlign.center)),
+                  pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text('الدين قبل', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold), textAlign: pw.TextAlign.center)),
+                  pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text('المبلغ', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold), textAlign: pw.TextAlign.center)),
+                  pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text('البيان', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold), textAlign: pw.TextAlign.center)),
+                  pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text('التاريخ', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold), textAlign: pw.TextAlign.center)),
+                ],
+              ),
+              ...entries.map((entry) {
+                final date = entry['date'] as DateTime;
+                final invoiceAmount = (entry['invoiceAmount'] as num?)?.toDouble() ?? 0.0;
+                final netAmount = (entry['netAmount'] as num?)?.toDouble() ?? 0.0;
+                final debtBefore = (entry['debtBefore'] as num?)?.toDouble() ?? 0.0;
+                final debtAfter = (entry['debtAfter'] as num?)?.toDouble() ?? 0.0;
+                final type = entry['type'] as String? ?? '';
+                
+                // تحديد المبلغ المعروض:
+                // - فاتورة نقد/محولة/دين: مبلغ الفاتورة الأصلي
+                // - معاملة يدوية: المبلغ
+                double displayAmount;
+                PdfColor amountColor;
+                if (type == 'cash_invoice' || type == 'converted_to_cash' || type == 'converted_to_debt' || type == 'debt_invoice') {
+                  displayAmount = invoiceAmount;
+                  if (type == 'cash_invoice') {
+                    amountColor = PdfColors.blue700;
+                  } else if (type == 'converted_to_cash') {
+                    amountColor = PdfColors.purple;
+                  } else if (type == 'converted_to_debt') {
+                    amountColor = PdfColors.deepOrange;
+                  } else {
+                    amountColor = PdfColors.red;
+                  }
+                } else {
+                  displayAmount = netAmount.abs();
+                  amountColor = netAmount > 0 ? PdfColors.orange : PdfColors.green700;
+                }
+                
+                return pw.TableRow(
+                  children: [
+                    pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text(fmt(debtAfter), style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold, color: debtAfter > 0 ? PdfColors.red : PdfColors.green700), textAlign: pw.TextAlign.center)),
+                    pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text(fmt(debtBefore), style: const pw.TextStyle(fontSize: 8), textAlign: pw.TextAlign.center)),
+                    pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text(fmt(displayAmount), style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold, color: amountColor), textAlign: pw.TextAlign.center)),
+                    pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text(entry['description'] as String, style: const pw.TextStyle(fontSize: 8))),
+                    pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text(DateFormat('yyyy/MM/dd').format(date), style: const pw.TextStyle(fontSize: 8), textAlign: pw.TextAlign.center)),
+                  ],
+                );
+              }).toList(),
+            ],
+          ),
+          pw.SizedBox(height: 15),
+          
+          // الرصيد النهائي
+          pw.Container(
+            padding: const pw.EdgeInsets.all(10),
+            decoration: pw.BoxDecoration(
+              border: pw.Border.all(color: PdfColors.black, width: 1.5),
+              borderRadius: pw.BorderRadius.circular(5),
+            ),
+            child: pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text('الرصيد النهائي:', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
+                pw.Text('${fmt(finalBalance)} دينار', 
+                  style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, 
+                    color: finalBalance > 0 ? PdfColors.red : PdfColors.green700)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
 
     return pdf.save();
   }
