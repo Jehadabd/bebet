@@ -551,6 +551,43 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
       }
 
       await (await db.database).transaction((txn) async {
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 🔒 إصلاح Race Condition: التحقق من أن الفاتورة لم تتغير منذ آخر تحميل
+        // هذا يمنع مشكلة الحفظ المتزامن التي تسبب أخطاء في حساب الفروقات
+        // ═══════════════════════════════════════════════════════════════════════════
+        if (!isNewInvoice && invoiceToManage?.id != null) {
+          final currentInvoiceData = await txn.query(
+            'invoices',
+            where: 'id = ?',
+            whereArgs: [invoiceToManage!.id],
+          );
+          
+          if (currentInvoiceData.isNotEmpty) {
+            final dbLastModified = currentInvoiceData.first['last_modified_at'] as String?;
+            final widgetLastModified = invoiceToManage!.lastModifiedAt?.toIso8601String();
+            
+            // التحقق من التعديل المتزامن
+            // إذا كان كلاهما موجوداً ومختلفين = تعديل متزامن
+            if (dbLastModified != null && widgetLastModified != null && dbLastModified != widgetLastModified) {
+              print('⚠️ CONCURRENT_MODIFICATION detected!');
+              print('   DB last_modified_at: $dbLastModified');
+              print('   Widget last_modified_at: $widgetLastModified');
+              throw Exception('CONCURRENT_MODIFICATION: تم تعديل الفاتورة من مكان آخر. يرجى إعادة تحميل الفاتورة والمحاولة مرة أخرى.');
+            }
+            
+            // التحقق الإضافي: مقارنة مبلغ الفاتورة للتأكد من عدم وجود تعديل
+            // هذا مفيد للفواتير القديمة التي ليس لديها last_modified_at
+            final dbTotalAmount = (currentInvoiceData.first['total_amount'] as num?)?.toDouble() ?? 0;
+            final widgetTotalAmount = invoiceToManage!.totalAmount;
+            if ((dbTotalAmount - widgetTotalAmount).abs() > 0.01) {
+              print('⚠️ CONCURRENT_MODIFICATION detected (total_amount mismatch)!');
+              print('   DB total_amount: $dbTotalAmount');
+              print('   Widget total_amount: $widgetTotalAmount');
+              throw Exception('CONCURRENT_MODIFICATION: تم تعديل الفاتورة من مكان آخر. يرجى إعادة تحميل الفاتورة والمحاولة مرة أخرى.');
+            }
+          }
+        }
+        
         Customer? customer;
         if (customerNameController.text.trim().isNotEmpty) {
           String? normalizedPhone;
@@ -772,7 +809,8 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
             final dbInvoice = await txn.query('invoices', where: 'id = ?', whereArgs: [invoiceId]);
             if (dbInvoice.isNotEmpty) {
               final dbTotal = (dbInvoice.first['total_amount'] as num?)?.toDouble() ?? 0.0;
-              final dbPaid = (dbInvoice.first['paid_amount'] as num?)?.toDouble() ?? 0.0;
+              // 🔧 إصلاح: استخدام الحقل الصحيح amount_paid_on_invoice بدلاً من paid_amount
+              final dbPaid = (dbInvoice.first['amount_paid_on_invoice'] as num?)?.toDouble() ?? 0.0;
               final expectedDebt = dbTotal - dbPaid;
               if ((currentDebtFromTx - expectedDebt).abs() > 1) {
                 print('⚠️ تحذير: فرق بين دين المعاملات ($currentDebtFromTx) ودين الفاتورة ($expectedDebt)');
@@ -820,10 +858,17 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           
           // ═══════════════════════════════════════════════════════════════════════
           // حالة 2: تغيير من نقد إلى دين - إضافة دين جديد
+          // 🔧 إصلاح: جلب رصيد العميل من قاعدة البيانات داخل المعاملة
           // ═══════════════════════════════════════════════════════════════════════
           else if (oldPaymentType == 'نقد' && paymentType == 'دين' && customer != null) {
             if (newRemaining > 0.001) {
-              final balanceBefore = customer.currentTotalDebt;
+              // 🔧 إصلاح: جلب الرصيد الحالي من قاعدة البيانات (وليس من الذاكرة)
+              final freshCustomerMaps = await txn.query('customers', where: 'id = ?', whereArgs: [customer.id]);
+              if (freshCustomerMaps.isEmpty) {
+                throw Exception('العميل غير موجود في قاعدة البيانات');
+              }
+              final freshCustomer = Customer.fromMap(freshCustomerMaps.first);
+              final balanceBefore = freshCustomer.currentTotalDebt;
               final balanceAfter = balanceBefore + newRemaining;
               
               // تحديث رصيد العميل
@@ -961,12 +1006,20 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
         }
         // ═══════════════════════════════════════════════════════════════════════
         // حالة 5: فاتورة جديدة بالدين
+        // 🔧 إصلاح: جلب رصيد العميل من قاعدة البيانات داخل المعاملة
         // ═══════════════════════════════════════════════════════════════════════
         else if (isNewInvoice && customer != null && paymentType == 'دين') {
           final newRemaining = totalAmount - paid;
           
           if (newRemaining > 0.001) {
-            final balanceBefore = customer.currentTotalDebt;
+            // 🔧 إصلاح: جلب الرصيد الحالي من قاعدة البيانات (وليس من الذاكرة)
+            // هذا يضمن أن الرصيد محدث حتى لو تم تعديله من مكان آخر
+            final freshCustomerMaps = await txn.query('customers', where: 'id = ?', whereArgs: [customer.id]);
+            if (freshCustomerMaps.isEmpty) {
+              throw Exception('العميل غير موجود في قاعدة البيانات');
+            }
+            final freshCustomer = Customer.fromMap(freshCustomerMaps.first);
+            final balanceBefore = freshCustomer.currentTotalDebt;
             final balanceAfter = balanceBefore + newRemaining;
             
             await txn.update('customers', {
@@ -1173,6 +1226,45 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
       return savedInvoice;
     } catch (e) {
       print('خطأ فادح ومُحاط بمعاملة عند حفظ الفاتورة: $e');
+      
+      // ═══════════════════════════════════════════════════════════════════════════
+      // 🔒 معالجة خاصة لخطأ التعديل المتزامن
+      // ═══════════════════════════════════════════════════════════════════════════
+      if (e.toString().contains('CONCURRENT_MODIFICATION')) {
+        if (mounted) {
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (ctx) => AlertDialog(
+              title: const Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 28),
+                  SizedBox(width: 8),
+                  Text('تعديل متزامن'),
+                ],
+              ),
+              content: const Text(
+                'تم تعديل هذه الفاتورة من مكان آخر أثناء عملك عليها.\n\n'
+                'لتجنب فقدان البيانات، يرجى:\n'
+                '1. إغلاق هذه الشاشة\n'
+                '2. فتح الفاتورة مرة أخرى\n'
+                '3. إعادة إجراء التعديلات',
+              ),
+              actions: [
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    Navigator.pop(context); // إغلاق شاشة الفاتورة
+                  },
+                  child: const Text('حسناً، أغلق الشاشة'),
+                ),
+              ],
+            ),
+          );
+        }
+        return null;
+      }
+      
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

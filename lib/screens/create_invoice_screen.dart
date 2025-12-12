@@ -2507,6 +2507,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     try {
       // متاح فقط للفواتير الموجودة ولها عميل
       if (invoiceToManage == null || invoiceToManage!.id == null) return;
+      
+      // 🔧 إصلاح: لا تنشئ معاملات invoice_live_update للفواتير المحفوظة
+      // المعاملات يجب أن تُنشأ فقط عند الحفظ الفعلي في saveInvoice
+      // هذا يمنع إنشاء معاملات زائدة عند فتح الفاتورة للتعديل
+      if (invoiceToManage!.status == 'محفوظة') {
+        return;
+      }
+      
       final int invoiceId = invoiceToManage!.id!;
       int? customerId = invoiceToManage!.customerId;
       if (customerId == null) {
@@ -2533,8 +2541,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
 
       double newContribution = 0.0;
       if (paymentType == 'دين') {
-        // استخدم دالة المتبقي الحالية التي تأخذ بعين الاعتبار التسويات النقدية
-        final remaining = await _calculateRemainingAmount();
+        // 🔧 حساب المتبقي بناءً على القيم الحالية في الشاشة (وليس القيم المحفوظة)
+        // هذا يضمن أن الخصم الجديد يُؤخذ بعين الاعتبار
+        final double itemsTotal = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+        final double loadingFee = double.tryParse(loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
+        final double currentTotalAmount = itemsTotal + loadingFee - discount; // الإجمالي بعد الخصم
+        final double paidAmount = double.tryParse(paidAmountController.text.replaceAll(',', '')) ?? 0.0;
+        final double remaining = currentTotalAmount - paidAmount;
         newContribution = remaining.clamp(0.0, double.infinity);
       } else {
         newContribution = 0.0;
@@ -2692,7 +2705,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
           ),
         ),
       ),
-      child: Scaffold(
+      child: Stack(
+        children: [
+          // المحتوى الرئيسي
+          AbsorbPointer(
+            absorbing: isSaving,
+            child: Scaffold(
         appBar: AppBar(
           title: Text(invoiceToManage != null 
               ? (isViewOnly ? 'عرض فاتورة' : 'تعديل فاتورة')
@@ -4133,9 +4151,47 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
             ),
           ),
         ),
-      ),
-    ),
-    );
+            ), // نهاية Scaffold
+          ), // نهاية AbsorbPointer
+          // ═══════════════════════════════════════════════════════════════════════════
+          // 🔄 مؤشر التحميل أثناء الحفظ
+          // ═══════════════════════════════════════════════════════════════════════════
+          if (isSaving)
+            Container(
+              color: Colors.black.withOpacity(0.3),
+              child: const Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircularProgressIndicator(
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                      strokeWidth: 3,
+                    ),
+                    SizedBox(height: 16),
+                    Text(
+                      'جاري حفظ الفاتورة...',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    SizedBox(height: 8),
+                    Text(
+                      'يرجى الانتظار وعدم إغلاق التطبيق',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ], // نهاية Stack children
+      ), // نهاية Stack
+    ), // نهاية Theme
+    ); // نهاية WillPopScope
   }
 
   Future<bool> _showAddAdjustmentDialog() async {

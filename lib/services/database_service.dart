@@ -2915,6 +2915,195 @@ class DatabaseService {
       throw Exception(_handleDatabaseError(e));
     }
   }
+
+  /// جلب المعاملات بشكل مجمع للفواتير
+  /// المعاملات اليدوية تظهر كما هي
+  /// معاملات الفواتير تُجمع في سطر واحد لكل فاتورة يعرض المبلغ المتبقي
+  /// 
+  /// 🔒 ضمانات الأمان:
+  /// 1. هذه الدالة للقراءة فقط - لا تعدل أي بيانات
+  /// 2. تتحقق من أن مجموع المعاملات المجمعة = مجموع المعاملات الأصلية
+  /// 3. تتحقق من عدم فقدان أي معاملة أثناء التجميع
+  Future<List<GroupedTransactionItem>> getGroupedCustomerTransactions(int customerId) async {
+    final db = await database;
+    final List<GroupedTransactionItem> result = [];
+    
+    try {
+      // 1. جلب جميع المعاملات مرتبة بالتاريخ
+      final allTransactions = await db.query(
+        'transactions',
+        where: 'customer_id = ?',
+        whereArgs: [customerId],
+        orderBy: 'transaction_date ASC, id ASC',
+      );
+      
+      // 🔒 حفظ المجموع الأصلي للتحقق لاحقاً
+      double originalTotalAmount = 0.0;
+      for (final tx in allTransactions) {
+        originalTotalAmount += (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
+      }
+      final int originalTransactionCount = allTransactions.length;
+      
+      // 2. تجميع المعاملات حسب invoice_id
+      final Map<int?, List<Map<String, dynamic>>> groupedByInvoice = {};
+      
+      for (final tx in allTransactions) {
+        final invoiceId = tx['invoice_id'] as int?;
+        groupedByInvoice.putIfAbsent(invoiceId, () => []);
+        groupedByInvoice[invoiceId]!.add(tx);
+      }
+      
+      // 🔒 متغيرات للتحقق من الأمان
+      double groupedTotalAmount = 0.0;
+      int groupedTransactionCount = 0;
+      
+      // 3. معالجة المعاملات اليدوية (invoice_id = null)
+      final manualTransactions = groupedByInvoice[null] ?? [];
+      for (final tx in manualTransactions) {
+        final amount = (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
+        groupedTotalAmount += amount;
+        groupedTransactionCount++;
+        
+        result.add(GroupedTransactionItem(
+          type: GroupedTransactionType.manual,
+          date: DateTime.parse(tx['transaction_date'] as String),
+          amount: amount,
+          description: tx['transaction_note'] as String? ?? _getTransactionTypeDescription(tx['transaction_type'] as String?),
+          transactionType: tx['transaction_type'] as String?,
+          transactions: [DebtTransaction.fromMap(tx)],
+          balanceBefore: (tx['balance_before_transaction'] as num?)?.toDouble(),
+          balanceAfter: (tx['new_balance_after_transaction'] as num?)?.toDouble(),
+          audioNotePath: tx['audio_note_path'] as String?,
+        ));
+      }
+      
+      // 4. معالجة معاملات الفواتير
+      for (final entry in groupedByInvoice.entries) {
+        if (entry.key == null) continue; // تخطي المعاملات اليدوية
+        
+        final invoiceId = entry.key!;
+        final invoiceTransactions = entry.value;
+        
+        // جلب بيانات الفاتورة
+        final invoiceData = await db.query(
+          'invoices',
+          where: 'id = ?',
+          whereArgs: [invoiceId],
+          limit: 1,
+        );
+        
+        if (invoiceData.isEmpty) continue;
+        
+        final invoice = invoiceData.first;
+        final invoiceDate = DateTime.parse(invoice['invoice_date'] as String);
+        final totalAmount = (invoice['total_amount'] as num?)?.toDouble() ?? 0.0;
+        final paymentType = invoice['payment_type'] as String? ?? '';
+        final paidAmount = (invoice['paid_amount'] as num?)?.toDouble() ?? 0.0;
+        
+        // حساب صافي المعاملات (المبلغ المتبقي)
+        double netAmount = 0.0;
+        for (final tx in invoiceTransactions) {
+          final txAmount = (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
+          netAmount += txAmount;
+          groupedTotalAmount += txAmount;
+          groupedTransactionCount++;
+        }
+        
+        // تحديد أول وآخر رصيد
+        double? firstBalanceBefore;
+        double? lastBalanceAfter;
+        if (invoiceTransactions.isNotEmpty) {
+          // ترتيب حسب التاريخ والـ id
+          invoiceTransactions.sort((a, b) {
+            final dateA = DateTime.parse(a['transaction_date'] as String);
+            final dateB = DateTime.parse(b['transaction_date'] as String);
+            final dateCompare = dateA.compareTo(dateB);
+            if (dateCompare != 0) return dateCompare;
+            return (a['id'] as int).compareTo(b['id'] as int);
+          });
+          
+          firstBalanceBefore = (invoiceTransactions.first['balance_before_transaction'] as num?)?.toDouble();
+          lastBalanceAfter = (invoiceTransactions.last['new_balance_after_transaction'] as num?)?.toDouble();
+        }
+        
+        // تحديد الوصف
+        String description;
+        if (paymentType == 'نقد') {
+          description = 'فاتورة #$invoiceId (نقد)';
+        } else if (netAmount.abs() < 0.01) {
+          description = 'فاتورة #$invoiceId (مسددة)';
+        } else {
+          description = 'فاتورة #$invoiceId';
+        }
+        
+        result.add(GroupedTransactionItem(
+          type: GroupedTransactionType.invoice,
+          date: invoiceDate,
+          amount: netAmount,
+          description: description,
+          invoiceId: invoiceId,
+          invoiceTotal: totalAmount,
+          invoicePaid: paidAmount,
+          paymentType: paymentType,
+          transactions: invoiceTransactions.map((tx) => DebtTransaction.fromMap(tx)).toList(),
+          balanceBefore: firstBalanceBefore,
+          balanceAfter: lastBalanceAfter,
+        ));
+      }
+      
+      // 🔒🔒🔒 فحص الأمان الحرج 🔒🔒🔒
+      // التحقق من أن مجموع المعاملات المجمعة = مجموع المعاملات الأصلية
+      final amountDiff = (groupedTotalAmount - originalTotalAmount).abs();
+      if (amountDiff > 0.001) {
+        // خطأ حرج! المجموع لا يتطابق
+        throw Exception(
+          '🚨 خطأ أمان حرج في التجميع! '
+          'المجموع الأصلي: $originalTotalAmount، '
+          'المجموع المجمع: $groupedTotalAmount، '
+          'الفرق: $amountDiff'
+        );
+      }
+      
+      // التحقق من عدم فقدان أي معاملة
+      if (groupedTransactionCount != originalTransactionCount) {
+        throw Exception(
+          '🚨 خطأ أمان حرج! فقدان معاملات أثناء التجميع! '
+          'العدد الأصلي: $originalTransactionCount، '
+          'العدد المجمع: $groupedTransactionCount'
+        );
+      }
+      
+      // 5. ترتيب النتائج حسب التاريخ (من الأحدث للأقدم)
+      result.sort((a, b) => b.date.compareTo(a.date));
+      
+      return result;
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+  
+  /// الحصول على وصف نوع المعاملة
+  String _getTransactionTypeDescription(String? type) {
+    switch (type) {
+      case 'manual_payment':
+        return 'تسديد يدوي';
+      case 'manual_debt':
+        return 'دين يدوي';
+      case 'opening_balance':
+        return 'رصيد افتتاحي';
+      case 'invoice_debt':
+      case 'debt_invoice':
+        return 'دين فاتورة';
+      case 'invoice_payment':
+        return 'تسديد فاتورة';
+      case 'invoice_adjustment':
+        return 'تعديل فاتورة';
+      case 'correction':
+        return 'تصحيح رصيد';
+      default:
+        return 'معاملة';
+    }
+  }
   // ... (بقية دوال المعاملات)
 
   // --- دوال الفواتير والمنطق المحاسبي ---
@@ -7140,6 +7329,197 @@ class DatabaseService {
         warnings.add('يوجد ${futureTransactions.length} معاملة بتاريخ مستقبلي');
       }
 
+      // 8. 🔍 فحص الفواتير - المنطق الصحيح
+      // المقارنة: صافي المعاملات المرتبطة بالفاتورة = المبلغ المتبقي في الفاتورة
+      // المبلغ المتبقي = total_amount - paid_amount (للدين) أو 0 (للنقد)
+      final List<InvoiceIssue> invoiceIssues = [];
+      
+      // جلب جميع الفواتير المحفوظة للعميل
+      final customerInvoices = await db.query(
+        'invoices',
+        where: 'customer_id = ? AND status = ?',
+        whereArgs: [customerId, 'محفوظة'],
+        orderBy: 'invoice_date ASC, id ASC',
+      );
+      
+      for (final inv in customerInvoices) {
+        final invoiceId = inv['id'] as int;
+        final invoiceDate = inv['invoice_date'] as String? ?? '';
+        final totalAmount = (inv['total_amount'] as num?)?.toDouble() ?? 0.0;
+        final paymentType = inv['payment_type'] as String? ?? '';
+        final paidAmount = (inv['amount_paid_on_invoice'] as num?)?.toDouble() ?? 0.0;
+        
+        final List<String> invoiceDetails = [];
+        double invoiceDifference = 0.0;
+        String issueDescription = '';
+        bool hasIssue = false;
+        
+        // 8.1 جلب جميع المعاملات المرتبطة بهذه الفاتورة فقط
+        final invoiceTx = await db.query(
+          'transactions',
+          where: 'invoice_id = ?',
+          whereArgs: [invoiceId],
+          orderBy: 'transaction_date ASC, id ASC',
+        );
+        
+        // حساب صافي المعاملات المرتبطة بالفاتورة
+        double netTxAmount = 0.0;
+        for (final tx in invoiceTx) {
+          netTxAmount += (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
+        }
+        
+        // 8.2 جلب المبلغ المتبقي من الفاتورة مباشرة
+        // المبلغ المتبقي = total_amount - paid_amount
+        // ملاحظة: total_amount يحتوي بالفعل على الخصم مطروحاً منه
+        double invoiceRemainingAmount = 0.0;
+        if (paymentType == 'دين') {
+          invoiceRemainingAmount = totalAmount - paidAmount;
+        }
+        // فاتورة نقد: المبلغ المتبقي = 0
+        
+        // 8.3 المقارنة: صافي المعاملات المرتبطة بالفاتورة = المبلغ المتبقي في الفاتورة
+        // ملاحظة: نقارن القيمة المطلقة لأن المعاملات قد تكون موجبة أو سالبة
+        final debtDiff = (netTxAmount - invoiceRemainingAmount).abs();
+        
+        if (debtDiff > 0.01 && paymentType == 'دين' && invoiceTx.isNotEmpty) {
+          hasIssue = true;
+          invoiceDifference = debtDiff;
+          issueDescription = 'صافي المعاملات المرتبطة لا يتطابق مع المبلغ المتبقي';
+          
+          invoiceDetails.add('📊 بيانات الفاتورة:');
+          invoiceDetails.add('   - إجمالي الفاتورة: ${totalAmount.toStringAsFixed(0)}');
+          invoiceDetails.add('   - المبلغ المسدد (في الفاتورة): ${paidAmount.toStringAsFixed(0)}');
+          invoiceDetails.add('   - المبلغ المتبقي: ${invoiceRemainingAmount.toStringAsFixed(0)}');
+          invoiceDetails.add('');
+          invoiceDetails.add('📈 صافي المعاملات المرتبطة بالفاتورة: ${netTxAmount.toStringAsFixed(0)}');
+          invoiceDetails.add('⚠️ الفرق: ${debtDiff.toStringAsFixed(0)}');
+          
+          if (invoiceTx.isNotEmpty) {
+            invoiceDetails.add('');
+            invoiceDetails.add('📝 المعاملات المرتبطة (${invoiceTx.length}):');
+            for (int i = 0; i < invoiceTx.length; i++) {
+              final tx = invoiceTx[i];
+              final txAmount = (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
+              final txType = tx['transaction_type'] as String? ?? '';
+              invoiceDetails.add('   ${i + 1}. ${txAmount >= 0 ? '+' : ''}${txAmount.toStringAsFixed(0)} ($txType)');
+            }
+          } else {
+            invoiceDetails.add('');
+            invoiceDetails.add('⚠️ لا توجد معاملات مرتبطة بهذه الفاتورة');
+          }
+        }
+        
+        // 8.4 فحص: فاتورة دين بدون أي معاملات
+        if (paymentType == 'دين' && invoiceTx.isEmpty && totalAmount > 0 && !hasIssue) {
+          hasIssue = true;
+          issueDescription = 'فاتورة دين بدون معاملات في سجل الديون';
+          invoiceDifference = invoiceRemainingAmount;
+          invoiceDetails.add('⚠️ فاتورة دين بمبلغ ${totalAmount.toStringAsFixed(0)} بدون أي معاملات');
+        }
+        
+        // 8.5 فحص: فاتورة نقد لها معاملات غير صفرية
+        if (paymentType == 'نقد' && netTxAmount.abs() > 0.01 && !hasIssue) {
+          // فحص إذا كانت تحولت من دين إلى نقد
+          final snapshots = await db.query(
+            'invoice_snapshots',
+            where: 'invoice_id = ?',
+            whereArgs: [invoiceId],
+            orderBy: 'created_at ASC',
+          );
+          
+          bool wasDebt = false;
+          if (snapshots.isNotEmpty) {
+            final originalPaymentType = snapshots.first['payment_type'] as String?;
+            wasDebt = originalPaymentType == 'دين';
+          }
+          
+          if (!wasDebt) {
+            hasIssue = true;
+            issueDescription = 'فاتورة نقد لها معاملات غير متوقعة';
+            invoiceDifference = netTxAmount.abs();
+            invoiceDetails.add('⚠️ فاتورة نقد أصلية لها صافي معاملات: ${netTxAmount.toStringAsFixed(0)}');
+          }
+        }
+        
+        // إضافة المشكلة إذا وجدت
+        if (hasIssue) {
+          invoiceIssues.add(InvoiceIssue(
+            invoiceId: invoiceId,
+            invoiceDate: invoiceDate,
+            description: issueDescription,
+            difference: invoiceDifference,
+            details: invoiceDetails,
+          ));
+        }
+      }
+      
+      // تحديث حالة الصحة بناءً على مشاكل الفواتير
+      if (invoiceIssues.isNotEmpty) {
+        isHealthy = false;
+      }
+      
+      // 9. 📊 مقارنة إجمالية مع منطق كشف الحساب التجاري
+      // حساب الرصيد من خلال جمع تأثيرات الفواتير والمعاملات اليدوية
+      double commercialBalance = 0.0;
+      int debtInvoicesCount = 0;
+      int cashInvoicesCount = 0;
+      double totalInvoiceAmountSum = 0.0;
+      double totalPaymentsSum = 0.0;
+      
+      // جمع تأثير جميع الفواتير على الدين
+      for (final inv in customerInvoices) {
+        final invoiceId = inv['id'] as int;
+        final paymentType = inv['payment_type'] as String? ?? '';
+        final totalAmount = (inv['total_amount'] as num?)?.toDouble() ?? 0.0;
+        
+        // إحصائيات الفواتير
+        totalInvoiceAmountSum += totalAmount;
+        if (paymentType == 'دين') {
+          debtInvoicesCount++;
+        } else {
+          cashInvoicesCount++;
+        }
+        
+        // جلب المعاملات المرتبطة بهذه الفاتورة
+        final invoiceTxForBalance = await db.query(
+          'transactions',
+          where: 'invoice_id = ?',
+          whereArgs: [invoiceId],
+        );
+        
+        // حساب صافي تأثير الفاتورة على الدين
+        for (final tx in invoiceTxForBalance) {
+          final txAmount = (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
+          commercialBalance += txAmount;
+          
+          // حساب المدفوعات (المبالغ السالبة = تسديدات)
+          if (txAmount < 0) {
+            totalPaymentsSum += txAmount.abs();
+          }
+        }
+      }
+      
+      // جمع المعاملات اليدوية (غير مرتبطة بفاتورة)
+      final manualTxResult = await db.rawQuery(
+        'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ? AND invoice_id IS NULL',
+        [customerId]
+      );
+      final double manualTxTotal = ((manualTxResult.first['total'] as num?) ?? 0).toDouble();
+      commercialBalance += manualTxTotal;
+      
+      // حساب المدفوعات اليدوية
+      final manualPaymentsResult = await db.rawQuery(
+        'SELECT COALESCE(SUM(ABS(amount_changed)), 0) AS total FROM transactions WHERE customer_id = ? AND invoice_id IS NULL AND amount_changed < 0',
+        [customerId]
+      );
+      totalPaymentsSum += ((manualPaymentsResult.first['total'] as num?) ?? 0).toDouble();
+      
+      // مقارنة الرصيد التجاري مع الرصيد المحسوب من المعاملات
+      final commercialDiff = (commercialBalance - calculatedBalance).abs();
+      if (commercialDiff > 0.01) {
+        warnings.add('فرق بين حساب كشف الحساب التجاري والمعاملات: ${commercialDiff.toStringAsFixed(2)} دينار');
+      }
+
       return FinancialIntegrityReport(
         customerId: customerId,
         customerName: customerName,
@@ -7149,6 +7529,12 @@ class DatabaseService {
         calculatedBalance: calculatedBalance,
         recordedBalance: recordedBalance,
         transactionCount: transactionCount,
+        invoiceIssues: invoiceIssues,
+        totalInvoices: customerInvoices.length,
+        debtInvoices: debtInvoicesCount,
+        cashInvoices: cashInvoicesCount,
+        totalInvoiceAmount: totalInvoiceAmountSum,
+        totalPayments: totalPaymentsSum,
       );
     } catch (e) {
       return FinancialIntegrityReport(
@@ -7165,8 +7551,11 @@ class DatabaseService {
   }
 
   /// التحقق الشامل من سلامة البيانات المالية لجميع العملاء
+  /// يفحص فقط العملاء الموجودين في سجل الديون (لديهم دين أو معاملات)
   Future<List<FinancialIntegrityReport>> verifyAllCustomersFinancialIntegrity() async {
-    final customers = await getAllCustomers();
+    // استخدام getCustomersForDebtRegister بدلاً من getAllCustomers
+    // لتجاهل العملاء المحذوفين أو الذين ليس لديهم أي نشاط مالي
+    final customers = await getCustomersForDebtRegister();
     final List<FinancialIntegrityReport> reports = [];
     
     for (final customer in customers) {
@@ -7177,6 +7566,137 @@ class DatabaseService {
     }
     
     return reports;
+  }
+
+  /// 🔧 إصلاح عدم تطابق معاملات الفاتورة
+  /// يقوم بإضافة معاملة تصحيحية لموازنة الفرق بين المعاملات والمبلغ المتبقي
+  /// 
+  /// ⚠️ تحذيرات أمان:
+  /// - يجب التأكد من صحة الفاتورة يدوياً قبل الإصلاح
+  /// - هذا الإجراء لا يمكن التراجع عنه
+  /// - يتم تسجيل الإصلاح في سجل التدقيق
+  Future<Map<String, dynamic>> repairInvoiceTransactionMismatch({
+    required int invoiceId,
+    required int customerId,
+    required double expectedDifference,
+  }) async {
+    final db = await database;
+    
+    try {
+      // 1. التحقق من وجود الفاتورة
+      final invoiceResult = await db.query(
+        'invoices',
+        where: 'id = ? AND customer_id = ?',
+        whereArgs: [invoiceId, customerId],
+      );
+      
+      if (invoiceResult.isEmpty) {
+        return {
+          'success': false,
+          'message': 'الفاتورة غير موجودة أو لا تنتمي لهذا العميل',
+        };
+      }
+      
+      final invoice = invoiceResult.first;
+      final totalAmount = (invoice['total_amount'] as num?)?.toDouble() ?? 0.0;
+      // استخدام amount_paid_on_invoice بدلاً من paid_amount (الحقل الصحيح)
+      final paidAmount = (invoice['amount_paid_on_invoice'] as num?)?.toDouble() ?? 0.0;
+      final paymentType = invoice['payment_type'] as String? ?? '';
+      
+      // 2. حساب المبلغ المتبقي المتوقع
+      double expectedRemainingDebt = 0.0;
+      if (paymentType == 'دين') {
+        expectedRemainingDebt = totalAmount - paidAmount;
+      }
+      
+      // 3. جلب صافي المعاملات الحالية
+      final txResult = await db.rawQuery(
+        'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE invoice_id = ?',
+        [invoiceId]
+      );
+      final double currentNetTx = ((txResult.first['total'] as num?) ?? 0).toDouble();
+      
+      // 4. حساب الفرق الفعلي
+      final actualDifference = expectedRemainingDebt - currentNetTx;
+      
+      // 5. التحقق من أن الفرق المتوقع قريب من الفرق الفعلي (للأمان)
+      if ((actualDifference.abs() - expectedDifference).abs() > 1.0) {
+        return {
+          'success': false,
+          'message': 'الفرق الفعلي (${actualDifference.toStringAsFixed(0)}) لا يتطابق مع المتوقع (${expectedDifference.toStringAsFixed(0)}). قد تكون البيانات تغيرت.',
+        };
+      }
+      
+      // 6. إذا لم يكن هناك فرق، لا حاجة للإصلاح
+      if (actualDifference.abs() < 0.01) {
+        return {
+          'success': true,
+          'message': 'لا يوجد فرق يحتاج إصلاح',
+        };
+      }
+      
+      // 7. جلب الرصيد الحالي للعميل
+      final customer = await getCustomerById(customerId);
+      if (customer == null) {
+        return {
+          'success': false,
+          'message': 'العميل غير موجود',
+        };
+      }
+      
+      final currentBalance = customer.currentTotalDebt;
+      final newBalance = currentBalance + actualDifference;
+      
+      // 8. إنشاء معاملة تصحيحية
+      final now = DateTime.now();
+      final transactionNote = 'تصحيح تلقائي - فاتورة #$invoiceId - الفرق: ${actualDifference.toStringAsFixed(0)}';
+      
+      await db.insert('transactions', {
+        'customer_id': customerId,
+        'invoice_id': invoiceId,
+        'amount_changed': actualDifference,
+        'transaction_type': actualDifference > 0 ? 'تصحيح_زيادة' : 'تصحيح_نقص',
+        'transaction_note': transactionNote,
+        'transaction_date': now.toIso8601String(),
+        'new_balance_after_transaction': newBalance,
+        'created_at': now.toIso8601String(),
+      });
+      
+      // 9. تحديث رصيد العميل
+      await db.update(
+        'customers',
+        {
+          'current_total_debt': newBalance,
+          'last_modified_at': now.toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [customerId],
+      );
+      
+      // 10. تسجيل في سجل التدقيق المالي
+      await db.insert('financial_audit_log', {
+        'operation_type': 'invoice_repair',
+        'entity_type': 'invoice',
+        'entity_id': invoiceId,
+        'old_values': '{"net_transactions": $currentNetTx, "expected_remaining": $expectedRemainingDebt}',
+        'new_values': '{"correction_amount": $actualDifference, "new_balance": $newBalance}',
+        'notes': transactionNote,
+        'created_at': now.toIso8601String(),
+      });
+      
+      return {
+        'success': true,
+        'message': 'تم إصلاح الفاتورة بنجاح. تم إضافة معاملة تصحيحية بمبلغ ${actualDifference.toStringAsFixed(0)} دينار',
+        'correctionAmount': actualDifference,
+        'newBalance': newBalance,
+      };
+      
+    } catch (e) {
+      return {
+        'success': false,
+        'message': 'خطأ في الإصلاح: $e',
+      };
+    }
   }
 
   /// إصلاح تلقائي لجميع مشاكل الأرصدة
@@ -8416,6 +8936,23 @@ class ChecksumVerificationReport {
 // 🛡️ نماذج البيانات للحماية والتدقيق المالي
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// تفاصيل مشكلة في فاتورة
+class InvoiceIssue {
+  final int invoiceId;
+  final String invoiceDate;
+  final String description;
+  final double difference;
+  final List<String> details;
+
+  InvoiceIssue({
+    required this.invoiceId,
+    required this.invoiceDate,
+    required this.description,
+    required this.difference,
+    this.details = const [],
+  });
+}
+
 /// تقرير سلامة البيانات المالية
 class FinancialIntegrityReport {
   final int customerId;
@@ -8426,6 +8963,14 @@ class FinancialIntegrityReport {
   final double calculatedBalance;
   final double recordedBalance;
   final int transactionCount;
+  final List<InvoiceIssue> invoiceIssues;
+  
+  // 📊 ملخص كشف الحساب التجاري
+  final int totalInvoices;           // إجمالي عدد الفواتير
+  final int debtInvoices;            // عدد فواتير الدين
+  final int cashInvoices;            // عدد الفواتير النقدية
+  final double totalInvoiceAmount;   // إجمالي مبالغ الفواتير
+  final double totalPayments;        // إجمالي المدفوعات
 
   FinancialIntegrityReport({
     required this.customerId,
@@ -8436,11 +8981,17 @@ class FinancialIntegrityReport {
     required this.calculatedBalance,
     required this.recordedBalance,
     required this.transactionCount,
+    this.invoiceIssues = const [],
+    this.totalInvoices = 0,
+    this.debtInvoices = 0,
+    this.cashInvoices = 0,
+    this.totalInvoiceAmount = 0.0,
+    this.totalPayments = 0.0,
   });
 
   @override
   String toString() {
-    return 'FinancialIntegrityReport(customerId: $customerId, customerName: $customerName, isHealthy: $isHealthy, issues: ${issues.length}, warnings: ${warnings.length})';
+    return 'FinancialIntegrityReport(customerId: $customerId, customerName: $customerName, isHealthy: $isHealthy, issues: ${issues.length}, warnings: ${warnings.length}, invoiceIssues: ${invoiceIssues.length}, invoices: $totalInvoices)';
   }
 }
 
@@ -8977,6 +9528,104 @@ class VerifiedBalanceResult {
       return 'VerifiedBalanceResult(✅ متحقق, رصيد: $calculatedBalance${wasAutoFixed ? ", تم إصلاح تلقائي" : ""})';
     } else {
       return 'VerifiedBalanceResult(❌ غير متحقق, محسوب: $calculatedBalance, مسجل: $recordedBalance, فرق: $difference)';
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 📊 نماذج عرض المعاملات المجمعة
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// نوع العنصر المجمع
+enum GroupedTransactionType {
+  manual,   // معاملة يدوية
+  invoice,  // فاتورة (مجمعة)
+}
+
+/// عنصر معاملة مجمع - يمثل إما معاملة يدوية أو فاتورة مجمعة
+class GroupedTransactionItem {
+  /// نوع العنصر
+  final GroupedTransactionType type;
+  
+  /// تاريخ العنصر
+  final DateTime date;
+  
+  /// المبلغ (للمعاملة اليدوية: المبلغ الفعلي، للفاتورة: صافي المعاملات = المبلغ المتبقي)
+  final double amount;
+  
+  /// الوصف
+  final String description;
+  
+  /// نوع المعاملة (للمعاملات اليدوية فقط)
+  final String? transactionType;
+  
+  /// رقم الفاتورة (للفواتير فقط)
+  final int? invoiceId;
+  
+  /// إجمالي الفاتورة (للفواتير فقط)
+  final double? invoiceTotal;
+  
+  /// المبلغ المسدد من الفاتورة (للفواتير فقط)
+  final double? invoicePaid;
+  
+  /// نوع الدفع (للفواتير فقط)
+  final String? paymentType;
+  
+  /// قائمة المعاملات التفصيلية
+  final List<DebtTransaction> transactions;
+  
+  /// الرصيد قبل (للمعاملة اليدوية: الرصيد قبل، للفاتورة: الرصيد قبل أول معاملة)
+  final double? balanceBefore;
+  
+  /// الرصيد بعد (للمعاملة اليدوية: الرصيد بعد، للفاتورة: الرصيد بعد آخر معاملة)
+  final double? balanceAfter;
+  
+  /// مسار الملاحظة الصوتية (للمعاملات اليدوية فقط)
+  final String? audioNotePath;
+
+  GroupedTransactionItem({
+    required this.type,
+    required this.date,
+    required this.amount,
+    required this.description,
+    this.transactionType,
+    this.invoiceId,
+    this.invoiceTotal,
+    this.invoicePaid,
+    this.paymentType,
+    required this.transactions,
+    this.balanceBefore,
+    this.balanceAfter,
+    this.audioNotePath,
+  });
+
+  /// هل هذا العنصر فاتورة؟
+  bool get isInvoice => type == GroupedTransactionType.invoice;
+  
+  /// هل هذا العنصر معاملة يدوية؟
+  bool get isManual => type == GroupedTransactionType.manual;
+  
+  /// عدد المعاملات التفصيلية
+  int get transactionCount => transactions.length;
+  
+  /// هل الفاتورة مسددة بالكامل؟
+  bool get isFullyPaid => isInvoice && amount.abs() < 0.01;
+  
+  /// هل الفاتورة نقدية؟
+  bool get isCashInvoice => isInvoice && paymentType == 'نقد';
+  
+  /// هل المبلغ موجب (دين)؟
+  bool get isDebt => amount > 0;
+  
+  /// هل المبلغ سالب (تسديد)؟
+  bool get isPayment => amount < 0;
+
+  @override
+  String toString() {
+    if (isInvoice) {
+      return 'GroupedTransactionItem(فاتورة #$invoiceId, متبقي: $amount, معاملات: $transactionCount)';
+    } else {
+      return 'GroupedTransactionItem(يدوية, مبلغ: $amount, نوع: $transactionType)';
     }
   }
 }

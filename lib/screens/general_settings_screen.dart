@@ -696,6 +696,7 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
       final healthyCount = reports.where((r) => r.isHealthy).length;
       final issueCount = reports.where((r) => !r.isHealthy).length;
       final warningCount = reports.where((r) => r.warnings.isNotEmpty).length;
+      final invoiceIssueCount = reports.fold<int>(0, (sum, r) => sum + r.invoiceIssues.length);
       
       if (!mounted) return;
       
@@ -754,12 +755,20 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                             Text('$warningCount', style: TextStyle(fontWeight: FontWeight.bold, color: warningCount > 0 ? Colors.orange : Colors.green)),
                           ],
                         ),
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('🧾 مشاكل فواتير:'),
+                            Text('$invoiceIssueCount', style: TextStyle(fontWeight: FontWeight.bold, color: invoiceIssueCount > 0 ? Colors.red : Colors.green)),
+                          ],
+                        ),
                       ],
                     ),
                   ),
                 ),
                 
-                if (issueCount == 0 && warningCount == 0) ...[
+                if (issueCount == 0 && warningCount == 0 && invoiceIssueCount == 0) ...[
                   const SizedBox(height: 16),
                   Container(
                     padding: const EdgeInsets.all(12),
@@ -787,12 +796,36 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                 if (issueCount > 0) ...[
                   const SizedBox(height: 16),
                   const Text('العملاء الذين لديهم مشاكل:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.orange[50],
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: Colors.orange.shade200),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.info_outline, color: Colors.orange, size: 16),
+                        SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            'للإصلاح: اذهب لسجل الديون ← اختر العميل ← اضغط زر فحص السلامة المالية 🛡️',
+                            style: TextStyle(fontSize: 11, color: Colors.orange),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                   const SizedBox(height: 8),
                   // عرض العملاء غير السليمين (سواء لديهم issues أو لا)
                   ...reports.where((r) => !r.isHealthy).take(15).map((r) {
                     // تحديد نص المشكلة
                     String issueText = '';
-                    if (r.issues.isNotEmpty) {
+                    if (r.invoiceIssues.isNotEmpty) {
+                      // إذا كانت المشكلة في الفواتير، نعرض تفاصيل أكثر
+                      issueText = '${r.invoiceIssues.length} فاتورة بها مشكلة';
+                    } else if (r.issues.isNotEmpty) {
                       issueText = r.issues.first;
                     } else if (r.calculatedBalance != r.recordedBalance) {
                       issueText = 'الرصيد المسجل (${r.recordedBalance.toStringAsFixed(0)}) ≠ المحسوب (${r.calculatedBalance.toStringAsFixed(0)})';
@@ -807,6 +840,23 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                         children: [
                           Text('• ${r.customerName}', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.red)),
                           Text('  $issueText', style: TextStyle(fontSize: 11, color: Colors.grey[700])),
+                          // عرض تفاصيل مشاكل الفواتير
+                          if (r.invoiceIssues.isNotEmpty)
+                            ...r.invoiceIssues.take(3).map((inv) => Padding(
+                              padding: const EdgeInsets.only(right: 16, top: 2),
+                              child: Text(
+                                '📄 فاتورة #${inv.invoiceId}: فرق ${inv.difference.toStringAsFixed(0)} دينار',
+                                style: TextStyle(fontSize: 10, color: Colors.red[400]),
+                              ),
+                            )),
+                          if (r.invoiceIssues.length > 3)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 16, top: 2),
+                              child: Text(
+                                '... و ${r.invoiceIssues.length - 3} فواتير أخرى',
+                                style: TextStyle(fontSize: 10, color: Colors.grey[500]),
+                              ),
+                            ),
                         ],
                       ),
                     );

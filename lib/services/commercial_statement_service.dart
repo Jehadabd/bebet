@@ -85,6 +85,30 @@ class CommercialStatementService {
       whereArgs: txArgs,
       orderBy: 'transaction_date ASC, id ASC',
     );
+    
+    // 2.5 جلب المعاملات المرتبطة بفواتير لكن الفواتير ليس لها customer_id مطابق
+    // هذا يحل مشكلة الفواتير القديمة التي لم يتم ربطها بالعميل بشكل صحيح
+    String orphanTxWhere = 'customer_id = ? AND invoice_id IS NOT NULL';
+    List<dynamic> orphanTxArgs = [customerId];
+    
+    if (startDate != null) {
+      orphanTxWhere += ' AND DATE(transaction_date) >= DATE(?)';
+      orphanTxArgs.add(startDate.toIso8601String());
+    }
+    if (endDate != null) {
+      orphanTxWhere += ' AND DATE(transaction_date) <= DATE(?)';
+      orphanTxArgs.add(endDate.toIso8601String());
+    }
+    
+    final invoiceRelatedTx = await db.query(
+      'transactions',
+      where: orphanTxWhere,
+      whereArgs: orphanTxArgs,
+      orderBy: 'transaction_date ASC, id ASC',
+    );
+    
+    // جمع invoice_ids من الفواتير التي تم جلبها
+    final fetchedInvoiceIds = invoices.map((inv) => inv['id'] as int).toSet();
 
     // 3. بناء قائمة السطور
     final List<Map<String, dynamic>> entries = [];
@@ -205,6 +229,39 @@ class CommercialStatementService {
         'debtAfter': 0.0,
         'type': 'manual_transaction',
         'invoiceId': null,
+        'paymentType': null,
+        'paidAmount': null,
+      });
+    }
+    
+    // إضافة المعاملات المرتبطة بفواتير لم تظهر في قائمة الفواتير
+    // (فواتير ليس لها customer_id مطابق أو حالتها ليست محفوظة)
+    for (final tx in invoiceRelatedTx) {
+      final invoiceId = tx['invoice_id'] as int?;
+      // تخطي إذا كانت الفاتورة موجودة في القائمة
+      if (invoiceId != null && fetchedInvoiceIds.contains(invoiceId)) {
+        continue;
+      }
+      
+      final txDate = DateTime.parse(tx['transaction_date'] as String);
+      final amount = (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
+      final txType = tx['transaction_type'] as String? ?? '';
+      final note = tx['transaction_note'] as String?;
+      
+      String description = 'فاتورة #$invoiceId';
+      if (note != null && note.isNotEmpty) {
+        description += ' - $note';
+      }
+      
+      entries.add({
+        'date': txDate,
+        'description': description,
+        'invoiceAmount': amount.abs(),
+        'netAmount': amount,
+        'debtBefore': 0.0,
+        'debtAfter': 0.0,
+        'type': 'orphan_invoice_transaction',
+        'invoiceId': invoiceId,
         'paymentType': null,
         'paidAmount': null,
       });
