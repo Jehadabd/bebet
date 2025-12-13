@@ -372,27 +372,7 @@ class _InvoiceHistoryScreenState extends State<InvoiceHistoryScreen> {
                 ]),
                 if (items.isNotEmpty) ...[
                   const SizedBox(height: 12),
-                  _buildInfoCard('الأصناف (${items.length})', [
-                    ...items.map((item) => Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 4),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.inventory_2, size: 16, color: Colors.grey),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              '${item['product_name'] ?? '-'} × ${item['quantity_individual'] ?? item['quantity_large_unit'] ?? 0}',
-                              style: const TextStyle(fontSize: 13),
-                            ),
-                          ),
-                          Text(
-                            '${_formatCurrency(item['item_total'])}',
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                        ],
-                      ),
-                    )),
-                  ]),
+                  _buildItemsTable(items),
                 ],
                 const SizedBox(height: 8),
                 Text(
@@ -414,6 +394,87 @@ class _InvoiceHistoryScreenState extends State<InvoiceHistoryScreen> {
             child: const Text('إغلاق'),
           ),
         ],
+      ),
+    );
+  }
+
+  // بناء جدول الأصناف بشكل منظم
+  Widget _buildItemsTable(List<dynamic> items) {
+    return Card(
+      elevation: 0,
+      color: Colors.grey[100],
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.inventory_2, size: 18, color: Colors.cyan[700]),
+                const SizedBox(width: 8),
+                Text(
+                  'الأصناف (${items.length})',
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+              ],
+            ),
+            const Divider(),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: DataTable(
+                headingRowHeight: 36,
+                dataRowMinHeight: 32,
+                dataRowMaxHeight: 40,
+                columnSpacing: 16,
+                horizontalMargin: 8,
+                headingRowColor: WidgetStateProperty.all(Colors.blue[50]),
+                columns: const [
+                  DataColumn(label: Text('ت', style: TextStyle(fontWeight: FontWeight.bold))),
+                  DataColumn(label: Text('المبلغ', style: TextStyle(fontWeight: FontWeight.bold))),
+                  DataColumn(label: Text('ID', style: TextStyle(fontWeight: FontWeight.bold))),
+                  DataColumn(label: Text('التفاصيل', style: TextStyle(fontWeight: FontWeight.bold))),
+                  DataColumn(label: Text('العدد', style: TextStyle(fontWeight: FontWeight.bold))),
+                  DataColumn(label: Text('نوع البيع', style: TextStyle(fontWeight: FontWeight.bold))),
+                  DataColumn(label: Text('السعر', style: TextStyle(fontWeight: FontWeight.bold))),
+                  DataColumn(label: Text('عدد الوحدات', style: TextStyle(fontWeight: FontWeight.bold))),
+                ],
+                rows: List<DataRow>.generate(
+                  items.length,
+                  (index) {
+                    final item = items[index];
+                    final productId = item['product_id']?.toString() ?? '-';
+                    final productName = item['product_name'] ?? '-';
+                    final quantity = item['quantity_individual'] ?? item['quantity_large_unit'] ?? 0;
+                    final saleType = item['sale_type'] ?? (item['quantity_individual'] != null ? 'مفرد' : 'جملة');
+                    final unitPrice = item['unit_price'] ?? 0;
+                    final unitsInLargeUnit = item['units_in_large_unit'] ?? item['quantity_large_unit'] ?? 0;
+                    final itemTotal = item['item_total'] ?? 0;
+                    
+                    return DataRow(
+                      color: WidgetStateProperty.resolveWith<Color?>((states) {
+                        if (index.isEven) return Colors.grey[50];
+                        return null;
+                      }),
+                      cells: [
+                        DataCell(Text('${index + 1}')),
+                        DataCell(Text(
+                          _formatCurrency(itemTotal),
+                          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green),
+                        )),
+                        DataCell(Text(productId)),
+                        DataCell(Text(productName, style: const TextStyle(fontWeight: FontWeight.w500))),
+                        DataCell(Text(quantity.toString())),
+                        DataCell(Text(saleType)),
+                        DataCell(Text(_formatCurrency(unitPrice))),
+                        DataCell(Text(unitsInLargeUnit.toString())),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -290,8 +290,20 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
   
   // دالة لاعتراض زر الرجوع
   Future<bool> _onWillPop() async {
-    // إذا لم تكن في وضع تعديل أو لا توجد تغييرات غير محفوظة، اخرج مباشرة
-    if (invoiceToManage == null || isViewOnly || !hasUnsavedChanges) {
+    // للفواتير الجديدة: حفظ مؤقت قبل الخروج
+    if (invoiceToManage == null && !isViewOnly && !savedOrSuspended) {
+      // حفظ البيانات مؤقتاً قبل الخروج
+      await _autoSave();
+      return true;
+    }
+    
+    // إذا كانت في وضع العرض فقط، اخرج مباشرة
+    if (isViewOnly) {
+      return true;
+    }
+    
+    // إذا لا توجد تغييرات غير محفوظة، اخرج مباشرة
+    if (!hasUnsavedChanges) {
       return true;
     }
     
@@ -697,6 +709,46 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     }
   }
 
+  // حفظ البيانات فوراً (يُستخدم عند الخروج من الشاشة)
+  void _saveDataImmediately() {
+    try {
+      if (savedOrSuspended || isViewOnly || widget.existingInvoice != null) {
+        return;
+      }
+
+      final data = {
+        'customerName': customerNameController.text,
+        'customerPhone': customerPhoneController.text,
+        'customerAddress': customerAddressController.text,
+        'installerName': installerNameController.text,
+        'selectedDate': selectedDate.toIso8601String(),
+        'paymentType': paymentType,
+        'discount': discount,
+        'paidAmount': paidAmountController.text,
+        'invoiceItems': invoiceItems
+            .map((item) => {
+                  'productName': item.productName,
+                  'unit': item.unit,
+                  'unitPrice': item.unitPrice,
+                  'costPrice': item.costPrice,
+                  'quantityIndividual': item.quantityIndividual,
+                  'quantityLargeUnit': item.quantityLargeUnit,
+                  'appliedPrice': item.appliedPrice,
+                  'itemTotal': item.itemTotal,
+                  'saleType': item.saleType,
+                  'unitsInLargeUnit': item.unitsInLargeUnit,
+                  'uniqueId': item.uniqueId,
+                })
+            .toList(),
+      };
+
+      // حفظ فوري بدون await (fire and forget)
+      storage.write(key: 'temp_invoice_data', value: jsonEncode(data));
+    } catch (e) {
+      print('Error in _saveDataImmediately: $e');
+    }
+  }
+
   // معالج تغيير الحقول مع تأخير
   void _onFieldChanged() {
     try {
@@ -709,7 +761,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         debounceTimer!.cancel();
       }
 
-      debounceTimer = Timer(const Duration(seconds: 1), _autoSave);
+      debounceTimer = Timer(const Duration(milliseconds: 300), _autoSave);
     } catch (e) {
       print('Error in onFieldChanged: $e');
     }
@@ -741,25 +793,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
   }
 
   Future<void> _loadInvoiceItems() async {
-    // 🔍 DEBUG: طباعة عند تحميل الأصناف
-    print('═══════════════════════════════════════════════════════════════════');
-    print('🔍 DEBUG LOAD ITEMS: بدء تحميل أصناف الفاتورة');
-    print('   - invoiceToManage: ${invoiceToManage?.id}');
-    
     try {
       if (invoiceToManage != null && invoiceToManage!.id != null) {
         final items = await db.getInvoiceItems(invoiceToManage!.id!);
-        
-        print('🔍 DEBUG LOAD ITEMS: تم جلب ${items.length} صنف');
-        for (int i = 0; i < items.length; i++) {
-          final item = items[i];
-          print('   [$i] ${item.productName}:');
-          print('       - quantity_individual: ${item.quantityIndividual}');
-          print('       - quantity_large_unit: ${item.quantityLargeUnit}');
-          print('       - applied_price: ${item.appliedPrice}');
-          print('       - item_total: ${item.itemTotal}');
-          print('       - uniqueId: ${item.uniqueId}');
-        }
         
         // تهيئة الـ controllers لكل صنف
         for (var item in items) {
@@ -777,15 +813,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
           _totalAmountController.text = formatNumber(itemsTotal + loadingFee);
         });
         
-        print('🔍 DEBUG LOAD ITEMS: تم تحميل الأصناف في invoiceItems');
-        print('   - عدد الأصناف في invoiceItems: ${invoiceItems.length}');
-        print('═══════════════════════════════════════════════════════════════════');
-        
         _scheduleLiveDebtSync();
       }
     } catch (e) {
-      print('❌ Error loading invoice items: $e');
-      print('═══════════════════════════════════════════════════════════════════');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('حدث خطأ أثناء تحميل أصناف الفاتورة: $e')),
@@ -809,11 +839,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
       // إلغاء المؤقت
       debounceTimer?.cancel();
 
-      // الحفظ النهائي عند إغلاق الشاشة
+      // الحفظ الفوري عند إغلاق الشاشة (بدون انتظار)
       if (!savedOrSuspended &&
           widget.existingInvoice == null &&
           !isViewOnly) {
-        _autoSave();
+        // حفظ فوري بدون debounce
+        _saveDataImmediately();
       }
 
       customerNameController.dispose();
@@ -1415,23 +1446,69 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     );
   }
 
-  // دالة إلغاء التعديل
-  void _cancelEdit() {
+  // دالة إلغاء التعديل - تستعيد جميع البيانات الأصلية
+  Future<void> _cancelEdit() async {
+    if (invoiceToManage == null) return;
+    
+    // جلب الفاتورة الأصلية من قاعدة البيانات
+    final originalInvoice = await db.getInvoiceById(invoiceToManage!.id!);
+    if (originalInvoice == null) return;
+    
     setState(() {
+      // استعادة بيانات العميل
+      customerNameController.text = originalInvoice.customerName;
+      customerPhoneController.text = originalInvoice.customerPhone ?? '';
+      customerAddressController.text = originalInvoice.customerAddress ?? '';
+      
+      // استعادة بيانات الفني
+      installerNameController.text = originalInvoice.installerName ?? '';
+      
+      // استعادة التاريخ
+      selectedDate = originalInvoice.invoiceDate;
+      
+      // استعادة نوع الدفع
+      paymentType = originalInvoice.paymentType;
+      
+      // استعادة الخصم
+      discount = originalInvoice.discount;
+      discountController.text = formatNumber(discount);
+      
+      // استعادة المبلغ المدفوع
+      paidAmountController.text = formatNumber(originalInvoice.amountPaidOnInvoice);
+      
+      // استعادة أجور التحميل
+      final itemsTotal = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+      final loadingFee = originalInvoice.totalAmount - itemsTotal;
+      loadingFeeController.text = loadingFee > 0 ? formatNumber(loadingFee) : '';
+      
+      // استعادة معدل النقاط
+      _installerPointsRate = originalInvoice.pointsRate;
+      _installerPointsRateController.text = _installerPointsRate.toString();
+      
+      // تحديث الفاتورة المُدارة
+      invoiceToManage = originalInvoice;
+      
+      // العودة لوضع العرض فقط
       isViewOnly = true;
+      hasUnsavedChanges = false;
     });
     
-    // إعادة تحميل البيانات الأصلية
-    _loadInvoiceItems();
+    // إعادة تحميل الأصناف من قاعدة البيانات
+    await _loadInvoiceItems();
+    
+    // تحديث الإجمالي
+    _recalculateTotals();
     
     // إظهار رسالة تأكيد
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('تم إلغاء التعديل - تم استعادة البيانات الأصلية'),
-        backgroundColor: Colors.orange,
-        duration: Duration(seconds: 2),
-      ),
-    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('تم إلغاء التعديل - تم استعادة جميع البيانات الأصلية'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
   // فحص إذا كانت التسويات الراجعة تتجاوز المبلغ المتبقي الفعلي
@@ -2023,14 +2100,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     for (final it in _settlementItems) {
       final delta = (_settlementIsDebit ? 1 : -1) * (it.itemTotal);
       final paymentType = _settlementIsDebit ? _settlementPaymentType : 'دين';
-      
-      print('=== DEBUG SAVING SETTLEMENT ITEM ===');
-      print('DEBUG: _settlementIsDebit = $_settlementIsDebit');
-      print('DEBUG: _settlementPaymentType = $_settlementPaymentType');
-      print('DEBUG: final paymentType = $paymentType');
-      print('DEBUG: productName = ${it.productName}');
-      print('DEBUG: itemTotal = ${it.itemTotal}');
-      print('=== END DEBUG SAVING SETTLEMENT ITEM ===');
       
       await db.insertInvoiceAdjustment(InvoiceAdjustment(
         invoiceId: invoiceToManage!.id!,
@@ -3588,7 +3657,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                         // استخدم البيانات المحدثة من invoiceItems بدلاً من item الأصلي
                         final currentItem = invoiceItems[index];
                         final isComplete = _isInvoiceItemComplete(currentItem);
-                        print('🔍 DEBUG onPriceSubmitted: index=$index, item=${currentItem.productName}, complete=$isComplete');
                         
                         // تحقق من اكتمال جميع الحقول قبل الانتقال
                         if (!isComplete) {
@@ -3636,22 +3704,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                         // انتقل إلى حقل التفاصيل في الصف التالي بعد تأخير قصير للسماح ببناء الـ widget
                         Future.delayed(const Duration(milliseconds: 100), () {
                           if (mounted && focusNodesList.length > index + 1) {
-                            print('🔍 DEBUG: نقل التركيز إلى الصف ${index + 1}');
                             focusNodesList[index + 1].details.requestFocus();
                           }
                         });
                       },
                       onItemUpdated: (updatedItem) {
-                        // 🔍 DEBUG: طباعة تحديث الصنف في الشاشة الرئيسية
-                        print('═══════════════════════════════════════════════════════════════════');
-                        print('🔍 DEBUG SCREEN UPDATE: استلام تحديث صنف');
-                        print('   - الصنف: ${updatedItem.productName}');
-                        print('   - الكمية (individual): ${updatedItem.quantityIndividual}');
-                        print('   - الكمية (large): ${updatedItem.quantityLargeUnit}');
-                        print('   - السعر: ${updatedItem.appliedPrice}');
-                        print('   - الإجمالي: ${updatedItem.itemTotal}');
-                        print('   - uniqueId: ${updatedItem.uniqueId}');
-                        
                         // تحديد أن هناك تغييرات غير محفوظة
                         if (invoiceToManage != null && !isViewOnly) {
                           hasUnsavedChanges = true;
@@ -3661,32 +3718,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                           final i = invoiceItems.indexWhere(
                               (it) => it.uniqueId == updatedItem.uniqueId);
                           
-                          print('🔍 DEBUG SCREEN UPDATE: موقع الصنف في القائمة: $i');
-                          
                           if (i != -1) {
-                            print('🔍 DEBUG SCREEN UPDATE: قبل التحديث - الكمية: ${invoiceItems[i].quantityIndividual ?? invoiceItems[i].quantityLargeUnit}');
                             invoiceItems[i] = updatedItem;
-                            print('🔍 DEBUG SCREEN UPDATE: بعد التحديث - الكمية: ${invoiceItems[i].quantityIndividual ?? invoiceItems[i].quantityLargeUnit}');
-                          } else {
-                            print('🔍 DEBUG SCREEN UPDATE: ⚠️ لم يتم العثور على الصنف في القائمة!');
                           }
                           
                           _recalculateTotals();
-                          _calculateProfit(); // Update profit on item update
-                          // ملاحظة: لا نضيف صف جديد هنا ولا ننقل التركيز
-                          // نقل التركيز يحدث فقط عند الضغط على Enter في حقل السعر (عبر onPriceSubmitted)
+                          _calculateProfit();
                         });
                         
-                        print('🔍 DEBUG SCREEN UPDATE: حالة القائمة بعد التحديث:');
-                        for (int idx = 0; idx < invoiceItems.length; idx++) {
-                          final itm = invoiceItems[idx];
-                          if (itm.productName.isNotEmpty) {
-                            print('   [$idx] ${itm.productName}: ${itm.quantityIndividual ?? itm.quantityLargeUnit} × ${itm.appliedPrice} = ${itm.itemTotal}');
-                          }
-                        }
-                        print('═══════════════════════════════════════════════════════════════════');
-                        
-        _scheduleLiveDebtSync();
+                        _scheduleLiveDebtSync();
                       },
                       onItemRemovedByUid: _removeInvoiceItemByUid,
                     );
@@ -4565,9 +4605,9 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     });
   }
   
-  // دالة للتعامل مع تغيير التركيز على حقل التفاصيل (للـ debug فقط)
+  // دالة للتعامل مع تغيير التركيز على حقل التفاصيل
   void _onDetailsFocusChanged() {
-    print('🔍 DEBUG _onDetailsFocusChanged: _detailsFocusNode.hasFocus=${_detailsFocusNode.hasFocus}');
+    // يمكن إضافة منطق هنا إذا لزم الأnged: _detailsFocusNode.hasFocus=${_detailsFocusNode.hasFocus}');
   }
 
   @override

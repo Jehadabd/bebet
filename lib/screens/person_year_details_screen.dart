@@ -5,6 +5,7 @@ import '../services/database_service.dart';
 import 'person_month_details_screen.dart';
 import '../models/person_data.dart' show PersonMonthData;
 import 'package:intl/intl.dart';
+import 'customer_products_dialog.dart';
 
 class PersonYearDetailsScreen extends StatefulWidget {
   final Customer customer;
@@ -66,6 +67,17 @@ class _PersonYearDetailsScreenState extends State<PersonYearDetailsScreen> {
     return '${year}-${month.toString().padLeft(2, '0')}';
   }
 
+  void _showCumulativeSales() {
+    showDialog(
+      context: context,
+      builder: (context) => CustomerProductsDialog(
+        customerId: widget.customer.id!,
+        customerName: widget.customer.name,
+        year: widget.year,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -116,17 +128,44 @@ class _PersonYearDetailsScreenState extends State<PersonYearDetailsScreen> {
                     ],
                   ),
                 )
-              : RefreshIndicator(
-                  onRefresh: _loadMonthlyData,
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: 12, // 12 شهر
-                    itemBuilder: (context, index) {
-                      final month = index + 1;
-                      final monthData = _monthlyData[month];
-                      return _buildMonthCard(month, monthData);
-                    },
-                  ),
+              : Column(
+                  children: [
+                    // زر المبيعات التراكمية
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: _showCumulativeSales,
+                          icon: const Icon(Icons.analytics),
+                          label: const Text('المبيعات التراكمية (تفصيل المنتجات)'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF2196F3),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    // قائمة الأشهر
+                    Expanded(
+                      child: RefreshIndicator(
+                        onRefresh: _loadMonthlyData,
+                        child: ListView.builder(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          itemCount: 12, // 12 شهر
+                          itemBuilder: (context, index) {
+                            final month = index + 1;
+                            final monthData = _monthlyData[month];
+                            return _buildMonthCard(month, monthData);
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
     );
   }

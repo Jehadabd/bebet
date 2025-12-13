@@ -292,14 +292,12 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
       final savedItems = await db.getInvoiceItems(invoiceId);
       
       if (savedInvoice == null) {
-        print('⚠️ تحذير: لم يتم العثور على الفاتورة بعد الحفظ!');
         return false;
       }
       
       // التحقق من تطابق عدد الأصناف
       final expectedItemsCount = invoiceItems.where(_isInvoiceItemComplete).length;
       if (savedItems.length != expectedItemsCount) {
-        print('⚠️ تحذير: عدد الأصناف المحفوظة (${savedItems.length}) ≠ المتوقع ($expectedItemsCount)');
         return false;
       }
       
@@ -308,14 +306,11 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
       final expectedTotal = invoiceItems.where(_isInvoiceItemComplete).fold(0.0, (sum, item) => sum + item.itemTotal);
       
       if ((savedTotal - expectedTotal).abs() > 0.01) {
-        print('⚠️ تحذير: إجمالي الأصناف المحفوظة ($savedTotal) ≠ المتوقع ($expectedTotal)');
         return false;
       }
       
-      print('✅ تم التحقق من صحة الفاتورة بعد الحفظ');
       return true;
     } catch (e) {
-      print('⚠️ خطأ في التحقق بعد الحفظ: $e');
       return false;
     }
   }
@@ -705,24 +700,6 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
         await txn
             .delete('invoice_items', where: 'invoice_id = ?', whereArgs: [invoiceId]);
         
-        // ═══════════════════════════════════════════════════════════════════════════
-        // 🔍 DEBUG: طباعة الأصناف قبل الحفظ
-        // ═══════════════════════════════════════════════════════════════════════════
-        print('═══════════════════════════════════════════════════════════════════');
-        print('🔍 DEBUG SAVE: بدء حفظ الأصناف للفاتورة رقم $invoiceId');
-        print('🔍 DEBUG SAVE: عدد الأصناف في الذاكرة: ${invoiceItems.length}');
-        for (int i = 0; i < invoiceItems.length; i++) {
-          final item = invoiceItems[i];
-          print('🔍 DEBUG SAVE: صنف [$i]: ${item.productName}');
-          print('   - الكمية (individual): ${item.quantityIndividual}');
-          print('   - الكمية (large): ${item.quantityLargeUnit}');
-          print('   - السعر: ${item.appliedPrice}');
-          print('   - الإجمالي: ${item.itemTotal}');
-          print('   - نوع البيع: ${item.saleType}');
-          print('   - uniqueId: ${item.uniqueId}');
-        }
-        print('═══════════════════════════════════════════════════════════════════');
-
         final products = await txn.rawQuery('SELECT * FROM products');
         final productMap = <String, Map<String, dynamic>>{};
         for (var productData in products) {
@@ -766,21 +743,11 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
             var itemMap = invoiceItem.toMap();
             itemMap.remove('id');
             
-            // 🔍 DEBUG: طباعة البيانات التي سيتم حفظها
-            print('🔍 DEBUG SAVE TO DB: حفظ صنف: ${item.productName}');
-            print('   - quantity_individual: ${itemMap['quantity_individual']}');
-            print('   - quantity_large_unit: ${itemMap['quantity_large_unit']}');
-            print('   - applied_price: ${itemMap['applied_price']}');
-            print('   - item_total: ${itemMap['item_total']}');
-            
             batch.insert('invoice_items', itemMap);
             savedItemsCount++;
           }
         }
         await batch.commit(noResult: true);
-        
-        print('🔍 DEBUG SAVE: تم حفظ $savedItemsCount صنف في قاعدة البيانات');
-        print('═══════════════════════════════════════════════════════════════════');
 
         // ═══════════════════════════════════════════════════════════════════════════
         // ✅ منطق الدين المحسّن - يتعامل مع جميع الحالات
@@ -817,7 +784,6 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
               }
             }
           }
-          print('🔍 DEBUG: الدين الحالي من المعاملات = $currentDebtFromTx');
           
           // ═══════════════════════════════════════════════════════════════════════
           // حالة 1: تغيير من دين إلى نقد - إلغاء الدين القديم
@@ -851,7 +817,6 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                   'transaction_uuid': txUuid,
                   'created_at': DateTime.now().toIso8601String(),
                 });
-                print('✅ تم إلغاء دين $currentDebtFromTx من العميل $oldCustomerId (تحويل لنقد)');
               }
             }
           }
@@ -891,7 +856,6 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                 'transaction_uuid': txUuid,
                 'created_at': DateTime.now().toIso8601String(),
               });
-              print('✅ تم إضافة دين $newRemaining للعميل ${customer.id} (تحويل من نقد)');
             }
           }
           
@@ -929,7 +893,6 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                   'transaction_uuid': txUuid1,
                   'created_at': DateTime.now().toIso8601String(),
                 });
-                print('✅ تم خصم دين $currentDebtFromTx من العميل القديم $oldCustomerId');
               }
             }
             
@@ -960,7 +923,6 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                   'transaction_uuid': txUuid2,
                   'created_at': DateTime.now().toIso8601String(),
                 });
-                print('✅ تم إضافة دين $newRemaining للعميل الجديد $newCustomerId');
               }
             }
           }
@@ -973,7 +935,6 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                    (oldCustomerId == newCustomerId || oldCustomerId == null)) {
             // حساب الفرق بين الدين الجديد والدين الحالي من المعاملات
             final debtChange = newRemaining - currentDebtFromTx;
-            print('🔍 DEBUG: الدين الجديد = $newRemaining, الدين الحالي من المعاملات = $currentDebtFromTx, الفرق = $debtChange');
             
             if (debtChange.abs() > 0.001) {
               // جلب رصيد العميل الحالي من قاعدة البيانات
@@ -1000,7 +961,6 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                 'transaction_uuid': txUuid,
                 'created_at': DateTime.now().toIso8601String(),
               });
-              print('✅ تم تعديل دين بفارق $debtChange للعميل ${customer.id}');
             }
           }
         }
@@ -1040,7 +1000,6 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
               'transaction_uuid': txUuid,
               'created_at': DateTime.now().toIso8601String(),
             });
-            print('✅ تم إضافة دين $newRemaining للعميل ${customer.id} (فاتورة جديدة)');
           }
         }
 
@@ -1134,8 +1093,6 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
             );
           }
           
-          print('✅ تم تسجيل التدقيق للفاتورة ${savedInvoice!.id} والعميل $customerId');
-          
           // 📸 حفظ النسخة الأصلية عند إنشاء فاتورة جديدة
           if (isNewInvoice) {
             try {
@@ -1144,9 +1101,8 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                 snapshotType: 'original',
                 notes: 'النسخة الأصلية عند الإنشاء',
               );
-              print('✅ تم حفظ النسخة الأصلية للفاتورة ${savedInvoice!.id}');
             } catch (e) {
-              print('تحذير: فشل حفظ النسخة الأصلية: $e');
+              // تجاهل خطأ حفظ النسخة الأصلية
             }
           } else {
             // 📸 حفظ نسخة بعد التعديل
@@ -1156,14 +1112,12 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                 snapshotType: 'after_edit',
                 notes: 'بعد التعديل - الإجمالي: $totalAmount',
               );
-              print('✅ تم حفظ نسخة بعد التعديل للفاتورة ${savedInvoice!.id}');
             } catch (e) {
-              print('تحذير: فشل حفظ نسخة بعد التعديل: $e');
+              // تجاهل خطأ حفظ نسخة بعد التعديل
             }
           }
         }
       } catch (auditError) {
-        print('تحذير: فشل تسجيل التدقيق: $auditError');
         // لا نوقف العملية إذا فشل التسجيل
       }
 
@@ -1189,7 +1143,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
             // 🔒 تحسين الأمان: التحقق بعد الحفظ
             final verificationPassed = await _verifyInvoiceAfterSave(savedInvoice!.id!);
             if (!verificationPassed) {
-              print('⚠️ تحذير: فشل التحقق بعد الحفظ - قد تكون هناك مشكلة في البيانات');
+              // فشل التحقق بعد الحفظ - قد تكون هناك مشكلة في البيانات
             }
             
             final freshItems = await db.getInvoiceItems(savedInvoice!.id!);
@@ -1203,9 +1157,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
               invoiceToManage = savedInvoice;
               isViewOnly = true;
             });
-            print('✅ تم إعادة تحميل ${freshItems.length} صنف من قاعدة البيانات');
           } catch (e) {
-            print('⚠️ فشل إعادة تحميل الأصناف: $e');
             setState(() {
               invoiceToManage = savedInvoice;
               isViewOnly = true;
@@ -1225,8 +1177,6 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
 
       return savedInvoice;
     } catch (e) {
-      print('خطأ فادح ومُحاط بمعاملة عند حفظ الفاتورة: $e');
-      
       // ═══════════════════════════════════════════════════════════════════════════
       // 🔒 معالجة خاصة لخطأ التعديل المتزامن
       // ═══════════════════════════════════════════════════════════════════════════
@@ -1305,10 +1255,9 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           final freshItems = await db.getInvoiceItems(invoiceToManage!.id!);
           if (freshItems.isNotEmpty) {
             itemsForPdf = freshItems;
-            print('✅ PDF: تم جلب ${freshItems.length} صنف من قاعدة البيانات');
           }
         } catch (e) {
-          print('⚠️ PDF: فشل جلب الأصناف من قاعدة البيانات، استخدام الذاكرة: $e');
+          // استخدام الأصناف من الذاكرة في حالة الفشل
         }
       }
 

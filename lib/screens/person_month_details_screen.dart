@@ -7,6 +7,7 @@ import '../services/database_service.dart';
 import 'invoice_details_screen.dart';
 import '../services/database_service.dart' show InvoiceWithProductData;
 import 'package:intl/intl.dart';
+import 'customer_products_dialog.dart';
 
 class PersonMonthDetailsScreen extends StatefulWidget {
   final Customer customer;
@@ -86,6 +87,18 @@ class _PersonMonthDetailsScreenState extends State<PersonMonthDetailsScreen> {
   }
 
   String _numericMonth(int year, int month) => '${year}-${month.toString().padLeft(2, '0')}';
+
+  void _showCumulativeSales() {
+    showDialog(
+      context: context,
+      builder: (context) => CustomerProductsDialog(
+        customerId: widget.customer.id!,
+        customerName: widget.customer.name,
+        year: widget.year,
+        month: widget.month,
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -224,6 +237,24 @@ class _PersonMonthDetailsScreenState extends State<PersonMonthDetailsScreen> {
                             ),
                           ),
                         ),
+                        // زر المبيعات التراكمية للشهر
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: _showCumulativeSales,
+                            icon: const Icon(Icons.analytics),
+                            label: const Text('تفصيل المنتجات المشتراة'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF2196F3),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
                         if (_invoices.isNotEmpty) ...[
                           _buildSectionHeader('الفواتير', Icons.receipt_long),
                           const SizedBox(height: 12),

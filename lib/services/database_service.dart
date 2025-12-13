@@ -2958,22 +2958,90 @@ class DatabaseService {
       int groupedTransactionCount = 0;
       
       // 3. معالجة المعاملات اليدوية (invoice_id = null)
+      // تجميعها في مجموعتين: إضافة دين وتسديد
       final manualTransactions = groupedByInvoice[null] ?? [];
+      
+      // فصل المعاملات اليدوية إلى إضافة دين وتسديد
+      final List<Map<String, dynamic>> manualDebtTransactions = [];
+      final List<Map<String, dynamic>> manualPaymentTransactions = [];
+      
       for (final tx in manualTransactions) {
         final amount = (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
         groupedTotalAmount += amount;
         groupedTransactionCount++;
         
+        if (amount > 0) {
+          manualDebtTransactions.add(tx);
+        } else {
+          manualPaymentTransactions.add(tx);
+        }
+      }
+      
+      // إضافة مجموعة معاملات الإضافة اليدوية (إذا وجدت)
+      if (manualDebtTransactions.isNotEmpty) {
+        double totalDebtAmount = 0.0;
+        DateTime? latestDate;
+        double? firstBalanceBefore;
+        double? lastBalanceAfter;
+        
+        // ترتيب حسب التاريخ
+        manualDebtTransactions.sort((a, b) {
+          final dateA = DateTime.parse(a['transaction_date'] as String);
+          final dateB = DateTime.parse(b['transaction_date'] as String);
+          return dateA.compareTo(dateB);
+        });
+        
+        for (final tx in manualDebtTransactions) {
+          totalDebtAmount += (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
+        }
+        
+        latestDate = DateTime.parse(manualDebtTransactions.last['transaction_date'] as String);
+        firstBalanceBefore = (manualDebtTransactions.first['balance_before_transaction'] as num?)?.toDouble();
+        lastBalanceAfter = (manualDebtTransactions.last['new_balance_after_transaction'] as num?)?.toDouble();
+        
         result.add(GroupedTransactionItem(
-          type: GroupedTransactionType.manual,
-          date: DateTime.parse(tx['transaction_date'] as String),
-          amount: amount,
-          description: tx['transaction_note'] as String? ?? _getTransactionTypeDescription(tx['transaction_type'] as String?),
-          transactionType: tx['transaction_type'] as String?,
-          transactions: [DebtTransaction.fromMap(tx)],
-          balanceBefore: (tx['balance_before_transaction'] as num?)?.toDouble(),
-          balanceAfter: (tx['new_balance_after_transaction'] as num?)?.toDouble(),
-          audioNotePath: tx['audio_note_path'] as String?,
+          type: GroupedTransactionType.manualDebtGroup,
+          date: latestDate,
+          amount: totalDebtAmount,
+          description: 'معاملات يدوية (إضافة دين)',
+          transactionType: 'manual_debt_group',
+          transactions: manualDebtTransactions.map((tx) => DebtTransaction.fromMap(tx)).toList(),
+          balanceBefore: firstBalanceBefore,
+          balanceAfter: lastBalanceAfter,
+        ));
+      }
+      
+      // إضافة مجموعة معاملات التسديد اليدوية (إذا وجدت)
+      if (manualPaymentTransactions.isNotEmpty) {
+        double totalPaymentAmount = 0.0;
+        DateTime? latestDate;
+        double? firstBalanceBefore;
+        double? lastBalanceAfter;
+        
+        // ترتيب حسب التاريخ
+        manualPaymentTransactions.sort((a, b) {
+          final dateA = DateTime.parse(a['transaction_date'] as String);
+          final dateB = DateTime.parse(b['transaction_date'] as String);
+          return dateA.compareTo(dateB);
+        });
+        
+        for (final tx in manualPaymentTransactions) {
+          totalPaymentAmount += (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
+        }
+        
+        latestDate = DateTime.parse(manualPaymentTransactions.last['transaction_date'] as String);
+        firstBalanceBefore = (manualPaymentTransactions.first['balance_before_transaction'] as num?)?.toDouble();
+        lastBalanceAfter = (manualPaymentTransactions.last['new_balance_after_transaction'] as num?)?.toDouble();
+        
+        result.add(GroupedTransactionItem(
+          type: GroupedTransactionType.manualPaymentGroup,
+          date: latestDate,
+          amount: totalPaymentAmount,
+          description: 'معاملات يدوية (تسديد)',
+          transactionType: 'manual_payment_group',
+          transactions: manualPaymentTransactions.map((tx) => DebtTransaction.fromMap(tx)).toList(),
+          balanceBefore: firstBalanceBefore,
+          balanceAfter: lastBalanceAfter,
         ));
       }
       
@@ -9538,8 +9606,10 @@ class VerifiedBalanceResult {
 
 /// نوع العنصر المجمع
 enum GroupedTransactionType {
-  manual,   // معاملة يدوية
-  invoice,  // فاتورة (مجمعة)
+  manual,           // معاملة يدوية (للعرض التفصيلي)
+  invoice,          // فاتورة (مجمعة)
+  manualDebtGroup,  // مجموعة معاملات يدوية (إضافة دين)
+  manualPaymentGroup, // مجموعة معاملات يدوية (تسديد)
 }
 
 /// عنصر معاملة مجمع - يمثل إما معاملة يدوية أو فاتورة مجمعة
@@ -9604,6 +9674,15 @@ class GroupedTransactionItem {
   
   /// هل هذا العنصر معاملة يدوية؟
   bool get isManual => type == GroupedTransactionType.manual;
+  
+  /// هل هذا العنصر مجموعة معاملات يدوية (إضافة دين)؟
+  bool get isManualDebtGroup => type == GroupedTransactionType.manualDebtGroup;
+  
+  /// هل هذا العنصر مجموعة معاملات يدوية (تسديد)؟
+  bool get isManualPaymentGroup => type == GroupedTransactionType.manualPaymentGroup;
+  
+  /// هل هذا العنصر مجموعة معاملات يدوية (أي نوع)؟
+  bool get isManualGroup => isManualDebtGroup || isManualPaymentGroup;
   
   /// عدد المعاملات التفصيلية
   int get transactionCount => transactions.length;

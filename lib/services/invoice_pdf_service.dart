@@ -13,6 +13,7 @@ import 'package:alnaser/services/settings_manager.dart';
 import 'package:alnaser/models/app_settings.dart';
 import 'package:alnaser/models/font_settings.dart';
 import 'package:alnaser/services/font_manager.dart';
+import 'package:alnaser/services/pdf_header.dart';
 
 class InvoicePdfService {
   static Future<pw.Document> generateInvoicePdf({
@@ -262,6 +263,7 @@ class InvoicePdfService {
   }
 
   // وثيقة تجهيز بدون أسعار أو مبالغ (تسلسل، ID، التفاصيل، العدد، نوع البيع فقط)
+  // الهيدر مثل الفاتورة العادية تماماً باستخدام buildPdfHeader
   static Future<pw.Document> generatePickingListPdf({
     required List<InvoiceItem> invoiceItems,
     required List<Product> allProducts,
@@ -274,7 +276,7 @@ class InvoicePdfService {
     required AppSettings appSettings,
   }) async {
     final pdf = pw.Document();
-    const itemsPerPage = 28;
+    const itemsPerPage = 20; // عدد أقل لأن الهيدر أكبر
     final totalPages = (invoiceItems.length / itemsPerPage).ceil().clamp(1, 9999);
     for (var pageIndex = 0; pageIndex < totalPages; pageIndex++) {
       final start = pageIndex * itemsPerPage;
@@ -285,7 +287,7 @@ class InvoicePdfService {
       pdf.addPage(
         pw.Page(
           pageFormat: PdfPageFormat.a4,
-          margin: const pw.EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          margin: pw.EdgeInsets.only(top: 0, bottom: 2, left: 10, right: 10),
           build: (pw.Context context) {
             return pw.Directionality(
               textDirection: pw.TextDirection.rtl,
@@ -294,79 +296,94 @@ class InvoicePdfService {
                   pw.Column(
                     crossAxisAlignment: pw.CrossAxisAlignment.start,
                     children: [
-                  pw.Row(
-                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                    children: [
-                      pw.Column(
-                        crossAxisAlignment: pw.CrossAxisAlignment.start,
+                      // ═══════════════════════════════════════════════════════════════
+                      // استخدام buildPdfHeader للهيدر الموحد مع الفاتورة العادية
+                      // ═══════════════════════════════════════════════════════════════
+                      buildPdfHeader(font, alnaserFont, logoImage, appSettings: appSettings),
+                      // عنوان قائمة التجهيز
+                      pw.Center(
+                        child: pw.Container(
+                          padding: const pw.EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                          decoration: pw.BoxDecoration(
+                            border: pw.Border.all(width: 1),
+                            borderRadius: pw.BorderRadius.circular(5),
+                          ),
+                          child: pw.Text(
+                            'قائمة تجهيز - فاتورة #$invoiceId',
+                            style: pw.TextStyle(
+                              font: alnaserFont,
+                              fontFallback: [font],
+                              fontSize: 16,
+                              fontWeight: pw.FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                      pw.SizedBox(height: 4),
+                      // معلومات العميل والتاريخ
+                      pw.Row(
+                        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                         children: [
-                          pw.Text('قائمة تجهيز - فاتورة #$invoiceId',
-                              style: pw.TextStyle(
-                                  font: alnaserFont,
-                                  fontSize: 20,
-                                  fontWeight: pw.FontWeight.bold)),
-                          pw.SizedBox(height: 4),
-                          pw.Text('العميل: $customerName',
-                              style: pw.TextStyle(font: font, fontSize: 12)),
+                          pw.Text('السيد: $customerName',
+                              style: pw.TextStyle(font: font, fontFallback: [font], fontSize: 12)),
                           pw.Text(
-                              'التاريخ: ${selectedDate.year}/${selectedDate.month}/${selectedDate.day}',
-                              style: pw.TextStyle(font: font, fontSize: 12)),
-                          ...appSettings.phoneNumbers.map((number) => pw.Text(number, style: pw.TextStyle(font: font, fontSize: 12))),
+                            'التاريخ: ${selectedDate.year}/${selectedDate.month}/${selectedDate.day}',
+                            style: pw.TextStyle(font: font, fontFallback: [font], fontSize: 11),
+                          ),
                         ],
                       ),
-                      pw.Container(width: 80, height: 80, child: pw.Image(logoImage))
+                      pw.Divider(height: 5, thickness: 0.5),
+                      // ═══════════════════════════════════════════════════════════════
+                      // جدول عناصر التجهيز
+                      // ═══════════════════════════════════════════════════════════════
+                      pw.Table(
+                        border: pw.TableBorder.all(width: 0.2),
+                        columnWidths: const {
+                          0: pw.FixedColumnWidth(70),  // التأشيرة (أقصى اليسار)
+                          1: pw.FixedColumnWidth(70),  // العدد
+                          2: pw.FixedColumnWidth(70),  // نوع البيع
+                          3: pw.FlexColumnWidth(1.2),  // التفاصيل
+                          4: pw.FixedColumnWidth(60),  // ID
+                          5: pw.FixedColumnWidth(22),  // ت (أقصى اليمين)
+                        },
+                        defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
+                        children: [
+                          pw.TableRow(children: [
+                            headerCell('التأشيرة', font),
+                            headerCell('العدد', font, color: PdfColor.fromInt(appSettings.itemQuantityColor), fontSettings: appSettings.fontSettings.quantity),
+                            headerCell('نوع البيع', font),
+                            headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor), fontSettings: appSettings.fontSettings.productDetails),
+                            headerCell('ID', font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.productId),
+                            headerCell('ت', font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.serialNumber),
+                          ]),
+                          ...pageItems.asMap().entries.map((entry) {
+                            final idx = entry.key + (pageIndex * itemsPerPage);
+                            final item = entry.value;
+                            final quantity = (item.quantityIndividual ?? item.quantityLargeUnit ?? 0.0);
+                            Product? product;
+                            try {
+                              product = allProducts.firstWhere((p) => p.name == item.productName);
+                            } catch (_) {}
+                            return pw.TableRow(children: [
+                              dataCell('', font), // التأشيرة
+                              dataCell('${formatNumber(quantity, forceDecimal: true)}', font, color: PdfColor.fromInt(appSettings.itemQuantityColor), fontSettings: appSettings.fontSettings.quantity),
+                              dataCell(item.saleType ?? '', font),
+                              dataCell(item.productName, font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor), fontSettings: appSettings.fontSettings.productDetails),
+                              dataCell(formatProductId(product?.id), font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.productId),
+                              dataCell('${idx + 1}', font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.serialNumber),
+                            ]);
+                          }).toList(),
+                        ],
+                      ),
+                      pw.SizedBox(height: 6),
+                      pw.Align(
+                        alignment: pw.Alignment.center,
+                        child: pw.Text('صفحة ${pageIndex + 1} من $totalPages',
+                            style: pw.TextStyle(font: font, fontFallback: [font], fontSize: 11)),
+                      ),
                     ],
                   ),
-                  pw.SizedBox(height: 6),
-                  // جدول عناصر التجهيز بالعكس بصرياً: نرتب الأعمدة من اليسار إلى اليمين كالتالي
-                  // التأشيرة، العدد، نوع البيع، التفاصيل، ID، ت (ليظهر ت أقصى اليمين)
-                  pw.Table(
-                    border: pw.TableBorder.all(width: 0.2),
-                    columnWidths: const {
-                      0: pw.FixedColumnWidth(70),  // التأشيرة (أقصى اليسار)
-                      1: pw.FixedColumnWidth(70),  // العدد
-                      2: pw.FixedColumnWidth(70),  // نوع البيع
-                      3: pw.FlexColumnWidth(1.2),  // التفاصيل
-                      4: pw.FixedColumnWidth(60),  // ID
-                      5: pw.FixedColumnWidth(22),  // ت (أقصى اليمين)
-                    },
-                    defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
-                    children: [
-                       pw.TableRow(children: [
-                         headerCell('التأشيرة', font),
-                         headerCell('العدد', font, color: PdfColor.fromInt(appSettings.itemQuantityColor), fontSettings: appSettings.fontSettings.quantity),
-                         headerCell('نوع البيع', font),
-                         headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor), fontSettings: appSettings.fontSettings.productDetails),
-                         headerCell('ID', font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.productId),
-                         headerCell('ت', font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.serialNumber),
-                       ]),
-                      ...pageItems.asMap().entries.map((entry) {
-                        final idx = entry.key + (pageIndex * itemsPerPage);
-                        final item = entry.value;
-                        final quantity = (item.quantityIndividual ?? item.quantityLargeUnit ?? 0.0);
-                        Product? product;
-                        try {
-                          product = allProducts.firstWhere((p) => p.name == item.productName);
-                        } catch (_) {}
-                          return pw.TableRow(children: [
-                            dataCell('', font), // التأشيرة
-                            dataCell('${formatNumber(quantity, forceDecimal: true)}', font, color: PdfColor.fromInt(appSettings.itemQuantityColor), fontSettings: appSettings.fontSettings.quantity),
-                            dataCell(item.saleType ?? '', font),
-                            dataCell(item.productName, font, align: pw.TextAlign.right, color: PdfColor.fromInt(appSettings.itemDetailsColor), fontSettings: appSettings.fontSettings.productDetails),
-                            dataCell(formatProductId(product?.id), font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.productId),
-                            dataCell('${idx + 1}', font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.serialNumber),
-                          ]);
-                      }).toList(),
-                    ],
-                  ),
-                  pw.SizedBox(height: 6),
-                  pw.Align(
-                    alignment: pw.Alignment.center,
-                    child: pw.Text('صفحة ${pageIndex + 1} من $totalPages',
-                        style: pw.TextStyle(font: font, fontSize: 11)),
-                  ),
-                    ],
-                  ),
+                  // العلامة المائية
                   pw.Positioned(
                     top: 0,
                     left: 0,
@@ -383,6 +400,7 @@ class InvoicePdfService {
                             'الناصر',
                             style: pw.TextStyle(
                               font: alnaserFont,
+                              fontFallback: [font],
                               fontSize: 220,
                               color: PdfColors.grey400,
                               fontWeight: pw.FontWeight.bold,
@@ -403,12 +421,11 @@ class InvoicePdfService {
   }
 
   static pw.Widget headerCell(String text, pw.Font font, {PdfColor? color, FontElementSettings? fontSettings}) {
-    // تطبيق إعدادات الخط إذا كانت متوفرة
-    pw.Font? customFont;
+    // استخدام الخط العربي الأساسي (Amiri) دائماً لضمان عرض النص العربي بشكل صحيح
+    // تطبيق الوزن فقط من الإعدادات
     pw.FontWeight? customWeight;
     
     if (fontSettings != null) {
-      customFont = FontManager.getPdfFont(fontSettings.fontFamily);
       customWeight = FontManager.getPdfFontWeight(fontSettings.fontWeight);
     }
     
@@ -416,7 +433,7 @@ class InvoicePdfService {
       padding: const pw.EdgeInsets.all(2),
       child: pw.Text(text,
           style: pw.TextStyle(
-              font: customFont ?? font, 
+              font: font, // استخدام الخط العربي الأساسي دائماً
               fontSize: 13, 
               fontWeight: customWeight ?? pw.FontWeight.bold, 
               color: color ?? PdfColors.black),
@@ -426,12 +443,11 @@ class InvoicePdfService {
 
   static pw.Widget dataCell(String text, pw.Font font,
       {pw.TextAlign align = pw.TextAlign.center, PdfColor? color, FontElementSettings? fontSettings}) {
-    // تطبيق إعدادات الخط إذا كانت متوفرة
-    pw.Font? customFont;
+    // استخدام الخط العربي الأساسي (Amiri) دائماً لضمان عرض النص العربي بشكل صحيح
+    // تطبيق الوزن فقط من الإعدادات
     pw.FontWeight? customWeight;
     
     if (fontSettings != null) {
-      customFont = FontManager.getPdfFont(fontSettings.fontFamily);
       customWeight = FontManager.getPdfFontWeight(fontSettings.fontWeight);
     }
     
@@ -439,7 +455,7 @@ class InvoicePdfService {
       padding: const pw.EdgeInsets.all(2),
       child: pw.Text(text,
           style: pw.TextStyle(
-              font: customFont ?? font, 
+              font: font, // استخدام الخط العربي الأساسي دائماً
               fontSize: 13, 
               fontWeight: customWeight ?? pw.FontWeight.bold, 
               color: color ?? PdfColors.black),

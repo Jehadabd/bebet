@@ -6,6 +6,7 @@ import '../services/database_service.dart';
 import 'invoice_details_screen.dart';
 import '../services/database_service.dart' show InvoiceWithProductData;
 import 'package:intl/intl.dart';
+import 'product_customers_dialog.dart';
 
 class ProductMonthDetailsScreen extends StatefulWidget {
   final Product product;
@@ -84,6 +85,18 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
   }
 
   String _numericMonth(int year, int month) => '${year}-${month.toString().padLeft(2, '0')}';
+
+  void _showCustomersBuying() {
+    showDialog(
+      context: context,
+      builder: (context) => ProductCustomersDialog(
+        productId: widget.product.id!,
+        productName: widget.product.name,
+        year: widget.year,
+        month: widget.month,
+      ),
+    );
+  }
 
   String _formatDate(DateTime date) {
     return '${date.day}/${date.month}/${date.year}';
@@ -168,156 +181,34 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                     itemCount: _invoices.length + 1,
                     itemBuilder: (context, index) {
                       if (index == 0) {
-                        // ملخص الشهر
-                        return Card(
-                          elevation: 4,
-                          margin: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 8),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(16),
-                            side: BorderSide(
-                                color: Colors.green.withOpacity(0.3), width: 1),
-                          ),
-                          child: Container(
-                            padding: const EdgeInsets.all(20),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(16),
-                              gradient: LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [
-                                  Colors.green.withOpacity(0.1),
-                                  Colors.green.withOpacity(0.05),
-                                ],
+                        // زر العملاء المشترين + ملخص الشهر
+                        return Column(
+                          children: [
+                            // زر العملاء المشترين
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 8),
+                              child: SizedBox(
+                                width: double.infinity,
+                                child: ElevatedButton.icon(
+                                  onPressed: _showCustomersBuying,
+                                  icon: const Icon(Icons.people),
+                                  label: const Text('تفصيل العملاء المشترين'),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF4CAF50),
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 12),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Container(
-                                      padding: const EdgeInsets.all(12),
-                                      decoration: BoxDecoration(
-                                        color: Colors.green.withOpacity(0.1),
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: const Icon(
-                                        Icons.calendar_month,
-                                        color: Colors.green,
-                                        size: 24,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 16),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            'ملخص الشهر',
-                                            style: const TextStyle(
-                                              fontSize: 18,
-                                              fontWeight: FontWeight.bold,
-                                              color: Colors.green,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            'الكمية المباعة: ${_fmt(_monthQuantity)} ${widget.product.unit}',
-                                            style: TextStyle(
-                                              fontSize: 14,
-                                              color: Colors.grey[600],
-                                            ),
-                                          ),
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            'الربح من الوحدة: ${_fmt(_calculateProfitPerUnit())} د.ع',
-                                            style: const TextStyle(
-                                              fontSize: 14,
-                                              color: Color(0xFF4CAF50),
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            'إجمالي الربح: ${_fmt(_monthProfit)} د.ع',
-                                            style: TextStyle(
-                                              fontSize: 12,
-                                              color: Colors.grey[600],
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 16),
-                                // معلومات إضافية
-                                Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withOpacity(0.7),
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(color: Colors.grey[300]!),
-                                  ),
-                                  child: Column(
-                                    children: [
-                                      Row(
-                                        children: [
-                                          Expanded(
-                                            child: _buildDetailInfo(
-                                              title: 'تكلفة الوحدة',
-                                              value: widget.product.costPrice != null
-                                                  ? '${_fmt(widget.product.costPrice!)} د.ع'
-                                                  : 'غير محدد',
-                                              color: const Color(0xFFF44336),
-                                            ),
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Expanded(
-                                            child: _buildDetailInfo(
-                                              title: 'متوسط سعر البيع',
-                                              value: _monthQuantity > 0
-                                                  ? '${_fmt(_monthSellingPrice / _monthQuantity)} د.ع'
-                                                  : 'غير محدد',
-                                              color: const Color(0xFFFF9800),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 8),
-                                      Row(
-                                        children: [
-                                          Expanded(
-                                            child: _buildDetailInfo(
-                                              title: 'الربح من الوحدة',
-                                              value: _monthQuantity > 0
-                                                  ? '${_fmt(_calculateProfitPerUnit())} د.ع'
-                                                  : 'غير محدد',
-                                              color: const Color(0xFF4CAF50),
-                                            ),
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Expanded(
-                                            child: _buildDetailInfo(
-                                              title: 'نسبة الربح',
-                                              value: widget.product.costPrice != null && 
-                                                     widget.product.costPrice! > 0 && 
-                                                     _monthQuantity > 0
-                                                  ? '${((_monthProfit / _monthQuantity / widget.product.costPrice!) * 100).toStringAsFixed(1)}%'
-                                                  : 'غير محدد',
-                                              color: const Color(0xFF9C27B0),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
+                            // ملخص الشهر
+                            _buildMonthSummaryCard(),
+                          ],
                         );
                       } else {
                         final invoiceData = _invoices[index - 1];
@@ -326,6 +217,155 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                     },
                   ),
                 ),
+    );
+  }
+
+  Widget _buildMonthSummaryCard() {
+    return Card(
+      elevation: 4,
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: Colors.green.withOpacity(0.3), width: 1),
+      ),
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Colors.green.withOpacity(0.1),
+              Colors.green.withOpacity(0.05),
+            ],
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.green.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.calendar_month,
+                    color: Colors.green,
+                    size: 24,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'ملخص الشهر',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.green,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'الكمية المباعة: ${_fmt(_monthQuantity)} ${widget.product.unit}',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'الربح من الوحدة: ${_fmt(_calculateProfitPerUnit())} د.ع',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: Color(0xFF4CAF50),
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'إجمالي الربح: ${_fmt(_monthProfit)} د.ع',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.7),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey[300]!),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildDetailInfo(
+                          title: 'تكلفة الوحدة',
+                          value: widget.product.costPrice != null
+                              ? '${_fmt(widget.product.costPrice!)} د.ع'
+                              : 'غير محدد',
+                          color: const Color(0xFFF44336),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _buildDetailInfo(
+                          title: 'متوسط سعر البيع',
+                          value: _monthQuantity > 0
+                              ? '${_fmt(_monthSellingPrice / _monthQuantity)} د.ع'
+                              : 'غير محدد',
+                          color: const Color(0xFFFF9800),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildDetailInfo(
+                          title: 'الربح من الوحدة',
+                          value: _monthQuantity > 0
+                              ? '${_fmt(_calculateProfitPerUnit())} د.ع'
+                              : 'غير محدد',
+                          color: const Color(0xFF4CAF50),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _buildDetailInfo(
+                          title: 'نسبة الربح',
+                          value: widget.product.costPrice != null &&
+                                  widget.product.costPrice! > 0 &&
+                                  _monthQuantity > 0
+                              ? '${((_monthProfit / _monthQuantity / widget.product.costPrice!) * 100).toStringAsFixed(1)}%'
+                              : 'غير محدد',
+                          color: const Color(0xFF9C27B0),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

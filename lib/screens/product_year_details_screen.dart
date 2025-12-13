@@ -4,6 +4,7 @@ import '../models/product.dart';
 import '../services/database_service.dart';
 import 'product_month_details_screen.dart';
 import 'package:intl/intl.dart';
+import 'product_customers_dialog.dart';
 
 class ProductYearDetailsScreen extends StatefulWidget {
   final Product product;
@@ -71,6 +72,17 @@ class _ProductYearDetailsScreenState extends State<ProductYearDetailsScreen> {
     return '${year}-${month.toString().padLeft(2, '0')}';
   }
 
+  void _showCustomersBuying() {
+    showDialog(
+      context: context,
+      builder: (context) => ProductCustomersDialog(
+        productId: widget.product.id!,
+        productName: widget.product.name,
+        year: widget.year,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -121,18 +133,45 @@ class _ProductYearDetailsScreenState extends State<ProductYearDetailsScreen> {
                     ],
                   ),
                 )
-              : RefreshIndicator(
-                  onRefresh: _loadMonthlyData,
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: 12, // 12 شهر
-                    itemBuilder: (context, index) {
-                      final month = index + 1;
-                      final quantity = _monthlySales[month] ?? 0.0;
-                      final profit = _monthlyProfit[month] ?? 0.0;
-                      return _buildMonthCard(month, quantity, profit);
-                    },
-                  ),
+              : Column(
+                  children: [
+                    // زر العملاء المشترين
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: _showCustomersBuying,
+                          icon: const Icon(Icons.people),
+                          label: const Text('العملاء المشترين (تفصيل العملاء)'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF4CAF50),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    // قائمة الأشهر
+                    Expanded(
+                      child: RefreshIndicator(
+                        onRefresh: _loadMonthlyData,
+                        child: ListView.builder(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          itemCount: 12, // 12 شهر
+                          itemBuilder: (context, index) {
+                            final month = index + 1;
+                            final quantity = _monthlySales[month] ?? 0.0;
+                            final profit = _monthlyProfit[month] ?? 0.0;
+                            return _buildMonthCard(month, quantity, profit);
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
     );
   }

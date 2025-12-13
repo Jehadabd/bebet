@@ -1021,4 +1021,449 @@ class ReportsService {
       _calculateItemCostWithDebug(item, enableDebug: true, productName: productName);
     }
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // تفصيل المنتجات المشتراة من عميل (المبيعات التراكمية)
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  /// تفصيل المنتجات المشتراة من عميل معين في سنة أو شهر محدد
+  /// يُرجع قائمة بالمنتجات مع المبلغ والربح والكمية بالوحدات الهرمية
+  Future<List<CustomerProductBreakdown>> getCustomerProductsBreakdown({
+    required int customerId,
+    required int year,
+    int? month,
+  }) async {
+    final db = await _db.database;
+    
+    // بناء شرط التاريخ
+    String dateCondition;
+    List<dynamic> dateArgs;
+    if (month != null) {
+      dateCondition = "strftime('%Y', i.invoice_date) = ? AND strftime('%m', i.invoice_date) = ?";
+      dateArgs = [year.toString(), month.toString().padLeft(2, '0')];
+    } else {
+      dateCondition = "strftime('%Y', i.invoice_date) = ?";
+      dateArgs = [year.toString()];
+    }
+    
+    // جلب بنود الفواتير مع بيانات المنتج الكاملة
+    final items = await db.rawQuery('''
+      SELECT 
+        ii.product_name,
+        ii.product_id,
+        ii.quantity_individual AS qi,
+        ii.quantity_large_unit AS ql,
+        ii.units_in_large_unit AS uilu,
+        ii.actual_cost_price AS actual_cost_per_unit,
+        ii.applied_price AS selling_price,
+        ii.sale_type AS sale_type,
+        ii.item_total,
+        p.id AS p_id,
+        p.unit AS product_unit,
+        p.cost_price AS product_cost_price,
+        p.length_per_unit AS length_per_unit,
+        p.unit_costs AS unit_costs,
+        p.unit_hierarchy AS unit_hierarchy
+      FROM invoice_items ii
+      INNER JOIN invoices i ON ii.invoice_id = i.id
+      LEFT JOIN products p ON p.name = ii.product_name
+      WHERE (i.customer_id = ? OR (i.customer_id IS NULL AND i.customer_name = (
+        SELECT name FROM customers WHERE id = ?
+      ))) AND i.status = 'محفوظة' AND $dateCondition
+    ''', [customerId, customerId, ...dateArgs]);
+    
+    // تجميع البيانات حسب المنتج
+    final Map<String, _ProductAggregation> productMap = {};
+    
+    for (final item in items) {
+      final productName = item['product_name'] as String;
+      final itemTotal = (item['item_total'] as num?)?.toDouble() ?? 0;
+      final qi = (item['qi'] as num?)?.toDouble() ?? 0;
+      final ql = (item['ql'] as num?)?.toDouble() ?? 0;
+      final uilu = (item['uilu'] as num?)?.toDouble() ?? 0;
+      final saleType = (item['sale_type'] as String?) ?? '';
+      final productUnit = (item['product_unit'] as String?) ?? 'piece';
+      final lengthPerUnit = (item['length_per_unit'] as num?)?.toDouble();
+      final unitHierarchy = item['unit_hierarchy'] as String?;
+      final unitCosts = item['unit_costs'] as String?;
+      final productId = (item['p_id'] as int?) ?? (item['product_id'] as int?);
+      
+      // حساب التكلفة
+      final totalCost = _calculateItemCost(item);
+      final profit = itemTotal - totalCost;
+      
+      // حساب الكمية بالوحدة الأساسية
+      // 🔧 إصلاح: التحقق من نوع البيع أولاً قبل افتراض أن ql > 0 يعني وحدة كبيرة
+      double baseQuantity;
+      if (saleType == 'قطعة' || saleType == 'متر') {
+        // بيع بوحدة أساسية - استخدام الكمية مباشرة
+        baseQuantity = qi > 0 ? qi : ql;
+      } else if (ql > 0) {
+        // بيع بوحدة كبيرة - تحويل للوحدة الأساسية
+        if (productUnit == 'meter' && saleType == 'لفة') {
+          baseQuantity = ql * (uilu > 0 ? uilu : (lengthPerUnit ?? 1));
+        } else {
+          baseQuantity = ql * (uilu > 0 ? uilu : _getMultiplierFromHierarchy(unitHierarchy, saleType));
+        }
+      } else {
+        baseQuantity = qi;
+      }
+      
+      if (!productMap.containsKey(productName)) {
+        productMap[productName] = _ProductAggregation(
+          productName: productName,
+          productId: productId,
+          productUnit: productUnit,
+          lengthPerUnit: lengthPerUnit,
+          unitHierarchy: unitHierarchy,
+          unitCosts: unitCosts,
+        );
+      }
+      
+      productMap[productName]!.totalAmount += itemTotal;
+      productMap[productName]!.totalProfit += profit;
+      productMap[productName]!.totalBaseQuantity += baseQuantity;
+    }
+    
+    // تحويل إلى قائمة النتائج
+    final results = productMap.values.map((agg) {
+      return CustomerProductBreakdown(
+        productName: agg.productName,
+        productId: agg.productId,
+        totalAmount: agg.totalAmount,
+        totalProfit: agg.totalProfit,
+        baseQuantity: agg.totalBaseQuantity,
+        baseUnit: agg.productUnit == 'meter' ? 'متر' : 'قطعة',
+        quantityFormatted: _formatQuantityWithHierarchy(
+          agg.totalBaseQuantity,
+          agg.productUnit,
+          agg.lengthPerUnit,
+          agg.unitHierarchy,
+        ),
+      );
+    }).toList();
+    
+    // ترتيب افتراضي حسب الربح
+    results.sort((a, b) => b.totalProfit.compareTo(a.totalProfit));
+    
+    return results;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // تفصيل العملاء المشترين لمنتج معين
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  /// تفصيل العملاء الذين اشتروا منتج معين في سنة أو شهر محدد
+  /// يُرجع قائمة بالعملاء مع المبلغ والربح والكمية بالوحدات الهرمية
+  Future<List<ProductCustomerBreakdown>> getProductCustomersBreakdown({
+    required int productId,
+    required int year,
+    int? month,
+  }) async {
+    final db = await _db.database;
+    
+    // جلب بيانات المنتج أولاً
+    final productData = await db.query('products', where: 'id = ?', whereArgs: [productId]);
+    if (productData.isEmpty) return [];
+    
+    final product = productData.first;
+    final productName = product['name'] as String;
+    final productUnit = product['unit'] as String;
+    final lengthPerUnit = (product['length_per_unit'] as num?)?.toDouble();
+    final unitHierarchy = product['unit_hierarchy'] as String?;
+    
+    // بناء شرط التاريخ
+    String dateCondition;
+    List<dynamic> dateArgs;
+    if (month != null) {
+      dateCondition = "strftime('%Y', i.invoice_date) = ? AND strftime('%m', i.invoice_date) = ?";
+      dateArgs = [year.toString(), month.toString().padLeft(2, '0')];
+    } else {
+      dateCondition = "strftime('%Y', i.invoice_date) = ?";
+      dateArgs = [year.toString()];
+    }
+    
+    // جلب بنود الفواتير لهذا المنتج
+    final items = await db.rawQuery('''
+      SELECT 
+        i.customer_id,
+        i.customer_name,
+        c.id AS c_id,
+        c.name AS c_name,
+        c.phone AS c_phone,
+        ii.quantity_individual AS qi,
+        ii.quantity_large_unit AS ql,
+        ii.units_in_large_unit AS uilu,
+        ii.actual_cost_price AS actual_cost_per_unit,
+        ii.applied_price AS selling_price,
+        ii.sale_type AS sale_type,
+        ii.item_total,
+        p.unit AS product_unit,
+        p.cost_price AS product_cost_price,
+        p.length_per_unit AS length_per_unit,
+        p.unit_costs AS unit_costs,
+        p.unit_hierarchy AS unit_hierarchy
+      FROM invoice_items ii
+      INNER JOIN invoices i ON ii.invoice_id = i.id
+      LEFT JOIN customers c ON i.customer_id = c.id
+      LEFT JOIN products p ON p.name = ii.product_name
+      WHERE ii.product_name = ? AND i.status = 'محفوظة' AND $dateCondition
+    ''', [productName, ...dateArgs]);
+    
+    // تجميع البيانات حسب العميل
+    final Map<String, _CustomerAggregation> customerMap = {};
+    
+    for (final item in items) {
+      final customerId = (item['customer_id'] as int?) ?? (item['c_id'] as int?);
+      final customerName = (item['c_name'] as String?) ?? (item['customer_name'] as String?) ?? 'غير معروف';
+      final customerPhone = item['c_phone'] as String?;
+      final itemTotal = (item['item_total'] as num?)?.toDouble() ?? 0;
+      final qi = (item['qi'] as num?)?.toDouble() ?? 0;
+      final ql = (item['ql'] as num?)?.toDouble() ?? 0;
+      final uilu = (item['uilu'] as num?)?.toDouble() ?? 0;
+      final saleType = (item['sale_type'] as String?) ?? '';
+      final pUnit = (item['product_unit'] as String?) ?? productUnit;
+      final pLengthPerUnit = (item['length_per_unit'] as num?)?.toDouble() ?? lengthPerUnit;
+      final pUnitHierarchy = (item['unit_hierarchy'] as String?) ?? unitHierarchy;
+      
+      // حساب التكلفة
+      final totalCost = _calculateItemCost(item);
+      final profit = itemTotal - totalCost;
+      
+      // حساب الكمية بالوحدة الأساسية
+      // 🔧 إصلاح: التحقق من نوع البيع أولاً قبل افتراض أن ql > 0 يعني وحدة كبيرة
+      double baseQuantity;
+      if (saleType == 'قطعة' || saleType == 'متر') {
+        // بيع بوحدة أساسية - استخدام الكمية مباشرة
+        baseQuantity = qi > 0 ? qi : ql;
+      } else if (ql > 0) {
+        // بيع بوحدة كبيرة - تحويل للوحدة الأساسية
+        if (pUnit == 'meter' && saleType == 'لفة') {
+          baseQuantity = ql * (uilu > 0 ? uilu : (pLengthPerUnit ?? 1));
+        } else {
+          baseQuantity = ql * (uilu > 0 ? uilu : _getMultiplierFromHierarchy(pUnitHierarchy, saleType));
+        }
+      } else {
+        baseQuantity = qi;
+      }
+      
+      final key = customerId?.toString() ?? customerName;
+      if (!customerMap.containsKey(key)) {
+        customerMap[key] = _CustomerAggregation(
+          customerId: customerId,
+          customerName: customerName,
+          customerPhone: customerPhone,
+        );
+      }
+      
+      customerMap[key]!.totalAmount += itemTotal;
+      customerMap[key]!.totalProfit += profit;
+      customerMap[key]!.totalBaseQuantity += baseQuantity;
+    }
+    
+    // تحويل إلى قائمة النتائج
+    final results = customerMap.values.map((agg) {
+      return ProductCustomerBreakdown(
+        customerId: agg.customerId,
+        customerName: agg.customerName,
+        customerPhone: agg.customerPhone,
+        totalAmount: agg.totalAmount,
+        totalProfit: agg.totalProfit,
+        baseQuantity: agg.totalBaseQuantity,
+        baseUnit: productUnit == 'meter' ? 'متر' : 'قطعة',
+        quantityFormatted: _formatQuantityWithHierarchy(
+          agg.totalBaseQuantity,
+          productUnit,
+          lengthPerUnit,
+          unitHierarchy,
+        ),
+      );
+    }).toList();
+    
+    // ترتيب افتراضي حسب الربح
+    results.sort((a, b) => b.totalProfit.compareTo(a.totalProfit));
+    
+    return results;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // دوال مساعدة
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  /// تحويل الكمية للوحدات الهرمية
+  /// مثال: 36 قطعة = 6 سيت = 1 كرتون
+  String _formatQuantityWithHierarchy(
+    double baseQuantity,
+    String productUnit,
+    double? lengthPerUnit,
+    String? unitHierarchyJson,
+  ) {
+    if (baseQuantity == 0) return '0';
+    
+    final baseUnitName = productUnit == 'meter' ? 'متر' : 'قطعة';
+    final parts = <String>[];
+    
+    // إضافة الكمية الأساسية
+    parts.add('${_formatNumber(baseQuantity)} $baseUnitName');
+    
+    // للمنتجات المباعة بالمتر
+    if (productUnit == 'meter' && lengthPerUnit != null && lengthPerUnit > 0) {
+      final rolls = baseQuantity / lengthPerUnit;
+      if (rolls >= 0.01) {
+        parts.add('${_formatNumber(rolls)} لفة');
+      }
+      return parts.join(' = ');
+    }
+    
+    // للمنتجات المباعة بالقطعة مع هرمية
+    if (unitHierarchyJson != null && unitHierarchyJson.isNotEmpty) {
+      try {
+        final hierarchy = jsonDecode(unitHierarchyJson) as List<dynamic>;
+        double remaining = baseQuantity;
+        double multiplier = 1.0;
+        
+        for (final level in hierarchy) {
+          final unitName = (level['unit_name'] ?? level['name'] ?? '').toString();
+          final qty = (level['quantity'] is num)
+              ? (level['quantity'] as num).toDouble()
+              : double.tryParse(level['quantity'].toString()) ?? 1.0;
+          
+          if (unitName.isEmpty || qty <= 0) continue;
+          
+          multiplier *= qty;
+          final unitsAtThisLevel = baseQuantity / multiplier;
+          
+          if (unitsAtThisLevel >= 0.01) {
+            parts.add('${_formatNumber(unitsAtThisLevel)} $unitName');
+          }
+        }
+      } catch (e) {
+        // تجاهل خطأ التحليل
+      }
+    }
+    
+    return parts.join(' = ');
+  }
+  
+  /// الحصول على المضاعف من التسلسل الهرمي
+  double _getMultiplierFromHierarchy(String? unitHierarchyJson, String saleType) {
+    if (unitHierarchyJson == null || unitHierarchyJson.isEmpty || saleType.isEmpty) {
+      return 1.0;
+    }
+    
+    try {
+      final hierarchy = jsonDecode(unitHierarchyJson) as List<dynamic>;
+      double multiplier = 1.0;
+      
+      for (final level in hierarchy) {
+        final unitName = (level['unit_name'] ?? level['name'] ?? '').toString();
+        final qty = (level['quantity'] is num)
+            ? (level['quantity'] as num).toDouble()
+            : double.tryParse(level['quantity'].toString()) ?? 1.0;
+        
+        multiplier *= qty;
+        
+        if (unitName == saleType) {
+          return multiplier;
+        }
+      }
+    } catch (e) {
+      // تجاهل خطأ التحليل
+    }
+    
+    return 1.0;
+  }
+  
+  /// تنسيق الأرقام
+  String _formatNumber(num value) {
+    if (value == value.toInt()) {
+      return value.toInt().toString();
+    }
+    return value.toStringAsFixed(2);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// نماذج البيانات
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// تفصيل منتج مشترى من عميل
+class CustomerProductBreakdown {
+  final String productName;
+  final int? productId;
+  final double totalAmount;
+  final double totalProfit;
+  final double baseQuantity;
+  final String baseUnit;
+  final String quantityFormatted;
+  
+  CustomerProductBreakdown({
+    required this.productName,
+    this.productId,
+    required this.totalAmount,
+    required this.totalProfit,
+    required this.baseQuantity,
+    required this.baseUnit,
+    required this.quantityFormatted,
+  });
+}
+
+/// تفصيل عميل اشترى منتج
+class ProductCustomerBreakdown {
+  final int? customerId;
+  final String customerName;
+  final String? customerPhone;
+  final double totalAmount;
+  final double totalProfit;
+  final double baseQuantity;
+  final String baseUnit;
+  final String quantityFormatted;
+  
+  ProductCustomerBreakdown({
+    this.customerId,
+    required this.customerName,
+    this.customerPhone,
+    required this.totalAmount,
+    required this.totalProfit,
+    required this.baseQuantity,
+    required this.baseUnit,
+    required this.quantityFormatted,
+  });
+}
+
+// كلاسات مساعدة للتجميع
+class _ProductAggregation {
+  final String productName;
+  final int? productId;
+  final String productUnit;
+  final double? lengthPerUnit;
+  final String? unitHierarchy;
+  final String? unitCosts;
+  double totalAmount = 0;
+  double totalProfit = 0;
+  double totalBaseQuantity = 0;
+  
+  _ProductAggregation({
+    required this.productName,
+    this.productId,
+    required this.productUnit,
+    this.lengthPerUnit,
+    this.unitHierarchy,
+    this.unitCosts,
+  });
+}
+
+class _CustomerAggregation {
+  final int? customerId;
+  final String customerName;
+  final String? customerPhone;
+  double totalAmount = 0;
+  double totalProfit = 0;
+  double totalBaseQuantity = 0;
+  
+  _CustomerAggregation({
+    this.customerId,
+    required this.customerName,
+    this.customerPhone,
+  });
 }

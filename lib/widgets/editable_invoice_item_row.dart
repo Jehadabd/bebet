@@ -200,16 +200,6 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     double? newQuantity = double.tryParse(value.replaceAll(',', ''));
     if (newQuantity == null || newQuantity <= 0) return;
     
-    // 🔍 DEBUG: طباعة تحديث الكمية
-    print('═══════════════════════════════════════════════════════════════════');
-    print('🔍 DEBUG UPDATE QTY: تحديث كمية الصنف: ${_currentItem.productName}');
-    print('   - الكمية القديمة (individual): ${_currentItem.quantityIndividual}');
-    print('   - الكمية القديمة (large): ${_currentItem.quantityLargeUnit}');
-    print('   - الكمية الجديدة: $newQuantity');
-    print('   - نوع البيع: ${_currentItem.saleType}');
-    print('   - uniqueId: ${_currentItem.uniqueId}');
-    print('═══════════════════════════════════════════════════════════════════');
-    
     setState(() {
       if (_currentItem.saleType == 'قطعة' || _currentItem.saleType == 'متر') {
         _currentItem = _currentItem.copyWith(

@@ -1188,8 +1188,8 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                         ],
                       ),
                       TextButton.icon(
-                        onPressed: () {
-                          Navigator.push(
+                        onPressed: () async {
+                          await Navigator.push(
                             context,
                             MaterialPageRoute(
                               builder: (context) => AddTransactionScreen(
@@ -1197,6 +1197,10 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                               ),
                             ),
                           );
+                          // تحديث المعاملات المجمعة بعد العودة من شاشة الإضافة
+                          if (mounted) {
+                            await _loadTransactions();
+                          }
                         },
                         icon: Icon(Icons.add_circle_outline,
                             color: Theme.of(context).colorScheme.secondary,
@@ -1235,6 +1239,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                                   item: item,
                                   isPlaying: _isPlaying,
                                   currentlyPlayingPath: _currentlyPlayingPath,
+                                  customerId: widget.customer.id!,
                                   onPlayStop: () async {
                                     if (item.audioNotePath != null) {
                                       if (_isPlaying && _currentlyPlayingPath == item.audioNotePath) {
@@ -2641,6 +2646,7 @@ class GroupedTransactionListTile extends StatelessWidget {
   final String? currentlyPlayingPath;
   final VoidCallback onPlayStop;
   final VoidCallback onRefresh;
+  final int customerId; // إضافة معرف العميل للتنقل للفاتورة
 
   const GroupedTransactionListTile({
     super.key,
@@ -2649,6 +2655,7 @@ class GroupedTransactionListTile extends StatelessWidget {
     required this.currentlyPlayingPath,
     required this.onPlayStop,
     required this.onRefresh,
+    required this.customerId,
   });
 
   String _formatCurrency(num value) {
@@ -2663,6 +2670,10 @@ class GroupedTransactionListTile extends StatelessWidget {
   Widget build(BuildContext context) {
     if (item.isInvoice) {
       return _buildInvoiceTile(context);
+    } else if (item.isManualDebtGroup) {
+      return _buildManualGroupTile(context, isDebt: true);
+    } else if (item.isManualPaymentGroup) {
+      return _buildManualGroupTile(context, isDebt: false);
     } else {
       return _buildManualTransactionTile(context);
     }
@@ -2739,24 +2750,38 @@ class GroupedTransactionListTile extends StatelessWidget {
                   ],
                 ),
               ),
-              // المبلغ المتبقي
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
+              // المبلغ المتبقي وزر الذهاب للفاتورة
+              Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    item.isFullyPaid ? 'مسددة' : 'المتبقي',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Colors.grey[600],
-                        ),
+                  // زر الذهاب للفاتورة
+                  IconButton(
+                    icon: Icon(Icons.open_in_new, color: Theme.of(context).colorScheme.primary, size: 20),
+                    tooltip: 'الذهاب للفاتورة',
+                    onPressed: () => _navigateToInvoice(context),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
                   ),
-                  Text(
-                    '${_formatCurrency(item.amount.abs())}',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          color: color,
-                          fontWeight: FontWeight.bold,
-                        ),
+                  const SizedBox(width: 8),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        item.isFullyPaid ? 'مسددة' : 'المتبقي',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Colors.grey[600],
+                            ),
+                      ),
+                      Text(
+                        '${_formatCurrency(item.amount.abs())}',
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              color: color,
+                              fontWeight: FontWeight.bold,
+                            ),
+                      ),
+                      const Icon(Icons.chevron_left, color: Colors.grey),
+                    ],
                   ),
-                  const Icon(Icons.chevron_left, color: Colors.grey),
                 ],
               ),
             ],
@@ -2843,6 +2868,265 @@ class GroupedTransactionListTile extends StatelessWidget {
     );
   }
 
+  /// بناء بطاقة مجموعة المعاملات اليدوية (إضافة دين أو تسديد)
+  Widget _buildManualGroupTile(BuildContext context, {required bool isDebt}) {
+    final color = isDebt
+        ? Theme.of(context).colorScheme.error
+        : Theme.of(context).colorScheme.tertiary;
+    final icon = isDebt ? Icons.add_circle : Icons.remove_circle;
+    final title = isDebt ? 'معاملات يدوية (إضافة دين)' : 'معاملات يدوية (تسديد)';
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12.0),
+      elevation: 2,
+      child: InkWell(
+        onTap: () => _showManualGroupDetails(context, isDebt: isDebt),
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(12.0),
+          child: Row(
+            children: [
+              // أيقونة المجموعة
+              CircleAvatar(
+                backgroundColor: color.withOpacity(0.1),
+                radius: 24,
+                child: Icon(icon, color: color, size: 24),
+              ),
+              const SizedBox(width: 12),
+              // معلومات المجموعة
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          title,
+                          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                fontWeight: FontWeight.bold,
+                              ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: color.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            '${item.transactionCount} معاملة',
+                            style: TextStyle(fontSize: 10, color: color),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'آخر تاريخ: ${_formatDate(item.date)}',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Colors.grey[600],
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+              // المجموع
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    'المجموع',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.grey[600],
+                        ),
+                  ),
+                  Text(
+                    '${isDebt ? '+' : ''}${_formatCurrency(item.amount.abs())}',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          color: color,
+                          fontWeight: FontWeight.bold,
+                        ),
+                  ),
+                  const Icon(Icons.chevron_left, color: Colors.grey),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// عرض تفاصيل مجموعة المعاملات اليدوية
+  void _showManualGroupDetails(BuildContext context, {required bool isDebt}) {
+    final color = isDebt
+        ? Theme.of(context).colorScheme.error
+        : Theme.of(context).colorScheme.tertiary;
+    final title = isDebt ? 'معاملات الإضافة اليدوية' : 'معاملات التسديد اليدوية';
+    final icon = isDebt ? Icons.add_circle : Icons.remove_circle;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        minChildSize: 0.3,
+        maxChildSize: 0.9,
+        expand: false,
+        builder: (context, scrollController) => Column(
+          children: [
+            // المقبض
+            Container(
+              margin: const EdgeInsets.only(top: 12),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            // العنوان
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Icon(icon, color: color),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.bold,
+                              ),
+                        ),
+                        Text(
+                          '${item.transactionCount} معاملة',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                  // المجموع
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: color.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      '${isDebt ? '+' : ''}${_formatCurrency(item.amount.abs())} دينار',
+                      style: TextStyle(
+                        color: color,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(),
+            // قائمة المعاملات
+            Expanded(
+              child: ListView.builder(
+                controller: scrollController,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                itemCount: item.transactions.length,
+                itemBuilder: (context, index) {
+                  final tx = item.transactions[index];
+                  final isPositive = tx.amountChanged > 0;
+                  final txColor = isPositive ? Colors.red : Colors.green;
+                  
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    child: ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: txColor.withOpacity(0.1),
+                        radius: 18,
+                        child: Text(
+                          '${index + 1}',
+                          style: TextStyle(color: txColor, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      title: Text(
+                        '${isPositive ? '+' : ''}${_formatCurrency(tx.amountChanged)} دينار',
+                        style: TextStyle(
+                          color: txColor,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _getTransactionTypeLabel(tx.transactionType),
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          if (tx.transactionNote != null && tx.transactionNote!.isNotEmpty)
+                            Text(
+                              tx.transactionNote!,
+                              style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                            ),
+                          Text(
+                            DateFormat('yyyy/MM/dd HH:mm').format(tx.transactionDate),
+                            style: TextStyle(fontSize: 10, color: Colors.grey[500]),
+                          ),
+                        ],
+                      ),
+                      trailing: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            'قبل: ${_formatCurrency(tx.balanceBeforeTransaction ?? 0)}',
+                            style: const TextStyle(fontSize: 10),
+                          ),
+                          Text(
+                            'بعد: ${_formatCurrency(tx.newBalanceAfterTransaction ?? 0)}',
+                            style: const TextStyle(fontSize: 10),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            // ملخص
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.grey[100],
+                border: Border(top: BorderSide(color: Colors.grey[300]!)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'المجموع:',
+                    style: Theme.of(context).textTheme.bodyLarge,
+                  ),
+                  Text(
+                    '${isDebt ? '+' : ''}${_formatCurrency(item.amount.abs())} دينار',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          color: color,
+                          fontWeight: FontWeight.bold,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// عرض تفاصيل الفاتورة (جميع المعاملات المرتبطة)
   void _showInvoiceDetails(BuildContext context) {
     showModalBottomSheet(
@@ -2912,6 +3196,27 @@ class GroupedTransactionListTile extends StatelessWidget {
                 ],
               ),
             ),
+            // زر الذهاب للفاتورة
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.pop(context); // إغلاق الـ BottomSheet
+                    _navigateToInvoice(context);
+                  },
+                  icon: const Icon(Icons.open_in_new, size: 18),
+                  label: const Text('الذهاب للفاتورة'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Theme.of(context).colorScheme.primary,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
             const Divider(),
             // قائمة المعاملات
             Expanded(
@@ -3007,6 +3312,54 @@ class GroupedTransactionListTile extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// الذهاب مباشرة لشاشة الفاتورة
+  void _navigateToInvoice(BuildContext context) async {
+    if (item.invoiceId == null) return;
+    
+    try {
+      final db = DatabaseService();
+      final invoice = await db.getInvoiceById(item.invoiceId!);
+      DebtTransaction? relatedDebtTransaction;
+      final transactions = await db.getCustomerTransactions(customerId);
+      for (var transaction in transactions) {
+        if (transaction.invoiceId == item.invoiceId &&
+            transaction.amountChanged > 0) {
+          relatedDebtTransaction = transaction;
+          break;
+        }
+      }
+
+      if (invoice != null && context.mounted) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => CreateInvoiceScreen(
+              existingInvoice: invoice,
+              isViewOnly: invoice.status == 'محفوظة',
+              relatedDebtTransaction: relatedDebtTransaction,
+            ),
+          ),
+        );
+      } else if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('لم يتم العثور على الفاتورة المطلوبة.'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('حدث خطأ عند تحميل الفاتورة: ${e.toString()}'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    }
   }
 
   String _getTransactionTypeLabel(String? type) {
