@@ -52,6 +52,7 @@ dependencies:
   decimal: ^3.2.4
   crypto: ^3.0.3
   googleapis_auth: ^1.4.1
+  # google_mlkit_text_recognition: ^0.13.1  # OCR محلي - لا يدعم Windows Desktop
 
 dev_dependencies:
   flutter_test:

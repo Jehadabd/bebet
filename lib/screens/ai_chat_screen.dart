@@ -3,11 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../services/ai_chat_service.dart';
 import '../services/database_service.dart';
-import '../services/huggingface_service.dart';
-import '../services/groq_service.dart';
 import '../services/gemini_service.dart';
-import '../services/sambanova_service.dart';
-import '../services/openrouter_service.dart';
 
 /// شاشة الدردشة مع الذكاء الاصطناعي
 class AIChatScreen extends StatefulWidget {
@@ -35,61 +31,29 @@ class _AIChatScreenState extends State<AIChatScreen> {
     print('🚀 AI Chat Screen: تهيئة الخدمة...');
     
     final dbService = DatabaseService();
-    await dbService.database; // تهيئة قاعدة البيانات
+    await dbService.database;
     
-    // قراءة API keys من .env
-    final openRouterKey = dotenv.env['OPENROUTER_API_KEY'] ?? '';
-    final sambaNovaKey = dotenv.env['SAMBANOVA_API_KEY'] ?? '';
+    // قراءة مفاتيح Gemini من .env
     final geminiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
-    final groqKey = dotenv.env['GROQ_API_KEY'] ?? '';
-    final huggingFaceKey = dotenv.env['HUGGINGFACE_API_KEY'] ?? '';
+    final geminiKey2 = dotenv.env['GEMINI_API_KEY_2'] ?? '';
+    final geminiKey3 = dotenv.env['GEMINI_API_KEY_3'] ?? '';
     
-    print('🔑 API Keys:');
-    print('   - OpenRouter: ${openRouterKey.isNotEmpty ? "موجود ✅ (الأولوية الأولى!)" : "غير موجود ❌"}');
-    print('   - SambaNova: ${sambaNovaKey.isNotEmpty ? "موجود ✅" : "غير موجود ❌"}');
-    print('   - Gemini: ${geminiKey.isNotEmpty ? "موجود ✅" : "غير موجود ❌"}');
-    print('   - Groq: ${groqKey.isNotEmpty ? "موجود ✅" : "غير موجود ❌"}');
-    print('   - HuggingFace (Qwen): ${huggingFaceKey.isNotEmpty ? "موجود ✅" : "غير موجود ❌"}');
+    final geminiKeysCount = [geminiKey, geminiKey2, geminiKey3].where((k) => k.isNotEmpty).length;
+    print('🔑 Gemini API Keys: $geminiKeysCount مفتاح/مفاتيح ${geminiKeysCount > 0 ? "✅" : "❌"}');
     
-    // إنشاء الخدمات (OpenRouter له الأولوية الأولى)
-    OpenRouterService? openRouterService;
-    SambaNovaService? sambaNovaService;
     GeminiService? geminiService;
-    GroqService? groqService;
-    HuggingFaceService? huggingFaceService;
-    
-    if (openRouterKey.isNotEmpty) {
-      openRouterService = OpenRouterService(apiKey: openRouterKey);
-      print('✅ تم تفعيل OpenRouter (Qwen/Llama) - الأولوية الأولى');
-    }
-    
-    if (sambaNovaKey.isNotEmpty) {
-      sambaNovaService = SambaNovaService(apiKey: sambaNovaKey);
-      print('✅ تم تفعيل SambaNova (Llama 405B) - الأولوية الثانية');
-    }
-    
-    if (geminiKey.isNotEmpty) {
-      geminiService = GeminiService(apiKey: geminiKey);
-      print('✅ تم تفعيل Gemini - الأولوية الثالثة');
-    }
-    
-    if (groqKey.isNotEmpty) {
-      groqService = GroqService(apiKey: groqKey);
-      print('✅ تم تفعيل Groq - الأولوية الرابعة');
-    }
-    
-    if (huggingFaceKey.isNotEmpty) {
-      huggingFaceService = HuggingFaceService(apiKey: huggingFaceKey);
-      print('✅ تم تفعيل Qwen 2.5 (HuggingFace) - الأولوية الخامسة');
+    if (geminiKeysCount > 0) {
+      geminiService = GeminiService(
+        apiKey: geminiKey.isNotEmpty ? geminiKey : (geminiKey2.isNotEmpty ? geminiKey2 : geminiKey3),
+        apiKey2: geminiKey2.isNotEmpty ? geminiKey2 : null,
+        apiKey3: geminiKey3.isNotEmpty ? geminiKey3 : null,
+      );
+      print('✅ تم تفعيل Gemini ($geminiKeysCount مفاتيح)');
     }
     
     _chatService = AIChatService(
       dbService,
-      openRouterService: openRouterService,
-      sambaNovaService: sambaNovaService,
       geminiService: geminiService,
-      groqService: groqService,
-      huggingFaceService: huggingFaceService,
     );
     
     print('✅ AI Chat Service جاهز!');

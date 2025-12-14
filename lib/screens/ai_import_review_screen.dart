@@ -1,9 +1,12 @@
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import '../services/ai_extraction_service.dart';
 import '../services/suppliers_service.dart';
+import '../services/product_specs_service.dart';
 import '../models/supplier.dart';
 import '../services/database_service.dart';
 import '../models/product.dart';
@@ -12,19 +15,19 @@ class AiImportReviewScreen extends StatefulWidget {
   final Uint8List fileBytes;
   final String mimeType; // image/png, image/jpeg, application/pdf
   final String type; // 'invoice' | 'receipt'
-  final String groqApiKey;
   final String geminiApiKey;
-  final String huggingfaceApiKey;
-  final int? supplierId; // إن تم تمرير المورد
+  final String? geminiApiKey2;
+  final String? geminiApiKey3;
+  final int? supplierId;
 
   const AiImportReviewScreen({
     Key? key,
     required this.fileBytes,
     required this.mimeType,
     required this.type,
-    required this.groqApiKey,
     required this.geminiApiKey,
-    required this.huggingfaceApiKey,
+    this.geminiApiKey2,
+    this.geminiApiKey3,
     this.supplierId,
   }) : super(key: key);
 
@@ -36,6 +39,7 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
   Map<String, dynamic>? _extracted;
   bool _loading = true;
   String? _error;
+  String? _rawOcrText; // النص الخام المستخرج من OCR
   final SuppliersService _suppliersService = SuppliersService();
   List<Supplier> _suppliers = const [];
   int? _selectedSupplierId;
@@ -111,9 +115,9 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
     });
     try {
       final service = AIExtractionService(
-        groqApiKey: widget.groqApiKey,
         geminiApiKey: widget.geminiApiKey,
-        huggingfaceApiKey: widget.huggingfaceApiKey,
+        geminiApiKey2: widget.geminiApiKey2,
+        geminiApiKey3: widget.geminiApiKey3,
       );
       final extractionResult = await service.extractInvoiceOrReceiptStructured(
         fileBytes: widget.fileBytes,
@@ -126,11 +130,25 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
       }
       
       if (!mounted) return;
-      final normalized = _normalizeResult(extractionResult.data);
+      var normalized = _normalizeResult(extractionResult.data);
+      
+      // حفظ النص الخام المستخرج من OCR
+      _rawOcrText = extractionResult.data['raw_text']?.toString();
+      
       // طباعة العناصر المستخرجة ومطابقتها مع المنتجات في القاعدة للتشخيص في الـ terminal
       if (widget.type == 'invoice') {
-        final items = (normalized['line_items'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+        var items = (normalized['line_items'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
         print('DEBUG AI ITEMS: extracted ${items.length} items');
+        
+        // 🧠 تطبيق المواصفات المحفوظة من قاعدة البيانات
+        final specsService = ProductSpecsService();
+        items = await specsService.enrichWithSpecs(items);
+        normalized['line_items'] = items;
+        
+        // حفظ المواصفات الجديدة من AI للتعلم
+        await specsService.saveSpecsFromAIResult(items);
+        print('📚 تم حفظ/تحديث مواصفات المنتجات للتعلم');
+        
         for (final it in items) {
           final name = (it['name'] ?? '').toString();
           final norm = _normalizeName(name);
@@ -142,7 +160,8 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
               if (k.contains(norm) || norm.contains(k)) { partial = true; break; }
             }
           }
-          print('DEBUG AI ITEM: name="$name" norm="$norm" => exact:$exact norm:$normHit partial:$partial');
+          final hasLocalSpec = it['analysis']?['from_local_db'] == true;
+          print('DEBUG AI ITEM: name="$name" => exact:$exact norm:$normHit partial:$partial localSpec:$hasLocalSpec');
         }
         
         // تحميل بيانات المنتجات الموجودة (التكلفة القديمة)
@@ -220,11 +239,14 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
             final qty = _toDouble(e['qty'] ?? e['quantity'] ?? e['count'] ?? 1);
             final price = _toDouble(e['price'] ?? e['unit_price'] ?? e['rate'] ?? 0);
             final amount = _toDouble(e['amount'] ?? e['line_total'] ?? (qty * price));
+            // الحفاظ على بيانات التحليل المتقدم من AI
+            final analysis = e['analysis'] as Map<String, dynamic>?;
             lineItems.add({
               'name': name.toString(),
               'qty': qty,
               'price': price,
               'amount': amount,
+              if (analysis != null) 'analysis': analysis,
             });
           }
         }
@@ -254,6 +276,99 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
     if (v is num) return v.toDouble();
     final s = v.toString().replaceAll(',', '').trim();
     return double.tryParse(s) ?? 0;
+  }
+
+  /// بناء خلية عرض التحليل المتقدم من AI
+  Widget _buildAnalysisCell(Map<String, dynamic> item) {
+    final analysis = item['analysis'] as Map<String, dynamic>?;
+    if (analysis == null) {
+      return const Text('-', style: TextStyle(color: Colors.grey));
+    }
+    
+    final unitType = analysis['unit_type']?.toString() ?? 'none';
+    final unitValue = _toDouble(analysis['unit_value'] ?? 0);
+    final calculatedPrice = _toDouble(analysis['calculated_unit_price'] ?? 0);
+    final unitLabel = analysis['unit_label']?.toString() ?? '';
+    final reasoning = analysis['reasoning']?.toString() ?? '';
+    final category = analysis['category']?.toString() ?? 'other';
+    
+    // أيقونة حسب التصنيف
+    IconData categoryIcon;
+    Color categoryColor;
+    switch (category) {
+      case 'cable':
+        categoryIcon = Icons.cable;
+        categoryColor = Colors.blue;
+        break;
+      case 'accessory':
+        categoryIcon = Icons.extension;
+        categoryColor = Colors.orange;
+        break;
+      case 'switchgear':
+        categoryIcon = Icons.toggle_on;
+        categoryColor = Colors.green;
+        break;
+      default:
+        categoryIcon = Icons.inventory_2;
+        categoryColor = Colors.grey;
+    }
+    
+    // إذا لم يكن هناك تحليل مفيد
+    if (unitType == 'none' || unitValue <= 0) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(categoryIcon, size: 16, color: categoryColor),
+          const SizedBox(width: 4),
+          const Text('قطعة', style: TextStyle(fontSize: 11)),
+        ],
+      );
+    }
+    
+    // عرض التحليل المتقدم
+    String unitText;
+    switch (unitType) {
+      case 'meter':
+        unitText = '${unitValue.toInt()}م';
+        break;
+      case 'pack':
+        unitText = 'تعبئة ${unitValue.toInt()}';
+        break;
+      case 'dozen':
+        unitText = 'درزن';
+        break;
+      case 'roll':
+        unitText = 'لفة ${unitValue.toInt()}م';
+        break;
+      case 'bundle':
+        unitText = 'شدة ${unitValue.toInt()}';
+        break;
+      default:
+        unitText = unitType;
+    }
+    
+    return Tooltip(
+      message: reasoning.isNotEmpty ? reasoning : unitLabel,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(categoryIcon, size: 14, color: categoryColor),
+              const SizedBox(width: 2),
+              Text(unitText, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          if (calculatedPrice > 0)
+            Text(
+              '${_fmt(calculatedPrice)} ${unitLabel.contains('متر') ? '/م' : '/قطعة'}',
+              style: TextStyle(fontSize: 10, color: Colors.green[700]),
+            ),
+        ],
+      ),
+    );
   }
 
   bool _isKnownProduct(String name) {
@@ -451,34 +566,301 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
 
   Widget _buildError() {
     final message = _error ?? '';
-    // رسائل لطيفة لحالات 429/503
+    // رسائل لطيفة لحالات مختلفة
     String friendly = message;
+    String suggestion = '';
+    IconData errorIcon = Icons.error_outline;
+    
     if (message.contains(' 429 ') || message.contains('code": 429') || message.contains('RESOURCE_EXHAUSTED')) {
-      friendly = 'الخدمة مشغولة الآن (429). الرجاء المحاولة بعد قليل.';
+      friendly = 'خدمات الذكاء الاصطناعي مشغولة الآن';
+      suggestion = 'جرب مرة أخرى بعد دقيقة أو أدخل البيانات يدوياً';
+      errorIcon = Icons.hourglass_empty;
     } else if (message.contains(' 503 ') || message.contains('UNAVAILABLE') || message.contains('code": 503')) {
-      friendly = 'الخدمة غير متاحة مؤقتاً (503). سنحاول مجدداً.';
+      friendly = 'الخدمة غير متاحة مؤقتاً';
+      suggestion = 'سنحاول مجدداً أو يمكنك الإدخال يدوياً';
+      errorIcon = Icons.cloud_off;
+    } else if (message.contains('فشل') || message.contains('جميع')) {
+      friendly = 'تعذر تحليل الصورة تلقائياً';
+      suggestion = 'يمكنك إدخال بيانات الفاتورة يدوياً';
+      errorIcon = Icons.image_not_supported;
     }
+    
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(friendly, textAlign: TextAlign.center),
-          const SizedBox(height: 12),
-          ElevatedButton.icon(
-            onPressed: _runExtraction,
-            icon: const Icon(Icons.refresh),
-            label: const Text('إعادة المحاولة'),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(errorIcon, size: 64, color: Colors.orange),
+            const SizedBox(height: 16),
+            Text(
+              friendly,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
+            ),
+            if (suggestion.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                suggestion,
+                style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                textAlign: TextAlign.center,
+              ),
+            ],
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _runExtraction,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('إعادة المحاولة'),
+                ),
+                const SizedBox(width: 12),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    // إنشاء بيانات فارغة للإدخال اليدوي
+                    setState(() {
+                      _error = null;
+                      _extracted = widget.type == 'invoice'
+                          ? {
+                              'invoice_date': DateTime.now().toString().substring(0, 10),
+                              'invoice_number': '',
+                              'currency': 'IQD',
+                              'line_items': <Map<String, dynamic>>[],
+                              'totals': {'subtotal': 0, 'discount': 0, 'grand_total': 0},
+                              'amount_paid': 0,
+                              'remaining': 0,
+                              'status': 'دين',
+                            }
+                          : {
+                              'receipt_date': DateTime.now().toString().substring(0, 10),
+                              'receipt_number': '',
+                              'amount': 0,
+                              'payment_method': 'نقد',
+                              'currency': 'IQD',
+                              'notes': '',
+                            };
+                    });
+                  },
+                  icon: const Icon(Icons.edit),
+                  label: const Text('إدخال يدوي'),
+                ),
+              ],
+            ),
+            if (widget.type == 'invoice') ...[
+              const SizedBox(height: 16),
+              const Divider(),
+              const SizedBox(height: 8),
+              Text(
+                'أو الصق نص الفاتورة:',
+                style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _showTextInputDialog,
+                    icon: const Icon(Icons.content_paste),
+                    label: const Text('تحليل نص'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.green[700],
+                    ),
+                  ),
+                  if (_rawOcrText != null && _rawOcrText!.isNotEmpty) ...[
+                    const SizedBox(width: 12),
+                    OutlinedButton.icon(
+                      onPressed: _showRawOcrText,
+                      icon: const Icon(Icons.text_snippet),
+                      label: const Text('عرض النص المستخرج'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.blue[700],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+  
+  /// عرض النص الخام المستخرج من OCR
+  Future<void> _showRawOcrText() async {
+    if (_rawOcrText == null || _rawOcrText!.isEmpty) return;
+    
+    final textController = TextEditingController(text: _rawOcrText);
+    
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.text_snippet, color: Colors.blue),
+            const SizedBox(width: 8),
+            const Text('النص المستخرج من OCR'),
+            const Spacer(),
+            IconButton(
+              icon: const Icon(Icons.copy),
+              tooltip: 'نسخ النص',
+              onPressed: () {
+                // نسخ النص للحافظة
+                final data = ClipboardData(text: _rawOcrText!);
+                Clipboard.setData(data);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('تم نسخ النص')),
+                );
+              },
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 500,
+          height: 400,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'يمكنك تعديل النص ثم الضغط على "تحليل" لإعادة التحليل:',
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: Directionality(
+                  textDirection: ui.TextDirection.rtl,
+                  child: TextField(
+                    controller: textController,
+                    maxLines: null,
+                    expands: true,
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(fontFamily: 'Courier New', fontSize: 12),
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.all(12),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
+        ),
+        actions: [
           TextButton(
-            onPressed: () {
-              setState(() => _error = null);
-            },
-            child: const Text('تجاهل والملء يدوياً'),
-          )
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إغلاق'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, textController.text),
+            child: const Text('تحليل'),
+          ),
         ],
       ),
     );
+    
+    if (result != null && result.trim().isNotEmpty) {
+      await _parseTextInput(result);
+    }
+  }
+  
+  /// عرض نافذة إدخال نص الفاتورة للتحليل
+  Future<void> _showTextInputDialog() async {
+    final textController = TextEditingController();
+    
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('الصق نص الفاتورة'),
+        content: SizedBox(
+          width: 400,
+          height: 300,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'الصق نص الفاتورة من Excel أو أي مصدر آخر:',
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: Directionality(
+                  textDirection: ui.TextDirection.rtl,
+                  child: TextField(
+                    controller: textController,
+                    maxLines: null,
+                    expands: true,
+                    textAlign: TextAlign.right,
+                    decoration: const InputDecoration(
+                      hintText:
+                          'مثال:\n1  سيمس Berly 80M 1.5*2  100  38.75  3,875\n2  كيبل 2.5*3  50  45  2,250',
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.all(12),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, textController.text),
+            child: const Text('تحليل'),
+          ),
+        ],
+      ),
+    );
+    
+    if (result != null && result.trim().isNotEmpty) {
+      await _parseTextInput(result);
+    }
+  }
+  
+  /// تحليل النص المدخل باستخدام SmartInvoiceParser
+  Future<void> _parseTextInput(String text) async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    
+    try {
+      final parser = InvoiceParserService();
+      final parsed = await parser.parseInvoiceTextWithDbLookup(text);
+      
+      final items = (parsed['line_items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+      
+      if (items.isEmpty) {
+        setState(() {
+          _error = 'لم يتم العثور على بنود في النص. تأكد من صيغة النص.';
+          _loading = false;
+        });
+        return;
+      }
+      
+      setState(() {
+        _extracted = _normalizeResult(parsed);
+        _loading = false;
+      });
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('تم استخراج ${items.length} بند بنجاح!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() {
+        _error = 'خطأ في تحليل النص: $e';
+        _loading = false;
+      });
+    }
   }
 
   Widget _buildForm() {
@@ -572,6 +954,7 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
                   DataColumn(label: SizedBox(width: 70, child: Text('العدد')), numeric: true),
                   DataColumn(label: SizedBox(width: 90, child: Text('السعر')), numeric: true),
                   DataColumn(label: SizedBox(width: 100, child: Text('المبلغ')), numeric: true),
+                  DataColumn(label: SizedBox(width: 120, child: Text('تحليل AI'))),
                   DataColumn(label: SizedBox(width: 80, child: Text('الوحدة'))),
                   DataColumn(label: SizedBox(width: 90, child: Text('التكلفة القديمة'))),
                   DataColumn(label: SizedBox(width: 90, child: Text('التكلفة الجديدة'))),
@@ -656,6 +1039,8 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
                         alignment: Alignment.centerRight,
                         child: Text(_fmt(_toDouble(item['amount'] ?? 0))),
                       )),
+                      // تحليل AI المتقدم
+                      DataCell(_buildAnalysisCell(item)),
                       // الوحدة (للمنتجات الجديدة فقط)
                       DataCell(
                         isNewProduct

@@ -246,18 +246,18 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
             ? 'image/png'
             : 'image/jpeg');
 
-    final groqApiKey = dotenv.env['GROQ_API_KEY'] ?? '';
     final geminiApiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
-    final huggingfaceApiKey = dotenv.env['HUGGINGFACE_API_KEY'] ?? '';
+    final geminiApiKey2 = dotenv.env['GEMINI_API_KEY_2'] ?? '';
+    final geminiApiKey3 = dotenv.env['GEMINI_API_KEY_3'] ?? '';
     
-    if (groqApiKey.isEmpty && geminiApiKey.isEmpty && huggingfaceApiKey.isEmpty) {
+    if (geminiApiKey.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لم يتم العثور على أي API Key في .env')),
+        const SnackBar(content: Text('لم يتم العثور على GEMINI_API_KEY في .env')),
       );
       return;
     }
-
+    
     if (!mounted) return;
     final saved = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
@@ -265,9 +265,9 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
           fileBytes: bytes,
           mimeType: mime,
           type: selectedType,
-          groqApiKey: groqApiKey,
           geminiApiKey: geminiApiKey,
-          huggingfaceApiKey: huggingfaceApiKey,
+          geminiApiKey2: geminiApiKey2.isNotEmpty ? geminiApiKey2 : null,
+          geminiApiKey3: geminiApiKey3.isNotEmpty ? geminiApiKey3 : null,
         ),
       ),
     );

@@ -1250,6 +1250,12 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                                     }
                                   },
                                   onRefresh: () async {
+                                    // 🔄 جلب بيانات العميل المحدّثة من قاعدة البيانات
+                                    final db = DatabaseService();
+                                    final updatedCustomer = await db.getCustomerById(widget.customer.id!);
+                                    if (updatedCustomer != null && mounted) {
+                                      await context.read<AppProvider>().selectCustomer(updatedCustomer);
+                                    }
                                     await _loadTransactions();
                                   },
                                 );
@@ -1359,6 +1365,15 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                                   }
                                 }
                               },
+                                  onRefresh: () async {
+                                    // 🔄 جلب بيانات العميل المحدّثة من قاعدة البيانات
+                                    final db = DatabaseService();
+                                    final updatedCustomer = await db.getCustomerById(widget.customer.id!);
+                                    if (updatedCustomer != null && mounted) {
+                                      await context.read<AppProvider>().selectCustomer(updatedCustomer);
+                                    }
+                                    await _loadTransactions();
+                                  },
                             );
                           },
                         ),
@@ -2324,6 +2339,8 @@ class TransactionListTile extends StatelessWidget {
   final Future<void> Function(DebtTransaction updated)? onEdit;
   // Callback for converting transaction type
   final Future<void> Function(int transactionId)? onConvertType;
+  // 🔄 Callback لتحديث البيانات عند الرجوع من الفاتورة
+  final VoidCallback? onRefresh;
 
   const TransactionListTile({
     super.key,
@@ -2334,6 +2351,7 @@ class TransactionListTile extends StatelessWidget {
     required this.audioPath,
     this.onEdit,
     this.onConvertType,
+    this.onRefresh,
   });
 
   // Helper to format numbers with thousand separators
@@ -2613,11 +2631,14 @@ class TransactionListTile extends StatelessWidget {
               relatedDebtTransaction: relatedDebtTransaction,
             ),
           ),
-        );
+        ).then((_) {
+          // 🔄 تحديث البيانات عند الرجوع من الفاتورة
+          onRefresh?.call();
+        });
       } else if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('لم يتم العثور على الفاتورة المطلوبة.'),
+            content: const Text('لم يتم العثور على الفاتورة المطلوبة.'),
             backgroundColor: Theme.of(context).colorScheme.error,
           ),
         );
@@ -3341,7 +3362,10 @@ class GroupedTransactionListTile extends StatelessWidget {
               relatedDebtTransaction: relatedDebtTransaction,
             ),
           ),
-        );
+        ).then((_) {
+          // 🔄 تحديث البيانات عند الرجوع من الفاتورة
+          onRefresh();
+        });
       } else if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

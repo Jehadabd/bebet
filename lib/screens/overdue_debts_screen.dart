@@ -290,7 +290,10 @@ class _OverdueDebtsScreenState extends State<OverdueDebtsScreen> {
           MaterialPageRoute(
             builder: (context) => CustomerDetailsScreen(customer: customer),
           ),
-        );
+        ).then((_) {
+          // 🔄 تحديث قائمة الديون عند الرجوع من صفحة العميل
+          _loadData();
+        });
       }
     } catch (e) {
       if (mounted) {

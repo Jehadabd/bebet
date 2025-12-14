@@ -115,10 +115,35 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
   // 🔒 تحسين الأمان: التحقق المسبق من صحة البيانات المالية
   // ═══════════════════════════════════════════════════════════════════════════
   _ValidationResult _validateInvoiceDataBeforeSave() {
-    // 1. التحقق من وجود أصناف
+    // 1. التحقق من وجود أصناف مكتملة
     final completeItems = invoiceItems.where(_isInvoiceItemComplete).toList();
+    final incompleteItems = invoiceItems.where((item) => 
+      item.productName.isNotEmpty && !_isInvoiceItemComplete(item)
+    ).toList();
+    
     if (completeItems.isEmpty) {
-      return _ValidationResult(isValid: false, errorMessage: 'لا يمكن حفظ فاتورة بدون أصناف');
+      // تحديد سبب عدم اكتمال الأصناف
+      if (incompleteItems.isNotEmpty) {
+        final problems = <String>[];
+        for (final item in incompleteItems) {
+          final itemProblems = <String>[];
+          final hasQty = (item.quantityIndividual != null && item.quantityIndividual! > 0) ||
+                         (item.quantityLargeUnit != null && item.quantityLargeUnit! > 0);
+          if (!hasQty) itemProblems.add('الكمية');
+          if (item.appliedPrice <= 0) itemProblems.add('السعر');
+          if (item.saleType == null || item.saleType!.isEmpty) itemProblems.add('نوع البيع');
+          if (itemProblems.isNotEmpty) {
+            problems.add('${item.productName}: ينقص ${itemProblems.join('، ')}');
+          }
+        }
+        if (problems.isNotEmpty) {
+          return _ValidationResult(
+            isValid: false, 
+            errorMessage: 'أصناف غير مكتملة:\n${problems.take(3).join('\n')}${problems.length > 3 ? '\n... و${problems.length - 3} أصناف أخرى' : ''}'
+          );
+        }
+      }
+      return _ValidationResult(isValid: false, errorMessage: 'لا يمكن حفظ فاتورة بدون أصناف. أضف صنفاً واحداً على الأقل مع الكمية والسعر ونوع البيع.');
     }
     
     // 2. حساب الإجمالي والتحقق من صحته
@@ -546,43 +571,6 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
       }
 
       await (await db.database).transaction((txn) async {
-        // ═══════════════════════════════════════════════════════════════════════════
-        // 🔒 إصلاح Race Condition: التحقق من أن الفاتورة لم تتغير منذ آخر تحميل
-        // هذا يمنع مشكلة الحفظ المتزامن التي تسبب أخطاء في حساب الفروقات
-        // ═══════════════════════════════════════════════════════════════════════════
-        if (!isNewInvoice && invoiceToManage?.id != null) {
-          final currentInvoiceData = await txn.query(
-            'invoices',
-            where: 'id = ?',
-            whereArgs: [invoiceToManage!.id],
-          );
-          
-          if (currentInvoiceData.isNotEmpty) {
-            final dbLastModified = currentInvoiceData.first['last_modified_at'] as String?;
-            final widgetLastModified = invoiceToManage!.lastModifiedAt?.toIso8601String();
-            
-            // التحقق من التعديل المتزامن
-            // إذا كان كلاهما موجوداً ومختلفين = تعديل متزامن
-            if (dbLastModified != null && widgetLastModified != null && dbLastModified != widgetLastModified) {
-              print('⚠️ CONCURRENT_MODIFICATION detected!');
-              print('   DB last_modified_at: $dbLastModified');
-              print('   Widget last_modified_at: $widgetLastModified');
-              throw Exception('CONCURRENT_MODIFICATION: تم تعديل الفاتورة من مكان آخر. يرجى إعادة تحميل الفاتورة والمحاولة مرة أخرى.');
-            }
-            
-            // التحقق الإضافي: مقارنة مبلغ الفاتورة للتأكد من عدم وجود تعديل
-            // هذا مفيد للفواتير القديمة التي ليس لديها last_modified_at
-            final dbTotalAmount = (currentInvoiceData.first['total_amount'] as num?)?.toDouble() ?? 0;
-            final widgetTotalAmount = invoiceToManage!.totalAmount;
-            if ((dbTotalAmount - widgetTotalAmount).abs() > 0.01) {
-              print('⚠️ CONCURRENT_MODIFICATION detected (total_amount mismatch)!');
-              print('   DB total_amount: $dbTotalAmount');
-              print('   Widget total_amount: $widgetTotalAmount');
-              throw Exception('CONCURRENT_MODIFICATION: تم تعديل الفاتورة من مكان آخر. يرجى إعادة تحميل الفاتورة والمحاولة مرة أخرى.');
-            }
-          }
-        }
-        
         Customer? customer;
         if (customerNameController.text.trim().isNotEmpty) {
           String? normalizedPhone;
@@ -697,9 +685,9 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
               where: 'id = ?', whereArgs: [invoiceId]);
         }
 
-        await txn
-            .delete('invoice_items', where: 'invoice_id = ?', whereArgs: [invoiceId]);
-        
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 🔒 حماية الأصناف: تحضير الأصناف المكتملة قبل الحذف
+        // ═══════════════════════════════════════════════════════════════════════════
         final products = await txn.rawQuery('SELECT * FROM products');
         final productMap = <String, Map<String, dynamic>>{};
         for (var productData in products) {
@@ -709,9 +697,8 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           }
         }
 
-        final batch = txn.batch();
-        int savedItemsCount = 0;
-
+        // تحضير قائمة الأصناف المكتملة مسبقاً
+        final List<Map<String, dynamic>> itemsToInsert = [];
         for (var item in invoiceItems) {
           if (_isInvoiceItemComplete(item)) {
             final productData = productMap[item.productName];
@@ -742,12 +729,31 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
 
             var itemMap = invoiceItem.toMap();
             itemMap.remove('id');
-            
-            batch.insert('invoice_items', itemMap);
-            savedItemsCount++;
+            itemsToInsert.add(itemMap);
           }
         }
+
+        // 🔒 التحقق من وجود أصناف مكتملة قبل الحذف (للفواتير الموجودة)
+        if (!isNewInvoice && itemsToInsert.isEmpty) {
+          throw Exception('لا يمكن حفظ الفاتورة بدون أصناف مكتملة. تأكد من إدخال اسم المنتج والكمية والسعر ونوع البيع.');
+        }
+
+        // الآن نحذف الأصناف القديمة بعد التأكد من وجود أصناف جديدة
+        await txn.delete('invoice_items', where: 'invoice_id = ?', whereArgs: [invoiceId]);
+        
+        // إدراج الأصناف الجديدة
+        final batch = txn.batch();
+        int savedItemsCount = 0;
+        for (var itemMap in itemsToInsert) {
+          batch.insert('invoice_items', itemMap);
+          savedItemsCount++;
+        }
         await batch.commit(noResult: true);
+        
+        // 🔒 التحقق من نجاح الإدراج
+        if (savedItemsCount == 0 && !isNewInvoice) {
+          throw Exception('فشل حفظ أصناف الفاتورة. يرجى المحاولة مرة أخرى.');
+        }
 
         // ═══════════════════════════════════════════════════════════════════════════
         // ✅ منطق الدين المحسّن - يتعامل مع جميع الحالات
@@ -1177,44 +1183,6 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
 
       return savedInvoice;
     } catch (e) {
-      // ═══════════════════════════════════════════════════════════════════════════
-      // 🔒 معالجة خاصة لخطأ التعديل المتزامن
-      // ═══════════════════════════════════════════════════════════════════════════
-      if (e.toString().contains('CONCURRENT_MODIFICATION')) {
-        if (mounted) {
-          showDialog(
-            context: context,
-            barrierDismissible: false,
-            builder: (ctx) => AlertDialog(
-              title: const Row(
-                children: [
-                  Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 28),
-                  SizedBox(width: 8),
-                  Text('تعديل متزامن'),
-                ],
-              ),
-              content: const Text(
-                'تم تعديل هذه الفاتورة من مكان آخر أثناء عملك عليها.\n\n'
-                'لتجنب فقدان البيانات، يرجى:\n'
-                '1. إغلاق هذه الشاشة\n'
-                '2. فتح الفاتورة مرة أخرى\n'
-                '3. إعادة إجراء التعديلات',
-              ),
-              actions: [
-                ElevatedButton(
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    Navigator.pop(context); // إغلاق شاشة الفاتورة
-                  },
-                  child: const Text('حسناً، أغلق الشاشة'),
-                ),
-              ],
-            ),
-          );
-        }
-        return null;
-      }
-      
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

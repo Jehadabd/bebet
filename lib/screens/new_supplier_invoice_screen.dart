@@ -266,14 +266,20 @@ class _NewSupplierInvoiceScreenState extends State<NewSupplierInvoiceScreen> {
     });
 
     final apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
-    if (apiKey.isEmpty) {
+    final apiKey2 = dotenv.env['GEMINI_API_KEY_2'] ?? '';
+    final apiKey3 = dotenv.env['GEMINI_API_KEY_3'] ?? '';
+    if (apiKey.isEmpty && apiKey2.isEmpty && apiKey3.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('GEMINI_API_KEY غير مضبوط في .env')));
       return;
     }
 
     try {
-      final gemini = GeminiService(apiKey: apiKey);
+      final gemini = GeminiService(
+        apiKey: apiKey.isNotEmpty ? apiKey : (apiKey2.isNotEmpty ? apiKey2 : apiKey3),
+        apiKey2: apiKey2.isNotEmpty ? apiKey2 : null,
+        apiKey3: apiKey3.isNotEmpty ? apiKey3 : null,
+      );
       final data = await gemini.extractInvoiceOrReceiptStructured(
         fileBytes: _pickedBytes!,
         fileMimeType: _pickedMime!,

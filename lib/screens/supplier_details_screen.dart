@@ -953,20 +953,18 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> with Sing
       }
     });
     
-    final groqApiKey = dotenv.env['GROQ_API_KEY'] ?? '';
     final geminiApiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
-    final huggingfaceApiKey = dotenv.env['HUGGINGFACE_API_KEY'] ?? '';
+    final geminiApiKey2 = dotenv.env['GEMINI_API_KEY_2'] ?? '';
+    final geminiApiKey3 = dotenv.env['GEMINI_API_KEY_3'] ?? '';
     
-    print('🔵 GROQ_API_KEY: ${groqApiKey.isEmpty ? "فارغ ❌" : "موجود ✅ (${groqApiKey.length} حرف)"}');
-    print('🟢 GEMINI_API_KEY: ${geminiApiKey.isEmpty ? "فارغ ❌" : "موجود ✅ (${geminiApiKey.length} حرف)"}');
-    print('🟠 HUGGINGFACE_API_KEY: ${huggingfaceApiKey.isEmpty ? "فارغ ❌" : "موجود ✅ (${huggingfaceApiKey.length} حرف)"}');
-    
-    if (groqApiKey.isEmpty && geminiApiKey.isEmpty && huggingfaceApiKey.isEmpty) {
+    if (geminiApiKey.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لم يتم العثور على أي API Key')),
+        const SnackBar(content: Text('لم يتم العثور على GEMINI_API_KEY')),
       );
       return;
     }
+    
+    print('🟢 GEMINI_API_KEY: موجود ✅');
     
     final type = await showDialog<String>(
       context: context,
@@ -1012,9 +1010,9 @@ class _SupplierDetailsScreenState extends State<SupplierDetailsScreen> with Sing
           fileBytes: bytes,
           mimeType: mime,
           type: type,
-          groqApiKey: groqApiKey,
           geminiApiKey: geminiApiKey,
-          huggingfaceApiKey: huggingfaceApiKey,
+          geminiApiKey2: geminiApiKey2.isNotEmpty ? geminiApiKey2 : null,
+          geminiApiKey3: geminiApiKey3.isNotEmpty ? geminiApiKey3 : null,
           supplierId: widget.supplier.id,
         ),
       ),

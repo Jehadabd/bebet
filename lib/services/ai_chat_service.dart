@@ -1,11 +1,7 @@
 import 'package:sqflite/sqflite.dart';
 import 'database_service.dart';
-import 'groq_service.dart';
 import 'gemini_service.dart';
-import 'huggingface_service.dart';
-import 'sambanova_service.dart';
-import 'openrouter_service.dart';
-import '../utils/money_calculator.dart'; // 🔧 إضافة استيراد MoneyCalculator
+import '../utils/money_calculator.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -13,25 +9,12 @@ import 'dart:io';
 /// هذه الخدمة تستطيع الوصول لكامل قاعدة البيانات والتحقق من صحة البيانات
 class AIChatService {
   final DatabaseService _dbService;
-  final GroqService? _groqService;
   final GeminiService? _geminiService;
-  final HuggingFaceService? _huggingFaceService;
-  final SambaNovaService? _sambaNovaService;
-  final OpenRouterService? _openRouterService;
   
   AIChatService(
     this._dbService, {
-    GroqService? groqService,
     GeminiService? geminiService,
-    HuggingFaceService? huggingFaceService,
-    SambaNovaService? sambaNovaService,
-    OpenRouterService? openRouterService,
-  })  : _groqService = groqService,
-        _geminiService = geminiService,
-        _huggingFaceService = huggingFaceService,
-        _sambaNovaService = sambaNovaService,
-        _openRouterService = openRouterService {
-  }
+  }) : _geminiService = geminiService;
 
   /// 🔧 حساب التكلفة من unit_hierarchy عندما لا تتوفر بيانات أخرى
   /// نفس منطق _calculateActualCostPrice في create_invoice_screen.dart
@@ -2442,20 +2425,14 @@ $dbContext
 
 سؤال المستخدم: $message''';
       
-      // إرسال للذكاء الاصطناعي (محاولة استخدام الأفضل)
+      // إرسال للذكاء الاصطناعي (Gemini فقط)
       String responseText = "عذرًا، لا يمكنني الإجابة حاليًا.";
       
-      if (_openRouterService != null) {
-        responseText = await _openRouterService!.sendMessage(fullPrompt, conversationHistory: history);
-      } else if (_sambaNovaService != null) {
-        responseText = await _sambaNovaService!.sendMessage(fullPrompt, conversationHistory: history);
-      } else if (_huggingFaceService != null) {
-        responseText = await _huggingFaceService!.sendMessage(fullPrompt, conversationHistory: history);
-      } else if (_geminiService != null) {
-        responseText = await _geminiService!.sendMessage(fullPrompt);
+      if (_geminiService != null) {
+        responseText = await _geminiService!.sendMessage(fullPrompt, conversationHistory: history);
       } else {
         return ChatResponse(
-          text: "عذرًا، خدمة الذكاء الاصطناعي غير متصلة حاليًا.",
+          text: "عذرًا، خدمة Gemini غير متصلة. تأكد من إعداد GEMINI_API_KEY.",
           status: 'error',
         );
       }

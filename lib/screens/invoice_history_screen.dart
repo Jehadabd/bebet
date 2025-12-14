@@ -446,8 +446,10 @@ class _InvoiceHistoryScreenState extends State<InvoiceHistoryScreen> {
                     final productName = item['product_name'] ?? '-';
                     final quantity = item['quantity_individual'] ?? item['quantity_large_unit'] ?? 0;
                     final saleType = item['sale_type'] ?? (item['quantity_individual'] != null ? 'مفرد' : 'جملة');
-                    final unitPrice = item['unit_price'] ?? 0;
-                    final unitsInLargeUnit = item['units_in_large_unit'] ?? item['quantity_large_unit'] ?? 0;
+                    // 🔧 إصلاح: استخدام applied_price بدلاً من unit_price لأنه السعر الفعلي المطبق
+                    final appliedPrice = item['applied_price'] ?? item['unit_price'] ?? 0;
+                    // 🔧 إصلاح: عرض الكمية الفعلية (quantity) بدلاً من units_in_large_unit
+                    final displayQuantity = item['quantity_individual'] ?? item['quantity_large_unit'] ?? 0;
                     final itemTotal = item['item_total'] ?? 0;
                     
                     return DataRow(
@@ -465,8 +467,8 @@ class _InvoiceHistoryScreenState extends State<InvoiceHistoryScreen> {
                         DataCell(Text(productName, style: const TextStyle(fontWeight: FontWeight.w500))),
                         DataCell(Text(quantity.toString())),
                         DataCell(Text(saleType)),
-                        DataCell(Text(_formatCurrency(unitPrice))),
-                        DataCell(Text(unitsInLargeUnit.toString())),
+                        DataCell(Text(_formatCurrency(appliedPrice))),
+                        DataCell(Text(displayQuantity.toString())),
                       ],
                     );
                   },

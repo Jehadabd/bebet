@@ -25,7 +25,7 @@ import 'sync/sync_tracker.dart'; // 🔄 تتبع المزامنة
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
   static Database? _database;
-  static const int _databaseVersion = 35; // 🔒 إضافة عمود checksum للأمان المالي
+  static const int _databaseVersion = 36; // 🧠 إضافة جدول product_specs للتعلم من الفواتير
   // تحكم بالطباعات التشخيصية من مصدر واحد
   // معطل في الإصدار النهائي لتجنب الطباعات المزعجة
   static const bool _verboseLogs = false;
@@ -1052,6 +1052,28 @@ class DatabaseService {
       )
     ''');
 
+    // -->> جدول مواصفات المنتجات للتعلم من الفواتير
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS product_specs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pattern TEXT NOT NULL,
+        pattern_normalized TEXT NOT NULL,
+        unit_type TEXT NOT NULL,
+        unit_value REAL NOT NULL DEFAULT 1,
+        category TEXT DEFAULT 'other',
+        brand TEXT,
+        confidence REAL DEFAULT 1.0,
+        usage_count INTEGER DEFAULT 1,
+        last_used_at TEXT,
+        created_at TEXT NOT NULL,
+        source TEXT DEFAULT 'ai',
+        UNIQUE(pattern_normalized)
+      )
+    ''');
+    
+    // فهرس للبحث السريع
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_product_specs_pattern ON product_specs(pattern_normalized)');
+
     // -->> بداية الإضافة: إنشاء جدول FTS5 والمحفزات
 
     // 1. إنشاء جدول FTS5 لفهرسة أسماء المنتجات المطبع
@@ -1505,6 +1527,35 @@ class DatabaseService {
         print('✅ تم إضافة عمود checksum لجدول المعاملات');
       } catch (e) {
         print("DEBUG DB: عمود checksum موجود بالفعل أو خطأ: $e");
+      }
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🧠 ترقية 36: إضافة جدول product_specs للتعلم من الفواتير
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (oldVersion < 36) {
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS product_specs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pattern TEXT NOT NULL,
+            pattern_normalized TEXT NOT NULL,
+            unit_type TEXT NOT NULL,
+            unit_value REAL NOT NULL DEFAULT 1,
+            category TEXT DEFAULT 'other',
+            brand TEXT,
+            confidence REAL DEFAULT 1.0,
+            usage_count INTEGER DEFAULT 1,
+            last_used_at TEXT,
+            created_at TEXT NOT NULL,
+            source TEXT DEFAULT 'ai',
+            UNIQUE(pattern_normalized)
+          )
+        ''');
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_product_specs_pattern ON product_specs(pattern_normalized)');
+        print('✅ تم إنشاء جدول product_specs للتعلم من الفواتير');
+      } catch (e) {
+        print("DEBUG DB: جدول product_specs موجود بالفعل أو خطأ: $e");
       }
     }
     
@@ -4612,10 +4663,12 @@ class DatabaseService {
       if (terms.isEmpty) return [];
       
       // تنظيف الكلمات من الأحرف الخاصة التي تسبب مشاكل في FTS5
+      // FTS5 يعتبر النقطة والأحرف الخاصة كفواصل كلمات
       final cleanedTerms = terms.map((term) {
-        // إزالة علامات الاقتباس والأحرف الخاصة
-        return term.replaceAll(RegExp(r'''['"*()[\]{}]'''), '');
-      }).where((t) => t.isNotEmpty).toList();
+        // إزالة جميع الأحرف الخاصة التي تسبب syntax error في FTS5
+        // بما في ذلك: . * " ' ( ) [ ] { } + - : ^ ~ @ # $ % & | \ / < > = ! ?
+        return term.replaceAll(RegExp(r'''[.'"*()[\]{}+\-:^~@#$%&|\\/<>=!?]'''), ' ').trim();
+      }).expand((term) => term.split(' ')).where((t) => t.isNotEmpty).toList();
       
       if (cleanedTerms.isEmpty) return [];
       
