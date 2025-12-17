@@ -263,6 +263,8 @@ class SyncOperation {
 
   SyncOperation copyWith({
     int? globalSequence,
+    Map<String, dynamic>? payloadAfter,
+    Map<String, dynamic>? payloadBefore,
     Map<String, OperationAcknowledgment>? acknowledgments,
     OperationStatus? status,
   }) => SyncOperation(
@@ -275,8 +277,8 @@ class SyncOperation {
     entityType: entityType,
     entityUuid: entityUuid,
     customerUuid: customerUuid,
-    payloadBefore: payloadBefore,
-    payloadAfter: payloadAfter,
+    payloadBefore: payloadBefore ?? this.payloadBefore,
+    payloadAfter: payloadAfter ?? this.payloadAfter,
     checksum: checksum,
     signature: signature,
     parentOperationId: parentOperationId,

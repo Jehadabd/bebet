@@ -63,10 +63,14 @@ class _SafeAutocompleteState<T extends Object> extends State<SafeAutocomplete<T>
           final RenderBox renderBox = context.findRenderObject() as RenderBox;
           final Size size = renderBox.size;
           
+          // حساب العرض المناسب للقائمة المنسدلة
+          // الحد الأدنى 300 بكسل لعرض أسماء المنتجات الطويلة
+          final double dropdownWidth = size.width < 300 ? 300.0 : size.width;
+          
           _overlayEntry = OverlayEntry(
             builder: (BuildContext context) {
               return Positioned(
-                width: size.width,
+                width: dropdownWidth,
                 child: CompositedTransformFollower(
                   link: _layerLink,
                   showWhenUnlinked: false,

@@ -236,17 +236,30 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
         for (final e in dynamicLines) {
           if (e is Map) {
             final name = e['name'] ?? e['item'] ?? e['product'] ?? e['details'] ?? e['description'] ?? '';
+            final originalName = e['original_name'] ?? name;
             final qty = _toDouble(e['qty'] ?? e['quantity'] ?? e['count'] ?? 1);
             final price = _toDouble(e['price'] ?? e['unit_price'] ?? e['rate'] ?? 0);
             final amount = _toDouble(e['amount'] ?? e['line_total'] ?? (qty * price));
-            // الحفاظ على بيانات التحليل المتقدم من AI
-            final analysis = e['analysis'] as Map<String, dynamic>?;
+            // بيانات المطابقة من Gemini
+            final matchedProductId = e['matched_product_id'];
+            final oldCostPrice = e['old_cost_price'];
+            final isNewProduct = e['is_new_product'] == true;
+            
+            // حقول المطابقة الذكية
+            final confidence = _toDouble(e['confidence'] ?? 0);
+            final reason = e['reason']?.toString() ?? '';
+            
             lineItems.add({
               'name': name.toString(),
+              'original_name': originalName.toString(),
               'qty': qty,
               'price': price,
               'amount': amount,
-              if (analysis != null) 'analysis': analysis,
+              'matched_product_id': matchedProductId,
+              'oldCostPrice': oldCostPrice,
+              'isNewProduct': isNewProduct,
+              'confidence': confidence,
+              'reason': reason,
             });
           }
         }
@@ -278,94 +291,60 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
     return double.tryParse(s) ?? 0;
   }
 
-  /// بناء خلية عرض التحليل المتقدم من AI
-  Widget _buildAnalysisCell(Map<String, dynamic> item) {
-    final analysis = item['analysis'] as Map<String, dynamic>?;
-    if (analysis == null) {
-      return const Text('-', style: TextStyle(color: Colors.grey));
+  /// بناء خلية عرض درجة الثقة في المطابقة
+  Widget _buildConfidenceCell(Map<String, dynamic> item) {
+    final confidence = _toDouble(item['confidence'] ?? 0);
+    final reason = item['reason']?.toString() ?? '';
+    final originalName = item['original_name']?.toString() ?? '';
+    final isNewProduct = item['isNewProduct'] == true;
+    
+    // تحديد اللون حسب درجة الثقة
+    Color confidenceColor;
+    IconData confidenceIcon;
+    String confidenceLabel;
+    
+    if (isNewProduct || confidence < 0.50) {
+      confidenceColor = Colors.orange;
+      confidenceIcon = Icons.fiber_new;
+      confidenceLabel = 'جديد';
+    } else if (confidence >= 0.90) {
+      confidenceColor = Colors.green;
+      confidenceIcon = Icons.check_circle;
+      confidenceLabel = '${(confidence * 100).toInt()}%';
+    } else if (confidence >= 0.70) {
+      confidenceColor = Colors.blue;
+      confidenceIcon = Icons.thumb_up;
+      confidenceLabel = '${(confidence * 100).toInt()}%';
+    } else {
+      confidenceColor = Colors.amber;
+      confidenceIcon = Icons.help_outline;
+      confidenceLabel = '${(confidence * 100).toInt()}%';
     }
     
-    final unitType = analysis['unit_type']?.toString() ?? 'none';
-    final unitValue = _toDouble(analysis['unit_value'] ?? 0);
-    final calculatedPrice = _toDouble(analysis['calculated_unit_price'] ?? 0);
-    final unitLabel = analysis['unit_label']?.toString() ?? '';
-    final reasoning = analysis['reasoning']?.toString() ?? '';
-    final category = analysis['category']?.toString() ?? 'other';
-    
-    // أيقونة حسب التصنيف
-    IconData categoryIcon;
-    Color categoryColor;
-    switch (category) {
-      case 'cable':
-        categoryIcon = Icons.cable;
-        categoryColor = Colors.blue;
-        break;
-      case 'accessory':
-        categoryIcon = Icons.extension;
-        categoryColor = Colors.orange;
-        break;
-      case 'switchgear':
-        categoryIcon = Icons.toggle_on;
-        categoryColor = Colors.green;
-        break;
-      default:
-        categoryIcon = Icons.inventory_2;
-        categoryColor = Colors.grey;
+    // بناء نص التلميح
+    String tooltipText = '';
+    if (originalName.isNotEmpty && originalName != item['name']) {
+      tooltipText = 'الأصلي: $originalName\n';
     }
-    
-    // إذا لم يكن هناك تحليل مفيد
-    if (unitType == 'none' || unitValue <= 0) {
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(categoryIcon, size: 16, color: categoryColor),
-          const SizedBox(width: 4),
-          const Text('قطعة', style: TextStyle(fontSize: 11)),
-        ],
-      );
-    }
-    
-    // عرض التحليل المتقدم
-    String unitText;
-    switch (unitType) {
-      case 'meter':
-        unitText = '${unitValue.toInt()}م';
-        break;
-      case 'pack':
-        unitText = 'تعبئة ${unitValue.toInt()}';
-        break;
-      case 'dozen':
-        unitText = 'درزن';
-        break;
-      case 'roll':
-        unitText = 'لفة ${unitValue.toInt()}م';
-        break;
-      case 'bundle':
-        unitText = 'شدة ${unitValue.toInt()}';
-        break;
-      default:
-        unitText = unitType;
+    if (reason.isNotEmpty) {
+      tooltipText += reason;
     }
     
     return Tooltip(
-      message: reasoning.isNotEmpty ? reasoning : unitLabel,
-      child: Column(
+      message: tooltipText.isNotEmpty ? tooltipText : 'لا توجد تفاصيل',
+      child: Row(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(categoryIcon, size: 14, color: categoryColor),
-              const SizedBox(width: 2),
-              Text(unitText, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-            ],
-          ),
-          if (calculatedPrice > 0)
-            Text(
-              '${_fmt(calculatedPrice)} ${unitLabel.contains('متر') ? '/م' : '/قطعة'}',
-              style: TextStyle(fontSize: 10, color: Colors.green[700]),
+          Icon(confidenceIcon, size: 16, color: confidenceColor),
+          const SizedBox(width: 4),
+          Text(
+            confidenceLabel,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+              color: confidenceColor,
             ),
+          ),
         ],
       ),
     );
@@ -821,46 +800,12 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
     }
   }
   
-  /// تحليل النص المدخل باستخدام SmartInvoiceParser
+  /// تحليل النص المدخل (ميزة معطلة مؤقتاً)
   Future<void> _parseTextInput(String text) async {
     setState(() {
-      _loading = true;
-      _error = null;
+      _error = 'ميزة تحليل النص غير متاحة حالياً. استخدم تحليل الصور بدلاً منها.';
+      _loading = false;
     });
-    
-    try {
-      final parser = InvoiceParserService();
-      final parsed = await parser.parseInvoiceTextWithDbLookup(text);
-      
-      final items = (parsed['line_items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-      
-      if (items.isEmpty) {
-        setState(() {
-          _error = 'لم يتم العثور على بنود في النص. تأكد من صيغة النص.';
-          _loading = false;
-        });
-        return;
-      }
-      
-      setState(() {
-        _extracted = _normalizeResult(parsed);
-        _loading = false;
-      });
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('تم استخراج ${items.length} بند بنجاح!'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
-    } catch (e) {
-      setState(() {
-        _error = 'خطأ في تحليل النص: $e';
-        _loading = false;
-      });
-    }
   }
 
   Widget _buildForm() {
@@ -954,7 +899,7 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
                   DataColumn(label: SizedBox(width: 70, child: Text('العدد')), numeric: true),
                   DataColumn(label: SizedBox(width: 90, child: Text('السعر')), numeric: true),
                   DataColumn(label: SizedBox(width: 100, child: Text('المبلغ')), numeric: true),
-                  DataColumn(label: SizedBox(width: 120, child: Text('تحليل AI'))),
+                  DataColumn(label: SizedBox(width: 60, child: Text('الثقة'))),
                   DataColumn(label: SizedBox(width: 80, child: Text('الوحدة'))),
                   DataColumn(label: SizedBox(width: 90, child: Text('التكلفة القديمة'))),
                   DataColumn(label: SizedBox(width: 90, child: Text('التكلفة الجديدة'))),
@@ -963,16 +908,25 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
                 rows: [
                   ...List.generate(lineItems.length, (index) {
                     final item = lineItems[index];
-                    // المنتج يعتبر "جديد" فقط إذا لم يكن له productId أو oldCostPrice
-                    final isNewProduct = !item.containsKey('productId') && !item.containsKey('oldCostPrice');
+                    // المنتج يعتبر "جديد" إذا كان isNewProduct = true أو لم يكن له productId/oldCostPrice
+                    final isNewProduct = item['isNewProduct'] == true || 
+                        (!item.containsKey('productId') && 
+                         !item.containsKey('oldCostPrice') && 
+                         !item.containsKey('matched_product_id'));
                     
                     // طباعة تشخيصية
                     if (index == 0) {
                       print('🔍 عرض البند: ${item['name']}');
+                      final originalName = item['original_name'];
+                      if (originalName != null && originalName != item['name']) {
+                        print('   📝 الاسم الأصلي: $originalName');
+                      }
                       print('   isNewProduct: $isNewProduct');
-                      print('   hasProductId: ${item.containsKey('productId')}');
+                      print('   hasProductId: ${item.containsKey('matched_product_id')}');
                       print('   hasOldCostPrice: ${item.containsKey('oldCostPrice')}');
                       print('   oldCostPrice: ${item['oldCostPrice']}');
+                      print('   confidence: ${item['confidence']}');
+                      print('   reason: ${item['reason']}');
                     }
                     
                     // حقول المنتج الجديد
@@ -1039,8 +993,8 @@ class _AiImportReviewScreenState extends State<AiImportReviewScreen> {
                         alignment: Alignment.centerRight,
                         child: Text(_fmt(_toDouble(item['amount'] ?? 0))),
                       )),
-                      // تحليل AI المتقدم
-                      DataCell(_buildAnalysisCell(item)),
+                      // درجة الثقة في المطابقة
+                      DataCell(_buildConfidenceCell(item)),
                       // الوحدة (للمنتجات الجديدة فقط)
                       DataCell(
                         isNewProduct

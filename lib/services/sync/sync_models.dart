@@ -120,6 +120,7 @@ class DeviceState {
   final int syncedUpToGlobal;
   final int pendingOperations;
   final String status;
+  final String appVersion;
 
   DeviceState({
     required this.deviceId,
@@ -130,6 +131,7 @@ class DeviceState {
     required this.syncedUpToGlobal,
     required this.pendingOperations,
     this.status = 'ACTIVE',
+    this.appVersion = '1.0.0',
   });
 
   Map<String, dynamic> toJson() => {
@@ -141,11 +143,13 @@ class DeviceState {
     'synced_up_to_global': syncedUpToGlobal,
     'pending_operations': pendingOperations,
     'status': status,
+    'app_version': appVersion,
   };
 
   factory DeviceState.fromJson(String deviceId, Map<String, dynamic> json) => DeviceState(
     deviceId: deviceId,
     deviceName: json['name'] as String? ?? 'Unknown',
+    appVersion: json['app_version'] as String? ?? '1.0.0',
     firstSeen: DateTime.parse(json['first_seen'] as String),
     lastSync: DateTime.parse(json['last_sync'] as String),
     localSequence: json['local_sequence'] as int? ?? 0,
@@ -170,6 +174,7 @@ class DeviceState {
     syncedUpToGlobal: syncedUpToGlobal ?? this.syncedUpToGlobal,
     pendingOperations: pendingOperations ?? this.pendingOperations,
     status: status ?? this.status,
+    appVersion: appVersion ?? this.appVersion,
   );
 }
 
@@ -178,6 +183,7 @@ class DeviceState {
 /// ═══════════════════════════════════════════════════════════════════════════
 class SyncManifest {
   final String schemaVersion;
+  final String appVersion;
   final int globalSequence;
   final DateTime lastModified;
   final String lastModifiedBy;
@@ -188,6 +194,7 @@ class SyncManifest {
 
   SyncManifest({
     this.schemaVersion = '2.0.0',
+    this.appVersion = '1.0.0',
     required this.globalSequence,
     required this.lastModified,
     required this.lastModifiedBy,
@@ -199,6 +206,7 @@ class SyncManifest {
 
   Map<String, dynamic> toJson() => {
     'schema_version': schemaVersion,
+    'app_version': appVersion,
     'global_sequence': globalSequence,
     'last_modified': lastModified.toIso8601String(),
     'last_modified_by': lastModifiedBy,
@@ -218,6 +226,7 @@ class SyncManifest {
     
     return SyncManifest(
       schemaVersion: json['schema_version'] as String? ?? '2.0.0',
+      appVersion: json['app_version'] as String? ?? '1.0.0',
       globalSequence: json['global_sequence'] as int? ?? 0,
       lastModified: DateTime.parse(json['last_modified'] as String? ?? DateTime.now().toIso8601String()),
       lastModifiedBy: json['last_modified_by'] as String? ?? '',
@@ -250,8 +259,10 @@ class SyncManifest {
     Map<String, DeviceState>? devices,
     Map<String, EntityState>? entities,
     String? merkleRoot,
+    String? appVersion,
   }) => SyncManifest(
     schemaVersion: schemaVersion,
+    appVersion: appVersion ?? this.appVersion,
     globalSequence: globalSequence ?? this.globalSequence,
     lastModified: lastModified ?? this.lastModified,
     lastModifiedBy: lastModifiedBy ?? this.lastModifiedBy,

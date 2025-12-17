@@ -1323,89 +1323,11 @@ class AIChatService {
     );
   }
 
-  /// تحليل دقة حساب الأرباح مع الذكاء الاصطناعي (Qwen)
-  /// يرسل بيانات تفصيلية عن المنتجات والأسعار للذكاء الاصطناعي
+  /// تحليل دقة حساب الأرباح مع الذكاء الاصطناعي
+  /// يستخدم التحليل المحلي فقط (تم إزالة خدمات AI الخارجية)
   Future<ChatResponse> analyzeProfitAccuracyWithAI() async {
-    if (_huggingFaceService == null) {
-      return await analyzeProfitAccuracy(); // استخدام التحليل العادي
-    }
-    
-    try {
-      final db = await _dbService.database;
-      
-      // جمع بيانات تفصيلية عن المنتجات والمبيعات
-      final productsData = await db.rawQuery('''
-        SELECT 
-          p.name,
-          p.unit,
-          p.cost_price,
-          p.unit_hierarchy,
-          p.unit_costs,
-          p.length_per_unit,
-          COUNT(DISTINCT ii.invoice_id) as sales_count,
-          SUM(ii.item_total) as total_sales,
-          SUM(CASE WHEN ii.quantity_large_unit > 0 THEN ii.quantity_large_unit ELSE ii.quantity_individual END) as total_qty
-        FROM products p
-        LEFT JOIN invoice_items ii ON ii.product_name = p.name
-        LEFT JOIN invoices i ON i.id = ii.invoice_id AND i.status = 'محفوظة'
-        GROUP BY p.name
-        HAVING sales_count > 0
-        LIMIT 20
-      ''');
-      
-      // بناء سياق مفصل للذكاء الاصطناعي
-      final contextData = StringBuffer();
-      contextData.writeln('بيانات المنتجات والأسعار:\n');
-      
-      for (var product in productsData) {
-        final name = product['name'] as String;
-        final unit = product['unit'] as String;
-        final costPrice = (product['cost_price'] as num?)?.toDouble() ?? 0.0;
-        final unitHierarchy = product['unit_hierarchy'] as String?;
-        final unitCosts = product['unit_costs'] as String?;
-        final lengthPerUnit = (product['length_per_unit'] as num?)?.toDouble();
-        final salesCount = product['sales_count'] as int;
-        final totalSales = (product['total_sales'] as num?)?.toDouble() ?? 0.0;
-        final totalQty = (product['total_qty'] as num?)?.toDouble() ?? 0.0;
-        
-        contextData.writeln('المنتج: $name');
-        contextData.writeln('  - الوحدة الأساسية: ${unit == "piece" ? "قطعة" : "متر"}');
-        contextData.writeln('  - تكلفة الوحدة الأساسية: $costPrice دينار');
-        
-        if (unitHierarchy != null && unitHierarchy.isNotEmpty) {
-          contextData.writeln('  - النظام الهرمي: $unitHierarchy');
-        }
-        
-        if (unitCosts != null && unitCosts.isNotEmpty) {
-          contextData.writeln('  - تكاليف الوحدات: $unitCosts');
-        }
-        
-        if (lengthPerUnit != null) {
-          contextData.writeln('  - طول اللفة: $lengthPerUnit متر');
-          contextData.writeln('  - تكلفة اللفة: ${costPrice * lengthPerUnit} دينار');
-        }
-        
-        contextData.writeln('  - عدد المبيعات: $salesCount فاتورة');
-        contextData.writeln('  - إجمالي المبيعات: ${totalSales.toStringAsFixed(0)} دينار');
-        contextData.writeln('  - الكمية المباعة: ${totalQty.toStringAsFixed(0)}\n');
-      }
-      
-      // إرسال للذكاء الاصطناعي
-      final aiResponse = await _huggingFaceService!.analyzeProfitAccuracy(
-        profitData: {
-          'products': contextData.toString(),
-          'request': 'قم بتحليل دقة حساب الأرباح وكشف أي أخطاء في الأسعار (Clash Detection)',
-        },
-      );
-      
-      return ChatResponse(
-        text: '🤖 تحليل Qwen 2.5:\n\n$aiResponse',
-        followups: ['تحليل محلي', 'تدقيق الفواتير', 'تقرير الأرباح'],
-        status: 'success',
-      );
-    } catch (e) {
-      return await analyzeProfitAccuracy();
-    }
+    // استخدام التحليل المحلي فقط
+    return await analyzeProfitAccuracy();
   }
 
   /// تحليل دقة حساب الأرباح واكتشاف الأخطاء (Clash Detection)
@@ -2130,37 +2052,11 @@ class AIChatService {
   /// إرسال الأخطاء للذكاء الاصطناعي للتحليل العميق
   Future<String> _analyzeErrorsWithAI(Map<String, dynamic> errorsData) async {
     try {
-      // 🌐 محاولة استخدام OpenRouter أولاً (الأولوية الأولى!)
-      if (_openRouterService != null) {
+      // استخدام Gemini للتحليل
+      if (_geminiService != null) {
         try {
-          final analysis = await _openRouterService!.analyzeInvoiceErrors(
-            errorsData: errorsData,
-          );
-          
-          return '🌐 تحليل ذكي من OpenRouter (Qwen 2.5 Coder 32B)\n\n$analysis';
-        } catch (e) {
-        }
-      }
-      
-      // 🚀 محاولة استخدام SambaNova (الأقوى!)
-      if (_sambaNovaService != null) {
-        try {
-          final analysis = await _sambaNovaService!.analyzeInvoiceErrors(
-            errorsData: errorsData,
-          );
-          
-          return '🚀 تحليل ذكي من SambaNova (Llama 3.1 405B)\n\n$analysis';
-        } catch (e) {
-        }
-      }
-      
-      final dataJson = jsonEncode(errorsData);
-      
-      // محاولة استخدام Qwen (الأقوى في المحاسبة)
-      if (_huggingFaceService != null) {
-        try {
-          final analysis = await _huggingFaceService!.analyzeDatabaseData(
-            systemContext: '''أنت محاسب خبير ومدقق مالي محترف.
+          final dataJson = jsonEncode(errorsData);
+          final prompt = '''أنت محاسب خبير ومدقق مالي محترف.
 مهمتك تحليل الأخطاء المحاسبية المكتشفة في الفواتير وتقديم:
 1. تفسير واضح لكل خطأ
 2. السبب المحتمل للخطأ
@@ -2168,38 +2064,16 @@ class AIChatService {
 4. الحل المقترح
 5. الأولوية (عالية/متوسطة/منخفضة)
 
-يجب أن تكون إجابتك بالعربية، واضحة، ومنظمة.''',
-            userQuery: 'قم بتحليل هذه الأخطاء المحاسبية وقدم تقرير مفصل مع توصيات للإصلاح',
-            dataJson: dataJson,
-          );
-          
-          return '🤖 تحليل ذكي من المحاسب الآلي (Qwen)\n\n$analysis';
-        } catch (e) {
-        }
-      }
-      
-      // محاولة Gemini كبديل
-      if (_geminiService != null) {
-        try {
-          final prompt = '''أنت محاسب خبير ومدقق مالي محترف.
-
-تم اكتشاف الأخطاء المحاسبية التالية في الفواتير:
-
+البيانات:
 $dataJson
 
-المطلوب:
-1. تحليل كل خطأ وتفسيره
-2. تحديد السبب المحتمل
-3. تقييم التأثير المالي
-4. اقتراح الحل المناسب
-5. تحديد الأولوية (عالية/متوسطة/منخفضة)
-
-قدم تقرير مفصل بالعربية.''';
+قم بتحليل هذه الأخطاء المحاسبية وقدم تقرير مفصل مع توصيات للإصلاح.
+يجب أن تكون إجابتك بالعربية، واضحة، ومنظمة.''';
           
           final analysis = await _geminiService!.sendMessage(prompt);
-          
           return '🤖 تحليل ذكي من Gemini\n\n$analysis';
         } catch (e) {
+          // تابع للتحليل المحلي
         }
       }
       

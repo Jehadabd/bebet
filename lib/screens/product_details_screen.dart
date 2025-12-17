@@ -23,7 +23,10 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
   Map<int, double> _yearlyProfit = {};
   bool _isLoading = true;
   double _averageSellingPrice = 0.0;
-   late final NumberFormat _nf = NumberFormat('#,##0', 'en_US');
+  double _totalSales = 0.0; // 🔧 إضافة: إجمالي المبيعات الفعلي
+  double _totalProfit = 0.0; // 🔧 إضافة: إجمالي الربح الفعلي
+  double _totalQuantity = 0.0; // 🔧 إضافة: إجمالي الكمية
+  late final NumberFormat _nf = NumberFormat('#,##0', 'en_US');
   String _fmt(num v) => _nf.format(v);
 
   @override
@@ -48,6 +51,9 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
         _yearlySales = yearlySales;
         _yearlyProfit = yearlyProfit;
         _averageSellingPrice = (salesData['averageSellingPrice'] ?? 0.0) as double;
+        _totalSales = (salesData['totalSales'] ?? 0.0) as double;
+        _totalProfit = (salesData['totalProfit'] ?? 0.0) as double;
+        _totalQuantity = (salesData['totalQuantity'] ?? 0.0) as double;
         _isLoading = false;
       });
     } catch (e) {
@@ -244,47 +250,23 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
   }
 
   // حساب الربح المتوقع بناءً على البيانات الفعلية
+  // 🔧 إصلاح: استخدام البيانات الفعلية من getProductSalesData
   String _calculateExpectedProfit() {
-    if (_yearlyProfit.isEmpty) return 'غير محدد';
+    if (_totalQuantity <= 0) return 'غير محدد';
     
-    // حساب إجمالي الربح من جميع السنوات
-    double totalProfit = 0.0;
-    double totalQuantity = 0.0;
-    
-    for (int year in _yearlySales.keys) {
-      totalProfit += _yearlyProfit[year] ?? 0.0;
-      totalQuantity += _yearlySales[year] ?? 0.0;
-    }
-    
-    if (totalQuantity > 0) {
-      return '${_fmt(totalProfit / totalQuantity)} د.ع';
-    }
-    
-    return 'غير محدد';
+    // الربح من الوحدة = إجمالي الربح ÷ إجمالي الكمية المباعة
+    final profitPerUnit = _totalProfit / _totalQuantity;
+    return '${_fmt(profitPerUnit)} د.ع';
   }
 
   // حساب نسبة الربح بناءً على البيانات الفعلية
+  // 🔧 إصلاح: استخدام البيانات الفعلية من getProductSalesData
   String _calculateProfitPercentage() {
-    if (_yearlyProfit.isEmpty || widget.product.costPrice == null || widget.product.costPrice! <= 0) {
-      return 'غير محدد';
-    }
+    if (_totalSales <= 0) return 'غير محدد';
     
-    // حساب إجمالي الربح من جميع السنوات
-    double totalProfit = 0.0;
-    double totalQuantity = 0.0;
-    
-    for (int year in _yearlySales.keys) {
-      totalProfit += _yearlyProfit[year] ?? 0.0;
-      totalQuantity += _yearlySales[year] ?? 0.0;
-    }
-    
-    if (totalQuantity > 0) {
-      double profitPerUnit = totalProfit / totalQuantity;
-      double percentage = (profitPerUnit / widget.product.costPrice!) * 100;
-      return '${percentage.toStringAsFixed(1)}%';
-    }
-    
-    return 'غير محدد';
+    // نسبة الربح = (إجمالي الربح ÷ إجمالي المبيعات) × 100
+    final percentage = (_totalProfit / _totalSales) * 100;
+    return '${percentage.toStringAsFixed(1)}%';
   }
 
   Widget _buildHeaderInfo({

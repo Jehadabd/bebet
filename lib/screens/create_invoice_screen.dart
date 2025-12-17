@@ -3593,7 +3593,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                                         style: TextStyle(
                                             fontWeight: FontWeight.bold)))),
                             Expanded(
-                                flex: 3,
+                                flex: 5, // 🔧 زيادة العرض لعرض أسماء المنتجات الطويلة
                                 child: Center(
                                     child: Text('التفاصيل',
                                         style: TextStyle(
@@ -5208,7 +5208,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
             ),
             // التفاصيل (اسم المنتج)
             Expanded(
-              flex: 3,
+              flex: 5, // 🔧 زيادة العرض لعرض أسماء المنتجات الطويلة
               child: Container(
                 decoration: BoxDecoration(
                   border: Border(right: BorderSide(color: gridBorderColor, width: 1)),

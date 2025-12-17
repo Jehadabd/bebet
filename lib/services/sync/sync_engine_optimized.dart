@@ -128,6 +128,8 @@ class OptimizedSyncEngine {
   bool _isSyncing = false;
   SyncLock? _currentLock;
   Timer? _heartbeatTimer;
+  Duration _serverTimeOffset = Duration.zero; // لتصحيح التوقيت
+  final String _currentAppVersion = '1.0.0'; // يجب أن يأتي من package_info
   
   // Cache للمجلدات
   String? _syncFolderId;
@@ -957,7 +959,7 @@ class OptimizedSyncEngine {
       final files = await _driveApi!.files.list(
         q: "name contains 'manifest' and '$folderId' in parents and trashed = false",
         spaces: 'drive',
-        $fields: 'files(id,name)',
+        $fields: 'files(id,name,createdTime,modifiedTime)',
       );
       
       if (files.files?.isEmpty ?? true) {
@@ -965,6 +967,15 @@ class OptimizedSyncEngine {
       }
       
       final file = files.files!.first;
+      
+      // 🕰️ حساب فرق التوقيت مع سيرفر جوجل
+      if (file.modifiedTime != null) {
+        final serverTime = file.modifiedTime!.toUtc();
+        final localTime = DateTime.now().toUtc();
+        _serverTimeOffset = serverTime.difference(localTime);
+        print('🕰️ فرق التوقيت مع السيرفر: ${_serverTimeOffset.inSeconds} ثانية');
+      }
+
       final content = await _downloadAndDecompressFile(file.id!, file.name ?? '');
       
       if (content == null) {
@@ -972,11 +983,29 @@ class OptimizedSyncEngine {
       }
       
       final json = jsonDecode(content) as Map<String, dynamic>;
-      return SyncManifest.fromJson(json);
-      
+      final manifest = SyncManifest.fromJson(json);
+
+      // 🛡️ فحص توافق الإصدار
+      _checkVersionCompatibility(manifest.appVersion);
+
+      return manifest;
     } catch (e) {
+      if (e is SyncException) rethrow;
       print('⚠️ خطأ في تنزيل manifest: $e');
       return SyncManifest.empty(_deviceId!);
+    }
+  }
+
+  void _checkVersionCompatibility(String remoteVersion) {
+    final remoteMajor = int.tryParse(remoteVersion.split('.').first) ?? 1;
+    final localMajor = int.tryParse(_currentAppVersion.split('.').first) ?? 1;
+
+    if (remoteMajor > localMajor) {
+      throw SyncException(
+        type: SyncErrorType.unknownError,
+        message: 'إصدار التطبيق لديك قديم جداً. يرجى التحديث للمزامنة. (السيرفر: $remoteVersion, لديك: $_currentAppVersion)',
+        isRecoverable: false,
+      );
     }
   }
 
@@ -1153,6 +1182,10 @@ class OptimizedSyncEngine {
         if (newOperations.isNotEmpty) {
           _updateStatus('جاري التحقق من البيانات...');
           await _verifyOperations(newOperations);
+          
+          // 🧠 كشف وحل التعارضات (3-Way Merge)
+          _updateStatus('جاري فحص التعارضات...');
+          await _detectAndResolveConflicts(pendingOps, newOperations);
         }
         
         // 6. تطبيق العمليات الواردة
@@ -1512,6 +1545,8 @@ class OptimizedSyncEngine {
     if (existing.isNotEmpty) return;
     
     final data = Map<String, dynamic>.from(op.payloadAfter);
+    // 🔄 تصحيح المصدر: عند استلام معاملة من جهاز آخر، يجب ألا تكون "من إنشائي"
+    data['is_created_by_me'] = 0;
     
     if (op.customerUuid != null) {
       final customers = await txn.query('customers', where: 'sync_uuid = ?', whereArgs: [op.customerUuid]);
@@ -1537,8 +1572,12 @@ class OptimizedSyncEngine {
   }
 
   Future<void> _applyTransactionUpdate(dynamic txn, SyncOperation op) async {
+    final data = Map<String, dynamic>.from(op.payloadAfter);
+    // 🛡️ حماية حقل الملكية: التحديث لا يجب أن يغير من أنشأ المعاملة
+    data.remove('is_created_by_me');
+
     await txn.update('transactions', {
-      ...op.payloadAfter,
+      ...data,
       'synced_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'transaction_uuid = ?', whereArgs: [op.entityUuid]);
   }
@@ -1568,6 +1607,88 @@ class OptimizedSyncEngine {
         await _db.recalculateCustomerTransactionBalances(customerId);
       }
     }
+  }
+
+  Future<void> _detectAndResolveConflicts(
+    List<SyncOperation> pendingOps,
+    List<SyncOperation> incomingOps,
+  ) async {
+    final pendingMap = {for (var op in pendingOps) '${op.entityType}:${op.entityUuid}': op};
+
+    for (var i = 0; i < incomingOps.length; i++) {
+      final incoming = incomingOps[i];
+      final key = '${incoming.entityType}:${incoming.entityUuid}';
+      final pending = pendingMap[key];
+
+      if (pending != null) {
+        // وجدنا تعارض: عملية معلقة وعملية واردة لنفس الكيان
+        if (pending.operationType == SyncOperationType.transactionUpdate &&
+            incoming.operationType == SyncOperationType.transactionUpdate) {
+          // دمج التحديثات (3-Way Merge)
+          final mergedPayload = _mergePayloads(pending, incoming);
+          if (mergedPayload != null) {
+            // تحديث العملية الواردة لتعكس الدمج (لتطبيقها على قاعدة البيانات)
+            incomingOps[i] = incoming.copyWith(payloadAfter: mergedPayload);
+            
+            // تحديث العملية المعلقة لتعكس الدمج (لرفعها لاحقاً)
+            final updatedPending = pending.copyWith(payloadAfter: mergedPayload);
+            await _updatePendingOperation(updatedPending);
+            
+            print('🧬 تم دمج التعارض للعملية ${incoming.entityUuid}');
+          }
+        }
+        // يمكن إضافة منطق لأنواع أخرى من التعارضات هنا
+      }
+    }
+  }
+
+  /// 🧠 دمج 3-Way Merge لحل تضارب الحقول
+  Map<String, dynamic>? _mergePayloads(SyncOperation local, SyncOperation remote) {
+    try {
+      final base = local.payloadBefore ?? {}; // الحالة الأصلية قبل التعديلين
+      final localChanges = local.payloadAfter;
+      final remoteChanges = remote.payloadAfter;
+
+      final merged = Map<String, dynamic>.from(localChanges); // نبدأ بتغييراتنا
+      bool hasConflict = false;
+
+      // مقارنة كل حقل
+      for (final key in remoteChanges.keys) {
+        final remoteValue = remoteChanges[key];
+        final localValue = localChanges[key];
+        final baseValue = base[key];
+
+        if (remoteValue != localValue) {
+          // الحقل مختلف بين الاثنين
+          if (localValue == baseValue) {
+            // نحن لم نغير هذا الحقل، والطرف الآخر غيره -> نقبل تغيير الطرف الآخر
+            merged[key] = remoteValue;
+          } else if (remoteValue != baseValue) {
+            // كلاهما غير الحقل لقيم مختلفة! -> تضارب حقيقي
+            // نلجأ لاستراتيجية Last Write Wins لهذا الحقل فقط
+            final localTime = local.timestamp.add(_serverTimeOffset);
+            if (remote.timestamp.isAfter(localTime)) {
+               merged[key] = remoteValue; // Remote wins this field
+            }
+            // else Local keeps its value
+          }
+        }
+      }
+      return merged;
+    } catch (e) {
+      print('⚠️ فشل الدمج الذكي: $e');
+      return null;
+    }
+  }
+
+  Future<void> _updatePendingOperation(SyncOperation op) async {
+    final db = await _db.database;
+    await db.update(
+      'sync_operations',
+      {'data': jsonEncode(op.toJson())},
+      where: 'operation_id = ?',
+      whereArgs: [op.operationId],
+    );
   }
 
   /// إغلاق المحرك

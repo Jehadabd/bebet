@@ -127,8 +127,8 @@ class DatabaseService {
     return errorMessage;
   }
 
-  /// حساب التكلفة من النظام الهرمي للوحدات
-  double _calculateCostFromHierarchy(String? unitHierarchy, String? unitCosts, String saleUnit, double quantity) {
+  /// حساب التكلفة من النظام الهرمي للوحدات (النسخة القديمة)
+  double _calculateCostFromHierarchyOld(String? unitHierarchy, String? unitCosts, String saleUnit, double quantity) {
     try {
       if (unitHierarchy == null || unitCosts == null) return 0.0;
       
@@ -160,6 +160,43 @@ class DatabaseService {
       return 0.0;
     } catch (e) {
       return 0.0;
+    }
+  }
+  
+  /// 🔧 حساب التكلفة من unit_hierarchy عندما لا تتوفر بيانات أخرى
+  /// نفس منطق _calculateCostFromHierarchy في reports_service.dart
+  double _calculateCostFromHierarchy({
+    required double productCost,
+    required String saleType,
+    required String? unitHierarchyJson,
+  }) {
+    // إذا لم يكن هناك تسلسل هرمي، نرجع التكلفة الأساسية
+    if (unitHierarchyJson == null || unitHierarchyJson.trim().isEmpty) {
+      return productCost;
+    }
+    
+    try {
+      final List<dynamic> hierarchy = jsonDecode(unitHierarchyJson) as List<dynamic>;
+      double multiplier = 1.0;
+      
+      for (final level in hierarchy) {
+        final String unitName = (level['unit_name'] ?? level['name'] ?? '').toString();
+        final double qty = (level['quantity'] is num)
+            ? (level['quantity'] as num).toDouble()
+            : double.tryParse(level['quantity'].toString()) ?? 1.0;
+        multiplier *= qty;
+        
+        // إذا وصلنا لوحدة البيع المطلوبة، نرجع التكلفة المحسوبة
+        if (unitName == saleType) {
+          return productCost * multiplier;
+        }
+      }
+      
+      // إذا لم نجد الوحدة في التسلسل، نرجع التكلفة الأساسية
+      return productCost;
+    } catch (e) {
+      // في حالة خطأ التحليل، نرجع التكلفة الأساسية
+      return productCost;
     }
   }
 
@@ -4666,8 +4703,8 @@ class DatabaseService {
       // FTS5 يعتبر النقطة والأحرف الخاصة كفواصل كلمات
       final cleanedTerms = terms.map((term) {
         // إزالة جميع الأحرف الخاصة التي تسبب syntax error في FTS5
-        // بما في ذلك: . * " ' ( ) [ ] { } + - : ^ ~ @ # $ % & | \ / < > = ! ?
-        return term.replaceAll(RegExp(r'''[.'"*()[\]{}+\-:^~@#$%&|\\/<>=!?]'''), ' ').trim();
+        // بما في ذلك: . * " ' ( ) [ ] { } + - : ^ ~ @ # $ % & | \ / < > = ! ? , × ×
+        return term.replaceAll(RegExp(r'''[.,;'"*()[\]{}+\-:^~@#$%&|\\/<>=!?×x]'''), ' ').trim();
       }).expand((term) => term.split(' ')).where((t) => t.isNotEmpty).toList();
       
       if (cleanedTerms.isEmpty) return [];
@@ -5585,18 +5622,20 @@ class DatabaseService {
       ''', [productId]);
  
       double totalQuantity = 0.0; // بوحدة الأساس (قطعة/متر)
+      double totalSoldUnits = 0.0; // بوحدة البيع (للحساب الصحيح لمتوسط سعر البيع)
       double totalProfit = 0.0;
       double totalSales = 0.0;
-      double averageSellingPrice = 0.0; // سيتم قسمة مجموع المبيعات على مجموع الكمية الأساسية
+      double weightedSellingPriceSum = 0.0; // مجموع (سعر البيع × الكمية المباعة)
       double totalCost = 0.0;
  
       for (final item in itemMaps) {
+        // 🔧 إصلاح: استخدام نفس طريقة تحويل الأنواع في getDailyReport
         final double quantityIndividual =
-            (item['quantity_individual'] ?? 0.0) as double;
+            (item['quantity_individual'] as num?)?.toDouble() ?? 0.0;
         final double quantityLargeUnit =
-            (item['quantity_large_unit'] ?? 0.0) as double;
+            (item['quantity_large_unit'] as num?)?.toDouble() ?? 0.0;
         final double unitsInLargeUnit =
-            (item['units_in_large_unit'] ?? 1.0) as double;
+            (item['units_in_large_unit'] as num?)?.toDouble() ?? 1.0;
 
         // 1) احسب إجمالي الكمية بوحدة الأساس (قطعة/متر)
         double currentItemTotalQuantity = 0.0;
@@ -5609,47 +5648,84 @@ class DatabaseService {
         totalQuantity += currentItemTotalQuantity;
 
         // 2) استخدم إجمالي المبيعات المحفوظ للبند
-        final double itemSales = (item['item_total'] ?? 0.0) as double;
+        final double itemSales = (item['item_total'] as num?)?.toDouble() ?? 0.0;
 
-        // 3) احسب التكلفة بإتباع نفس منطق السنة/الشهر
-        final double? actualCostPrice = item['actual_cost_price'] as double?; // قد تكون تكلفة للوحدة المباعة
-        final double baseCostPrice = (item['cost_price'] ?? item['product_cost_price'] ?? 0.0) as double; // تكلفة للوحدة الأساسية غالبًا
-        final double appliedPrice = (item['applied_price'] ?? 0.0) as double; // سعر البيع للوحدة
+        // 3) احسب التكلفة بإتباع نفس منطق getDailyReport
+        final double? actualCostPrice = (item['actual_cost_price'] as num?)?.toDouble();
+        final double baseCostPrice = (item['cost_price'] as num?)?.toDouble() ?? 
+            (item['product_cost_price'] as num?)?.toDouble() ?? 0.0;
+        final double appliedPrice = (item['applied_price'] as num?)?.toDouble() ?? 0.0;
 
-        double itemCostTotal = 0.0;
-        if (quantityLargeUnit > 0) {
-          // بيع بوحدة كبيرة
-          double costPerLargeUnit = actualCostPrice != null && actualCostPrice > 0
-              ? actualCostPrice
-              : baseCostPrice * unitsInLargeUnit;
-          // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
-          if (costPerLargeUnit <= 0 && appliedPrice > 0) {
-            costPerLargeUnit = MoneyCalculator.getEffectiveCost(0, appliedPrice);
-          }
-          itemCostTotal = costPerLargeUnit * quantityLargeUnit;
-        } else {
-          // بيع بالوحدة الأساسية
-          double costPerUnit = actualCostPrice != null && actualCostPrice > 0
-              ? actualCostPrice
-              : baseCostPrice;
-          // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
-          if (costPerUnit <= 0 && appliedPrice > 0) {
-            costPerUnit = MoneyCalculator.getEffectiveCost(0, appliedPrice);
-          }
-          itemCostTotal = costPerUnit * quantityIndividual;
+        // 🔧 إصلاح: نفس منطق getDailyReport في ai_chat_service.dart
+        final String productUnit = (item['unit'] as String?) ?? 'piece';
+        final double lengthPerUnit = (item['length_per_unit'] as num?)?.toDouble() ?? 1.0;
+        final String saleType = (item['sale_type'] as String?) ?? (productUnit == 'meter' ? 'متر' : 'قطعة');
+        final String? unitCostsJson = item['unit_costs'] as String?;
+        final String? unitHierarchyJson = item['unit_hierarchy'] as String?;
+        
+        // تحليل unit_costs JSON
+        Map<String, dynamic> unitCosts = const {};
+        if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
+          try { unitCosts = jsonDecode(unitCostsJson) as Map<String, dynamic>; } catch (_) {}
         }
+        
+        final bool soldAsLargeUnit = quantityLargeUnit > 0;
+        final double soldUnitsCount = soldAsLargeUnit ? quantityLargeUnit : quantityIndividual;
+        
+        // حساب التكلفة لكل وحدة مباعة - نفس منطق getDailyReport
+        double costPerSoldUnit;
+        if (actualCostPrice != null && actualCostPrice > 0) {
+          costPerSoldUnit = actualCostPrice;
+        } else if (soldAsLargeUnit) {
+          // أولاً: التحقق من unit_costs المخزنة
+          final dynamic stored = unitCosts[saleType];
+          if (stored is num && stored > 0) {
+            costPerSoldUnit = stored.toDouble();
+          } else {
+            final bool isMeterRoll = productUnit == 'meter' && (saleType == 'لفة');
+            if (isMeterRoll) {
+              costPerSoldUnit = baseCostPrice * (unitsInLargeUnit > 0 ? unitsInLargeUnit : lengthPerUnit);
+            } else if (unitsInLargeUnit > 0) {
+              costPerSoldUnit = baseCostPrice * unitsInLargeUnit;
+            } else {
+              // احتياطي: حساب من unit_hierarchy
+              costPerSoldUnit = _calculateCostFromHierarchy(
+                productCost: baseCostPrice,
+                saleType: saleType,
+                unitHierarchyJson: unitHierarchyJson,
+              );
+            }
+          }
+        } else {
+          costPerSoldUnit = baseCostPrice;
+        }
+        
+        // إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+        if (costPerSoldUnit <= 0 && appliedPrice > 0) {
+          costPerSoldUnit = MoneyCalculator.getEffectiveCost(0, appliedPrice);
+        }
+        
+        final double itemCostTotal = costPerSoldUnit * soldUnitsCount;
+        
+        // 🔧 إصلاح: حساب الربح بنفس منطق getProductYearlyProfit
+        // الربح = (سعر البيع - التكلفة) × عدد الوحدات المباعة
+        final double itemProfit = (appliedPrice - costPerSoldUnit) * soldUnitsCount;
 
         totalSales += itemSales;
         totalCost += itemCostTotal;
-        totalProfit = MoneyCalculator.add(totalProfit, MoneyCalculator.subtract(itemSales, itemCostTotal));
+        totalProfit += itemProfit;
 
-        // 4) للمعدل لكل وحدة أساس: مجموع المبيعات ÷ مجموع الكمية الأساسية
-        averageSellingPrice += itemSales; // سيقسم لاحقاً على totalQuantity
+        // 🔧 إصلاح: حساب متوسط سعر البيع بشكل صحيح
+        // متوسط سعر البيع = مجموع (سعر البيع × الكمية) ÷ إجمالي الكمية المباعة
+        // نستخدم الكمية بوحدة البيع (وليس الأساس) لأن سعر البيع هو للوحدة المباعة
+        weightedSellingPriceSum += appliedPrice * soldUnitsCount;
+        totalSoldUnits += soldUnitsCount;
       }
  
-      // حساب متوسط سعر البيع
-      if (totalQuantity > 0) {
-        averageSellingPrice = averageSellingPrice / totalQuantity;
+      // حساب متوسط سعر البيع (بوحدة البيع)
+      double averageSellingPrice = 0.0;
+      if (totalSoldUnits > 0) {
+        averageSellingPrice = weightedSellingPriceSum / totalSoldUnits;
       }
  
       // دمج تسويات البنود (debit/credit) لهذا المنتج عبر جدول invoice_adjustments مع احترام الهرمية
@@ -5696,17 +5772,36 @@ class DatabaseService {
           }
           final double signedBaseQty = (type == 'debit' ? 1 : -1) * baseQty;
 
-          // التكلفة = تكلفة وحدة الأساس × الكمية بوحدة الأساس
-          final double costContribution = baseCost * (signedBaseQty);
+          // 🔧 إصلاح: حساب تكلفة الوحدة المباعة بنفس منطق getProductYearlyProfit
+          double costPerSaleUnit;
+          if (saleType == 'قطعة' || saleType == 'متر') {
+            costPerSaleUnit = baseCost;
+          } else if (productUnit == 'meter' && saleType == 'لفة') {
+            final double factor = (unitsInLargeUnit > 0) ? unitsInLargeUnit : (lengthPerUnit ?? 1.0);
+            costPerSaleUnit = baseCost * factor;
+          } else {
+            costPerSaleUnit = baseCost * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+          }
+          
+          // 🔧 إصلاح: حساب الربح بنفس منطق getProductYearlyProfit
+          // الربح = (سعر البيع - التكلفة) × عدد الوحدات المباعة
+          final double adjustmentProfit = (type == 'debit' ? 1 : -1) * (pricePerSaleUnit - costPerSaleUnit) * qtySaleUnits;
+          final double costContribution = costPerSaleUnit * qtySaleUnits;
 
           totalSales += salesContribution;
           totalQuantity += signedBaseQty;
-          totalCost += costContribution.abs();
-          totalProfit = MoneyCalculator.add(totalProfit, MoneyCalculator.subtract(salesContribution, costContribution));
+          totalCost += costContribution;
+          totalProfit += adjustmentProfit;
+          
+          // 🔧 إصلاح: تحديث متوسط سعر البيع بشكل صحيح
+          final double signedSoldUnits = (type == 'debit' ? 1 : -1) * qtySaleUnits;
+          weightedSellingPriceSum += pricePerSaleUnit * signedSoldUnits.abs();
+          totalSoldUnits += signedSoldUnits.abs();
         }
 
-        if (totalQuantity > 0) {
-          averageSellingPrice = totalSales / totalQuantity;
+        // إعادة حساب متوسط سعر البيع بعد إضافة التسويات
+        if (totalSoldUnits > 0) {
+          averageSellingPrice = weightedSellingPriceSum / totalSoldUnits;
         }
       } catch (_) {}
 
@@ -5995,6 +6090,7 @@ class DatabaseService {
   }
 
   // دوال تقارير الأشخاص
+  /// 🔧 إصلاح: نفس منطق getDailyReport في ai_chat_service.dart
   Future<Map<String, dynamic>> getCustomerProfitData(int customerId) async {
     final db = await database;
     try {
@@ -6017,26 +6113,22 @@ class DatabaseService {
         WHERE customer_id = ?
       ''', [customerId]);
  
-      // حساب الأرباح من الفواتير (المحفوظة فقط) وبمعادلة كمية مصححة
-      // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط من سعر البيع
-      final List<Map<String, dynamic>> profitMaps = await db.rawQuery('''
+      // جلب جميع البنود مع بيانات المنتج (مع unit_costs و unit_hierarchy)
+      final List<Map<String, dynamic>> itemMaps = await db.rawQuery('''
         SELECT 
-          SUM(
-            CASE 
-              WHEN COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0) > 0 
-              THEN (ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0))
-              ELSE ii.applied_price * 0.10
-            END * 
-            (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                  THEN ii.quantity_large_unit
-                  ELSE COALESCE(ii.quantity_individual, 0.0) END)
-          ) as total_profit,
-          SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_selling_price,
-          SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END) as total_quantity
+          ii.quantity_individual,
+          ii.quantity_large_unit,
+          ii.units_in_large_unit,
+          ii.applied_price,
+          ii.sale_type,
+          ii.cost_price as item_cost_price,
+          ii.actual_cost_price,
+          ii.item_total,
+          p.cost_price as product_cost_price,
+          p.unit as product_unit,
+          p.length_per_unit,
+          p.unit_costs,
+          p.unit_hierarchy
         FROM invoices i
         JOIN invoice_items ii ON i.id = ii.invoice_id
         JOIN products p ON ii.product_name = p.name
@@ -6044,14 +6136,79 @@ class DatabaseService {
           SELECT name FROM customers WHERE id = ?
         ))) AND i.status = 'محفوظة'
       ''', [customerId, customerId]);
+      
+      double totalProfit = 0.0;
+      double totalSellingPrice = 0.0;
+      double totalQuantity = 0.0;
+      
+      for (final item in itemMaps) {
+        // 🔧 إصلاح: استخدام نفس طريقة تحويل الأنواع في getDailyReport
+        final double quantityIndividual = (item['quantity_individual'] as num?)?.toDouble() ?? 0.0;
+        final double quantityLargeUnit = (item['quantity_large_unit'] as num?)?.toDouble() ?? 0.0;
+        final double unitsInLargeUnit = (item['units_in_large_unit'] as num?)?.toDouble() ?? 1.0;
+        final double sellingPrice = (item['applied_price'] as num?)?.toDouble() ?? 0.0;
+        final String saleType = (item['sale_type'] as String?) ?? 'قطعة';
+        final double? actualCostPrice = (item['actual_cost_price'] as num?)?.toDouble();
+        final double itemCostPrice = (item['item_cost_price'] as num?)?.toDouble() ?? 
+            (item['product_cost_price'] as num?)?.toDouble() ?? 0.0;
+        final double baseCostPrice = (item['product_cost_price'] as num?)?.toDouble() ?? 0.0;
+        final String productUnit = (item['product_unit'] as String?) ?? 'piece';
+        final double lengthPerUnit = (item['length_per_unit'] as num?)?.toDouble() ?? 1.0;
+        final String? unitCostsJson = item['unit_costs'] as String?;
+        final String? unitHierarchyJson = item['unit_hierarchy'] as String?;
+        
+        // تحليل unit_costs JSON
+        Map<String, dynamic> unitCosts = const {};
+        if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
+          try { unitCosts = jsonDecode(unitCostsJson) as Map<String, dynamic>; } catch (_) {}
+        }
+        
+        final bool soldAsLargeUnit = quantityLargeUnit > 0;
+        final double soldUnitsCount = soldAsLargeUnit ? quantityLargeUnit : quantityIndividual;
+        
+        // حساب التكلفة لكل وحدة مباعة - نفس منطق getDailyReport
+        double costPerSoldUnit;
+        if (actualCostPrice != null && actualCostPrice > 0) {
+          costPerSoldUnit = actualCostPrice;
+        } else if (soldAsLargeUnit) {
+          // أولاً: التحقق من unit_costs المخزنة
+          final dynamic stored = unitCosts[saleType];
+          if (stored is num && stored > 0) {
+            costPerSoldUnit = stored.toDouble();
+          } else {
+            final bool isMeterRoll = productUnit == 'meter' && (saleType == 'لفة');
+            if (isMeterRoll) {
+              costPerSoldUnit = baseCostPrice * (unitsInLargeUnit > 0 ? unitsInLargeUnit : lengthPerUnit);
+            } else if (unitsInLargeUnit > 0) {
+              costPerSoldUnit = baseCostPrice * unitsInLargeUnit;
+            } else {
+              // احتياطي: حساب من unit_hierarchy
+              costPerSoldUnit = _calculateCostFromHierarchy(
+                productCost: baseCostPrice,
+                saleType: saleType,
+                unitHierarchyJson: unitHierarchyJson,
+              );
+            }
+          }
+        } else {
+          costPerSoldUnit = itemCostPrice > 0 ? itemCostPrice : baseCostPrice;
+        }
+        
+        // إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+        if (costPerSoldUnit <= 0 && sellingPrice > 0) {
+          costPerSoldUnit = MoneyCalculator.getEffectiveCost(0, sellingPrice);
+        }
+        
+        final double itemProfit = (sellingPrice - costPerSoldUnit) * soldUnitsCount;
+        totalProfit += itemProfit;
+        totalQuantity += soldUnitsCount;
+        totalSellingPrice += sellingPrice * soldUnitsCount;
+      }
  
       final totalSales = (invoiceMaps.first['total_sales'] ?? 0.0) as double;
       final totalInvoices = (invoiceMaps.first['total_invoices'] ?? 0) as int;
       final totalTransactions =
           (transactionMaps.first['total_transactions'] ?? 0) as int;
-      final totalProfit = (profitMaps.first['total_profit'] ?? 0.0) as double;
-      final totalSellingPrice = (profitMaps.first['total_selling_price'] ?? 0.0) as double;
-      final totalQuantity = (profitMaps.first['total_quantity'] ?? 0.0) as double;
       
       // حساب متوسط سعر البيع
       double averageSellingPrice = 0.0;
@@ -6159,41 +6316,100 @@ class DatabaseService {
         ORDER BY year DESC
       ''', [customerId, customerId]);
       
-      // 2. جلب بيانات الأرباح من الأصناف (نفس طريقة getCustomerProfitData)
-      // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط من سعر البيع
-      final List<Map<String, dynamic>> profitMaps = await db.rawQuery('''
+      // 2. 🔧 إصلاح: نفس منطق getDailyReport في ai_chat_service.dart
+      final List<Map<String, dynamic>> itemMaps = await db.rawQuery('''
         SELECT 
           strftime('%Y', i.invoice_date) as year,
-          SUM(
-            CASE 
-              WHEN COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0) > 0 
-              THEN (ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0))
-              ELSE ii.applied_price * 0.10
-            END * 
-            (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                  THEN ii.quantity_large_unit
-                  ELSE COALESCE(ii.quantity_individual, 0.0) END)
-          ) as total_profit,
-          SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END)) as total_selling_price,
-          SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit
-                    ELSE COALESCE(ii.quantity_individual, 0.0) END) as total_quantity
+          ii.quantity_individual,
+          ii.quantity_large_unit,
+          ii.units_in_large_unit,
+          ii.applied_price,
+          ii.sale_type,
+          ii.cost_price as item_cost_price,
+          ii.actual_cost_price,
+          p.cost_price as product_cost_price,
+          p.unit as product_unit,
+          p.length_per_unit,
+          p.unit_costs,
+          p.unit_hierarchy
         FROM invoices i
         JOIN invoice_items ii ON i.id = ii.invoice_id
         JOIN products p ON ii.product_name = p.name
         WHERE (i.customer_id = ? OR (i.customer_id IS NULL AND i.customer_name = (
           SELECT name FROM customers WHERE id = ?
         ))) AND i.status = 'محفوظة'
-        GROUP BY strftime('%Y', i.invoice_date)
       ''', [customerId, customerId]);
       
-      // تحويل بيانات الأرباح إلى map للوصول السريع
+      // حساب الأرباح لكل سنة
       final Map<int, Map<String, dynamic>> profitByYear = {};
-      for (final p in profitMaps) {
-        final year = int.parse(p['year'] as String);
-        profitByYear[year] = p;
+      for (final item in itemMaps) {
+        final int year = int.parse(item['year'] as String);
+        // 🔧 إصلاح: استخدام نفس طريقة تحويل الأنواع في getDailyReport
+        final double quantityIndividual = (item['quantity_individual'] as num?)?.toDouble() ?? 0.0;
+        final double quantityLargeUnit = (item['quantity_large_unit'] as num?)?.toDouble() ?? 0.0;
+        final double unitsInLargeUnit = (item['units_in_large_unit'] as num?)?.toDouble() ?? 1.0;
+        final double sellingPrice = (item['applied_price'] as num?)?.toDouble() ?? 0.0;
+        final String saleType = (item['sale_type'] as String?) ?? 'قطعة';
+        final double? actualCostPrice = (item['actual_cost_price'] as num?)?.toDouble();
+        final double itemCostPrice = (item['item_cost_price'] as num?)?.toDouble() ?? 
+            (item['product_cost_price'] as num?)?.toDouble() ?? 0.0;
+        final double baseCostPrice = (item['product_cost_price'] as num?)?.toDouble() ?? 0.0;
+        final String productUnit = (item['product_unit'] as String?) ?? 'piece';
+        final double lengthPerUnit = (item['length_per_unit'] as num?)?.toDouble() ?? 1.0;
+        final String? unitCostsJson = item['unit_costs'] as String?;
+        final String? unitHierarchyJson = item['unit_hierarchy'] as String?;
+        
+        // تحليل unit_costs JSON
+        Map<String, dynamic> unitCosts = const {};
+        if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
+          try { unitCosts = jsonDecode(unitCostsJson) as Map<String, dynamic>; } catch (_) {}
+        }
+        
+        final bool soldAsLargeUnit = quantityLargeUnit > 0;
+        final double soldUnitsCount = soldAsLargeUnit ? quantityLargeUnit : quantityIndividual;
+        
+        // حساب التكلفة لكل وحدة مباعة - نفس منطق getDailyReport
+        double costPerSoldUnit;
+        if (actualCostPrice != null && actualCostPrice > 0) {
+          costPerSoldUnit = actualCostPrice;
+        } else if (soldAsLargeUnit) {
+          // أولاً: التحقق من unit_costs المخزنة
+          final dynamic stored = unitCosts[saleType];
+          if (stored is num && stored > 0) {
+            costPerSoldUnit = stored.toDouble();
+          } else {
+            final bool isMeterRoll = productUnit == 'meter' && (saleType == 'لفة');
+            if (isMeterRoll) {
+              costPerSoldUnit = baseCostPrice * (unitsInLargeUnit > 0 ? unitsInLargeUnit : lengthPerUnit);
+            } else if (unitsInLargeUnit > 0) {
+              costPerSoldUnit = baseCostPrice * unitsInLargeUnit;
+            } else {
+              // احتياطي: حساب من unit_hierarchy
+              costPerSoldUnit = _calculateCostFromHierarchy(
+                productCost: baseCostPrice,
+                saleType: saleType,
+                unitHierarchyJson: unitHierarchyJson,
+              );
+            }
+          }
+        } else {
+          costPerSoldUnit = itemCostPrice > 0 ? itemCostPrice : baseCostPrice;
+        }
+        
+        // إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+        if (costPerSoldUnit <= 0 && sellingPrice > 0) {
+          costPerSoldUnit = MoneyCalculator.getEffectiveCost(0, sellingPrice);
+        }
+        
+        final double itemProfit = (sellingPrice - costPerSoldUnit) * soldUnitsCount;
+        final double itemSellingTotal = sellingPrice * soldUnitsCount;
+        
+        if (!profitByYear.containsKey(year)) {
+          profitByYear[year] = {'total_profit': 0.0, 'total_selling_price': 0.0, 'total_quantity': 0.0};
+        }
+        profitByYear[year]!['total_profit'] = (profitByYear[year]!['total_profit'] as double) + itemProfit;
+        profitByYear[year]!['total_selling_price'] = (profitByYear[year]!['total_selling_price'] as double) + itemSellingTotal;
+        profitByYear[year]!['total_quantity'] = (profitByYear[year]!['total_quantity'] as double) + soldUnitsCount;
       }
       
       // 2. جلب عدد المعاملات لكل سنة بشكل منفصل
@@ -6370,35 +6586,99 @@ class DatabaseService {
         );
       }
  
-      // الخطوة 2: حساب الربح بنفس طريقة getCustomerProfitData و getCustomerYearlyData
-      // 🔧 إصلاح: تضمين الفواتير القديمة التي ليس لها customer_id (بالاسم)
-      // 🔧 إصلاح 2: توحيد طريقة حساب الربح مع الدوال الأخرى
-      // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط من سعر البيع
-      final List<Map<String, dynamic>> profitRows = await db.rawQuery('''
+      // الخطوة 2: 🔧 إصلاح: نفس منطق getDailyReport في ai_chat_service.dart
+      final List<Map<String, dynamic>> itemMaps = await db.rawQuery('''
         SELECT 
           strftime('%m', i.invoice_date) AS month,
-          SUM(
-            CASE 
-              WHEN COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0) > 0 
-              THEN (ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0))
-              ELSE ii.applied_price * 0.10
-            END * 
-            (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                  THEN ii.quantity_large_unit
-                  ELSE COALESCE(ii.quantity_individual, 0.0) END)
-          ) as total_profit
+          ii.quantity_individual,
+          ii.quantity_large_unit,
+          ii.units_in_large_unit,
+          ii.applied_price,
+          ii.sale_type,
+          ii.cost_price as item_cost_price,
+          ii.actual_cost_price,
+          p.cost_price as product_cost_price,
+          p.unit as product_unit,
+          p.length_per_unit,
+          p.unit_costs,
+          p.unit_hierarchy
         FROM invoices i
         JOIN invoice_items ii ON i.id = ii.invoice_id
         JOIN products p ON ii.product_name = p.name
         WHERE (i.customer_id = ? OR (i.customer_id IS NULL AND i.customer_name = (
           SELECT name FROM customers WHERE id = ?
         ))) AND strftime('%Y', i.invoice_date) = ? AND i.status = 'محفوظة'
-        GROUP BY strftime('%m', i.invoice_date)
       ''', [customerId, customerId, year.toString()]);
 
-      for (final r in profitRows) {
-        final int month = int.parse((r['month'] as String));
-        final double totalProfit = ((r['total_profit'] as num?) ?? 0).toDouble();
+      // حساب الأرباح لكل شهر
+      final Map<int, double> profitByMonth = {};
+      for (final item in itemMaps) {
+        final int month = int.parse(item['month'] as String);
+        // 🔧 إصلاح: استخدام نفس طريقة تحويل الأنواع في getDailyReport
+        final double quantityIndividual = (item['quantity_individual'] as num?)?.toDouble() ?? 0.0;
+        final double quantityLargeUnit = (item['quantity_large_unit'] as num?)?.toDouble() ?? 0.0;
+        final double unitsInLargeUnit = (item['units_in_large_unit'] as num?)?.toDouble() ?? 1.0;
+        final double sellingPrice = (item['applied_price'] as num?)?.toDouble() ?? 0.0;
+        final String saleType = (item['sale_type'] as String?) ?? 'قطعة';
+        final double? actualCostPrice = (item['actual_cost_price'] as num?)?.toDouble();
+        final double itemCostPrice = (item['item_cost_price'] as num?)?.toDouble() ?? 
+            (item['product_cost_price'] as num?)?.toDouble() ?? 0.0;
+        final double baseCostPrice = (item['product_cost_price'] as num?)?.toDouble() ?? 0.0;
+        final String productUnit = (item['product_unit'] as String?) ?? 'piece';
+        final double lengthPerUnit = (item['length_per_unit'] as num?)?.toDouble() ?? 1.0;
+        final String? unitCostsJson = item['unit_costs'] as String?;
+        final String? unitHierarchyJson = item['unit_hierarchy'] as String?;
+        
+        // تحليل unit_costs JSON
+        Map<String, dynamic> unitCosts = const {};
+        if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
+          try { unitCosts = jsonDecode(unitCostsJson) as Map<String, dynamic>; } catch (_) {}
+        }
+        
+        final bool soldAsLargeUnit = quantityLargeUnit > 0;
+        final double soldUnitsCount = soldAsLargeUnit ? quantityLargeUnit : quantityIndividual;
+        
+        // حساب التكلفة لكل وحدة مباعة - نفس منطق getDailyReport
+        double costPerSoldUnit;
+        if (actualCostPrice != null && actualCostPrice > 0) {
+          costPerSoldUnit = actualCostPrice;
+        } else if (soldAsLargeUnit) {
+          // أولاً: التحقق من unit_costs المخزنة
+          final dynamic stored = unitCosts[saleType];
+          if (stored is num && stored > 0) {
+            costPerSoldUnit = stored.toDouble();
+          } else {
+            final bool isMeterRoll = productUnit == 'meter' && (saleType == 'لفة');
+            if (isMeterRoll) {
+              costPerSoldUnit = baseCostPrice * (unitsInLargeUnit > 0 ? unitsInLargeUnit : lengthPerUnit);
+            } else if (unitsInLargeUnit > 0) {
+              costPerSoldUnit = baseCostPrice * unitsInLargeUnit;
+            } else {
+              // احتياطي: حساب من unit_hierarchy
+              costPerSoldUnit = _calculateCostFromHierarchy(
+                productCost: baseCostPrice,
+                saleType: saleType,
+                unitHierarchyJson: unitHierarchyJson,
+              );
+            }
+          }
+        } else {
+          costPerSoldUnit = itemCostPrice > 0 ? itemCostPrice : baseCostPrice;
+        }
+        
+        // إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+        if (costPerSoldUnit <= 0 && sellingPrice > 0) {
+          costPerSoldUnit = MoneyCalculator.getEffectiveCost(0, sellingPrice);
+        }
+        
+        final double itemProfit = (sellingPrice - costPerSoldUnit) * soldUnitsCount;
+        profitByMonth[month] = (profitByMonth[month] ?? 0) + itemProfit;
+      }
+
+      // تحديث monthlyData بالأرباح المحسوبة
+      for (final entry in profitByMonth.entries) {
+        final int month = entry.key;
+        final double totalProfit = entry.value;
         
         final existing = monthlyData[month];
         if (existing != null) {
@@ -6774,116 +7054,104 @@ class DatabaseService {
   }
 
   /// دالة لحساب ربح المنتج سنويًا
+  /// 🔧 إصلاح: نفس منطق getDailyReport في ai_chat_service.dart
   Future<Map<int, double>> getProductYearlyProfit(int productId) async {
     final db = await database;
     try {
-      // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط من سعر البيع
-      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+      // جلب بيانات المنتج أولاً (مع unit_costs و unit_hierarchy)
+      final prodRows = await db.rawQuery(
+        'SELECT unit, cost_price, length_per_unit, unit_costs, unit_hierarchy FROM products WHERE id = ?', 
+        [productId]
+      );
+      if (prodRows.isEmpty) return {};
+      
+      final String productUnit = (prodRows.first['unit'] as String?) ?? 'piece';
+      final double baseCostPrice = ((prodRows.first['cost_price'] as num?)?.toDouble() ?? 0.0);
+      final double lengthPerUnit = ((prodRows.first['length_per_unit'] as num?)?.toDouble() ?? 1.0);
+      final String? unitCostsJson = prodRows.first['unit_costs'] as String?;
+      final String? unitHierarchyJson = prodRows.first['unit_hierarchy'] as String?;
+      
+      // تحليل unit_costs JSON
+      Map<String, dynamic> unitCosts = const {};
+      if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
+        try { unitCosts = jsonDecode(unitCostsJson) as Map<String, dynamic>; } catch (_) {}
+      }
+
+      // جلب جميع البنود مع السنة
+      final List<Map<String, dynamic>> itemMaps = await db.rawQuery('''
         SELECT 
           strftime('%Y', i.invoice_date) as year,
-          SUM(
-            CASE 
-              WHEN COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0) > 0 
-              THEN (ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0))
-              ELSE ii.applied_price * 0.10
-            END * 
-            (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                  THEN ii.quantity_large_unit
-                  ELSE ii.quantity_individual END)
-          ) as total_profit,
-          SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit
-                    ELSE ii.quantity_individual END)) as total_selling_price,
-          SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
-                    ELSE ii.quantity_individual END) as total_quantity,
-          p.unit,
-          p.length_per_unit,
-          p.unit_hierarchy,
-          p.unit_costs
+          ii.quantity_individual,
+          ii.quantity_large_unit,
+          ii.units_in_large_unit,
+          ii.applied_price,
+          ii.sale_type,
+          ii.cost_price as item_cost_price,
+          ii.actual_cost_price,
+          p.cost_price as product_cost_price
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         JOIN products p ON ii.product_name = p.name
         WHERE p.id = ? AND i.status = 'محفوظة'
-        GROUP BY strftime('%Y', i.invoice_date)
         ORDER BY year DESC
       ''', [productId]);
 
       final Map<int, double> yearlyProfit = {};
-      for (final map in maps) {
-        final year = int.parse(map['year'] as String);
-        double profit = (map['total_profit'] ?? 0.0) as double;
+      
+      for (final item in itemMaps) {
+        final int year = int.parse(item['year'] as String);
+        // 🔧 إصلاح: استخدام نفس طريقة تحويل الأنواع في getDailyReport
+        final double quantityIndividual = (item['quantity_individual'] as num?)?.toDouble() ?? 0.0;
+        final double quantityLargeUnit = (item['quantity_large_unit'] as num?)?.toDouble() ?? 0.0;
+        final double unitsInLargeUnit = (item['units_in_large_unit'] as num?)?.toDouble() ?? 1.0;
+        final double sellingPrice = (item['applied_price'] as num?)?.toDouble() ?? 0.0;
+        final String saleType = (item['sale_type'] as String?) ?? (productUnit == 'meter' ? 'متر' : 'قطعة');
+        final double? actualCostPrice = (item['actual_cost_price'] as num?)?.toDouble();
+        final double itemCostPrice = (item['item_cost_price'] as num?)?.toDouble() ?? 
+            (item['product_cost_price'] as num?)?.toDouble() ?? 0.0;
         
-        // تصحيح الربح للمنتجات المباعة بالمتر
-        final productUnit = map['unit'] as String;
-        if (productUnit == 'meter') {
-          // إعادة حساب الربح باستخدام النظام الهرمي
-          final unitHierarchy = map['unit_hierarchy'] as String?;
-          final unitCosts = map['unit_costs'] as String?;
-          
-          if (unitHierarchy != null && unitCosts != null) {
-            // جلب تفاصيل البنود لهذا العام
-            final List<Map<String, dynamic>> itemMaps = await db.rawQuery('''
-              SELECT 
-                ii.quantity_individual,
-                ii.quantity_large_unit,
-                ii.units_in_large_unit,
-                ii.applied_price,
-                ii.sale_type,
-                p.cost_price as product_cost_price
-              FROM invoice_items ii
-              JOIN invoices i ON ii.invoice_id = i.id
-              JOIN products p ON ii.product_name = p.name
-              WHERE p.id = ? AND strftime('%Y', i.invoice_date) = ? AND i.status = 'محفوظة'
-            ''', [productId, year.toString()]);
-            
-            double correctedProfit = 0.0;
-            for (final item in itemMaps) {
-              final double quantityIndividual = (item['quantity_individual'] ?? 0.0) as double;
-              final double quantityLargeUnit = (item['quantity_large_unit'] ?? 0.0) as double;
-              final double unitsInLargeUnit = (item['units_in_large_unit'] ?? 1.0) as double;
-              final double sellingPrice = (item['applied_price'] ?? 0.0) as double;
-              final String saleType = (item['sale_type'] ?? 'متر') as String;
-              
-              double costPrice = 0.0;
-              if (saleType == 'متر') {
-                costPrice = (item['product_cost_price'] ?? 0.0) as double;
-              } else if (saleType == 'لفة') {
-                // حساب تكلفة اللفة من النظام الهرمي
-                costPrice = _calculateCostFromHierarchy(unitHierarchy, unitCosts, 'لفة', 1.0);
-                if (costPrice == 0.0) {
-                  // إذا لم يتم العثور على التكلفة، احسبها يدوياً
-                  final productCostPrice = (item['product_cost_price'] ?? 0.0) as double;
-                  final lengthPerUnit = (map['length_per_unit'] ?? 1.0) as double;
-                  costPrice = productCostPrice * lengthPerUnit;
-                }
-              }
-              
-              // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
-              if (costPrice <= 0 && sellingPrice > 0) {
-                costPrice = MoneyCalculator.getEffectiveCost(0, sellingPrice);
-              }
-              
-              if (quantityLargeUnit > 0) {
-                correctedProfit += (sellingPrice - costPrice) * quantityLargeUnit;
-              } else {
-                correctedProfit += (sellingPrice - costPrice) * quantityIndividual;
-              }
+        final bool soldAsLargeUnit = quantityLargeUnit > 0;
+        final double soldUnitsCount = soldAsLargeUnit ? quantityLargeUnit : quantityIndividual;
+        
+        // حساب التكلفة لكل وحدة مباعة - نفس منطق getDailyReport
+        double costPerSoldUnit;
+        if (actualCostPrice != null && actualCostPrice > 0) {
+          costPerSoldUnit = actualCostPrice;
+        } else if (soldAsLargeUnit) {
+          // أولاً: التحقق من unit_costs المخزنة
+          final dynamic stored = unitCosts[saleType];
+          if (stored is num && stored > 0) {
+            costPerSoldUnit = stored.toDouble();
+          } else {
+            final bool isMeterRoll = productUnit == 'meter' && (saleType == 'لفة');
+            if (isMeterRoll) {
+              costPerSoldUnit = baseCostPrice * (unitsInLargeUnit > 0 ? unitsInLargeUnit : lengthPerUnit);
+            } else if (unitsInLargeUnit > 0) {
+              costPerSoldUnit = baseCostPrice * unitsInLargeUnit;
+            } else {
+              // احتياطي: حساب من unit_hierarchy
+              costPerSoldUnit = _calculateCostFromHierarchy(
+                productCost: baseCostPrice,
+                saleType: saleType,
+                unitHierarchyJson: unitHierarchyJson,
+              );
             }
-            
-            profit = correctedProfit;
           }
+        } else {
+          costPerSoldUnit = itemCostPrice > 0 ? itemCostPrice : baseCostPrice;
         }
         
-        yearlyProfit[year] = profit;
+        // إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+        if (costPerSoldUnit <= 0 && sellingPrice > 0) {
+          costPerSoldUnit = MoneyCalculator.getEffectiveCost(0, sellingPrice);
+        }
+        
+        final double itemProfit = (sellingPrice - costPerSoldUnit) * soldUnitsCount;
+        yearlyProfit[year] = (yearlyProfit[year] ?? 0) + itemProfit;
       }
-      // دمج أرباح تسويات البنود سنوياً مع احترام الهرمية
+      
+      // دمج أرباح تسويات البنود سنوياً
       try {
-        final prodRows = await db.rawQuery('SELECT unit, cost_price, length_per_unit FROM products WHERE id = ?', [productId]);
-        String productUnit = (prodRows.isNotEmpty ? (prodRows.first['unit'] as String?) : null) ?? 'piece';
-        final double baseCost = prodRows.isNotEmpty ? ((prodRows.first['cost_price'] as num?)?.toDouble() ?? 0.0) : 0.0;
-        final double? lengthPerUnit = prodRows.isNotEmpty ? (prodRows.first['length_per_unit'] as num?)?.toDouble() : null;
-
         final rows = await db.rawQuery('''
           SELECT strftime('%Y', created_at) as year, type, quantity, price, sale_type, units_in_large_unit
           FROM invoice_adjustments
@@ -6901,18 +7169,26 @@ class DatabaseService {
 
           final double salesContribution = (type == 'debit' ? 1 : -1) * qtySaleUnits * pricePerSaleUnit;
 
-          double baseQty;
-          if (productUnit == 'meter' && saleType == 'لفة') {
-            final double factor = (unitsInLargeUnit > 0) ? unitsInLargeUnit : (lengthPerUnit ?? 1.0);
-            baseQty = qtySaleUnits * factor;
+          // حساب التكلفة للوحدة المباعة - نفس المنطق
+          double costPerSaleUnit;
+          final dynamic stored = unitCosts[saleType];
+          if (stored is num && stored > 0) {
+            costPerSaleUnit = stored.toDouble();
+          } else if (productUnit == 'meter' && saleType == 'لفة') {
+            costPerSaleUnit = baseCostPrice * (unitsInLargeUnit > 0 ? unitsInLargeUnit : lengthPerUnit);
           } else if (saleType == 'قطعة' || saleType == 'متر') {
-            baseQty = qtySaleUnits;
+            costPerSaleUnit = baseCostPrice;
+          } else if (unitsInLargeUnit > 0) {
+            costPerSaleUnit = baseCostPrice * unitsInLargeUnit;
           } else {
-            baseQty = qtySaleUnits * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+            costPerSaleUnit = _calculateCostFromHierarchy(
+              productCost: baseCostPrice,
+              saleType: saleType,
+              unitHierarchyJson: unitHierarchyJson,
+            );
           }
-          final double signedBaseQty = (type == 'debit' ? 1 : -1) * baseQty;
-          final double costContribution = baseCost * (signedBaseQty);
-
+          
+          final double costContribution = (type == 'debit' ? 1 : -1) * costPerSaleUnit * qtySaleUnits;
           yearlyProfit[year] = (yearlyProfit[year] ?? 0) + (salesContribution - costContribution);
         }
       } catch (_) {}
@@ -6924,117 +7200,105 @@ class DatabaseService {
   }
 
   /// دالة لحساب ربح المنتج شهريًا لسنة معينة
+  /// 🔧 إصلاح: نفس منطق getDailyReport في ai_chat_service.dart
   Future<Map<int, double>> getProductMonthlyProfit(
       int productId, int year) async {
     final db = await database;
     try {
-      // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط من سعر البيع
-      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+      // جلب بيانات المنتج أولاً (مع unit_costs و unit_hierarchy)
+      final prodRows = await db.rawQuery(
+        'SELECT unit, cost_price, length_per_unit, unit_costs, unit_hierarchy FROM products WHERE id = ?', 
+        [productId]
+      );
+      if (prodRows.isEmpty) return {};
+      
+      final String productUnit = (prodRows.first['unit'] as String?) ?? 'piece';
+      final double baseCostPrice = ((prodRows.first['cost_price'] as num?)?.toDouble() ?? 0.0);
+      final double lengthPerUnit = ((prodRows.first['length_per_unit'] as num?)?.toDouble() ?? 1.0);
+      final String? unitCostsJson = prodRows.first['unit_costs'] as String?;
+      final String? unitHierarchyJson = prodRows.first['unit_hierarchy'] as String?;
+      
+      // تحليل unit_costs JSON
+      Map<String, dynamic> unitCosts = const {};
+      if (unitCostsJson != null && unitCostsJson.trim().isNotEmpty) {
+        try { unitCosts = jsonDecode(unitCostsJson) as Map<String, dynamic>; } catch (_) {}
+      }
+
+      // جلب جميع البنود مع الشهر
+      final List<Map<String, dynamic>> itemMaps = await db.rawQuery('''
         SELECT 
           strftime('%m', i.invoice_date) as month,
-          SUM(
-            CASE 
-              WHEN COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0) > 0 
-              THEN (ii.applied_price - COALESCE(ii.actual_cost_price, ii.cost_price, p.cost_price, 0))
-              ELSE ii.applied_price * 0.10
-            END * 
-            (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                  THEN ii.quantity_large_unit
-                  ELSE ii.quantity_individual END)
-          ) as total_profit,
-          SUM(ii.applied_price * (CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit
-                    ELSE ii.quantity_individual END)) as total_selling_price,
-          SUM(CASE WHEN ii.quantity_large_unit IS NOT NULL AND ii.quantity_large_unit > 0 
-                    THEN ii.quantity_large_unit * COALESCE(ii.units_in_large_unit, 1.0)
-                    ELSE ii.quantity_individual END) as total_quantity,
-          p.unit,
-          p.length_per_unit,
-          p.unit_hierarchy,
-          p.unit_costs
+          ii.quantity_individual,
+          ii.quantity_large_unit,
+          ii.units_in_large_unit,
+          ii.applied_price,
+          ii.sale_type,
+          ii.cost_price as item_cost_price,
+          ii.actual_cost_price,
+          p.cost_price as product_cost_price
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         JOIN products p ON ii.product_name = p.name
         WHERE p.id = ? AND strftime('%Y', i.invoice_date) = ? AND i.status = 'محفوظة'
-        GROUP BY strftime('%m', i.invoice_date)
         ORDER BY month ASC
       ''', [productId, year.toString()]);
 
       final Map<int, double> monthlyProfit = {};
-      for (final map in maps) {
-        final month = int.parse(map['month'] as String);
-        double profit = (map['total_profit'] ?? 0.0) as double;
+      
+      for (final item in itemMaps) {
+        final int month = int.parse(item['month'] as String);
+        // 🔧 إصلاح: استخدام نفس طريقة تحويل الأنواع في getDailyReport
+        final double quantityIndividual = (item['quantity_individual'] as num?)?.toDouble() ?? 0.0;
+        final double quantityLargeUnit = (item['quantity_large_unit'] as num?)?.toDouble() ?? 0.0;
+        final double unitsInLargeUnit = (item['units_in_large_unit'] as num?)?.toDouble() ?? 1.0;
+        final double sellingPrice = (item['applied_price'] as num?)?.toDouble() ?? 0.0;
+        final String saleType = (item['sale_type'] as String?) ?? (productUnit == 'meter' ? 'متر' : 'قطعة');
+        final double? actualCostPrice = (item['actual_cost_price'] as num?)?.toDouble();
+        final double itemCostPrice = (item['item_cost_price'] as num?)?.toDouble() ?? 
+            (item['product_cost_price'] as num?)?.toDouble() ?? 0.0;
         
-        // تصحيح الربح للمنتجات المباعة بالمتر
-        final productUnit = map['unit'] as String;
-        if (productUnit == 'meter') {
-          // إعادة حساب الربح باستخدام النظام الهرمي
-          final unitHierarchy = map['unit_hierarchy'] as String?;
-          final unitCosts = map['unit_costs'] as String?;
-          
-          if (unitHierarchy != null && unitCosts != null) {
-            // جلب تفاصيل البنود لهذا الشهر
-            final List<Map<String, dynamic>> itemMaps = await db.rawQuery('''
-              SELECT 
-                ii.quantity_individual,
-                ii.quantity_large_unit,
-                ii.units_in_large_unit,
-                ii.applied_price,
-                ii.sale_type,
-                p.cost_price as product_cost_price
-              FROM invoice_items ii
-              JOIN invoices i ON ii.invoice_id = i.id
-              JOIN products p ON ii.product_name = p.name
-              WHERE p.id = ? AND strftime('%Y', i.invoice_date) = ? AND strftime('%m', i.invoice_date) = ? AND i.status = 'محفوظة'
-            ''', [productId, year.toString(), month.toString().padLeft(2, '0')]);
-            
-            double correctedProfit = 0.0;
-            for (final item in itemMaps) {
-              final double quantityIndividual = (item['quantity_individual'] ?? 0.0) as double;
-              final double quantityLargeUnit = (item['quantity_large_unit'] ?? 0.0) as double;
-              final double unitsInLargeUnit = (item['units_in_large_unit'] ?? 1.0) as double;
-              final double sellingPrice = (item['applied_price'] ?? 0.0) as double;
-              final String saleType = (item['sale_type'] ?? 'متر') as String;
-              
-              double costPrice = 0.0;
-              if (saleType == 'متر') {
-                costPrice = (item['product_cost_price'] ?? 0.0) as double;
-              } else if (saleType == 'لفة') {
-                // حساب تكلفة اللفة من النظام الهرمي
-                costPrice = _calculateCostFromHierarchy(unitHierarchy, unitCosts, 'لفة', 1.0);
-                if (costPrice == 0.0) {
-                  // إذا لم يتم العثور على التكلفة، احسبها يدوياً
-                  final productCostPrice = (item['product_cost_price'] ?? 0.0) as double;
-                  final lengthPerUnit = (map['length_per_unit'] ?? 1.0) as double;
-                  costPrice = productCostPrice * lengthPerUnit;
-                }
-              }
-              
-              // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
-              if (costPrice <= 0 && sellingPrice > 0) {
-                costPrice = MoneyCalculator.getEffectiveCost(0, sellingPrice);
-              }
-              
-              if (quantityLargeUnit > 0) {
-                correctedProfit += (sellingPrice - costPrice) * quantityLargeUnit;
-              } else {
-                correctedProfit += (sellingPrice - costPrice) * quantityIndividual;
-              }
+        final bool soldAsLargeUnit = quantityLargeUnit > 0;
+        final double soldUnitsCount = soldAsLargeUnit ? quantityLargeUnit : quantityIndividual;
+        
+        // حساب التكلفة لكل وحدة مباعة - نفس منطق getDailyReport
+        double costPerSoldUnit;
+        if (actualCostPrice != null && actualCostPrice > 0) {
+          costPerSoldUnit = actualCostPrice;
+        } else if (soldAsLargeUnit) {
+          // أولاً: التحقق من unit_costs المخزنة
+          final dynamic stored = unitCosts[saleType];
+          if (stored is num && stored > 0) {
+            costPerSoldUnit = stored.toDouble();
+          } else {
+            final bool isMeterRoll = productUnit == 'meter' && (saleType == 'لفة');
+            if (isMeterRoll) {
+              costPerSoldUnit = baseCostPrice * (unitsInLargeUnit > 0 ? unitsInLargeUnit : lengthPerUnit);
+            } else if (unitsInLargeUnit > 0) {
+              costPerSoldUnit = baseCostPrice * unitsInLargeUnit;
+            } else {
+              // احتياطي: حساب من unit_hierarchy
+              costPerSoldUnit = _calculateCostFromHierarchy(
+                productCost: baseCostPrice,
+                saleType: saleType,
+                unitHierarchyJson: unitHierarchyJson,
+              );
             }
-            
-            profit = correctedProfit;
           }
+        } else {
+          costPerSoldUnit = itemCostPrice > 0 ? itemCostPrice : baseCostPrice;
         }
         
-        monthlyProfit[month] = profit;
+        // إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+        if (costPerSoldUnit <= 0 && sellingPrice > 0) {
+          costPerSoldUnit = MoneyCalculator.getEffectiveCost(0, sellingPrice);
+        }
+        
+        final double itemProfit = (sellingPrice - costPerSoldUnit) * soldUnitsCount;
+        monthlyProfit[month] = (monthlyProfit[month] ?? 0) + itemProfit;
       }
-      // دمج أرباح تسويات البنود شهرياً مع احترام الهرمية
+      
+      // دمج أرباح تسويات البنود شهرياً
       try {
-        final prodRows = await db.rawQuery('SELECT unit, cost_price, length_per_unit FROM products WHERE id = ?', [productId]);
-        String productUnit = (prodRows.isNotEmpty ? (prodRows.first['unit'] as String?) : null) ?? 'piece';
-        final double baseCost = prodRows.isNotEmpty ? ((prodRows.first['cost_price'] as num?)?.toDouble() ?? 0.0) : 0.0;
-        final double? lengthPerUnit = prodRows.isNotEmpty ? (prodRows.first['length_per_unit'] as num?)?.toDouble() : null;
-
         final rows = await db.rawQuery('''
           SELECT strftime('%m', created_at) as month, type, quantity, price, sale_type, units_in_large_unit
           FROM invoice_adjustments
@@ -7052,18 +7316,26 @@ class DatabaseService {
 
           final double salesContribution = (type == 'debit' ? 1 : -1) * qtySaleUnits * pricePerSaleUnit;
 
-          double baseQty;
-          if (productUnit == 'meter' && saleType == 'لفة') {
-            final double factor = (unitsInLargeUnit > 0) ? unitsInLargeUnit : (lengthPerUnit ?? 1.0);
-            baseQty = qtySaleUnits * factor;
+          // حساب التكلفة للوحدة المباعة - نفس المنطق
+          double costPerSaleUnit;
+          final dynamic stored = unitCosts[saleType];
+          if (stored is num && stored > 0) {
+            costPerSaleUnit = stored.toDouble();
+          } else if (productUnit == 'meter' && saleType == 'لفة') {
+            costPerSaleUnit = baseCostPrice * (unitsInLargeUnit > 0 ? unitsInLargeUnit : lengthPerUnit);
           } else if (saleType == 'قطعة' || saleType == 'متر') {
-            baseQty = qtySaleUnits;
+            costPerSaleUnit = baseCostPrice;
+          } else if (unitsInLargeUnit > 0) {
+            costPerSaleUnit = baseCostPrice * unitsInLargeUnit;
           } else {
-            baseQty = qtySaleUnits * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+            costPerSaleUnit = _calculateCostFromHierarchy(
+              productCost: baseCostPrice,
+              saleType: saleType,
+              unitHierarchyJson: unitHierarchyJson,
+            );
           }
-          final double signedBaseQty = (type == 'debit' ? 1 : -1) * baseQty;
-          final double costContribution = baseCost * (signedBaseQty);
-
+          
+          final double costContribution = (type == 'debit' ? 1 : -1) * costPerSaleUnit * qtySaleUnits;
           monthlyProfit[month] = (monthlyProfit[month] ?? 0) + (salesContribution - costContribution);
         }
       } catch (_) {}

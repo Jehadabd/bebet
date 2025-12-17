@@ -350,10 +350,9 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                       Expanded(
                         child: _buildDetailInfo(
                           title: 'نسبة الربح',
-                          value: widget.product.costPrice != null &&
-                                  widget.product.costPrice! > 0 &&
-                                  _monthQuantity > 0
-                              ? '${((_monthProfit / _monthQuantity / widget.product.costPrice!) * 100).toStringAsFixed(1)}%'
+                          // 🔧 إصلاح: حساب نسبة الربح بناءً على إجمالي المبيعات (الربح ÷ المبيعات × 100)
+                          value: _monthSellingPrice > 0
+                              ? '${((_monthProfit / _monthSellingPrice) * 100).toStringAsFixed(1)}%'
                               : 'غير محدد',
                           color: const Color(0xFF9C27B0),
                         ),
