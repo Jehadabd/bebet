@@ -5,6 +5,8 @@ import 'package:share_plus/share_plus.dart';
 import 'package:provider/provider.dart';
 import '../providers/app_provider.dart';
 import '../services/database_service.dart';
+import '../services/telegram_backup_service.dart';
+import '../services/telegram_invoice_export_service.dart';
 import '../models/customer.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/password_service.dart';
@@ -392,18 +394,45 @@ class _MainScreenState extends State<MainScreen> {
               title: 'رفع قاعدة\nالبيانات',
               onTap: () async {
                 final progressNotifier = ValueNotifier<double>(0.0);
+                final statusNotifier = ValueNotifier<String>('جاري رفع قاعدة البيانات...');
                 bool uploadSucceeded = false;
+
+                // جلب وقت آخر رفع
+                final telegramService = TelegramBackupService();
+                final lastUploadTime = await telegramService.getLastUploadTime();
 
                 // ابدأ الرفع في مهمة منفصلة وتحديث المؤشر ثم إغلاق الحوار
                 Future(() async {
                   try {
+                    // 1) رفع قاعدة البيانات إلى Drive و Telegram
                     await context.read<AppProvider>().uploadDatabaseToDrive(
                       onProgress: (p) {
-                        progressNotifier.value = p;
+                        progressNotifier.value = p * 0.5; // 50% للرفع الأساسي
                       },
                     );
+
+                    // 2) إرسال الفواتير الجديدة إلى Telegram (إذا كان هناك وقت سابق)
+                    if (telegramService.isConfigured && lastUploadTime != null) {
+                      statusNotifier.value = 'جاري إرسال الفواتير الجديدة...';
+                      final exportService = TelegramInvoiceExportService();
+                      await exportService.exportAndSendNewInvoices(
+                        afterDate: lastUploadTime,
+                        onProgress: (current, total, status) {
+                          if (total > 0) {
+                            progressNotifier.value = 0.5 + (current / total) * 0.45;
+                            statusNotifier.value = status;
+                          }
+                        },
+                      );
+                    }
+
+                    // 3) حفظ وقت الرفع الحالي
+                    await telegramService.saveLastUploadTime();
+                    
+                    progressNotifier.value = 1.0;
                     uploadSucceeded = true;
-                  } catch (_) {
+                  } catch (e) {
+                    print('Upload error: $e');
                     uploadSucceeded = false;
                   } finally {
                     if (Navigator.of(context, rootNavigator: true).canPop()) {
@@ -419,13 +448,18 @@ class _MainScreenState extends State<MainScreen> {
                     title: const Text('رفع قاعدة البيانات'),
                     content: ValueListenableBuilder<double>(
                       valueListenable: progressNotifier,
-                      builder: (context, value, _) => Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          LinearProgressIndicator(value: value <= 0 || value >= 1 ? null : value),
-                          const SizedBox(height: 12),
-                          Text('${(value * 100).clamp(0, 100).toStringAsFixed(0)}%')
-                        ],
+                      builder: (context, progress, _) => ValueListenableBuilder<String>(
+                        valueListenable: statusNotifier,
+                        builder: (context, status, _) => Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            LinearProgressIndicator(value: progress <= 0 || progress >= 1 ? null : progress),
+                            const SizedBox(height: 12),
+                            Text('${(progress * 100).clamp(0, 100).toStringAsFixed(0)}%'),
+                            const SizedBox(height: 8),
+                            Text(status, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -433,7 +467,7 @@ class _MainScreenState extends State<MainScreen> {
 
                 if (result == true) {
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                    content: Text('تم رفع قاعدة البيانات والملفات الصوتية بنجاح إلى Google Drive'),
+                    content: Text('تم رفع قاعدة البيانات وإرسال الفواتير بنجاح'),
                     duration: Duration(seconds: 3),
                   ));
                 } else {

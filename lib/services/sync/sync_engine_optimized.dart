@@ -8,6 +8,11 @@
 // 4. ✅ Rolling Snapshots - صور كاملة دورية مع حذف القديم
 // 5. ✅ Smart Cleanup - تنظيف ذكي للحفاظ على المساحة
 // 6. ✅ Delta Sync - مزامنة الفروقات فقط
+// 7. ✅ Pre-Sync Backup - نسخ احتياطي قبل المزامنة
+// 8. ✅ Sync Audit Log - سجل تدقيق المزامنة
+// 9. ✅ Post-Sync Verification - التحقق بعد المزامنة
+// 10. ✅ Large Transaction Confirmation - تأكيد المعاملات الكبيرة
+// 11. ✅ Old Transaction Rejection - رفض المعاملات القديمة
 
 import 'dart:async';
 import 'dart:convert';
@@ -16,11 +21,14 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:http/http.dart' as http;
+import 'package:sqflite/sqflite.dart';
 
 import 'sync_models.dart';
 import 'sync_operation.dart';
 import 'sync_security.dart';
+import 'sync_audit_service.dart';
 import '../database_service.dart';
+import '../settings_manager.dart';
 
 /// ═══════════════════════════════════════════════════════════════════════════
 /// إعدادات المزامنة المحسّنة للمساحة المحدودة
@@ -50,6 +58,11 @@ class OptimizedSyncConfig {
   final bool enableCompression;
   final int compressionLevel; // 1-9 (9 = أعلى ضغط)
   
+  // 🔄 إعدادات Timeout & Retry (لحل مشكلة semaphore timeout)
+  final Duration networkTimeout; // مهلة عمليات الشبكة
+  final int maxRetries; // عدد محاولات إعادة المحاولة
+  final Duration retryDelay; // التأخير بين المحاولات
+  
   const OptimizedSyncConfig({
     // القفل
     this.lockTimeout = const Duration(minutes: 3),
@@ -74,6 +87,11 @@ class OptimizedSyncConfig {
     // الضغط
     this.enableCompression = true,
     this.compressionLevel = 6, // توازن بين السرعة والحجم
+    
+    // Timeout & Retry
+    this.networkTimeout = const Duration(seconds: 60), // مهلة 60 ثانية
+    this.maxRetries = 3, // 3 محاولات
+    this.retryDelay = const Duration(seconds: 2), // تأخير 2 ثانية
   });
 }
 
@@ -120,6 +138,9 @@ class OptimizedSyncEngine {
   final OptimizedSyncConfig config;
   final DatabaseService _db;
   
+  // 🔒 خدمة التدقيق والأمان
+  late final SyncAuditService _auditService;
+  
   String? _deviceId;
   String? _deviceName;
   String? _secretKey;
@@ -130,6 +151,7 @@ class OptimizedSyncEngine {
   Timer? _heartbeatTimer;
   Duration _serverTimeOffset = Duration.zero; // لتصحيح التوقيت
   final String _currentAppVersion = '1.0.0'; // يجب أن يأتي من package_info
+  int? _currentSyncLogId; // معرف سجل المزامنة الحالي
   
   // Cache للمجلدات
   String? _syncFolderId;
@@ -140,6 +162,10 @@ class OptimizedSyncEngine {
   Function(double)? onProgress;
   Function(SyncReport)? onSyncComplete;
   Function(StorageReport)? onStorageCheck;
+  
+  // 🔒 Callbacks للأمان
+  Future<bool> Function(List<PendingLargeTransaction>)? onLargeTransactionsDetected;
+  void Function(PostSyncVerificationResult)? onVerificationComplete;
   
   // Drive API
   http.Client? _httpClient;
@@ -154,7 +180,16 @@ class OptimizedSyncEngine {
   OptimizedSyncEngine({
     this.config = const OptimizedSyncConfig(),
     DatabaseService? db,
-  }) : _db = db ?? DatabaseService();
+    SyncSecurityConfig? securityConfig,
+  }) : _db = db ?? DatabaseService() {
+    _auditService = SyncAuditService(
+      db: _db,
+      config: securityConfig ?? const SyncSecurityConfig(),
+    );
+  }
+  
+  /// الحصول على خدمة التدقيق
+  SyncAuditService get auditService => _auditService;
 
   /// تهيئة المحرك
   Future<void> initialize({
@@ -176,7 +211,135 @@ class OptimizedSyncEngine {
   bool get isReady => _driveApi != null && _deviceId != null && _secretKey != null;
   bool get isSyncing => _isSyncing;
 
+  /// فرض فتح القفل يدوياً (للحالات الطارئة)
+  /// يُستخدم عندما يعلق القفل ولا يمكن الحصول عليه
+  Future<bool> forceUnlock() async {
+    if (!isReady) {
+      print('❌ المحرك غير جاهز');
+      return false;
+    }
+    
+    try {
+      print('🔓 جاري فرض فتح القفل...');
+      
+      // قراءة القفل الحالي للتحقق
+      final existingLock = await _readLock();
+      if (existingLock == null) {
+        print('✅ لا يوجد قفل حالياً');
+        return true;
+      }
+      
+      print('📋 معلومات القفل:');
+      print('   - الجهاز: ${existingLock.deviceName}');
+      print('   - تم الحصول عليه: ${existingLock.acquiredAt}');
+      print('   - ينتهي في: ${existingLock.expiresAt}');
+      print('   - عمر heartbeat: ${existingLock.heartbeatAgeSeconds} ثانية');
+      print('   - منتهي الصلاحية: ${existingLock.isExpired}');
+      
+      // حذف القفل
+      await _forceDeleteLock();
+      _currentLock = null;
+      
+      print('✅ تم فرض فتح القفل بنجاح');
+      return true;
+    } catch (e) {
+      print('❌ فشل فرض فتح القفل: $e');
+      return false;
+    }
+  }
+  
+  /// التحقق من حالة القفل الحالي
+  Future<Map<String, dynamic>?> checkLockStatus() async {
+    if (!isReady) return null;
+    
+    try {
+      final existingLock = await _readLock();
+      if (existingLock == null) {
+        return {'status': 'free', 'message': 'القفل متاح'};
+      }
+      
+      return {
+        'status': existingLock.isExpired ? 'expired' : 'busy',
+        'device_name': existingLock.deviceName,
+        'device_id': existingLock.deviceId,
+        'is_mine': existingLock.deviceId == _deviceId,
+        'acquired_at': existingLock.acquiredAt.toIso8601String(),
+        'expires_at': existingLock.expiresAt.toIso8601String(),
+        'heartbeat_age_seconds': existingLock.heartbeatAgeSeconds,
+        'remaining_seconds': existingLock.remainingSeconds,
+        'is_expired': existingLock.isExpired,
+        'message': existingLock.isExpired 
+            ? 'القفل منتهي الصلاحية'
+            : 'القفل مشغول بواسطة ${existingLock.deviceName}',
+      };
+    } catch (e) {
+      return {'status': 'error', 'message': 'خطأ في فحص القفل: $e'};
+    }
+  }
 
+  /// ═══════════════════════════════════════════════════════════════════════
+  /// 🔄 Timeout & Retry Wrapper - لحل مشكلة semaphore timeout
+  /// ═══════════════════════════════════════════════════════════════════════
+  
+  /// تنفيذ عملية مع timeout و retry تلقائي
+  Future<T> _withTimeoutAndRetry<T>(
+    Future<T> Function() operation, {
+    String? operationName,
+    Duration? timeout,
+    int? maxRetries,
+  }) async {
+    final effectiveTimeout = timeout ?? config.networkTimeout;
+    final effectiveMaxRetries = maxRetries ?? config.maxRetries;
+    final opName = operationName ?? 'عملية';
+    
+    Exception? lastError;
+    
+    for (int attempt = 1; attempt <= effectiveMaxRetries; attempt++) {
+      try {
+        // تنفيذ العملية مع timeout
+        final result = await operation().timeout(
+          effectiveTimeout,
+          onTimeout: () {
+            throw TimeoutException(
+              'انتهت مهلة $opName بعد ${effectiveTimeout.inSeconds} ثانية',
+              effectiveTimeout,
+            );
+          },
+        );
+        return result;
+      } on TimeoutException catch (e) {
+        lastError = e;
+        print('⏱️ Timeout في $opName (محاولة $attempt/$effectiveMaxRetries): ${e.message}');
+        
+        if (attempt < effectiveMaxRetries) {
+          // انتظار قبل إعادة المحاولة (exponential backoff)
+          final delay = config.retryDelay * attempt;
+          print('🔄 إعادة المحاولة بعد ${delay.inSeconds} ثانية...');
+          await Future.delayed(delay);
+        }
+      } on SocketException catch (e) {
+        lastError = e;
+        print('🌐 خطأ شبكة في $opName (محاولة $attempt/$effectiveMaxRetries): ${e.message}');
+        
+        if (attempt < effectiveMaxRetries) {
+          final delay = config.retryDelay * attempt;
+          print('🔄 إعادة المحاولة بعد ${delay.inSeconds} ثانية...');
+          await Future.delayed(delay);
+        }
+      } catch (e) {
+        // أخطاء أخرى - لا نعيد المحاولة
+        rethrow;
+      }
+    }
+    
+    // فشلت جميع المحاولات
+    throw SyncException(
+      type: SyncErrorType.networkError,
+      message: 'فشل $opName بعد $effectiveMaxRetries محاولات: ${lastError?.toString()}',
+      originalError: lastError,
+      isRecoverable: true,
+    );
+  }
 
   /// ═══════════════════════════════════════════════════════════════════════
   /// القفل المحسّن مع Verify-After-Write
@@ -193,16 +356,25 @@ class OptimizedSyncEngine {
         
         if (existingLock != null) {
           if (existingLock.isExpired) {
-            print('🔓 القفل منتهي الصلاحية، جاري الحذف...');
+            // القفل منتهي الصلاحية أو الـ heartbeat قديم
+            final reason = DateTime.now().toUtc().isAfter(existingLock.expiresAt)
+                ? 'انتهت صلاحيته'
+                : 'الجهاز الآخر توقف (heartbeat قديم: ${existingLock.heartbeatAgeSeconds} ثانية)';
+            print('🔓 القفل منتهي: $reason، جاري الحذف...');
             await _forceDeleteLock();
+            // بعد حذف القفل المنتهي، نحاول مباشرة إنشاء قفل جديد
           } else if (existingLock.deviceId == _deviceId) {
             print('🔄 تجديد القفل الحالي...');
             _currentLock = await _renewLock(existingLock);
             _startHeartbeat();
             return true;
           } else {
+            // القفل لجهاز آخر ولم ينتهِ بعد
+            final remaining = existingLock.remainingSeconds;
+            final heartbeatAge = existingLock.heartbeatAgeSeconds;
             print('⏳ القفل مشغول بواسطة ${existingLock.deviceName}');
-            _updateStatus('انتظار القفل... محاولة $attempt/${config.maxLockRetries}');
+            print('   ⏱️ متبقي: $remaining ثانية، عمر heartbeat: $heartbeatAge ثانية');
+            _updateStatus('انتظار القفل من ${existingLock.deviceName}... ($attempt/${config.maxLockRetries})');
             await Future.delayed(config.lockRetryInterval);
             continue;
           }
@@ -407,21 +579,29 @@ class OptimizedSyncEngine {
 
   Future<void> _releaseLock() async {
     _stopHeartbeat();
-    if (_currentLock != null) {
+    _currentLock = null; // ⚠️ مهم: إلغاء القفل أولاً قبل الحذف لمنع الـ heartbeat من محاولة التجديد
+    try {
       await _forceDeleteLock();
-      _currentLock = null;
       print('🔓 تم تحرير القفل');
+    } catch (e) {
+      // تجاهل الخطأ إذا كان القفل محذوفاً بالفعل
+      print('⚠️ تحذير عند تحرير القفل (قد يكون محذوفاً بالفعل): $e');
     }
   }
 
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
-      if (_currentLock != null && !_currentLock!.isExpired) {
+      // ⚠️ التحقق من أن القفل لا يزال موجوداً ولم يتم تحريره
+      final lock = _currentLock;
+      if (lock != null && !lock.isExpired && _isSyncing) {
         try {
-          _currentLock = await _renewLock(_currentLock!);
+          _currentLock = await _renewLock(lock);
         } catch (e) {
-          print('⚠️ فشل تجديد القفل: $e');
+          // تجاهل الخطأ إذا كان القفل محذوفاً (تم تحريره)
+          if (!e.toString().contains('404') && !e.toString().contains('not found')) {
+            print('⚠️ فشل تجديد القفل: $e');
+          }
         }
       }
     });
@@ -494,7 +674,7 @@ class OptimizedSyncEngine {
       contentType = 'application/json';
     }
     
-    // رفع الملف
+    // رفع الملف مع timeout و retry
     try {
       final tempFile = await _createTempFile(fileName, finalBytes);
       final media = drive.Media(
@@ -503,11 +683,15 @@ class OptimizedSyncEngine {
         contentType: contentType,
       );
       
-      await _driveApi!.files.create(
-        drive.File()
-          ..name = fileName
-          ..parents = [batchesFolderId],
-        uploadMedia: media,
+      // 🔄 استخدام timeout wrapper لتجنب semaphore timeout
+      await _withTimeoutAndRetry(
+        () => _driveApi!.files.create(
+          drive.File()
+            ..name = fileName
+            ..parents = [batchesFolderId],
+          uploadMedia: media,
+        ),
+        operationName: 'رفع Batch',
       );
       
       await tempFile.delete();
@@ -520,6 +704,7 @@ class OptimizedSyncEngine {
       
     } catch (e) {
       print('❌ فشل رفع الـ Batch: $e');
+      if (e is SyncException) rethrow;
       throw SyncException(
         type: SyncErrorType.networkError,
         message: 'فشل رفع العمليات',
@@ -578,16 +763,27 @@ class OptimizedSyncEngine {
     return operations;
   }
 
-  /// تنزيل وفك ضغط ملف
+  /// تنزيل وفك ضغط ملف مع timeout و retry
   Future<String?> _downloadAndDecompressFile(String fileId, String fileName) async {
     try {
-      final media = await _driveApi!.files.get(
-        fileId,
-        downloadOptions: drive.DownloadOptions.fullMedia,
-      ) as drive.Media;
+      // 🔄 استخدام timeout wrapper لتجنب semaphore timeout
+      final media = await _withTimeoutAndRetry(
+        () async => await _driveApi!.files.get(
+          fileId,
+          downloadOptions: drive.DownloadOptions.fullMedia,
+        ) as drive.Media,
+        operationName: 'تنزيل $fileName',
+      );
       
       final bytes = <int>[];
-      await for (final chunk in media.stream) {
+      // قراءة البيانات مع timeout
+      await for (final chunk in media.stream.timeout(
+        config.networkTimeout,
+        onTimeout: (sink) {
+          sink.addError(TimeoutException('انتهت مهلة قراءة البيانات'));
+          sink.close();
+        },
+      )) {
         bytes.addAll(chunk);
       }
       
@@ -598,6 +794,11 @@ class OptimizedSyncEngine {
       }
       
       return utf8.decode(bytes);
+    } on TimeoutException catch (e) {
+      print('⏱️ Timeout في تنزيل $fileName: ${e.message}');
+      return null;
+    } on SyncException {
+      rethrow;
     } catch (e) {
       print('⚠️ خطأ في تنزيل الملف $fileName: $e');
       return null;
@@ -1142,12 +1343,47 @@ class OptimizedSyncEngine {
     _isSyncing = true;
     final startTime = DateTime.now();
     final warnings = <String>[];
+    final affectedCustomerNames = <String>[];
+    final affectedCustomerIds = <int>[];
     var operationsDownloaded = 0;
     var operationsUploaded = 0;
     var operationsApplied = 0;
+    var failedOperationsList = <FailedOperationInfo>[];
+    String? backupPath;
     
     try {
-      // 0. فحص المساحة أولاً
+      // التحقق من جاهزية DriveApi
+      if (_driveApi == null) {
+        throw SyncException(
+          type: SyncErrorType.unknownError,
+          message: 'DriveApi غير مهيأ - يرجى إعادة تسجيل الدخول',
+          isRecoverable: false,
+        );
+      }
+      
+      // 🔐 استخدام المفتاح المضمن (لا يحتاج مزامنة)
+      _secretKey = await SyncSecurity.getOrCreateSecretKey();
+      
+      // 📦 التحقق من وضع النقل الكامل
+      final settings = await SettingsManager.getAppSettings();
+      if (settings.syncFullTransferMode) {
+        print('📦 وضع النقل الكامل مفعل - سيتم رفع جميع البيانات');
+        _isSyncing = false; // إعادة تعيين لأن performFullTransfer ستعيد تعيينه
+        return await performFullTransfer();
+      }
+      
+      // 💾 1. إنشاء نسخة احتياطية قبل المزامنة
+      _updateStatus('جاري إنشاء نسخة احتياطية...');
+      backupPath = await _auditService.createPreSyncBackup();
+      
+      // 📝 2. بدء سجل التدقيق
+      _currentSyncLogId = await _auditService.startSyncLog(
+        syncType: 'normal',
+        deviceId: _deviceId!,
+        backupPath: backupPath,
+      );
+      
+      // 0. فحص المساحة
       final storageReport = await checkStorageUsage();
       if (storageReport.totalMB > config.maxStorageMB * config.cleanupThresholdPercent) {
         await performSmartCleanup();
@@ -1175,10 +1411,45 @@ class OptimizedSyncEngine {
         
         // 4. تنزيل العمليات الجديدة (من Batches)
         _updateStatus('جاري تنزيل التحديثات...');
-        final newOperations = await _downloadNewBatches(syncedUpTo);
+        var newOperations = await _downloadNewBatches(syncedUpTo);
         operationsDownloaded = newOperations.length;
         
-        // 5. التحقق من صحة العمليات
+        // 🔒 5. فحص وتصفية العمليات الواردة (أمان)
+        if (newOperations.isNotEmpty) {
+          _updateStatus('جاري فحص العمليات الواردة...');
+          final validationResult = await _auditService.validateIncomingOperations(newOperations);
+          
+          // إضافة أسباب الرفض للتحذيرات
+          warnings.addAll(validationResult.rejectionReasons);
+          
+          // طلب تأكيد للمعاملات الكبيرة
+          if (validationResult.needsConfirmation.isNotEmpty) {
+            if (onLargeTransactionsDetected != null) {
+              final confirmed = await onLargeTransactionsDetected!(validationResult.needsConfirmation);
+              if (confirmed) {
+                // إضافة المعاملات المؤكدة للقائمة المعتمدة
+                newOperations = [
+                  ...validationResult.approved,
+                  ...validationResult.needsConfirmation.map((p) => p.operation),
+                ];
+              } else {
+                // المستخدم رفض - استخدام المعتمدة فقط
+                newOperations = validationResult.approved;
+                warnings.add('تم تخطي ${validationResult.needsConfirmation.length} معاملة كبيرة بناءً على طلب المستخدم');
+              }
+            } else {
+              // لا يوجد callback - قبول المعاملات الكبيرة تلقائياً
+              newOperations = [
+                ...validationResult.approved,
+                ...validationResult.needsConfirmation.map((p) => p.operation),
+              ];
+            }
+          } else {
+            newOperations = validationResult.approved;
+          }
+        }
+        
+        // 6. التحقق من صحة العمليات
         if (newOperations.isNotEmpty) {
           _updateStatus('جاري التحقق من البيانات...');
           await _verifyOperations(newOperations);
@@ -1188,13 +1459,23 @@ class OptimizedSyncEngine {
           await _detectAndResolveConflicts(pendingOps, newOperations);
         }
         
-        // 6. تطبيق العمليات الواردة
+        // 7. تطبيق العمليات الواردة
         if (newOperations.isNotEmpty) {
           _updateStatus('جاري تطبيق ${newOperations.length} تحديث...');
-          operationsApplied = await _applyIncomingOperations(newOperations);
+          final applyResult = await _applyIncomingOperations(newOperations);
+          operationsApplied = applyResult.applied;
+          failedOperationsList = applyResult.failed;
+          
+          // جمع أسماء ومعرفات العملاء المتأثرين
+          for (final op in newOperations) {
+            final customerName = op.payloadAfter['customer_name'] ?? op.payloadAfter['name'];
+            if (customerName != null && !affectedCustomerNames.contains(customerName)) {
+              affectedCustomerNames.add(customerName.toString());
+            }
+          }
         }
         
-        // 7. رفع العمليات المحلية (كـ Batch مضغوط)
+        // 8. رفع العمليات المحلية (كـ Batch مضغوط)
         if (pendingOps.isNotEmpty) {
           operationsUploaded = await _uploadOperationsAsBatch(
             pendingOps,
@@ -1202,20 +1483,77 @@ class OptimizedSyncEngine {
           );
         }
         
-        // 8. تحديث الـ Manifest
+        // 9. تحديث الـ Manifest
         final newGlobalSequence = manifest.globalSequence + operationsUploaded;
         await _updateManifest(manifest, newGlobalSequence);
         
-        // 9. إنشاء Snapshot إذا لزم الأمر
+        // 10. إنشاء Snapshot إذا لزم الأمر
         if (newGlobalSequence > 0 && 
             newGlobalSequence % config.snapshotEveryNOperations == 0) {
           await _createCompressedSnapshot(newGlobalSequence);
         }
         
-        // 10. تنظيف الـ Batches القديمة
+        // 11. تنظيف الـ Batches القديمة
         await _cleanupOldBatches(newGlobalSequence);
         
-        _updateStatus('اكتملت المزامنة بنجاح ✅');
+        // 🔍 12. التحقق بعد المزامنة (بدون إصلاح تلقائي)
+        if (operationsApplied > 0) {
+          _updateStatus('جاري التحقق من صحة الأرصدة...');
+          
+          // جمع معرفات العملاء المتأثرين
+          final db = await _db.database;
+          for (final name in affectedCustomerNames) {
+            final customers = await db.query(
+              'customers',
+              columns: ['id'],
+              where: 'name = ?',
+              whereArgs: [name],
+            );
+            for (final c in customers) {
+              final id = c['id'] as int?;
+              if (id != null && !affectedCustomerIds.contains(id)) {
+                affectedCustomerIds.add(id);
+              }
+            }
+          }
+          
+          // تنفيذ التحقق
+          final verificationResult = await _auditService.verifyAfterSync(affectedCustomerIds);
+          
+          // إضافة تحذيرات إذا وُجدت مشاكل
+          if (!verificationResult.isHealthy) {
+            for (final issue in verificationResult.issues) {
+              warnings.add(
+                '⚠️ فرق في رصيد "${issue.customerName}": مسجل=${issue.recordedBalance.toStringAsFixed(0)}، محسوب=${issue.calculatedBalance.toStringAsFixed(0)}'
+              );
+            }
+          }
+          
+          // إرسال النتيجة للـ callback
+          onVerificationComplete?.call(verificationResult);
+        }
+        
+        if (failedOperationsList.isEmpty && warnings.isEmpty) {
+          _updateStatus('اكتملت المزامنة بنجاح ✅');
+        } else if (failedOperationsList.isNotEmpty) {
+          _updateStatus('اكتملت المزامنة مع ${failedOperationsList.length} عملية فاشلة ⚠️');
+        } else {
+          _updateStatus('اكتملت المزامنة مع ${warnings.length} تحذير ⚠️');
+        }
+        
+        // 📝 تحديث سجل التدقيق
+        if (_currentSyncLogId != null) {
+          await _auditService.completeSyncLog(
+            logId: _currentSyncLogId!,
+            success: true,
+            operationsUploaded: operationsUploaded,
+            operationsDownloaded: operationsDownloaded,
+            operationsApplied: operationsApplied,
+            operationsFailed: failedOperationsList.length,
+            affectedCustomers: affectedCustomerNames,
+            warnings: warnings,
+          );
+        }
         
         final report = SyncReport(
           startTime: startTime,
@@ -1224,7 +1562,9 @@ class OptimizedSyncEngine {
           operationsDownloaded: operationsDownloaded,
           operationsUploaded: operationsUploaded,
           operationsApplied: operationsApplied,
+          operationsFailed: failedOperationsList.length,
           warnings: warnings,
+          failedOperations: failedOperationsList,
         );
         
         onSyncComplete?.call(report);
@@ -1236,6 +1576,20 @@ class OptimizedSyncEngine {
       
     } on SyncException catch (e) {
       _updateStatus('فشلت المزامنة: ${e.message}');
+      
+      // 📝 تحديث سجل التدقيق بالفشل
+      if (_currentSyncLogId != null) {
+        await _auditService.completeSyncLog(
+          logId: _currentSyncLogId!,
+          success: false,
+          operationsUploaded: operationsUploaded,
+          operationsDownloaded: operationsDownloaded,
+          operationsApplied: operationsApplied,
+          operationsFailed: failedOperationsList.length,
+          errorMessage: e.message,
+          warnings: warnings,
+        );
+      }
       
       return SyncReport(
         startTime: startTime,
@@ -1252,6 +1606,16 @@ class OptimizedSyncEngine {
     } catch (e) {
       _updateStatus('فشلت المزامنة: $e');
       
+      // 📝 تحديث سجل التدقيق بالفشل
+      if (_currentSyncLogId != null) {
+        await _auditService.completeSyncLog(
+          logId: _currentSyncLogId!,
+          success: false,
+          errorMessage: e.toString(),
+          warnings: warnings,
+        );
+      }
+      
       return SyncReport(
         startTime: startTime,
         endTime: DateTime.now(),
@@ -1263,6 +1627,7 @@ class OptimizedSyncEngine {
       
     } finally {
       _isSyncing = false;
+      _currentSyncLogId = null;
     }
   }
 
@@ -1281,6 +1646,9 @@ class OptimizedSyncEngine {
     final startTime = DateTime.now();
     
     try {
+      // 🔐 استخدام المفتاح المضمن
+      _secretKey = await SyncSecurity.getOrCreateSecretKey();
+      
       // فقط تنزيل وتطبيق التحديثات الجديدة بدون رفع
       final manifest = await _downloadManifest();
       final myDeviceState = manifest.devices[_deviceId];
@@ -1288,9 +1656,14 @@ class OptimizedSyncEngine {
       
       final newOperations = await _downloadNewBatches(syncedUpTo);
       
+      var appliedCount = 0;
+      var failedOps = <FailedOperationInfo>[];
+      
       if (newOperations.isNotEmpty) {
         await _verifyOperations(newOperations);
-        await _applyIncomingOperations(newOperations);
+        final applyResult = await _applyIncomingOperations(newOperations);
+        appliedCount = applyResult.applied;
+        failedOps = applyResult.failed;
       }
       
       return SyncReport(
@@ -1298,7 +1671,9 @@ class OptimizedSyncEngine {
         endTime: DateTime.now(),
         success: true,
         operationsDownloaded: newOperations.length,
-        operationsApplied: newOperations.length,
+        operationsApplied: appliedCount,
+        operationsFailed: failedOps.length,
+        failedOperations: failedOps,
       );
       
     } catch (e) {
@@ -1313,7 +1688,268 @@ class OptimizedSyncEngine {
     }
   }
 
-
+  /// ═══════════════════════════════════════════════════════════════════════
+  /// 📦 وضع النقل الكامل - Full Transfer Mode
+  /// رفع جميع البيانات (العملاء والمعاملات) لنقلها لجهاز جديد
+  /// ═══════════════════════════════════════════════════════════════════════
+  
+  Future<SyncReport> performFullTransfer() async {
+    if (!isReady) {
+      throw SyncException(
+        type: SyncErrorType.unknownError,
+        message: 'محرك المزامنة غير جاهز',
+        isRecoverable: false,
+      );
+    }
+    
+    if (_isSyncing) {
+      throw SyncException(
+        type: SyncErrorType.lockAcquisitionFailed,
+        message: 'المزامنة جارية بالفعل',
+        isRecoverable: true,
+      );
+    }
+    
+    _isSyncing = true;
+    final startTime = DateTime.now();
+    var operationsUploaded = 0;
+    
+    try {
+      _updateStatus('جاري تحضير النقل الكامل...');
+      
+      // 🔐 استخدام المفتاح المضمن
+      _secretKey = await SyncSecurity.getOrCreateSecretKey();
+      
+      // 1. جمع العملاء مع صافي أرصدتهم فقط
+      final db = await _db.database;
+      
+      final customers = await db.query(
+        'customers',
+        where: 'is_deleted IS NULL OR is_deleted = 0',
+      );
+      
+      print('📊 النقل الكامل: ${customers.length} عميل (صافي الأرصدة فقط)');
+      _updateStatus('جاري رفع ${customers.length} عميل...');
+      
+      // 2. إنشاء عمليات sync للعملاء مع صافي أرصدتهم
+      final allOperations = <SyncOperation>[];
+      var localSeq = await _getLocalSequence();
+      
+      for (final customer in customers) {
+        final customerId = customer['id'] as int;
+        
+        // حساب صافي الرصيد من المعاملات
+        final balanceResult = await db.rawQuery('''
+          SELECT COALESCE(SUM(amount_changed), 0) as net_balance
+          FROM transactions
+          WHERE customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)
+        ''', [customerId]);
+        
+        final netBalance = (balanceResult.first['net_balance'] as num?)?.toDouble() ?? 0.0;
+        
+        localSeq++;
+        final syncUuid = customer['sync_uuid'] as String? ?? SyncSecurity.generateUuid();
+        
+        // تحديث sync_uuid إذا لم يكن موجوداً
+        if (customer['sync_uuid'] == null) {
+          await db.update(
+            'customers',
+            {'sync_uuid': syncUuid},
+            where: 'id = ?',
+            whereArgs: [customerId],
+          );
+        }
+        
+        // إنشاء Causality Vector للعملية
+        final causalityVector = CausalityVector();
+        causalityVector.increment(_deviceId!);
+        
+        // إعداد بيانات العميل مع صافي الرصيد
+        final customerData = Map<String, dynamic>.from(customer)
+          ..remove('id')
+          ..['initial_balance'] = netBalance  // صافي الرصيد كرصيد افتتاحي
+          ..['is_full_transfer'] = true;      // علامة أن هذا نقل كامل
+        
+        final op = SyncOperation.create(
+          deviceId: _deviceId!,
+          localSequence: localSeq,
+          operationType: SyncOperationType.customerCreate,
+          entityType: 'customer',
+          entityUuid: syncUuid,
+          payloadAfter: customerData,
+          causalityVector: causalityVector,
+          secretKey: _secretKey!,
+        );
+        allOperations.add(op);
+        
+        print('📤 ${customer['name']}: صافي الرصيد = $netBalance');
+      }
+      
+      // ❌ لا نرسل المعاملات التفصيلية - فقط العملاء مع صافي أرصدتهم
+      
+      if (allOperations.isEmpty) {
+        _updateStatus('لا توجد بيانات للنقل');
+        return SyncReport(
+          startTime: startTime,
+          endTime: DateTime.now(),
+          success: true,
+          operationsUploaded: 0,
+        );
+      }
+      
+      // 4. الحصول على القفل
+      _updateStatus('جاري الحصول على القفل...');
+      final lockAcquired = await _acquireLockSafely();
+      if (!lockAcquired) {
+        throw SyncException(
+          type: SyncErrorType.lockAcquisitionFailed,
+          message: 'فشل الحصول على القفل',
+        );
+      }
+      
+      try {
+        // 5. تنزيل الـ Manifest الحالي
+        final manifest = await _downloadManifest();
+        
+        // 6. رفع جميع العمليات كـ Batch واحد كبير
+        _updateStatus('جاري رفع ${allOperations.length} عملية...');
+        
+        // تقسيم العمليات إلى batches إذا كانت كثيرة
+        final batchSize = config.maxOperationsPerBatch;
+        var currentGlobalSeq = manifest.globalSequence;
+        
+        for (var i = 0; i < allOperations.length; i += batchSize) {
+          final batch = allOperations.skip(i).take(batchSize).toList();
+          final uploaded = await _uploadFullTransferBatch(batch, currentGlobalSeq);
+          operationsUploaded += uploaded;
+          currentGlobalSeq += uploaded;
+          
+          final progress = (i + batch.length) / allOperations.length;
+          onProgress?.call(progress);
+          _updateStatus('تم رفع ${i + batch.length} من ${allOperations.length} عملية...');
+        }
+        
+        // 7. تحديث الـ Manifest
+        await _updateManifest(manifest, currentGlobalSeq);
+        
+        // 8. إنشاء Snapshot كامل
+        _updateStatus('جاري إنشاء نسخة احتياطية...');
+        await _createCompressedSnapshot(currentGlobalSeq);
+        
+        // 9. تعليم جميع المعاملات والعملاء كـ "مرفوعة" لتجنب رفعها مرة أخرى
+        _updateStatus('جاري تحديث حالة البيانات...');
+        await db.rawUpdate('UPDATE transactions SET is_uploaded = 1 WHERE is_created_by_me = 1');
+        await db.rawUpdate('UPDATE customers SET synced_at = ? WHERE synced_at IS NULL', 
+          [DateTime.now().toUtc().toIso8601String()]);
+        
+        // 10. حذف العمليات المعلقة من جدول sync_operations (لأنها رُفعت بالنقل الكامل)
+        await db.delete('sync_operations', where: 'status = ?', whereArgs: ['pending']);
+        print('✅ تم تعليم جميع البيانات كمرفوعة');
+        
+        _updateStatus('✅ اكتمل النقل الكامل بنجاح!');
+        
+        // 11. إيقاف وضع النقل الكامل تلقائياً
+        final settings = await SettingsManager.getAppSettings();
+        if (settings.syncFullTransferMode) {
+          await SettingsManager.saveAppSettings(
+            settings.copyWith(syncFullTransferMode: false),
+          );
+          print('🔄 تم إيقاف وضع النقل الكامل تلقائياً');
+        }
+        
+        return SyncReport(
+          startTime: startTime,
+          endTime: DateTime.now(),
+          success: true,
+          operationsUploaded: operationsUploaded,
+        );
+        
+      } finally {
+        await _releaseLock();
+      }
+      
+    } on SyncException catch (e) {
+      _updateStatus('فشل النقل الكامل: ${e.message}');
+      return SyncReport(
+        startTime: startTime,
+        endTime: DateTime.now(),
+        success: false,
+        errorMessage: e.message,
+        errorType: e.type,
+        operationsUploaded: operationsUploaded,
+      );
+    } catch (e) {
+      _updateStatus('فشل النقل الكامل: $e');
+      return SyncReport(
+        startTime: startTime,
+        endTime: DateTime.now(),
+        success: false,
+        errorMessage: e.toString(),
+        errorType: SyncErrorType.unknownError,
+      );
+    } finally {
+      _isSyncing = false;
+    }
+  }
+  
+  /// رفع batch للنقل الكامل (بدون تسجيل في sync_operations المحلي)
+  Future<int> _uploadFullTransferBatch(
+    List<SyncOperation> operations,
+    int startGlobalSequence,
+  ) async {
+    if (operations.isEmpty) return 0;
+    
+    final batchesFolderId = await _ensureSubFolder(_batchesFolderName);
+    int currentSequence = startGlobalSequence;
+    
+    final batchOperations = <Map<String, dynamic>>[];
+    for (final op in operations) {
+      currentSequence++;
+      final updatedOp = op.copyWith(globalSequence: currentSequence);
+      batchOperations.add(updatedOp.toJson());
+    }
+    
+    final batchData = {
+      'batch_id': 'full_transfer_${DateTime.now().toUtc().millisecondsSinceEpoch}_$_deviceId',
+      'device_id': _deviceId,
+      'device_name': _deviceName,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+      'operations_count': operations.length,
+      'start_sequence': startGlobalSequence + 1,
+      'end_sequence': currentSequence,
+      'schema_version': '3.0',
+      'is_full_transfer': true,
+      'operations': batchOperations,
+    };
+    
+    final jsonContent = jsonEncode(batchData);
+    final finalBytes = config.enableCompression 
+        ? gzip.encode(utf8.encode(jsonContent))
+        : utf8.encode(jsonContent);
+    final fileName = 'full_transfer_${DateTime.now().toUtc().millisecondsSinceEpoch}_${_deviceId!.substring(0, 8)}.json.gz';
+    
+    final tempFile = await _createTempFile(fileName, finalBytes);
+    final media = drive.Media(
+      tempFile.openRead(),
+      finalBytes.length,
+      contentType: config.enableCompression ? 'application/gzip' : 'application/json',
+    );
+    
+    await _withTimeoutAndRetry(
+      () => _driveApi!.files.create(
+        drive.File()
+          ..name = fileName
+          ..parents = [batchesFolderId],
+        uploadMedia: media,
+      ),
+      operationName: 'رفع Full Transfer Batch',
+    );
+    
+    await tempFile.delete();
+    
+    print('✅ تم رفع ${operations.length} عملية (نقل كامل)');
+    return operations.length;
+  }
 
   /// ═══════════════════════════════════════════════════════════════════════
   /// دوال مساعدة
@@ -1454,36 +2090,166 @@ class OptimizedSyncEngine {
     }
   }
 
-  Future<int> _applyIncomingOperations(List<SyncOperation> operations) async {
-    if (operations.isEmpty) return 0;
+  /// تطبيق العمليات الواردة وإرجاع عدد العمليات الناجحة وقائمة الفاشلة
+  Future<({int applied, List<FailedOperationInfo> failed})> _applyIncomingOperations(List<SyncOperation> operations) async {
+    if (operations.isEmpty) return (applied: 0, failed: <FailedOperationInfo>[]);
     
     int appliedCount = 0;
+    int skippedCount = 0;
+    final failedOperations = <FailedOperationInfo>[];
+    final failedOperationIds = <String>[];
     final db = await _db.database;
     
-    await db.transaction((txn) async {
-      for (final op in operations) {
-        try {
+    // تطبيق كل عملية على حدة (بدون transaction واحد لتجنب rollback الكامل)
+    for (final op in operations) {
+      try {
+        await db.transaction((txn) async {
           await _applySingleOperation(txn, op);
-          appliedCount++;
-          onProgress?.call(appliedCount / operations.length);
-        } catch (e) {
-          print('❌ فشل تطبيق العملية ${op.operationId}: $e');
-          throw SyncException(
-            type: SyncErrorType.rollbackRequired,
-            message: 'فشل تطبيق العملية',
-            originalError: e,
-          );
+        });
+        appliedCount++;
+        
+        // تسجيل تفاصيل العملية الناجحة (بعد انتهاء الـ transaction)
+        await _logOperationDetail(op, true);
+        
+        onProgress?.call((appliedCount + skippedCount) / operations.length);
+      } catch (e) {
+        skippedCount++;
+        
+        // تسجيل تفاصيل العملية الفاشلة (بعد انتهاء الـ transaction)
+        await _logOperationDetail(op, false, errorMessage: e.toString());
+        
+        // استخراج معلومات مفهومة عن العملية الفاشلة
+        final customerName = op.payloadAfter['customer_name'] ?? 
+                            op.payloadAfter['name'] ?? 
+                            'غير معروف';
+        final amount = (op.payloadAfter['amount_changed'] ?? 
+                      op.payloadAfter['amount'] ?? 
+                      op.payloadAfter['total_amount'] ?? 
+                      0).toDouble();
+        
+        // تحديد نوع العملية بالعربي
+        String operationType = _getOperationTypeName(op.operationType);
+        if (op.entityType == 'transaction') {
+          final amountChanged = op.payloadAfter['amount_changed'];
+          if (amountChanged != null && amountChanged is num) {
+            operationType = amountChanged > 0 ? 'إضافة دين' : 'تسديد';
+          }
         }
+        
+        // استخراج التاريخ
+        String date = 'غير معروف';
+        if (op.payloadAfter['date'] != null) {
+          date = op.payloadAfter['date'].toString().split('T').first;
+        } else if (op.payloadAfter['created_at'] != null) {
+          date = op.payloadAfter['created_at'].toString().split('T').first;
+        } else {
+          date = op.timestamp.toLocal().toString().split(' ').first;
+        }
+        
+        final failedInfo = FailedOperationInfo(
+          customerName: customerName.toString(),
+          amount: amount,
+          operationType: operationType,
+          date: date,
+          error: e.toString(),
+        );
+        
+        failedOperations.add(failedInfo);
+        failedOperationIds.add(op.operationId);
+        
+        // طباعة معلومات واضحة في الـ console
+        print('');
+        print('═══════════════════════════════════════════════════');
+        print('❌ فشل تطبيق العملية:');
+        print('   📋 النوع: $operationType');
+        print('   👤 العميل: $customerName');
+        print('   💰 المبلغ: $amount');
+        print('   📅 التاريخ: $date');
+        print('   ⚠️ السبب: $e');
+        print('═══════════════════════════════════════════════════');
+        print('');
+        
+        onProgress?.call((appliedCount + skippedCount) / operations.length);
       }
-    });
+    }
     
-    // إعادة حساب الأرصدة
-    await _recalculateAffectedBalances(operations);
+    // طباعة ملخص
+    if (failedOperations.isNotEmpty) {
+      print('');
+      print('📊 ملخص المزامنة:');
+      print('   ✅ نجحت: $appliedCount عملية');
+      print('   ❌ فشلت: ${failedOperations.length} عملية');
+      print('');
+    }
     
-    return appliedCount;
+    // إعادة حساب الأرصدة للعمليات الناجحة فقط
+    if (appliedCount > 0) {
+      final successfulOps = operations.where((op) => 
+        !failedOperationIds.contains(op.operationId)
+      ).toList();
+      await _recalculateAffectedBalances(successfulOps);
+      
+      // 🔧 تنظيف: إذا كانت هناك عمليات نقل كامل، نحذف العمليات المعلقة
+      // لأن البيانات المستوردة لا يجب إعادة رفعها
+      final hasFullTransferOps = operations.any((op) => 
+        op.payloadAfter['is_full_transfer'] == true
+      );
+      
+      if (hasFullTransferOps) {
+        print('🧹 تنظيف العمليات المعلقة بعد النقل الكامل...');
+        
+        // حذف جميع العمليات المعلقة (لأنها من النقل الكامل)
+        await db.delete('sync_operations', where: 'status = ?', whereArgs: ['pending']);
+        
+        // تعليم جميع المعاملات كمرفوعة
+        await db.rawUpdate('UPDATE transactions SET is_uploaded = 1 WHERE is_created_by_me = 0');
+        
+        // تحديث synced_at لجميع العملاء
+        await db.rawUpdate(
+          'UPDATE customers SET synced_at = ? WHERE synced_at IS NULL',
+          [DateTime.now().toUtc().toIso8601String()]
+        );
+        
+        print('✅ تم تنظيف العمليات المعلقة');
+      }
+    }
+    
+    return (applied: appliedCount, failed: failedOperations);
+  }
+  
+  /// الحصول على اسم نوع العملية بالعربي
+  String _getOperationTypeName(SyncOperationType type) {
+    switch (type) {
+      case SyncOperationType.customerCreate:
+        return 'إنشاء عميل';
+      case SyncOperationType.customerUpdate:
+        return 'تحديث عميل';
+      case SyncOperationType.customerDelete:
+        return 'حذف عميل';
+      case SyncOperationType.transactionCreate:
+        return 'إنشاء معاملة';
+      case SyncOperationType.transactionUpdate:
+        return 'تحديث معاملة';
+      case SyncOperationType.transactionDelete:
+        return 'حذف معاملة';
+      default:
+        return type.name;
+    }
   }
 
   Future<void> _applySingleOperation(dynamic txn, SyncOperation op) async {
+    // التحقق من أن العملية لم تُطبق مسبقاً
+    final existing = await txn.query(
+      'sync_applied_operations',
+      where: 'operation_id = ?',
+      whereArgs: [op.operationId],
+    );
+    
+    if (existing.isNotEmpty) {
+      print('⏭️ تخطي عملية مطبقة مسبقاً: ${op.operationId}');
+      return; // تخطي العملية المطبقة مسبقاً
+    }
+    
     switch (op.operationType) {
       case SyncOperationType.customerCreate:
         await _applyCustomerCreate(txn, op);
@@ -1507,23 +2273,165 @@ class OptimizedSyncEngine {
         print('⚠️ نوع عملية غير مدعوم: ${op.operationType}');
     }
     
-    // تسجيل العملية
-    await txn.insert('sync_applied_operations', {
-      'operation_id': op.operationId,
-      'applied_at': DateTime.now().toUtc().toIso8601String(),
-      'device_id': op.deviceId,
-    });
+    // تسجيل العملية (مع تجاهل التكرار)
+    await txn.insert(
+      'sync_applied_operations',
+      {
+        'operation_id': op.operationId,
+        'applied_at': DateTime.now().toUtc().toIso8601String(),
+        'device_id': op.deviceId,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+  }
+  
+  /// تسجيل تفاصيل العملية بعد انتهاء الـ transaction
+  Future<void> _logOperationDetail(SyncOperation op, bool success, {String? errorMessage}) async {
+    try {
+      String? customerName;
+      int? customerId;
+      double? amount;
+      String entityType = 'unknown';
+      String operationType = 'unknown';
+      
+      switch (op.operationType) {
+        case SyncOperationType.customerCreate:
+          entityType = 'customer';
+          operationType = 'create';
+          customerName = op.payloadAfter['name'] as String?;
+          break;
+        case SyncOperationType.customerUpdate:
+          entityType = 'customer';
+          operationType = 'update';
+          customerName = op.payloadAfter['name'] as String?;
+          customerId = op.payloadAfter['id'] as int?;
+          break;
+        case SyncOperationType.customerDelete:
+          entityType = 'customer';
+          operationType = 'delete';
+          customerName = op.payloadBefore?['name'] as String?;
+          customerId = op.payloadBefore?['id'] as int?;
+          break;
+        case SyncOperationType.transactionCreate:
+          entityType = 'transaction';
+          operationType = 'create';
+          customerName = op.payloadAfter['customer_name'] as String?;
+          customerId = op.payloadAfter['customer_id'] as int?;
+          amount = (op.payloadAfter['amount_changed'] as num?)?.toDouble();
+          break;
+        case SyncOperationType.transactionUpdate:
+          entityType = 'transaction';
+          operationType = 'update';
+          customerName = op.payloadAfter['customer_name'] as String?;
+          customerId = op.payloadAfter['customer_id'] as int?;
+          amount = (op.payloadAfter['amount_changed'] as num?)?.toDouble();
+          break;
+        case SyncOperationType.transactionDelete:
+          entityType = 'transaction';
+          operationType = 'delete';
+          customerName = op.payloadBefore?['customer_name'] as String?;
+          customerId = op.payloadBefore?['customer_id'] as int?;
+          amount = (op.payloadBefore?['amount_changed'] as num?)?.toDouble();
+          break;
+        default:
+          break;
+      }
+      
+      await _auditService.logSyncOperationDetail(
+        syncLogId: _currentSyncLogId,
+        operationType: operationType,
+        entityType: entityType,
+        entityId: op.payloadAfter['id'] as int?,
+        entityUuid: op.entityUuid,
+        customerId: customerId,
+        customerName: customerName,
+        amount: amount,
+        transactionType: amount != null ? (amount > 0 ? 'debt' : 'payment') : null,
+        operationTime: DateTime.now(),
+        success: success,
+        errorMessage: errorMessage,
+        direction: 'download',
+      );
+    } catch (e) {
+      // تجاهل أخطاء التسجيل
+      print('⚠️ فشل تسجيل تفاصيل العملية: $e');
+    }
   }
 
   Future<void> _applyCustomerCreate(dynamic txn, SyncOperation op) async {
-    final existing = await txn.query('customers', where: 'sync_uuid = ?', whereArgs: [op.entityUuid]);
-    if (existing.isNotEmpty) return;
+    // 1️⃣ التحقق من عدم وجود العميل بـ sync_uuid
+    final existingByUuid = await txn.query('customers', where: 'sync_uuid = ?', whereArgs: [op.entityUuid]);
+    if (existingByUuid.isNotEmpty) {
+      print('⏭️ تخطي إنشاء عميل موجود بـ sync_uuid: ${op.entityUuid}');
+      return;
+    }
     
-    await txn.insert('customers', {
-      ...op.payloadAfter,
+    // 2️⃣ التحقق من عدم وجود العميل بالاسم المُطبّع (لتجنب التكرار)
+    final customerName = op.payloadAfter['name'] as String?;
+    if (customerName != null && customerName.isNotEmpty) {
+      final normalizedName = _normalizeCustomerName(customerName);
+      final allCustomers = await txn.query('customers', 
+        where: 'is_deleted IS NULL OR is_deleted = 0'
+      );
+      
+      for (final customer in allCustomers) {
+        final existingName = customer['name'] as String? ?? '';
+        if (_normalizeCustomerName(existingName) == normalizedName) {
+          // العميل موجود بالفعل - نحدث sync_uuid فقط
+          final existingId = customer['id'] as int;
+          await txn.update(
+            'customers',
+            {'sync_uuid': op.entityUuid},
+            where: 'id = ?',
+            whereArgs: [existingId],
+          );
+          print('🔗 تم ربط العميل الموجود "$customerName" بـ sync_uuid: ${op.entityUuid}');
+          return;
+        }
+      }
+    }
+    
+    // 3️⃣ التحقق من وضع النقل الكامل
+    final isFullTransfer = op.payloadAfter['is_full_transfer'] == true;
+    final initialBalance = (op.payloadAfter['initial_balance'] as num?)?.toDouble() ?? 0.0;
+    
+    // 4️⃣ إنشاء العميل الجديد
+    final customerData = Map<String, dynamic>.from(op.payloadAfter);
+    customerData['current_total_debt'] = isFullTransfer ? initialBalance : 0.0;
+    customerData.remove('id');
+    customerData.remove('is_full_transfer');
+    customerData.remove('initial_balance');
+    
+    final newCustomerId = await txn.insert('customers', {
+      ...customerData,
       'sync_uuid': op.entityUuid,
       'synced_at': DateTime.now().toUtc().toIso8601String(),
     });
+    
+    // 5️⃣ إذا كان نقل كامل وهناك رصيد، نُنشئ معاملة "رصيد افتتاحي"
+    if (isFullTransfer && initialBalance != 0) {
+      final now = DateTime.now();
+      final txUuid = SyncSecurity.generateUuid();
+      
+      await txn.insert('transactions', {
+        'customer_id': newCustomerId,
+        'amount_changed': initialBalance,
+        'new_balance_after_transaction': initialBalance,
+        'transaction_date': now.toIso8601String(),
+        'transaction_note': 'رصيد افتتاحي - نقل من جهاز آخر',
+        'transaction_type': 'opening_balance',
+        'is_created_by_me': 0,
+        'is_uploaded': 1,  // ✅ مهم: تعليمها كمرفوعة لتجنب إعادة رفعها
+        'transaction_uuid': txUuid,
+        'sync_uuid': txUuid,
+        'created_at': now.toIso8601String(),
+        'synced_at': now.toUtc().toIso8601String(),
+      });
+      
+      print('✅ تم إنشاء عميل جديد: "$customerName" مع رصيد افتتاحي: $initialBalance');
+    } else {
+      print('✅ تم إنشاء عميل جديد: "$customerName" (الرصيد سيُحسب من المعاملات)');
+    }
   }
 
   Future<void> _applyCustomerUpdate(dynamic txn, SyncOperation op) async {
@@ -1541,22 +2449,80 @@ class OptimizedSyncEngine {
   }
 
   Future<void> _applyTransactionCreate(dynamic txn, SyncOperation op) async {
-    final existing = await txn.query('transactions', where: 'transaction_uuid = ?', whereArgs: [op.entityUuid]);
-    if (existing.isNotEmpty) return;
+    // 1️⃣ التحقق من عدم وجود المعاملة بـ transaction_uuid
+    final existingByUuid = await txn.query('transactions', where: 'transaction_uuid = ?', whereArgs: [op.entityUuid]);
+    if (existingByUuid.isNotEmpty) {
+      print('⏭️ تخطي معاملة موجودة بـ UUID: ${op.entityUuid}');
+      return;
+    }
+    
+    // أيضاً التحقق بـ sync_uuid
+    final existingBySyncUuid = await txn.query('transactions', where: 'sync_uuid = ?', whereArgs: [op.entityUuid]);
+    if (existingBySyncUuid.isNotEmpty) {
+      print('⏭️ تخطي معاملة موجودة بـ sync_uuid: ${op.entityUuid}');
+      return;
+    }
     
     final data = Map<String, dynamic>.from(op.payloadAfter);
     // 🔄 تصحيح المصدر: عند استلام معاملة من جهاز آخر، يجب ألا تكون "من إنشائي"
     data['is_created_by_me'] = 0;
     
-    if (op.customerUuid != null) {
-      final customers = await txn.query('customers', where: 'sync_uuid = ?', whereArgs: [op.customerUuid]);
-      if (customers.isNotEmpty) {
-        data['customer_id'] = customers.first['id'];
+    // ⚠️ إزالة الحقول غير الموجودة في جدول transactions
+    // هذه الحقول تُستخدم فقط للبحث الذكي عن العميل، وليست أعمدة في الجدول
+    data.remove('customer_id');      // سيتم تعيينه بعد البحث عن العميل
+    data.remove('customer_name');    // حقل مساعد للمزامنة فقط
+    data.remove('customer_phone');   // حقل مساعد للمزامنة فقط
+    data.remove('name');             // قد يأتي من بيانات العميل
+    
+    // 🔍 Smart Customer Matching - البحث الذكي عن العميل
+    final customerId = await _findOrCreateCustomer(txn, op);
+    if (customerId != null) {
+      data['customer_id'] = customerId;
+    } else {
+      // ❌ فشل في إيجاد أو إنشاء العميل
+      final customerName = op.payloadAfter['customer_name'] ?? 
+                          op.payloadAfter['name'] ?? 'غير معروف';
+      throw SyncException(
+        type: SyncErrorType.rollbackRequired,
+        message: 'فشل في ربط المعاملة بالعميل "$customerName"',
+        isRecoverable: true,
+      );
+    }
+    
+    // 2️⃣ التحقق الإضافي: هل توجد معاملة مطابقة بـ (customer_id + amount + date)؟
+    // هذا يمنع إضافة نفس المعاملة مرتين حتى لو كان لها UUID مختلف
+    final amountChanged = (data['amount_changed'] as num?)?.toDouble() ?? 0;
+    final transactionDate = data['transaction_date'] as String?;
+    
+    if (transactionDate != null) {
+      final duplicateCheck = await txn.query(
+        'transactions',
+        where: 'customer_id = ? AND amount_changed = ? AND transaction_date = ? AND (is_deleted IS NULL OR is_deleted = 0)',
+        whereArgs: [customerId, amountChanged, transactionDate],
+      );
+      
+      if (duplicateCheck.isNotEmpty) {
+        // معاملة مطابقة موجودة - نتحقق من الوقت أيضاً
+        final existingTx = duplicateCheck.first;
+        final existingNote = existingTx['transaction_note'] as String? ?? '';
+        final newNote = data['transaction_note'] as String? ?? '';
+        
+        // إذا كانت الملاحظة متطابقة أيضاً، فهي نفس المعاملة
+        if (existingNote == newNote) {
+          print('⏭️ تخطي معاملة مكررة: $amountChanged في $transactionDate');
+          // تحديث UUID للمعاملة الموجودة
+          await txn.update(
+            'transactions',
+            {'transaction_uuid': op.entityUuid, 'sync_uuid': op.entityUuid},
+            where: 'id = ?',
+            whereArgs: [existingTx['id']],
+          );
+          return;
+        }
       }
     }
     
     // 🔒 التحقق من صحة البيانات المالية قبل الإدراج
-    final amountChanged = (data['amount_changed'] as num?)?.toDouble() ?? 0;
     if (amountChanged.abs() > 1000000000) {
       throw SyncException(
         type: SyncErrorType.rollbackRequired,
@@ -1564,11 +2530,32 @@ class OptimizedSyncEngine {
       );
     }
     
+    // 3️⃣ إدراج المعاملة
+    // التأكد من وجود created_at (مطلوب NOT NULL)
+    if (data['created_at'] == null) {
+      data['created_at'] = data['transaction_date'] ?? DateTime.now().toIso8601String();
+    }
+    
+    // ✅ مهم: تعليم المعاملة المستوردة كمرفوعة لتجنب إعادة رفعها
+    data['is_uploaded'] = 1;
+    
+    // 🔄 إضافة علامة "من المزامنة" للمعاملات المستوردة من جهاز آخر
+    final existingNote = data['transaction_note'] as String? ?? '';
+    if (!existingNote.contains('من المزامنة') && !existingNote.contains('من جهاز آخر')) {
+      data['transaction_note'] = existingNote.isEmpty 
+          ? 'من المزامنة (جهاز آخر)' 
+          : '$existingNote\nمن المزامنة (جهاز آخر)';
+    }
+    
     await txn.insert('transactions', {
       ...data,
       'transaction_uuid': op.entityUuid,
+      'sync_uuid': op.entityUuid,
       'synced_at': DateTime.now().toUtc().toIso8601String(),
     });
+    
+    final customerName = op.payloadAfter['customer_name'] ?? 'غير معروف';
+    print('✅ تم إضافة معاملة: $amountChanged للعميل "$customerName" (من المزامنة)');
   }
 
   Future<void> _applyTransactionUpdate(dynamic txn, SyncOperation op) async {
@@ -1590,21 +2577,62 @@ class OptimizedSyncEngine {
   }
 
   Future<void> _recalculateAffectedBalances(List<SyncOperation> operations) async {
+    final affectedCustomerIds = <int>{};
     final affectedCustomerUuids = <String>{};
     
+    // جمع جميع العملاء المتأثرين
     for (final op in operations) {
+      // من عمليات المعاملات
       if (op.entityType == 'transaction' && op.customerUuid != null) {
         affectedCustomerUuids.add(op.customerUuid!);
+      }
+      // من عمليات إنشاء العملاء (لإعادة حساب الرصيد من الصفر)
+      if (op.entityType == 'customer' && op.operationType == SyncOperationType.customerCreate) {
+        affectedCustomerUuids.add(op.entityUuid);
       }
     }
     
     final db = await _db.database;
+    
+    // البحث عن العملاء بـ sync_uuid
     for (final uuid in affectedCustomerUuids) {
       final customers = await db.query('customers', where: 'sync_uuid = ?', whereArgs: [uuid]);
       if (customers.isNotEmpty) {
-        final customerId = customers.first['id'] as int;
+        affectedCustomerIds.add(customers.first['id'] as int);
+      }
+    }
+    
+    // أيضاً البحث عن العملاء بالاسم (للعملاء المُنشأين تلقائياً)
+    for (final op in operations) {
+      if (op.entityType == 'transaction') {
+        final customerName = op.payloadAfter['customer_name'] as String?;
+        if (customerName != null && customerName.isNotEmpty) {
+          final normalizedName = _normalizeCustomerName(customerName);
+          final allCustomers = await db.query('customers', 
+            where: 'is_deleted IS NULL OR is_deleted = 0'
+          );
+          
+          for (final customer in allCustomers) {
+            final existingName = customer['name'] as String? ?? '';
+            if (_normalizeCustomerName(existingName) == normalizedName) {
+              affectedCustomerIds.add(customer['id'] as int);
+              break;
+            }
+          }
+        }
+      }
+    }
+    
+    // إعادة حساب الرصيد لجميع العملاء المتأثرين
+    print('🔄 إعادة حساب الرصيد لـ ${affectedCustomerIds.length} عميل...');
+    
+    for (final customerId in affectedCustomerIds) {
+      try {
         await _db.recalculateAndApplyCustomerDebt(customerId);
         await _db.recalculateCustomerTransactionBalances(customerId);
+        print('✅ تم إعادة حساب رصيد العميل: $customerId');
+      } catch (e) {
+        print('⚠️ فشل إعادة حساب رصيد العميل $customerId: $e');
       }
     }
   }
@@ -1691,6 +2719,148 @@ class OptimizedSyncEngine {
     );
   }
 
+  /// ═══════════════════════════════════════════════════════════════════════
+  /// 🔍 Smart Customer Matching - البحث الذكي عن العميل
+  /// ═══════════════════════════════════════════════════════════════════════
+  
+  /// البحث عن العميل أو إنشاؤه تلقائياً
+  /// الترتيب: sync_uuid → الاسم المُطبّع → رقم الهاتف → إنشاء جديد
+  Future<int?> _findOrCreateCustomer(dynamic txn, SyncOperation op) async {
+    final customerUuid = op.customerUuid;
+    final payload = op.payloadAfter;
+    
+    // استخراج بيانات العميل من المعاملة
+    final customerName = payload['customer_name'] as String? ?? 
+                        payload['name'] as String?;
+    final customerPhone = payload['customer_phone'] as String? ?? 
+                         payload['phone'] as String?;
+    
+    // 1️⃣ البحث بـ sync_uuid
+    if (customerUuid != null && customerUuid.isNotEmpty) {
+      final byUuid = await txn.query(
+        'customers',
+        where: 'sync_uuid = ?',
+        whereArgs: [customerUuid],
+      );
+      if (byUuid.isNotEmpty) {
+        print('✅ وُجد العميل بـ sync_uuid: $customerUuid');
+        return byUuid.first['id'] as int;
+      }
+    }
+    
+    // 2️⃣ البحث بالاسم المُطبّع (Normalized Name)
+    if (customerName != null && customerName.isNotEmpty) {
+      final normalizedName = _normalizeCustomerName(customerName);
+      
+      // البحث في جميع العملاء ومقارنة الأسماء المُطبّعة
+      final allCustomers = await txn.query('customers', 
+        where: 'is_deleted IS NULL OR is_deleted = 0'
+      );
+      
+      for (final customer in allCustomers) {
+        final existingName = customer['name'] as String? ?? '';
+        final existingNormalized = _normalizeCustomerName(existingName);
+        
+        if (normalizedName == existingNormalized) {
+          final customerId = customer['id'] as int;
+          
+          // تحديث sync_uuid للعميل المحلي ليتطابق مع البعيد
+          if (customerUuid != null && customerUuid.isNotEmpty) {
+            await txn.update(
+              'customers',
+              {'sync_uuid': customerUuid},
+              where: 'id = ?',
+              whereArgs: [customerId],
+            );
+            print('🔗 تم ربط العميل "$customerName" بـ sync_uuid: $customerUuid');
+          }
+          
+          print('✅ وُجد العميل بالاسم المُطبّع: "$customerName"');
+          return customerId;
+        }
+      }
+    }
+    
+    // 3️⃣ البحث برقم الهاتف
+    if (customerPhone != null && customerPhone.isNotEmpty) {
+      final normalizedPhone = _normalizePhone(customerPhone);
+      
+      final byPhone = await txn.query(
+        'customers',
+        where: "(phone = ? OR phone = ?) AND (is_deleted IS NULL OR is_deleted = 0)",
+        whereArgs: [customerPhone, normalizedPhone],
+      );
+      
+      if (byPhone.isNotEmpty) {
+        final customerId = byPhone.first['id'] as int;
+        
+        // تحديث sync_uuid
+        if (customerUuid != null && customerUuid.isNotEmpty) {
+          await txn.update(
+            'customers',
+            {'sync_uuid': customerUuid},
+            where: 'id = ?',
+            whereArgs: [customerId],
+          );
+        }
+        
+        print('✅ وُجد العميل برقم الهاتف: $customerPhone');
+        return customerId;
+      }
+    }
+    
+    // 4️⃣ إنشاء العميل تلقائياً من بيانات المعاملة (إذا كان الإعداد مفعلاً)
+    if (customerName != null && customerName.isNotEmpty) {
+      // التحقق من إعداد الإنشاء التلقائي للعملاء
+      final settings = await SettingsManager.getAppSettings();
+      if (!settings.syncAutoCreateCustomers) {
+        print('⚠️ إنشاء العملاء التلقائي معطل - لن يتم إنشاء العميل "$customerName"');
+        return null;
+      }
+      
+      print('🆕 إنشاء عميل جديد تلقائياً: "$customerName"');
+      
+      final newCustomerId = await txn.insert('customers', {
+        'name': customerName,
+        'phone': customerPhone,
+        'sync_uuid': customerUuid ?? SyncSecurity.generateUuid(),
+        'current_total_debt': 0.0,
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+        'synced_at': DateTime.now().toUtc().toIso8601String(),
+      });
+      
+      print('✅ تم إنشاء العميل بنجاح: ID=$newCustomerId');
+      return newCustomerId;
+    }
+    
+    // ❌ لا يمكن إيجاد أو إنشاء العميل
+    print('❌ فشل في إيجاد أو إنشاء العميل');
+    return null;
+  }
+  
+  /// تطبيع اسم العميل للمقارنة
+  /// يزيل المسافات الزائدة، يحول للحروف الصغيرة، يزيل التشكيل
+  String _normalizeCustomerName(String name) {
+    return name
+      .trim()
+      .toLowerCase()
+      // إزالة التشكيل العربي
+      .replaceAll(RegExp(r'[\u064B-\u065F\u0670]'), '')
+      // تحويل المسافات المتعددة لمسافة واحدة
+      .replaceAll(RegExp(r'\s+'), ' ')
+      // إزالة الأقواس والرموز الخاصة
+      .replaceAll(RegExp(r'[()[\]{}]'), '')
+      .trim();
+  }
+  
+  /// تطبيع رقم الهاتف
+  String _normalizePhone(String phone) {
+    return phone
+      .replaceAll(RegExp(r'[^\d+]'), '') // إبقاء الأرقام و + فقط
+      .replaceAll(RegExp(r'^00'), '+')   // تحويل 00 إلى +
+      .trim();
+  }
+
   /// إغلاق المحرك
   void dispose() {
     _stopHeartbeat();
@@ -1699,6 +2869,23 @@ class OptimizedSyncEngine {
 }
 
 /// ═══════════════════════════════════════════════════════════════════════════
+/// معلومات عملية فاشلة (للعرض للمستخدم)
+class FailedOperationInfo {
+  final String customerName;
+  final double amount;
+  final String operationType; // تسديد أو إضافة
+  final String date;
+  final String error;
+  
+  FailedOperationInfo({
+    required this.customerName,
+    required this.amount,
+    required this.operationType,
+    required this.date,
+    required this.error,
+  });
+}
+
 /// تقرير المزامنة
 /// ═══════════════════════════════════════════════════════════════════════════
 class SyncReport {
@@ -1710,7 +2897,9 @@ class SyncReport {
   final int operationsDownloaded;
   final int operationsUploaded;
   final int operationsApplied;
+  final int operationsFailed;
   final List<String> warnings;
+  final List<FailedOperationInfo> failedOperations;
 
   SyncReport({
     required this.startTime,
@@ -1721,10 +2910,15 @@ class SyncReport {
     this.operationsDownloaded = 0,
     this.operationsUploaded = 0,
     this.operationsApplied = 0,
+    this.operationsFailed = 0,
     List<String>? warnings,
-  }) : warnings = warnings ?? [];
+    List<FailedOperationInfo>? failedOperations,
+  }) : warnings = warnings ?? [],
+       failedOperations = failedOperations ?? [];
 
   Duration get duration => endTime.difference(startTime);
+  
+  bool get hasFailedOperations => failedOperations.isNotEmpty;
 }
 
 /// استثناء المزامنة

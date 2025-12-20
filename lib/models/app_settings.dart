@@ -30,6 +30,11 @@ class AppSettings {
   
   // إعدادات الفاتورة
   final bool autoScrollInvoice; // التمرير التلقائي عند إضافة عنصر جديد للفاتورة
+  
+  // 🔄 إعدادات المزامنة
+  final bool syncFullTransferMode; // وضع النقل الكامل - رفع جميع البيانات عند المزامنة
+  final bool syncShowConfirmation; // إظهار رسالة تأكيد قبل المزامنة
+  final bool syncAutoCreateCustomers; // إنشاء العملاء تلقائياً عند استلام معاملات
 
   AppSettings({
     this.phoneNumbers = const [],
@@ -56,6 +61,9 @@ class AppSettings {
     double? pointsPerHundredThousand,
     bool? showPointsConfirmationOnSave,
     bool? autoScrollInvoice,
+    bool? syncFullTransferMode,
+    bool? syncShowConfirmation,
+    bool? syncAutoCreateCustomers,
   }) : remainingAmountColor = remainingAmountColor ?? Colors.black.value,
        discountColor = discountColor ?? Colors.black.value,
        loadingFeesColor = loadingFeesColor ?? Colors.black.value,
@@ -78,7 +86,10 @@ class AppSettings {
        fontSettings = fontSettings ?? FontSettings(),
        pointsPerHundredThousand = pointsPerHundredThousand ?? 1.0,
        showPointsConfirmationOnSave = showPointsConfirmationOnSave ?? false,
-       autoScrollInvoice = autoScrollInvoice ?? true;
+       autoScrollInvoice = autoScrollInvoice ?? true,
+       syncFullTransferMode = syncFullTransferMode ?? false,
+       syncShowConfirmation = syncShowConfirmation ?? true,
+       syncAutoCreateCustomers = syncAutoCreateCustomers ?? true;
 
   Map<String, dynamic> toJson() => {
         'phoneNumbers': phoneNumbers,
@@ -105,6 +116,9 @@ class AppSettings {
         'pointsPerHundredThousand': pointsPerHundredThousand,
         'showPointsConfirmationOnSave': showPointsConfirmationOnSave,
         'autoScrollInvoice': autoScrollInvoice,
+        'syncFullTransferMode': syncFullTransferMode,
+        'syncShowConfirmation': syncShowConfirmation,
+        'syncAutoCreateCustomers': syncAutoCreateCustomers,
       };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -132,6 +146,9 @@ class AppSettings {
         pointsPerHundredThousand: (json['pointsPerHundredThousand'] as num?)?.toDouble() ?? 1.0,
         showPointsConfirmationOnSave: json['showPointsConfirmationOnSave'] ?? false,
         autoScrollInvoice: json['autoScrollInvoice'] ?? true,
+        syncFullTransferMode: json['syncFullTransferMode'] ?? false,
+        syncShowConfirmation: json['syncShowConfirmation'] ?? true,
+        syncAutoCreateCustomers: json['syncAutoCreateCustomers'] ?? true,
       );
 
   AppSettings copyWith({
@@ -159,6 +176,9 @@ class AppSettings {
     double? pointsPerHundredThousand,
     bool? showPointsConfirmationOnSave,
     bool? autoScrollInvoice,
+    bool? syncFullTransferMode,
+    bool? syncShowConfirmation,
+    bool? syncAutoCreateCustomers,
   }) {
     return AppSettings(
       phoneNumbers: phoneNumbers ?? this.phoneNumbers,
@@ -185,6 +205,9 @@ class AppSettings {
       pointsPerHundredThousand: pointsPerHundredThousand ?? this.pointsPerHundredThousand,
       showPointsConfirmationOnSave: showPointsConfirmationOnSave ?? this.showPointsConfirmationOnSave,
       autoScrollInvoice: autoScrollInvoice ?? this.autoScrollInvoice,
+      syncFullTransferMode: syncFullTransferMode ?? this.syncFullTransferMode,
+      syncShowConfirmation: syncShowConfirmation ?? this.syncShowConfirmation,
+      syncAutoCreateCustomers: syncAutoCreateCustomers ?? this.syncAutoCreateCustomers,
     );
   }
 }

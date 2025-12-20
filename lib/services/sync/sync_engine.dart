@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:http/http.dart' as http;
+import 'package:sqflite/sqflite.dart';
 
 import 'sync_models.dart';
 import 'sync_operation.dart';
@@ -891,38 +892,107 @@ class SyncEngine {
     
     _updateStatus('جاري تطبيق ${operations.length} عملية...');
     int appliedCount = 0;
+    int skippedCount = 0;
+    final failedOperations = <Map<String, dynamic>>[];
     
     final db = await _db.database;
     
-    await db.transaction((txn) async {
-      for (final op in operations) {
-        try {
+    // تطبيق كل عملية على حدة
+    for (final op in operations) {
+      try {
+        await db.transaction((txn) async {
           await _applySingleOperation(txn, op);
-          appliedCount++;
-          
-          // تحديث التقدم
-          onProgress?.call(appliedCount / operations.length);
-        } catch (e) {
-          print('❌ فشل تطبيق العملية ${op.operationId}: $e');
-          // في حالة الفشل، نتراجع عن كل شيء
-          throw SyncException(
-            type: SyncErrorType.rollbackRequired,
-            message: 'فشل تطبيق العملية ${op.operationId}',
-            details: {'operation_id': op.operationId, 'error': e.toString()},
-            originalError: e,
-          );
-        }
+        });
+        appliedCount++;
+        onProgress?.call((appliedCount + skippedCount) / operations.length);
+      } catch (e) {
+        skippedCount++;
+        
+        // استخراج معلومات مفهومة
+        final customerName = op.payloadAfter['customer_name'] ?? 
+                            op.payloadAfter['name'] ?? 
+                            'غير معروف';
+        final amount = op.payloadAfter['amount_changed'] ?? 
+                      op.payloadAfter['amount'] ?? 
+                      0;
+        
+        failedOperations.add({
+          'customer_name': customerName,
+          'amount': amount,
+          'error': e.toString(),
+        });
+        
+        print('');
+        print('═══════════════════════════════════════════════════');
+        print('❌ فشل تطبيق العملية:');
+        print('   📋 النوع: ${_getOperationTypeName(op.operationType)}');
+        print('   👤 العميل: $customerName');
+        print('   💰 المبلغ: $amount');
+        print('   ⚠️ السبب: $e');
+        print('═══════════════════════════════════════════════════');
+        
+        onProgress?.call((appliedCount + skippedCount) / operations.length);
       }
-    });
+    }
     
-    // إعادة حساب الأرصدة المتأثرة
-    await _recalculateAffectedBalances(operations);
+    // ملخص
+    if (failedOperations.isNotEmpty) {
+      print('');
+      print('📊 ملخص: نجحت $appliedCount، فشلت ${failedOperations.length}');
+      
+      if (appliedCount == 0) {
+        final first = failedOperations.first;
+        throw SyncException(
+          type: SyncErrorType.rollbackRequired,
+          message: 'فشل - العميل: ${first['customer_name']}, المبلغ: ${first['amount']}',
+        );
+      }
+    }
+    
+    // إعادة حساب الأرصدة
+    if (appliedCount > 0) {
+      final successfulOps = operations.where((op) => 
+        !failedOperations.any((f) => f['operation_id'] == op.operationId)
+      ).toList();
+      await _recalculateAffectedBalances(successfulOps);
+    }
     
     print('✅ تم تطبيق $appliedCount عملية بنجاح');
     return appliedCount;
   }
+  
+  String _getOperationTypeName(SyncOperationType type) {
+    switch (type) {
+      case SyncOperationType.customerCreate:
+        return 'إنشاء عميل';
+      case SyncOperationType.customerUpdate:
+        return 'تحديث عميل';
+      case SyncOperationType.customerDelete:
+        return 'حذف عميل';
+      case SyncOperationType.transactionCreate:
+        return 'إنشاء معاملة';
+      case SyncOperationType.transactionUpdate:
+        return 'تحديث معاملة';
+      case SyncOperationType.transactionDelete:
+        return 'حذف معاملة';
+      default:
+        return type.name;
+    }
+  }
 
   Future<void> _applySingleOperation(dynamic txn, SyncOperation op) async {
+    // التحقق من أن العملية لم تُطبق مسبقاً
+    final existing = await txn.query(
+      'sync_applied_operations',
+      where: 'operation_id = ?',
+      whereArgs: [op.operationId],
+    );
+    
+    if (existing.isNotEmpty) {
+      print('⏭️ تخطي عملية مطبقة مسبقاً: ${op.operationId}');
+      return; // تخطي العملية المطبقة مسبقاً
+    }
+    
     switch (op.operationType) {
       case SyncOperationType.customerCreate:
         await _applyCustomerCreate(txn, op);
@@ -946,12 +1016,16 @@ class SyncEngine {
         print('⚠️ نوع عملية غير مدعوم: ${op.operationType}');
     }
     
-    // تسجيل أن العملية تم تطبيقها
-    await txn.insert('sync_applied_operations', {
-      'operation_id': op.operationId,
-      'applied_at': DateTime.now().toUtc().toIso8601String(),
-      'device_id': op.deviceId,
-    });
+    // تسجيل أن العملية تم تطبيقها (مع تجاهل التكرار)
+    await txn.insert(
+      'sync_applied_operations',
+      {
+        'operation_id': op.operationId,
+        'applied_at': DateTime.now().toUtc().toIso8601String(),
+        'device_id': op.deviceId,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
   }
 
   Future<void> _applyCustomerCreate(dynamic txn, SyncOperation op) async {
@@ -1602,6 +1676,12 @@ class SyncEngine {
     String? remoteChecksum;
     
     try {
+      // 🔐 مزامنة المفتاح المشترك أولاً (مهم جداً!)
+      _updateStatus('جاري مزامنة المفتاح المشترك...');
+      final syncFolderId = await _ensureSyncFolder();
+      _secretKey = await SyncSecurity.syncSharedSecret(_driveApi!, syncFolderId);
+      print('🔐 المفتاح المشترك جاهز');
+      
       // المرحلة 0: التحضير المحلي
       final localState = await _prepareLocalState();
       localChecksum = '${localState['checksums']['customers']}|${localState['checksums']['transactions']}';

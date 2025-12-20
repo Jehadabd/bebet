@@ -16,82 +16,33 @@ class SyncLocalStorage {
   
   SyncLocalStorage([DatabaseService? db]) : _db = db ?? DatabaseService();
 
+  // متغير لتتبع حالة التهيئة
+  static bool _tablesInitialized = false;
+  static final _initLock = Object();
+  
   /// تهيئة جداول المزامنة
   Future<void> ensureSyncTables() async {
-    final db = await _db.database;
+    // تجنب التهيئة المتكررة
+    if (_tablesInitialized) return;
     
-    // جدول العمليات المحلية
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS sync_operations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        operation_id TEXT UNIQUE NOT NULL,
-        device_id TEXT NOT NULL,
-        local_sequence INTEGER NOT NULL,
-        global_sequence INTEGER,
-        operation_type TEXT NOT NULL,
-        entity_type TEXT NOT NULL,
-        entity_uuid TEXT NOT NULL,
-        customer_uuid TEXT,
-        payload_before TEXT,
-        payload_after TEXT NOT NULL,
-        checksum TEXT NOT NULL,
-        signature TEXT NOT NULL,
-        parent_operation_id TEXT,
-        causality_vector TEXT,
-        status TEXT NOT NULL DEFAULT 'pending',
-        created_at TEXT NOT NULL,
-        uploaded_at TEXT,
-        data TEXT NOT NULL
-      )
-    ''');
-    
-    // جدول العمليات المطبقة (من أجهزة أخرى)
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS sync_applied_operations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        operation_id TEXT UNIQUE NOT NULL,
-        device_id TEXT NOT NULL,
-        applied_at TEXT NOT NULL
-      )
-    ''');
-
-    
-    // جدول حالة المزامنة
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS sync_state (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        device_id TEXT NOT NULL,
-        device_name TEXT,
-        local_sequence INTEGER NOT NULL DEFAULT 0,
-        synced_up_to_global INTEGER NOT NULL DEFAULT 0,
-        last_sync_at TEXT,
-        secret_key_hash TEXT
-      )
-    ''');
-    
-    // إضافة أعمدة sync_uuid للجداول الموجودة إذا لم تكن موجودة
-    await _ensureColumn(db, 'customers', 'sync_uuid', 'TEXT');
-    await _ensureColumn(db, 'customers', 'is_deleted', 'INTEGER DEFAULT 0');
-    await _ensureColumn(db, 'customers', 'deleted_at', 'TEXT');
-    await _ensureColumn(db, 'customers', 'synced_at', 'TEXT');
-    
-    await _ensureColumn(db, 'transactions', 'sync_uuid', 'TEXT');
-    await _ensureColumn(db, 'transactions', 'is_deleted', 'INTEGER DEFAULT 0');
-    await _ensureColumn(db, 'transactions', 'deleted_at', 'TEXT');
-    await _ensureColumn(db, 'transactions', 'synced_at', 'TEXT');
-    
-    // إنشاء فهارس
     try {
-      await db.execute('CREATE INDEX IF NOT EXISTS idx_sync_ops_status ON sync_operations(status)');
-      await db.execute('CREATE INDEX IF NOT EXISTS idx_sync_ops_device ON sync_operations(device_id)');
-      await db.execute('CREATE INDEX IF NOT EXISTS idx_customers_sync_uuid ON customers(sync_uuid)');
-      await db.execute('CREATE INDEX IF NOT EXISTS idx_transactions_sync_uuid ON transactions(sync_uuid)');
+      final db = await _db.database;
+      
+      // تم نقل إنشاء الجداول إلى DatabaseService لتفادي مشاكل القفل (Database Locked)
+      // نحن نعتمد الآن على أن الجداول موجودة بالفعل بفضل DatabaseService._initDatabase
+      
+      // تعيين sync_uuid للسجلات الموجودة التي ليس لها uuid
+      await _assignMissingSyncUuids(db);
+      
+      _tablesInitialized = true;
+      print('✅ تم تهيئة جداول المزامنة بنجاح');
+      
     } catch (e) {
-      print('⚠️ خطأ في إنشاء الفهارس: $e');
+      print('⚠️ خطأ في تهيئة جداول المزامنة: $e');
+      // إعادة المحاولة بعد تأخير قصير
+      await Future.delayed(const Duration(milliseconds: 500));
+      rethrow;
     }
-    
-    // تعيين sync_uuid للسجلات الموجودة التي ليس لها uuid
-    await _assignMissingSyncUuids(db);
   }
 
   Future<void> _ensureColumn(Database db, String table, String column, String type) async {

@@ -2692,9 +2692,13 @@ class GroupedTransactionListTile extends StatelessWidget {
     if (item.isInvoice) {
       return _buildInvoiceTile(context);
     } else if (item.isManualDebtGroup) {
-      return _buildManualGroupTile(context, isDebt: true);
+      return _buildManualGroupTile(context, isDebt: true, isSync: false);
     } else if (item.isManualPaymentGroup) {
-      return _buildManualGroupTile(context, isDebt: false);
+      return _buildManualGroupTile(context, isDebt: false, isSync: false);
+    } else if (item.isSyncDebtGroup) {
+      return _buildManualGroupTile(context, isDebt: true, isSync: true);
+    } else if (item.isSyncPaymentGroup) {
+      return _buildManualGroupTile(context, isDebt: false, isSync: true);
     } else {
       return _buildManualTransactionTile(context);
     }
@@ -2889,19 +2893,30 @@ class GroupedTransactionListTile extends StatelessWidget {
     );
   }
 
-  /// بناء بطاقة مجموعة المعاملات اليدوية (إضافة دين أو تسديد)
-  Widget _buildManualGroupTile(BuildContext context, {required bool isDebt}) {
+  /// بناء بطاقة مجموعة المعاملات اليدوية أو المزامنة (إضافة دين أو تسديد)
+  Widget _buildManualGroupTile(BuildContext context, {required bool isDebt, required bool isSync}) {
     final color = isDebt
         ? Theme.of(context).colorScheme.error
         : Theme.of(context).colorScheme.tertiary;
-    final icon = isDebt ? Icons.add_circle : Icons.remove_circle;
-    final title = isDebt ? 'معاملات يدوية (إضافة دين)' : 'معاملات يدوية (تسديد)';
+    
+    // أيقونة مختلفة للمزامنة
+    final IconData icon;
+    final String title;
+    if (isSync) {
+      icon = isDebt ? Icons.cloud_download : Icons.cloud_upload;
+      title = isDebt ? 'معاملات مزامنة (إضافة دين)' : 'معاملات مزامنة (تسديد)';
+    } else {
+      icon = isDebt ? Icons.add_circle : Icons.remove_circle;
+      title = isDebt ? 'معاملات يدوية (إضافة دين)' : 'معاملات يدوية (تسديد)';
+    }
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12.0),
       elevation: 2,
+      // خلفية مميزة لمعاملات المزامنة
+      color: isSync ? Colors.blue[50] : null,
       child: InkWell(
-        onTap: () => _showManualGroupDetails(context, isDebt: isDebt),
+        onTap: () => _showManualGroupDetails(context, isDebt: isDebt, isSync: isSync),
         borderRadius: BorderRadius.circular(12),
         child: Padding(
           padding: const EdgeInsets.all(12.0),
@@ -2909,9 +2924,9 @@ class GroupedTransactionListTile extends StatelessWidget {
             children: [
               // أيقونة المجموعة
               CircleAvatar(
-                backgroundColor: color.withOpacity(0.1),
+                backgroundColor: isSync ? Colors.blue.withOpacity(0.2) : color.withOpacity(0.1),
                 radius: 24,
-                child: Icon(icon, color: color, size: 24),
+                child: Icon(icon, color: isSync ? Colors.blue : color, size: 24),
               ),
               const SizedBox(width: 12),
               // معلومات المجموعة
@@ -2921,24 +2936,49 @@ class GroupedTransactionListTile extends StatelessWidget {
                   children: [
                     Row(
                       children: [
-                        Text(
-                          title,
-                          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                                fontWeight: FontWeight.bold,
-                              ),
+                        Flexible(
+                          child: Text(
+                            title,
+                            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                         const SizedBox(width: 8),
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
-                            color: color.withOpacity(0.1),
+                            color: isSync ? Colors.blue.withOpacity(0.1) : color.withOpacity(0.1),
                             borderRadius: BorderRadius.circular(10),
                           ),
                           child: Text(
                             '${item.transactionCount} معاملة',
-                            style: TextStyle(fontSize: 10, color: color),
+                            style: TextStyle(fontSize: 10, color: isSync ? Colors.blue : color),
                           ),
                         ),
+                        // شارة المزامنة
+                        if (isSync) ...[
+                          const SizedBox(width: 4),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.blue,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.sync, color: Colors.white, size: 10),
+                                SizedBox(width: 2),
+                                Text(
+                                  'مزامنة',
+                                  style: TextStyle(fontSize: 8, color: Colors.white, fontWeight: FontWeight.bold),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                     const SizedBox(height: 4),
@@ -2978,13 +3018,21 @@ class GroupedTransactionListTile extends StatelessWidget {
     );
   }
 
-  /// عرض تفاصيل مجموعة المعاملات اليدوية
-  void _showManualGroupDetails(BuildContext context, {required bool isDebt}) {
+  /// عرض تفاصيل مجموعة المعاملات اليدوية أو المزامنة
+  void _showManualGroupDetails(BuildContext context, {required bool isDebt, required bool isSync}) {
     final color = isDebt
         ? Theme.of(context).colorScheme.error
         : Theme.of(context).colorScheme.tertiary;
-    final title = isDebt ? 'معاملات الإضافة اليدوية' : 'معاملات التسديد اليدوية';
-    final icon = isDebt ? Icons.add_circle : Icons.remove_circle;
+    
+    final String title;
+    final IconData icon;
+    if (isSync) {
+      title = isDebt ? 'معاملات المزامنة (إضافة دين)' : 'معاملات المزامنة (تسديد)';
+      icon = isDebt ? Icons.cloud_download : Icons.cloud_upload;
+    } else {
+      title = isDebt ? 'معاملات الإضافة اليدوية' : 'معاملات التسديد اليدوية';
+      icon = isDebt ? Icons.add_circle : Icons.remove_circle;
+    }
 
     showModalBottomSheet(
       context: context,
@@ -3014,17 +3062,44 @@ class GroupedTransactionListTile extends StatelessWidget {
               padding: const EdgeInsets.all(16),
               child: Row(
                 children: [
-                  Icon(icon, color: color),
+                  Icon(icon, color: isSync ? Colors.blue : color),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          title,
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                fontWeight: FontWeight.bold,
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                title,
+                                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                      fontWeight: FontWeight.bold,
+                                    ),
                               ),
+                            ),
+                            if (isSync) ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.blue,
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.sync, color: Colors.white, size: 12),
+                                    SizedBox(width: 2),
+                                    Text(
+                                      'من جهاز آخر',
+                                      style: TextStyle(fontSize: 10, color: Colors.white),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
                         Text(
                           '${item.transactionCount} معاملة',
@@ -3065,14 +3140,18 @@ class GroupedTransactionListTile extends StatelessWidget {
                   
                   return Card(
                     margin: const EdgeInsets.only(bottom: 8),
+                    // خلفية مميزة لمعاملات المزامنة
+                    color: isSync ? Colors.blue[50] : null,
                     child: ListTile(
                       leading: CircleAvatar(
-                        backgroundColor: txColor.withOpacity(0.1),
+                        backgroundColor: isSync ? Colors.blue.withOpacity(0.2) : txColor.withOpacity(0.1),
                         radius: 18,
-                        child: Text(
-                          '${index + 1}',
-                          style: TextStyle(color: txColor, fontWeight: FontWeight.bold),
-                        ),
+                        child: isSync 
+                            ? const Icon(Icons.sync, color: Colors.blue, size: 16)
+                            : Text(
+                                '${index + 1}',
+                                style: TextStyle(color: txColor, fontWeight: FontWeight.bold),
+                              ),
                       ),
                       title: Text(
                         '${isPositive ? '+' : ''}${_formatCurrency(tx.amountChanged)} دينار',

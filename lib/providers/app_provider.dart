@@ -8,6 +8,7 @@ import '../services/database_service.dart';
 import '../services/drive_service.dart';
 import '../services/pdf_service.dart';
 import '../services/financial_audit_service.dart';
+import '../services/telegram_backup_service.dart';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:archive/archive_io.dart';
@@ -322,13 +323,13 @@ class AppProvider with ChangeNotifier {
       throw Exception('ميزة Google Drive غير مدعومة على هذا النظام');
     }
     
-    // 1. Re-entrancy Guard: Prevent double-click or concurrent syncs
+    // 1. Re-entrancy Guard
     if (_isSyncing) {
       print('SYNC: Sync already in progress, ignoring request.');
       return;
     }
 
-    // 2. Strict Connectivity Check
+    // 2. Connectivity Check
     try {
       final result = await InternetAddress.lookup('google.com');
       if (result.isEmpty || result[0].rawAddress.isEmpty) {
@@ -341,190 +342,30 @@ class AppProvider with ChangeNotifier {
     _isSyncing = true;
     _setLoading(true);
     try {
-      // 3) تأكد من تسجيل الدخول
+      // 3. Ensure signed in
       final signed = await _drive.isSignedIn();
       if (!signed) {
         await _drive.signIn();
       }
 
-      // 2) تجهيز مسارات المزامنة
-      final syncFolderId = await _drive.ensureSyncFolder();
-      final ownFileName = await _drive.getOwnDeviceJsonName();
-      print('SYNC: syncFolderId=' + syncFolderId + ', ownFileName=' + ownFileName);
-
-      // 3) تحميل ملفنا الحالي (أو البدء بفارغ)
-      Map<String, dynamic> ownJson = await _drive.readDeviceJson(syncFolderId, ownFileName);
-      if (ownJson.isEmpty) ownJson = {};
-      print('SYNC: loaded own JSON with customer keys: ' + ownJson.keys.length.toString());
-
-      // 4) رفع معاملاتنا غير المرفوعة
-      final toUpload = await _db.getTransactionsToUpload();
-      print('SYNC: transactions to upload count = ' + toUpload.length.toString());
-      if (toUpload.isNotEmpty) {
-        for (final tx in toUpload) {
-          // احصل على اسم العميل بطريقة موثوقة من قاعدة البيانات عند الحاجة
-          Customer? customer;
-          try {
-            customer = _customers.firstWhere((c) => c.id == tx.customerId);
-          } catch (_) {
-            customer = await _db.getCustomerById(tx.customerId);
-          }
-          if (customer == null) {
-            print('SYNC WARN: لم يتم العثور على اسم عميل للمعاملة ${tx.id}, سيتم تجاهل رفعها لتجنب UNKNOWN');
-            continue;
-          }
-          final key = (customer.name).replaceAll(RegExp(r'[\s,]'), '');
-          ownJson[key] ??= { 'transactions': [], 'displayName': customer.name };
-          // تأكد من حفظ displayName إن لم يكن موجوداً
-          if (ownJson[key] is Map && (ownJson[key]['displayName'] == null || (ownJson[key]['displayName'] as String).isEmpty)) {
-            ownJson[key]['displayName'] = customer.name;
-          }
-          String? uuid = tx.transactionUuid;
-          if (uuid == null || uuid.isEmpty) {
-            uuid = _generateUuid();
-            await _db.setTransactionUuidById(tx.id!, uuid);
-          }
-          ownJson[key]['transactions'].add({
-            'transactionId': uuid,
-            'date': tx.transactionDate.toIso8601String(),
-            'amount': tx.amountChanged,
-            'type': tx.amountChanged < 0 ? 'debt_payment' : 'debt_addition',
-            'isRead': false,
-            'description': tx.description ?? "من الفرع الثاني",
-          });
-        }
-        // تنظيف المعاملات المقروءة في ملفنا
-        ownJson.updateAll((_, v) {
-          if (v is Map && v['transactions'] is List) {
-            v['transactions'] = (v['transactions'] as List).where((t) => (t['isRead'] ?? false) == false).toList();
-          }
-          return v;
-        });
-        await _drive.writeDeviceJson(syncFolderId, ownFileName, ownJson);
-        await _db.markTransactionsUploaded(
-          toUpload.map((t) => t.transactionUuid ?? '').where((s) => s.isNotEmpty).toList(),
-        );
-        print('SYNC: uploaded own JSON and marked ' + toUpload.length.toString() + ' as uploaded');
+      // 4. Delegate to DriveService strict logic
+      print('SYNC: Starting robust sync via DriveService...');
+      final result = await _drive.performFullSync();
+      
+      if (result['success'] == false) {
+        throw Exception('Sync failed: ${result['error']}');
       }
 
-      // 5) قراءة ملفات الأجهزة الأخرى
-      final allFiles = await _drive.listDeviceJsons(syncFolderId);
-      print('SYNC: found ' + allFiles.length.toString() + ' JSON files in sync folder');
-      for (final f in allFiles) { print('SYNC: file -> ' + (f.name ?? '')); }
-      for (final f in allFiles) {
-        final name = f.name ?? '';
-        if (name == ownFileName) continue;
-        print('SYNC: processing other device file ' + name);
-        final content = await _drive.readDeviceJson(syncFolderId, name);
-        if (content.isEmpty) { print('SYNC: file ' + name + ' has empty or invalid JSON'); continue; }
-        print('SYNC: file ' + name + ' top-level keys count = ' + content.keys.length.toString());
-        final firstKeys = content.keys.take(5).toList();
-        print('SYNC: first keys: ' + firstKeys.join(', '));
-        // Debug preview: print up to five customers and first five transactions from other device JSON
-        try {
-          print('=== معاينة ملف جهاز آخر: ' + name + ' ===');
-          int printedCustomers = 0;
-          for (final entry in content.entries) {
-            if (printedCustomers >= 5) break;
-            final customerKey = entry.key;
-            final obj = entry.value;
-            if (obj is Map && obj['transactions'] is List) {
-              final txs = (obj['transactions'] as List);
-              print('- عميل: ' + customerKey + ' | عدد المعاملات: ' + txs.length.toString());
-              final preview = txs.take(5);
-              for (final t in preview) {
-                final id = t['transactionId'];
-                final date = t['date'];
-                final amount = t['amount'];
-                final type = t['type'];
-                final isRead = t['isRead'];
-                print('  • id=' + (id?.toString() ?? '') + ' | date=' + (date?.toString() ?? '') + ' | amount=' + (amount?.toString() ?? '') + ' | type=' + (type?.toString() ?? '') + ' | isRead=' + (isRead?.toString() ?? ''));
-              }
-              printedCustomers++;
-            }
-          }
-          print('=== نهاية المعاينة ===');
-        } catch (e) {
-          print('فشل طباعة المعاينة لملف ' + name + ': ' + e.toString());
-        }
-        bool changed = false;
-        for (final entry in content.entries) {
-          final normName = entry.key.replaceAll(RegExp(r'[\s,]'), '');
-          final obj = entry.value;
-          if (obj is! Map) continue;
-          final txs = (obj['transactions'] as List?) ?? [];
-          // حاول مطابقة العميل محليًا
-          Customer? local;
-          try {
-            local = _customers.firstWhere(
-              (c) => c.name.replaceAll(RegExp(r'[\s,]'), '') == normName,
-            );
-          } catch (_) {
-            local = null;
-          }
-          if (local == null) {
-            if (_autoCreateCustomerOnSync) {
-              // أنشئ العميل تلقائياً ثم طبّق المعاملات
-              final createdName = (obj['displayName'] as String?)?.trim().isNotEmpty == true
-                  ? (obj['displayName'] as String)
-                  : entry.key.toString();
-              try {
-                final newId = await _db.insertCustomer(
-                  Customer(name: createdName, currentTotalDebt: 0.0),
-                );
-                local = Customer(id: newId, name: createdName, currentTotalDebt: 0.0);
-                _customers.add(local!);
-                _applySearchFilter();
-                print('SYNC: تم إنشاء عميل جديد أثناء المزامنة: ' + createdName + ' (id=' + newId.toString() + ')');
-              } catch (e) {
-                print('SYNC: فشل إنشاء عميل جديد ' + createdName + ': ' + e.toString());
-                continue;
-              }
-            } else {
-              print('SYNC: تجاهل عميل غير موجود محلياً: ' + entry.key.toString());
-              continue;
-            }
-          }
-          for (final t in txs) {
-            final isRead = (t['isRead'] ?? false) == true;
-            if (isRead) continue;
-            final String type = (t['type'] ?? 'debt_addition') as String;
-            final double amount = ((t['amount'] as num?) ?? 0).toDouble();
-            final double signedAmount = type == 'debt_payment' ? -amount.abs() : amount.abs();
-            final String? txId = t['transactionId'] as String?;
-            final String? desc = t['description'] as String?;
-            final DateTime occurred = DateTime.tryParse(t['date'] ?? '') ?? DateTime.now();
-            // أدرج محليًا إذا لم تكن موجودة
-            // أدرج محليًا إذا لم تكن موجودة
-            try {
-              await _db.insertExternalTransactionAndApply(
-                customerId: local.id!,
-                amount: signedAmount,
-                type: type.toUpperCase(),
-                note: 'من مزامنة جهاز آخر',
-                description: desc ?? 'إضافة من الكمبيوتر الثاني',
-                transactionUuid: txId,
-                occurredAt: occurred,
-              );
-              // علّم كمقروءة فقط إذا تمت العملية بنجاح (أو تم تخطيها لأنها مكررة)
-              t['isRead'] = true;
-              changed = true;
-            } catch (e) {
-              print('SYNC ERROR: Failed to process transaction $txId: $e');
-              // لا نعلمها كمقروءة، لنحاول مرة أخرى في المزامنة القادمة
-            }
-          }
-        }
-        if (changed) {
-          await _drive.writeDeviceJson(syncFolderId, name, content);
-        }
-      }
+      print('SYNC: Completed successfully. Uploaded: ${result['uploaded_count']}, Downloaded: ${result['downloaded_count']}');
 
-      // 6) إعادة تحميل الحالة لعرض الأرصدة المحدثة
+      // 5. Refresh local state
       await _loadCustomers();
       if (_selectedCustomer != null) {
         await loadCustomerTransactions(_selectedCustomer!.id!);
       }
+    } catch (e) {
+      print('SYNC ERROR: $e');
+      rethrow;
     } finally {
       _setLoading(false);
       _isSyncing = false;
@@ -549,11 +390,6 @@ class AppProvider with ChangeNotifier {
       onProgress?.call(0.05);
       final dbFile = await _db.getDatabaseFile();
       final audioPaths = await _db.getAllAudioNotePaths();
-      
-      print('DEBUG: Found ${audioPaths.length} audio paths:');
-      for (final path in audioPaths) {
-        print('DEBUG: Audio path: $path');
-      }
 
       // 2) إنشاء مجلد مؤقت ونسخ قاعدة البيانات وجمع الصوتيات
       onProgress?.call(0.15);
@@ -572,13 +408,10 @@ class AppProvider with ChangeNotifier {
       for (final p in audioPaths) {
         try {
           final f = File(p);
-          print('DEBUG: Checking audio file: $p, exists: ${await f.exists()}');
-          
           File? sourceFile = f;
           if (!await f.exists()) {
             // البحث عن الملف في مجلدات أخرى محتملة
             final fileName = p.split(Platform.pathSeparator).last;
-            print('DEBUG: File not found at original path, searching for: $fileName');
             
             // البحث في مجلد قاعدة البيانات الحالي أولاً
             final supportDir = await getApplicationSupportDirectory();
@@ -586,7 +419,6 @@ class AppProvider with ChangeNotifier {
             final currentUserFile = File('${dbAudioDir.path}/$fileName');
             if (await currentUserFile.exists()) {
               sourceFile = currentUserFile;
-              print('DEBUG: Found file in database directory: ${currentUserFile.path}');
             } else {
               // البحث في مجلد المستندات العام
               final publicDocs = Directory('${Platform.environment['PUBLIC'] ?? ''}\\Documents');
@@ -594,7 +426,6 @@ class AppProvider with ChangeNotifier {
                 final publicFile = File('${publicDocs.path}\\$fileName');
                 if (await publicFile.exists()) {
                   sourceFile = publicFile;
-                  print('DEBUG: Found file in public documents: ${publicFile.path}');
                 }
               }
               
@@ -608,7 +439,6 @@ class AppProvider with ChangeNotifier {
                       final userFile = File('${userDocs.path}\\$fileName');
                       if (await userFile.exists()) {
                         sourceFile = userFile;
-                        print('DEBUG: Found file in user documents: ${userFile.path}');
                         break;
                       }
                     }
@@ -621,34 +451,21 @@ class AppProvider with ChangeNotifier {
           if (sourceFile != null && await sourceFile.exists()) {
             final fileName = sourceFile.path.split(Platform.pathSeparator).last;
             final targetPath = '${audioDir.path}/$fileName';
-            
-            // التأكد من أن الملف المصدر قابل للقراءة
             final sourceSize = await sourceFile.length();
-            print('DEBUG: Source file size: $sourceSize bytes');
             
             if (sourceSize > 0) {
               await sourceFile.copy(targetPath);
               final copiedFile = File(targetPath);
               final copiedSize = await copiedFile.length();
-              print('DEBUG: Copied file size: $copiedSize bytes');
-              
               if (copiedSize == sourceSize) {
                 copiedAudioFiles++;
-                print('DEBUG: Successfully copied audio file to: $targetPath');
-              } else {
-                print('DEBUG: File size mismatch! Source: $sourceSize, Copied: $copiedSize');
               }
-            } else {
-              print('DEBUG: Source file is empty, skipping: $p');
             }
-          } else {
-            print('DEBUG: Audio file not found anywhere: $p');
           }
         } catch (e) {
-          print('DEBUG: Error copying audio file $p: $e');
+          // تجاهل أخطاء نسخ الملفات الصوتية
         }
       }
-      print('DEBUG: Total audio files copied: $copiedAudioFiles');
       
       // نسخ إضافي للملفات الصوتية من مجلد قاعدة البيانات الحالي
       if (copiedAudioFiles == 0) {
@@ -657,8 +474,6 @@ class AppProvider with ChangeNotifier {
           final currentAudioDir = Directory('${supportDir.path}/audio_notes');
           if (await currentAudioDir.exists()) {
             final currentAudioFiles = await currentAudioDir.list().toList();
-            print('DEBUG: Found ${currentAudioFiles.length} audio files in current database directory');
-            
             for (final file in currentAudioFiles) {
               if (file is File) {
                 final fileName = file.path.split(Platform.pathSeparator).last;
@@ -666,13 +481,12 @@ class AppProvider with ChangeNotifier {
                 if (!await File(targetPath).exists()) {
                   await file.copy(targetPath);
                   copiedAudioFiles++;
-                  print('DEBUG: Copied audio file from current database directory: $fileName');
                 }
               }
             }
           }
         } catch (e) {
-          print('DEBUG: Error copying from current database directory: $e');
+          // تجاهل الأخطاء
         }
       }
       
@@ -690,14 +504,13 @@ class AppProvider with ChangeNotifier {
                 final base = p.split(Platform.pathSeparator).last;
                 final backupPath = '${backupAudioDir.path}/$base';
                 await f.copy(backupPath);
-                print('DEBUG: Created backup audio file: $backupPath');
               }
             } catch (e) {
-              print('DEBUG: Error creating backup audio file: $e');
+              // تجاهل الأخطاء
             }
           }
         } catch (e) {
-          print('DEBUG: Error creating audio backup directory: $e');
+          // تجاهل الأخطاء
         }
       }
 
@@ -709,31 +522,32 @@ class AppProvider with ChangeNotifier {
       final encoder = ZipFileEncoder();
       encoder.create(zipFile.path);
       encoder.addFile(dbCopy);
-      print('DEBUG: Added database file to ZIP: ${dbCopy.path}');
       
       if (await audioDir.exists()) {
         final audioFiles = await audioDir.list().toList();
-        print('DEBUG: Audio directory exists with ${audioFiles.length} files');
-        for (final file in audioFiles) {
-          print('DEBUG: Audio file in directory: ${file.path}');
-        }
         if (audioFiles.isNotEmpty) {
           encoder.addDirectory(audioDir);
-          print('DEBUG: Added audio directory to ZIP with ${audioFiles.length} files');
-        } else {
-          print('DEBUG: Audio directory is empty, not adding to ZIP');
         }
-      } else {
-        print('DEBUG: Audio directory does not exist');
       }
       encoder.close();
-      print('DEBUG: ZIP file created: ${zipFile.path}');
 
       // 4) الرفع وسياسة الاحتفاظ
       onProgress?.call(0.75);
       await _drive.uploadBackupZipAndRetain(zipFile: zipFile, progress: (p) {
-        onProgress?.call(0.75 + 0.2 * p.clamp(0.0, 1.0));
+        onProgress?.call(0.75 + 0.15 * p.clamp(0.0, 1.0));
       });
+
+      // 5) إرسال النسخة الاحتياطية إلى Telegram
+      onProgress?.call(0.90);
+      try {
+        final telegramService = TelegramBackupService();
+        if (telegramService.isConfigured) {
+          final caption = '📦 نسخة احتياطية - ${now.year}/${now.month}/${now.day} ${now.hour}:${now.minute.toString().padLeft(2, '0')}';
+          await telegramService.sendDocument(file: zipFile, caption: caption);
+        }
+      } catch (e) {
+        // لا نوقف العملية إذا فشل إرسال Telegram
+      }
 
       onProgress?.call(1.0);
     } finally {
@@ -875,10 +689,9 @@ class AppProvider with ChangeNotifier {
       final audioDir = Directory('${supportDir.path}/audio_notes');
       if (!await audioDir.exists()) {
         await audioDir.create(recursive: true);
-        print('DEBUG: Created audio notes directory: ${audioDir.path}');
       }
     } catch (e) {
-      print('DEBUG: Error creating audio notes directory: $e');
+      // تجاهل الأخطاء
     }
   }
 

@@ -14,5 +14,8 @@ export 'sync_tracker.dart';
 export 'sync_engine.dart';           // المحرك الأصلي
 export 'sync_engine_optimized.dart'; // المحرك المحسّن للمساحة المحدودة
 
+// خدمة التدقيق والأمان
+export 'sync_audit_service.dart';
+
 // الخدمة الموحدة (الأسهل للاستخدام)
 export 'sync_service.dart';

@@ -16,6 +16,7 @@ import 'sync_engine_optimized.dart';
 import 'sync_local_storage.dart';
 import 'sync_models.dart';
 import 'sync_security.dart';
+import 'sync_audit_service.dart';
 
 /// حالة المزامنة
 enum SyncStatus {
@@ -28,6 +29,28 @@ enum SyncStatus {
   notSignedIn,    // غير مسجل الدخول
 }
 
+/// معلومات عملية فاشلة
+class FailedOperation {
+  final String customerName;
+  final double amount;
+  final String operationType; // تسديد أو إضافة
+  final String date;
+  final String error;
+  
+  FailedOperation({
+    required this.customerName,
+    required this.amount,
+    required this.operationType,
+    required this.date,
+    required this.error,
+  });
+  
+  @override
+  String toString() {
+    return '$operationType - $customerName: $amount ($date)';
+  }
+}
+
 /// نتيجة المزامنة
 class SyncResult {
   final bool success;
@@ -35,8 +58,10 @@ class SyncResult {
   final int downloaded;
   final int uploaded;
   final int applied;
+  final int failed;
   final Duration duration;
   final String? error;
+  final List<FailedOperation> failedOperations;
   
   SyncResult({
     required this.success,
@@ -44,9 +69,14 @@ class SyncResult {
     this.downloaded = 0,
     this.uploaded = 0,
     this.applied = 0,
+    this.failed = 0,
     this.duration = Duration.zero,
     this.error,
+    this.failedOperations = const [],
   });
+  
+  /// هل هناك عمليات فاشلة؟
+  bool get hasFailedOperations => failedOperations.isNotEmpty;
 }
 
 /// ═══════════════════════════════════════════════════════════════════════════
@@ -83,8 +113,35 @@ class SyncService {
   double get progress => _progress;
   bool get isSyncing => _status == SyncStatus.syncing;
   
+  // 🔒 Callbacks للأمان - يمكن تعيينها من الواجهة
+  Future<bool> Function(List<PendingLargeTransaction>)? onLargeTransactionsDetected;
+  void Function(PostSyncVerificationResult)? onVerificationComplete;
+  
+  /// الحصول على خدمة التدقيق
+  SyncAuditService? get auditService => _syncEngine?.auditService;
+  
+  // متغير لتتبع حالة التهيئة
+  bool _isInitialized = false;
+  bool _isInitializing = false;
+  
   /// تهيئة خدمة المزامنة
   Future<bool> initialize() async {
+    // تجنب التهيئة المتكررة
+    if (_isInitialized && _syncEngine != null && _syncEngine!.isReady) {
+      return true;
+    }
+    
+    // تجنب التهيئة المتزامنة
+    if (_isInitializing) {
+      // انتظار حتى تنتهي التهيئة الجارية
+      while (_isInitializing) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+      return _isInitialized;
+    }
+    
+    _isInitializing = true;
+    
     try {
       // التحقق من تسجيل الدخول
       final isSignedIn = await _driveService.isSignedIn();
@@ -116,6 +173,15 @@ class SyncService {
           enableCompression: true,
           snapshotEveryNOperations: 200,
         ),
+        securityConfig: const SyncSecurityConfig(
+          largeTransactionThreshold: 10000000, // 10 مليون
+          maxTransactionAgeDays: 30, // شهر
+          maxBackupsToKeep: 3,
+          enablePreSyncBackup: true,
+          enablePostSyncVerification: true,
+          enableLargeTransactionConfirmation: true,
+          enableOldTransactionRejection: true,
+        ),
       );
       
       // تهيئة المحرك
@@ -135,13 +201,20 @@ class SyncService {
         _progressController.add(p);
       };
       
+      // ربط callbacks الأمان
+      _syncEngine!.onLargeTransactionsDetected = onLargeTransactionsDetected;
+      _syncEngine!.onVerificationComplete = onVerificationComplete;
+      
       _updateStatus(SyncStatus.idle, 'جاهز للمزامنة');
+      _isInitialized = true;
       return true;
       
     } catch (e) {
       print('❌ فشل تهيئة خدمة المزامنة: $e');
       _updateStatus(SyncStatus.failed, 'فشل التهيئة: $e');
       return false;
+    } finally {
+      _isInitializing = false;
     }
   }
   
@@ -183,15 +256,32 @@ class SyncService {
       final report = await _syncEngine!.performOptimizedSync();
       
       if (report.success) {
-        _updateStatus(SyncStatus.success, 'تمت المزامنة بنجاح ✅');
+        if (report.hasFailedOperations) {
+          _updateStatus(SyncStatus.success, 'تمت المزامنة مع ${report.operationsFailed} عملية فاشلة ⚠️');
+        } else {
+          _updateStatus(SyncStatus.success, 'تمت المزامنة بنجاح ✅');
+        }
+        
+        // تحويل FailedOperationInfo إلى FailedOperation
+        final failedOps = report.failedOperations.map((info) => FailedOperation(
+          customerName: info.customerName,
+          amount: info.amount,
+          operationType: info.operationType,
+          date: info.date,
+          error: info.error,
+        )).toList();
         
         return SyncResult(
           success: true,
-          message: 'تمت المزامنة بنجاح',
+          message: report.hasFailedOperations 
+              ? 'تمت المزامنة مع ${report.operationsFailed} عملية فاشلة'
+              : 'تمت المزامنة بنجاح',
           downloaded: report.operationsDownloaded,
           uploaded: report.operationsUploaded,
           applied: report.operationsApplied,
+          failed: report.operationsFailed,
           duration: report.duration,
+          failedOperations: failedOps,
         );
       } else {
         _updateStatus(SyncStatus.failed, report.errorMessage ?? 'فشلت المزامنة');
@@ -268,6 +358,97 @@ class SyncService {
     }
   }
   
+  /// الحصول على ملخص العمليات المعلقة (للعرض في رسالة التأكيد)
+  Future<Map<String, int>> getPendingSyncSummary() async {
+    try {
+      final db = await _db.database;
+      
+      // عدد العمليات المعلقة
+      final pendingOps = await db.query(
+        'sync_operations',
+        where: 'status = ?',
+        whereArgs: ['pending'],
+      );
+      
+      // تصنيف العمليات
+      int customerOps = 0;
+      int transactionOps = 0;
+      
+      for (final op in pendingOps) {
+        final data = op['data'] as String?;
+        if (data != null) {
+          if (data.contains('"entity_type":"customer"')) {
+            customerOps++;
+          } else if (data.contains('"entity_type":"transaction"')) {
+            transactionOps++;
+          }
+        }
+      }
+      
+      return {
+        'total': pendingOps.length,
+        'customers': customerOps,
+        'transactions': transactionOps,
+      };
+    } catch (e) {
+      print('⚠️ خطأ في الحصول على ملخص العمليات: $e');
+      return {'total': 0, 'customers': 0, 'transactions': 0};
+    }
+  }
+  
+  /// تنفيذ النقل الكامل
+  Future<SyncResult> performFullTransfer() async {
+    // التحقق من تسجيل الدخول
+    final isSignedIn = await _driveService.isSignedIn();
+    if (!isSignedIn) {
+      return SyncResult(
+        success: false,
+        message: 'يرجى تسجيل الدخول إلى Google Drive أولاً',
+      );
+    }
+    
+    // تهيئة المحرك إذا لم يكن جاهزاً
+    if (_syncEngine == null || !_syncEngine!.isReady) {
+      final initialized = await initialize();
+      if (!initialized) {
+        return SyncResult(
+          success: false,
+          message: 'فشل تهيئة نظام المزامنة',
+        );
+      }
+    }
+    
+    _updateStatus(SyncStatus.syncing, 'جاري النقل الكامل...');
+    
+    try {
+      final report = await _syncEngine!.performFullTransfer();
+      
+      if (report.success) {
+        _updateStatus(SyncStatus.success, 'تم النقل الكامل بنجاح ✅');
+        return SyncResult(
+          success: true,
+          message: 'تم نقل جميع البيانات بنجاح',
+          uploaded: report.operationsUploaded,
+          duration: report.duration,
+        );
+      } else {
+        _updateStatus(SyncStatus.failed, report.errorMessage ?? 'فشل النقل الكامل');
+        return SyncResult(
+          success: false,
+          message: report.errorMessage ?? 'فشل النقل الكامل',
+          error: report.errorMessage,
+        );
+      }
+    } catch (e) {
+      _updateStatus(SyncStatus.failed, 'خطأ: $e');
+      return SyncResult(
+        success: false,
+        message: 'حدث خطأ أثناء النقل الكامل',
+        error: e.toString(),
+      );
+    }
+  }
+  
   /// الحصول على معرف الجهاز (ثابت ومحفوظ)
   /// 
   /// يتم توليد UUID فريد مرة واحدة فقط عند أول تشغيل
@@ -283,9 +464,12 @@ class SyncService {
   
   Future<http.Client?> _getAuthenticatedClient() async {
     try {
-      return await _driveService.getAuthenticatedHttpClient();
+      final client = await _driveService.getAuthenticatedHttpClient();
+      print('✅ تم الحصول على HTTP Client بنجاح');
+      return client;
     } catch (e) {
       print('❌ فشل الحصول على HTTP Client: $e');
+      _updateStatus(SyncStatus.failed, 'فشل المصادقة: $e');
       return null;
     }
   }
@@ -298,6 +482,49 @@ class SyncService {
     print('🔄 Sync: $message');
   }
   
+  /// فرض فتح القفل يدوياً (للحالات الطارئة)
+  /// يُستخدم عندما يعلق القفل ولا يمكن الحصول عليه
+  Future<bool> forceReleaseLock() async {
+    // تهيئة المحرك إذا لم يكن جاهزاً
+    if (_syncEngine == null || !_syncEngine!.isReady) {
+      final initialized = await initialize();
+      if (!initialized) {
+        print('❌ فشل تهيئة المحرك لفرض فتح القفل');
+        return false;
+      }
+    }
+    
+    try {
+      final result = await _syncEngine!.forceUnlock();
+      if (result) {
+        _updateStatus(SyncStatus.idle, 'تم فرض فتح القفل بنجاح ✅');
+      }
+      return result;
+    } catch (e) {
+      print('❌ خطأ في فرض فتح القفل: $e');
+      _updateStatus(SyncStatus.failed, 'فشل فرض فتح القفل: $e');
+      return false;
+    }
+  }
+  
+  /// التحقق من حالة القفل الحالي
+  Future<Map<String, dynamic>?> checkLockStatus() async {
+    // تهيئة المحرك إذا لم يكن جاهزاً
+    if (_syncEngine == null || !_syncEngine!.isReady) {
+      final initialized = await initialize();
+      if (!initialized) {
+        return {'error': 'فشل تهيئة المحرك'};
+      }
+    }
+    
+    try {
+      return await _syncEngine!.checkLockStatus();
+    } catch (e) {
+      print('❌ خطأ في التحقق من حالة القفل: $e');
+      return {'error': e.toString()};
+    }
+  }
+
   /// إغلاق الخدمة
   void dispose() {
     _syncEngine?.dispose();

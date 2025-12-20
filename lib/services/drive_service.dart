@@ -16,6 +16,7 @@ import 'package:network_info_plus/network_info_plus.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'database_service.dart';
 import '../models/transaction.dart';
+import '../models/customer.dart'; // 🔄 Import Customer model
 
 class DriveService {
   static final DriveService _instance = DriveService._internal();
@@ -270,7 +271,7 @@ class DriveService {
       spaces: 'drive',
     );
     if (result.files?.isNotEmpty ?? false) {
-      return result.files!.first.id;
+      return result.files!.first.id; // Could be null, caller must handle
     }
     final folder = drive.File()
       ..name = folderName
@@ -283,7 +284,8 @@ class DriveService {
     try {
       final client = await _getAuthenticatedClient();
       final driveApi = drive.DriveApi(client);
-      final folderId = await _getFolderId(specificName: await _getUniqueFolderName());
+    final folderId = await _getFolderId(specificName: await _getUniqueFolderName());
+    if (folderId == null) throw Exception('فشل إنشاء مجلد التقارير');
       final existingFiles = await driveApi.files.list(
         q: "name = '$fileName' and '$folderId' in parents and trashed = false",
         spaces: 'drive',
@@ -299,7 +301,7 @@ class DriveService {
       } else {
         final driveFile = drive.File()
           ..name = fileName
-          ..parents = [folderId!];
+          ..parents = [folderId];
         final media = drive.Media(file.openRead(), await file.length());
         await driveApi.files.create(
           driveFile,
@@ -321,6 +323,7 @@ class DriveService {
       final client = await _getAuthenticatedClient();
       final driveApi = drive.DriveApi(client);
       final folderId = await _getFolderId();
+      if (folderId == null) throw Exception('فشل الوصول لمجلد التقارير');
       final existingFiles = await driveApi.files.list(
         q: "name = 'سجل الديون.pdf' and '$folderId' in parents and trashed = false",
         spaces: 'drive',
@@ -336,7 +339,7 @@ class DriveService {
       } else {
         final driveFile = drive.File()
           ..name = 'سجل الديون.pdf'
-          ..parents = [folderId!];
+          ..parents = [folderId];
         final media = drive.Media(reportFile.openRead(), await reportFile.length());
         await driveApi.files.create(
           driveFile,
@@ -430,12 +433,21 @@ extension DriveSyncExtension on DriveService {
       spaces: 'drive',
     );
     if ((list.files?.isNotEmpty ?? false)) {
-      return list.files!.first.id!;
+      final id = list.files!.first.id;
+      if (id == null) {
+        // If ID is null (very unlikely), we can't use this folder.
+        // It's safer to throw or try to create a new one, but let's throw friendly error.
+        throw Exception('مجلد المزامنة موجود ولكن بدون معرف. يرجى حذفه من Google Drive وإعادة المحاولة.');
+      }
+      return id;
     }
     final folder = drive.File()
       ..name = syncFolderName
       ..mimeType = 'application/vnd.google-apps.folder';
     final created = await driveApi.files.create(folder);
+    if (created.id == null) {
+      throw Exception('فشل إنشاء مجلد المزامنة (ID is null).');
+    }
     return created.id!;
   }
 
@@ -584,11 +596,14 @@ extension DriveSyncExtension on DriveService {
       await resetUploadStatusForMissingFile();
     }
     
-    final transactions = await db.getTransactionsToUpload();
+    final transactions = await db.getTransactionsForSync(); // 🔄 Use new method name
+    
+    // 🔄 الحصول على العملاء للمزامنة
+    final customersToSync = await db.getCustomersToSync();
     
     // فلترة المعاملات بناءً على حالة الملف
     final transactionsToSync = transactions.where((t) {
-      if (t.transactionUuid == null) return false;
+      if (t['transaction_uuid'] == null) return false;
       
       // إذا لم يوجد الملف على Drive، نرفع جميع المعاملات
       if (!fileExists) {
@@ -602,13 +617,19 @@ extension DriveSyncExtension on DriveService {
       
       // إذا وجد الملف وليس فارغاً، نرفع فقط التي لم يتم قراءتها من أجهزة أخرى
       // ولكن نرفع المعاملات التي أنشأناها نحن حتى لو تم قراءتها
-      return t.isUploaded && (!t.isReadByOthers || t.isCreatedByMe);
+      final isUploaded = (t['is_uploaded'] as int?) == 1;
+      final isReadByOthers = (t['is_read_by_others'] as int?) == 1;
+      final isCreatedByMe = (t['is_created_by_me'] as int?) == 1;
+      
+      return isUploaded && (!isReadByOthers || isCreatedByMe);
     }).toList();
     
     print('SYNC: Transactions to sync: ${transactionsToSync.length}');
+    print('SYNC: Customers to sync: ${customersToSync.length}');
     
     return {
-      'transactions': transactionsToSync.map((t) => t.toMap()).toList(),
+      'transactions': transactionsToSync, // هي بالفعل Maps الآن
+      'customers': customersToSync.map((c) => c.toMap()).toList(), // 🔄 إضافة العملاء
       'device_id': await _getStableDeviceIdPrefix(),
       'sync_timestamp': DateTime.now().toUtc().toIso8601String(),
       'file_exists_on_drive': fileExists,
@@ -730,32 +751,57 @@ extension DriveSyncExtension on DriveService {
         print('SYNC: Uploading empty file - no transactions to sync');
       } else {
         await _writeJsonFileByName(folderId, fileName, syncData);
-        print('SYNC: Uploading ${syncData['transactions'].length} transactions');
+        print('SYNC: Uploading ${syncData['transactions'].length} transactions and ${syncData['customers'].length} customers');
+        
+        // 🔄 بعد الرفع الناجح، نحدث حالة العملاء
+        if (syncData['customers'] != null) {
+          final customersList = syncData['customers'] as List;
+          final uuids = customersList.map((c) => c['sync_uuid'] as String?).whereType<String>().toList();
+          final db = DatabaseService(); 
+          await db.markCustomersAsSynced(uuids);
+        }
       }
       
       // 4. تحديث Heartbeat
       await updateSyncHeartbeat();
       
       // 5. قراءة المعاملات من الأجهزة الأخرى
+      final db = DatabaseService(); // نحتاج DB هنا لإدراج العملاء
       final otherDevices = await _listAllDeviceJsonFilesFromAnySyncFolder();
       final List<String> readTransactionUuids = [];
       
       for (final deviceFile in otherDevices) {
         if (deviceFile.name!.contains(deviceId)) continue; // تجاهل ملفاتنا
         
+
         try {
-          final deviceData = await _readJsonFileByName(folderId, deviceFile.name!);
-          if (deviceData['transactions'] != null) {
-            final transactions = List<Map<String, dynamic>>.from(deviceData['transactions']);
-            for (final tx in transactions) {
-              final uuid = tx['transaction_uuid'] as String?;
-              if (uuid != null) {
-                readTransactionUuids.add(uuid);
-                // إدراج المعاملة في قاعدة البيانات المحلية
-                await _insertTransactionFromSync(tx);
+            final deviceData = await _readJsonFileByName(folderId, deviceFile.name!);
+            
+            // 🔄 1. معالجة العملاء أولاً (لضمان وجودهم قبل إضافة الديون)
+            if (deviceData['customers'] != null) {
+              final customers = List<Map<String, dynamic>>.from(deviceData['customers']);
+              for (final cData in customers) {
+               try {
+                  await db.insertImportedCustomer(Customer.fromMap(cData));
+               } catch (e) {
+                 print('SYNC ERROR processing customer: $e');
+               }
+              }
+              print('SYNC: Processed ${customers.length} imported customers');
+            }
+
+            // 2. معالجة المعاملات
+            if (deviceData['transactions'] != null) {
+              final transactions = List<Map<String, dynamic>>.from(deviceData['transactions']);
+              for (final tx in transactions) {
+                final uuid = tx['transaction_uuid'] as String?;
+                if (uuid != null) {
+                  readTransactionUuids.add(uuid);
+                  // إدراج المعاملة في قاعدة البيانات المحلية
+                  await _insertTransactionFromSync(tx);
+                }
               }
             }
-          }
         } catch (e) {
           print('Error reading device file ${deviceFile.name}: $e');
         }
@@ -796,9 +842,25 @@ extension DriveSyncExtension on DriveService {
 
   // إدراج معاملة من المزامنة في قاعدة البيانات المحلية
   // ✅ تم إصلاح: إعادة حساب رصيد العميل بعد إدراج المعاملة
-  Future<void> _insertTransactionFromSync(Map<String, dynamic> txData) async {
-    final db = DatabaseService();
-    final transaction = DebtTransaction.fromMap(txData);
+  // 🔄 تم إضافة: آلية إعادة المحاولة (Retry) لتفادي قفل قاعدة البيانات
+  Future<void> _insertTransactionFromSync(Map<String, dynamic> txData, {int retryCount = 0}) async {
+    const int maxRetries = 3;
+    try {
+      final db = DatabaseService();
+
+      
+      // 🔄 تصحيح معرف العميل باستخدام UUID للتأكد من ربط الدين بالشخص الصحيح
+      if (txData['customer_sync_uuid'] != null) {
+        final localCustomerId = await db.findCustomerIdBySyncUuid(txData['customer_sync_uuid']);
+        if (localCustomerId != null) {
+          txData['customer_id'] = localCustomerId;
+        } else {
+           print('SYNC WARNING: Customer UUID ${txData['customer_sync_uuid']} not found locally even after import.');
+           // يمكن هنا إضافة منطق استرجاع (Fallback) أو تخطي
+        }
+      }
+      
+      final transaction = DebtTransaction.fromMap(txData);
     
     // التحقق من وجود المعاملة محلياً
     final existing = await db.database.then((d) => d.query(
@@ -821,6 +883,16 @@ extension DriveSyncExtension on DriveService {
         print('SYNC: تم إدراج معاملة وتحديث رصيد العميل ${transaction.customerId}');
       } catch (e) {
         print('SYNC ERROR: فشل إدراج معاملة من المزامنة: $e');
+        rethrow;
+      }
+    }
+    } catch (e) {
+      // 🔄 محاولة إعادة المحاولة عند قفل قاعدة البيانات
+      if (retryCount < maxRetries && e.toString().toLowerCase().contains('database is locked')) {
+        print('SYNC: Database locked, retrying insert in 500ms... (Attempt ${retryCount + 1})');
+        await Future.delayed(const Duration(milliseconds: 500));
+        await _insertTransactionFromSync(txData, retryCount: retryCount + 1);
+      } else {
         rethrow;
       }
     }

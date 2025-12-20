@@ -25,7 +25,7 @@ import 'sync/sync_tracker.dart'; // 🔄 تتبع المزامنة
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
   static Database? _database;
-  static const int _databaseVersion = 36; // 🧠 إضافة جدول product_specs للتعلم من الفواتير
+  static const int _databaseVersion = 38; // 🔄 إضافة جداول المزامنة لمنع القفل
   // تحكم بالطباعات التشخيصية من مصدر واحد
   // معطل في الإصدار النهائي لتجنب الطباعات المزعجة
   static const bool _verboseLogs = false;
@@ -1147,6 +1147,108 @@ class DatabaseService {
     ''');
 
     // -->> نهاية الإضافة
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔄 المزامنة: دمج جداول المزامنة هنا لمنع مشكلة Database Locked
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    // 1. جدول العمليات المحلية
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_operations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        operation_id TEXT UNIQUE NOT NULL,
+        device_id TEXT NOT NULL,
+        local_sequence INTEGER NOT NULL,
+        global_sequence INTEGER,
+        operation_type TEXT NOT NULL,
+        entity_type TEXT NOT NULL,
+        entity_uuid TEXT NOT NULL,
+        customer_uuid TEXT,
+        payload_before TEXT,
+        payload_after TEXT NOT NULL,
+        checksum TEXT NOT NULL,
+        signature TEXT NOT NULL,
+        parent_operation_id TEXT,
+        causality_vector TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL,
+        uploaded_at TEXT,
+        data TEXT NOT NULL
+      )
+    ''');
+    
+    // 2. جدول العمليات المطبقة (من أجهزة أخرى)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_applied_operations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        operation_id TEXT UNIQUE NOT NULL,
+        device_id TEXT NOT NULL,
+        applied_at TEXT NOT NULL
+      )
+    ''');
+    
+    // 3. جدول حالة المزامنة
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        device_id TEXT NOT NULL,
+        device_name TEXT,
+        local_sequence INTEGER NOT NULL DEFAULT 0,
+        synced_up_to_global INTEGER NOT NULL DEFAULT 0,
+        last_sync_at TEXT,
+        secret_key_hash TEXT
+      )
+    ''');
+
+    // 4. جدول سجل تدقيق المزامنة
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sync_start_time TEXT NOT NULL,
+        sync_end_time TEXT,
+        sync_type TEXT NOT NULL,
+        operations_uploaded INTEGER DEFAULT 0,
+        operations_downloaded INTEGER DEFAULT 0,
+        operations_applied INTEGER DEFAULT 0,
+        operations_failed INTEGER DEFAULT 0,
+        success INTEGER DEFAULT 0,
+        error_message TEXT,
+        affected_customers TEXT,
+        warnings TEXT,
+        device_id TEXT NOT NULL,
+        backup_path TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    ''');
+    
+    // 5. إنشاء الفهارس
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_sync_ops_status ON sync_operations(status)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_sync_ops_device ON sync_operations(device_id)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_sync_audit_start ON sync_audit_log(sync_start_time)');
+
+    // 5. تعديلات الجداول الأساسية للمزامنة (أعمدة UUID والحذف)
+    // جدول customers - التأكد من وجود الأعمدة
+    try {
+      // نضيف الأعمدة فقط إذا لم تكن موجودة، لكن في CREATE TABLE الأساسي يمكننا إضافتها مباشرة
+      // ولكن بما أن الجدول قد أُنشئ بالأعلى، نستخدم ALTER TABLE هنا لضمان التوافق
+      // ملاحظة: في CREATE TABLE الأساسي بالأعلى لم نضف هذه الأعمدة، لذا نضيفها هنا
+      await db.execute('ALTER TABLE customers ADD COLUMN sync_uuid TEXT;');
+      await db.execute('ALTER TABLE customers ADD COLUMN is_deleted INTEGER DEFAULT 0;');
+      await db.execute('ALTER TABLE customers ADD COLUMN deleted_at TEXT;');
+      await db.execute('ALTER TABLE customers ADD COLUMN synced_at TEXT;');
+      
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_customers_sync_uuid ON customers(sync_uuid)');
+    } catch (_) {}
+
+    // جدول transactions
+    try {
+      await db.execute('ALTER TABLE transactions ADD COLUMN sync_uuid TEXT;');
+      await db.execute('ALTER TABLE transactions ADD COLUMN is_deleted INTEGER DEFAULT 0;');
+      await db.execute('ALTER TABLE transactions ADD COLUMN deleted_at TEXT;');
+      await db.execute('ALTER TABLE transactions ADD COLUMN synced_at TEXT;');
+      
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_transactions_sync_uuid ON transactions(sync_uuid)');
+    } catch (_) {}
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -1597,6 +1699,130 @@ class DatabaseService {
     }
     
     // ═══════════════════════════════════════════════════════════════════════════
+    // 🔄 ترقية 37: إضافة جداول المزامنة رسمياً في DatabaseService
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (oldVersion < 37) {
+      print('DEBUG DB: الترقية للإصدار 37 - إضافة جداول المزامنة');
+      
+      // جدول sync_operations
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS sync_operations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            operation_id TEXT UNIQUE NOT NULL,
+            device_id TEXT NOT NULL,
+            local_sequence INTEGER NOT NULL,
+            global_sequence INTEGER,
+            operation_type TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_uuid TEXT NOT NULL,
+            customer_uuid TEXT,
+            payload_before TEXT,
+            payload_after TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            signature TEXT NOT NULL,
+            parent_operation_id TEXT,
+            causality_vector TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            uploaded_at TEXT,
+            data TEXT NOT NULL
+          )
+        ''');
+      } catch (e) {
+        print("DEBUG DB: جدول sync_operations موجود بالفعل أو خطأ: $e");
+      }
+      
+      // جدول sync_applied_operations
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS sync_applied_operations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            operation_id TEXT UNIQUE NOT NULL,
+            device_id TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+          )
+        ''');
+      } catch (e) {
+        print("DEBUG DB: جدول sync_applied_operations موجود بالفعل أو خطأ: $e");
+      }
+      
+      // جدول sync_state
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS sync_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            device_id TEXT NOT NULL,
+            device_name TEXT,
+            local_sequence INTEGER NOT NULL DEFAULT 0,
+            synced_up_to_global INTEGER NOT NULL DEFAULT 0,
+            last_sync_at TEXT,
+            secret_key_hash TEXT
+          )
+        ''');
+      } catch (e) {
+        print("DEBUG DB: جدول sync_state موجود بالفعل أو خطأ: $e");
+      }
+      
+      // جدول سجل تدقيق المزامنة
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS sync_audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sync_start_time TEXT NOT NULL,
+            sync_end_time TEXT,
+            sync_type TEXT NOT NULL,
+            operations_uploaded INTEGER DEFAULT 0,
+            operations_downloaded INTEGER DEFAULT 0,
+            operations_applied INTEGER DEFAULT 0,
+            operations_failed INTEGER DEFAULT 0,
+            success INTEGER DEFAULT 0,
+            error_message TEXT,
+            affected_customers TEXT,
+            warnings TEXT,
+            device_id TEXT NOT NULL,
+            backup_path TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+          )
+        ''');
+      } catch (e) {
+        print("DEBUG DB: جدول sync_audit_log موجود بالفعل أو خطأ: $e");
+      }
+      
+      // الفهارس
+      try {
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_sync_ops_status ON sync_operations(status)');
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_sync_ops_device ON sync_operations(device_id)');
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_sync_audit_start ON sync_audit_log(sync_start_time)');
+      } catch (_) {}
+      
+      // تحديث جداول العملاء والمعاملات (إضافة أعمدة المزامنة)
+      Future<void> _addColIfNotExists(String table, String col, String def) async {
+        try {
+          // يمكن أن يفشل إذا العمود موجود، لذا نستخدم try-catch بسيط
+          await db.execute('ALTER TABLE $table ADD COLUMN $col $def;');
+          print('✅ تم إضافة عمود $col لجدول $table');
+        } catch (_) {}
+      }
+      
+      await _addColIfNotExists('customers', 'sync_uuid', 'TEXT');
+      await _addColIfNotExists('customers', 'is_deleted', 'INTEGER DEFAULT 0');
+      await _addColIfNotExists('customers', 'deleted_at', 'TEXT');
+      await _addColIfNotExists('customers', 'synced_at', 'TEXT');
+      
+      await _addColIfNotExists('transactions', 'sync_uuid', 'TEXT');
+      await _addColIfNotExists('transactions', 'is_deleted', 'INTEGER DEFAULT 0');
+      await _addColIfNotExists('transactions', 'deleted_at', 'TEXT');
+      await _addColIfNotExists('transactions', 'synced_at', 'TEXT');
+      
+      // إضافة الفهارس
+      try {
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_customers_sync_uuid ON customers(sync_uuid)');
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_transactions_sync_uuid ON transactions(sync_uuid)');
+      } catch (_) {}
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
     // 🔒 تحقق شامل نهائي - ضمان وجود جميع الأعمدة المطلوبة
     // ═══════════════════════════════════════════════════════════════════════════
     await _ensureAllRequiredColumns(db);
@@ -1708,6 +1934,7 @@ class DatabaseService {
           final customerSyncUuid = customerRows.isNotEmpty ? customerRows.first['sync_uuid'] as String? : null;
           
           // تشغيل التتبع بشكل غير متزامن (fire and forget)
+          // 🔄 تضمين بيانات العميل للمزامنة الذكية
           tracker.trackTransactionCreate({
             'id': transactionId,
             'customer_id': customerId,
@@ -1716,7 +1943,10 @@ class DatabaseService {
             'new_balance_after_transaction': customer.currentTotalDebt,
             'transaction_note': 'الدين المبدئي عند إضافة العميل',
             'transaction_type': 'opening_balance',
-          }, customerSyncUuid).then((_) {
+          }, customerSyncUuid,
+            customerName: customer.name,
+            customerPhone: customer.phone,
+          ).then((_) {
             print('🔄 تم تسجيل معاملة الدين المبدئي للمزامنة');
           }).catchError((e) {
             print('⚠️ تحذير: فشل تسجيل مزامنة معاملة الدين المبدئي: $e');
@@ -2578,8 +2808,24 @@ class DatabaseService {
           transactionData['id'] = transactionId;
           transactionData['checksum'] = checksum;
           
+          // 🔄 الحصول على بيانات العميل للمزامنة الذكية
+          final customerData = await (await database).query(
+            'customers',
+            columns: ['name', 'phone'],
+            where: 'id = ?',
+            whereArgs: [transaction.customerId],
+            limit: 1,
+          );
+          final customerName = customerData.isNotEmpty ? customerData.first['name'] as String? : null;
+          final customerPhone = customerData.isNotEmpty ? customerData.first['phone'] as String? : null;
+          
           // تشغيل التتبع بشكل غير متزامن (fire and forget)
-          tracker.trackTransactionCreate(transactionData, customerSyncUuid).then((_) {
+          tracker.trackTransactionCreate(
+            transactionData, 
+            customerSyncUuid,
+            customerName: customerName,
+            customerPhone: customerPhone,
+          ).then((_) {
             print('🔄 تم تسجيل عملية إنشاء المعاملة للمزامنة: $transactionId');
           }).catchError((e) {
             print('⚠️ تحذير: فشل تسجيل المزامنة للمعاملة: $e');
@@ -3046,46 +3292,60 @@ class DatabaseService {
       int groupedTransactionCount = 0;
       
       // 3. معالجة المعاملات اليدوية (invoice_id = null)
-      // تجميعها في مجموعتين: إضافة دين وتسديد
+      // تجميعها في 4 مجموعات: محلية (إضافة/تسديد) + مزامنة (إضافة/تسديد)
       final manualTransactions = groupedByInvoice[null] ?? [];
       
-      // فصل المعاملات اليدوية إلى إضافة دين وتسديد
-      final List<Map<String, dynamic>> manualDebtTransactions = [];
-      final List<Map<String, dynamic>> manualPaymentTransactions = [];
+      // فصل المعاملات اليدوية إلى 4 مجموعات
+      final List<Map<String, dynamic>> localDebtTransactions = [];      // محلية - إضافة دين
+      final List<Map<String, dynamic>> localPaymentTransactions = [];   // محلية - تسديد
+      final List<Map<String, dynamic>> syncDebtTransactions = [];       // مزامنة - إضافة دين
+      final List<Map<String, dynamic>> syncPaymentTransactions = [];    // مزامنة - تسديد
       
       for (final tx in manualTransactions) {
         final amount = (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
+        final isCreatedByMe = ((tx['is_created_by_me'] as int?) ?? 1) == 1;
+        
         groupedTotalAmount += amount;
         groupedTransactionCount++;
         
-        if (amount > 0) {
-          manualDebtTransactions.add(tx);
+        if (isCreatedByMe) {
+          // معاملة محلية
+          if (amount > 0) {
+            localDebtTransactions.add(tx);
+          } else {
+            localPaymentTransactions.add(tx);
+          }
         } else {
-          manualPaymentTransactions.add(tx);
+          // معاملة مزامنة (من جهاز آخر)
+          if (amount > 0) {
+            syncDebtTransactions.add(tx);
+          } else {
+            syncPaymentTransactions.add(tx);
+          }
         }
       }
       
-      // إضافة مجموعة معاملات الإضافة اليدوية (إذا وجدت)
-      if (manualDebtTransactions.isNotEmpty) {
+      // إضافة مجموعة معاملات الإضافة المحلية (إذا وجدت)
+      if (localDebtTransactions.isNotEmpty) {
         double totalDebtAmount = 0.0;
         DateTime? latestDate;
         double? firstBalanceBefore;
         double? lastBalanceAfter;
         
         // ترتيب حسب التاريخ
-        manualDebtTransactions.sort((a, b) {
+        localDebtTransactions.sort((a, b) {
           final dateA = DateTime.parse(a['transaction_date'] as String);
           final dateB = DateTime.parse(b['transaction_date'] as String);
           return dateA.compareTo(dateB);
         });
         
-        for (final tx in manualDebtTransactions) {
+        for (final tx in localDebtTransactions) {
           totalDebtAmount += (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
         }
         
-        latestDate = DateTime.parse(manualDebtTransactions.last['transaction_date'] as String);
-        firstBalanceBefore = (manualDebtTransactions.first['balance_before_transaction'] as num?)?.toDouble();
-        lastBalanceAfter = (manualDebtTransactions.last['new_balance_after_transaction'] as num?)?.toDouble();
+        latestDate = DateTime.parse(localDebtTransactions.last['transaction_date'] as String);
+        firstBalanceBefore = (localDebtTransactions.first['balance_before_transaction'] as num?)?.toDouble();
+        lastBalanceAfter = (localDebtTransactions.last['new_balance_after_transaction'] as num?)?.toDouble();
         
         result.add(GroupedTransactionItem(
           type: GroupedTransactionType.manualDebtGroup,
@@ -3093,33 +3353,33 @@ class DatabaseService {
           amount: totalDebtAmount,
           description: 'معاملات يدوية (إضافة دين)',
           transactionType: 'manual_debt_group',
-          transactions: manualDebtTransactions.map((tx) => DebtTransaction.fromMap(tx)).toList(),
+          transactions: localDebtTransactions.map((tx) => DebtTransaction.fromMap(tx)).toList(),
           balanceBefore: firstBalanceBefore,
           balanceAfter: lastBalanceAfter,
         ));
       }
       
-      // إضافة مجموعة معاملات التسديد اليدوية (إذا وجدت)
-      if (manualPaymentTransactions.isNotEmpty) {
+      // إضافة مجموعة معاملات التسديد المحلية (إذا وجدت)
+      if (localPaymentTransactions.isNotEmpty) {
         double totalPaymentAmount = 0.0;
         DateTime? latestDate;
         double? firstBalanceBefore;
         double? lastBalanceAfter;
         
         // ترتيب حسب التاريخ
-        manualPaymentTransactions.sort((a, b) {
+        localPaymentTransactions.sort((a, b) {
           final dateA = DateTime.parse(a['transaction_date'] as String);
           final dateB = DateTime.parse(b['transaction_date'] as String);
           return dateA.compareTo(dateB);
         });
         
-        for (final tx in manualPaymentTransactions) {
+        for (final tx in localPaymentTransactions) {
           totalPaymentAmount += (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
         }
         
-        latestDate = DateTime.parse(manualPaymentTransactions.last['transaction_date'] as String);
-        firstBalanceBefore = (manualPaymentTransactions.first['balance_before_transaction'] as num?)?.toDouble();
-        lastBalanceAfter = (manualPaymentTransactions.last['new_balance_after_transaction'] as num?)?.toDouble();
+        latestDate = DateTime.parse(localPaymentTransactions.last['transaction_date'] as String);
+        firstBalanceBefore = (localPaymentTransactions.first['balance_before_transaction'] as num?)?.toDouble();
+        lastBalanceAfter = (localPaymentTransactions.last['new_balance_after_transaction'] as num?)?.toDouble();
         
         result.add(GroupedTransactionItem(
           type: GroupedTransactionType.manualPaymentGroup,
@@ -3127,7 +3387,75 @@ class DatabaseService {
           amount: totalPaymentAmount,
           description: 'معاملات يدوية (تسديد)',
           transactionType: 'manual_payment_group',
-          transactions: manualPaymentTransactions.map((tx) => DebtTransaction.fromMap(tx)).toList(),
+          transactions: localPaymentTransactions.map((tx) => DebtTransaction.fromMap(tx)).toList(),
+          balanceBefore: firstBalanceBefore,
+          balanceAfter: lastBalanceAfter,
+        ));
+      }
+      
+      // 🔄 إضافة مجموعة معاملات المزامنة - إضافة دين (إذا وجدت)
+      if (syncDebtTransactions.isNotEmpty) {
+        double totalDebtAmount = 0.0;
+        DateTime? latestDate;
+        double? firstBalanceBefore;
+        double? lastBalanceAfter;
+        
+        // ترتيب حسب التاريخ
+        syncDebtTransactions.sort((a, b) {
+          final dateA = DateTime.parse(a['transaction_date'] as String);
+          final dateB = DateTime.parse(b['transaction_date'] as String);
+          return dateA.compareTo(dateB);
+        });
+        
+        for (final tx in syncDebtTransactions) {
+          totalDebtAmount += (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
+        }
+        
+        latestDate = DateTime.parse(syncDebtTransactions.last['transaction_date'] as String);
+        firstBalanceBefore = (syncDebtTransactions.first['balance_before_transaction'] as num?)?.toDouble();
+        lastBalanceAfter = (syncDebtTransactions.last['new_balance_after_transaction'] as num?)?.toDouble();
+        
+        result.add(GroupedTransactionItem(
+          type: GroupedTransactionType.syncDebtGroup,
+          date: latestDate,
+          amount: totalDebtAmount,
+          description: 'معاملات مزامنة (إضافة دين)',
+          transactionType: 'sync_debt_group',
+          transactions: syncDebtTransactions.map((tx) => DebtTransaction.fromMap(tx)).toList(),
+          balanceBefore: firstBalanceBefore,
+          balanceAfter: lastBalanceAfter,
+        ));
+      }
+      
+      // 🔄 إضافة مجموعة معاملات المزامنة - تسديد (إذا وجدت)
+      if (syncPaymentTransactions.isNotEmpty) {
+        double totalPaymentAmount = 0.0;
+        DateTime? latestDate;
+        double? firstBalanceBefore;
+        double? lastBalanceAfter;
+        
+        // ترتيب حسب التاريخ
+        syncPaymentTransactions.sort((a, b) {
+          final dateA = DateTime.parse(a['transaction_date'] as String);
+          final dateB = DateTime.parse(b['transaction_date'] as String);
+          return dateA.compareTo(dateB);
+        });
+        
+        for (final tx in syncPaymentTransactions) {
+          totalPaymentAmount += (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
+        }
+        
+        latestDate = DateTime.parse(syncPaymentTransactions.last['transaction_date'] as String);
+        firstBalanceBefore = (syncPaymentTransactions.first['balance_before_transaction'] as num?)?.toDouble();
+        lastBalanceAfter = (syncPaymentTransactions.last['new_balance_after_transaction'] as num?)?.toDouble();
+        
+        result.add(GroupedTransactionItem(
+          type: GroupedTransactionType.syncPaymentGroup,
+          date: latestDate,
+          amount: totalPaymentAmount,
+          description: 'معاملات مزامنة (تسديد)',
+          transactionType: 'sync_payment_group',
+          transactions: syncPaymentTransactions.map((tx) => DebtTransaction.fromMap(tx)).toList(),
           balanceBefore: firstBalanceBefore,
           balanceAfter: lastBalanceAfter,
         ));
@@ -4232,6 +4560,22 @@ class DatabaseService {
     }
   }
 
+  /// جلب الفواتير المُنشأة بعد تاريخ معين (للنسخ الاحتياطي إلى Telegram)
+  Future<List<Invoice>> getInvoicesCreatedAfter(DateTime afterDate) async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.query(
+        'invoices',
+        where: "created_at > ? AND status = 'محفوظة'",
+        whereArgs: [afterDate.toIso8601String()],
+        orderBy: 'created_at ASC',
+      );
+      return List.generate(maps.length, (i) => Invoice.fromMap(maps[i]));
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
   Future<Invoice?> getInvoiceById(int id) async {
     final db = await database;
     return await getInvoiceByIdUsingTransaction(
@@ -5229,15 +5573,29 @@ class DatabaseService {
       final tracker = SyncTrackerInstance.instance;
       if (!tracker.isEnabled) return;
       
-      // جلب sync_uuid للعميل بشكل غير متزامن
+      // جلب sync_uuid وبيانات العميل بشكل غير متزامن
       database.then((db) async {
         try {
-          final customerRows = await db.query('customers', columns: ['sync_uuid'], where: 'id = ?', whereArgs: [customerId], limit: 1);
+          final customerRows = await db.query(
+            'customers', 
+            columns: ['sync_uuid', 'name', 'phone'], 
+            where: 'id = ?', 
+            whereArgs: [customerId], 
+            limit: 1
+          );
           final customerSyncUuid = customerRows.isNotEmpty ? customerRows.first['sync_uuid'] as String? : null;
+          final customerName = customerRows.isNotEmpty ? customerRows.first['name'] as String? : null;
+          final customerPhone = customerRows.isNotEmpty ? customerRows.first['phone'] as String? : null;
           
           transactionData['id'] = transactionId;
           
-          await tracker.trackTransactionCreate(transactionData, customerSyncUuid);
+          // 🔄 تضمين بيانات العميل للمزامنة الذكية
+          await tracker.trackTransactionCreate(
+            transactionData, 
+            customerSyncUuid,
+            customerName: customerName,
+            customerPhone: customerPhone,
+          );
           print('🔄 تم تسجيل المعاملة للمزامنة: $transactionId');
         } catch (e) {
           print('⚠️ تحذير: فشل تسجيل المزامنة: $e');
@@ -5285,11 +5643,25 @@ class DatabaseService {
             if (existingOps.isNotEmpty) return; // مسجلة مسبقاً
           }
           
-          // جلب sync_uuid للعميل
-          final customerRows = await db.query('customers', columns: ['sync_uuid'], where: 'id = ?', whereArgs: [customerId], limit: 1);
+          // جلب sync_uuid وبيانات العميل للمزامنة الذكية
+          final customerRows = await db.query(
+            'customers', 
+            columns: ['sync_uuid', 'name', 'phone'], 
+            where: 'id = ?', 
+            whereArgs: [customerId], 
+            limit: 1
+          );
           final customerSyncUuid = customerRows.isNotEmpty ? customerRows.first['sync_uuid'] as String? : null;
+          final customerName = customerRows.isNotEmpty ? customerRows.first['name'] as String? : null;
+          final customerPhone = customerRows.isNotEmpty ? customerRows.first['phone'] as String? : null;
           
-          await tracker.trackTransactionCreate(Map<String, dynamic>.from(txData), customerSyncUuid);
+          // 🔄 تضمين بيانات العميل للمزامنة الذكية
+          await tracker.trackTransactionCreate(
+            Map<String, dynamic>.from(txData), 
+            customerSyncUuid,
+            customerName: customerName,
+            customerPhone: customerPhone,
+          );
           print('🔄 تم تسجيل آخر معاملة للعميل $customerId للمزامنة: $txId');
         } catch (e) {
           print('⚠️ تحذير: فشل تسجيل آخر معاملة للمزامنة: $e');
@@ -5300,14 +5672,75 @@ class DatabaseService {
     }
   }
 
-  Future<List<DebtTransaction>> getTransactionsToUpload() async {
+  /// 🔄 الحصول على بيانات المعاملات للمزامنة (بما في ذلك معرف العميل الفريد)
+  Future<List<Map<String, dynamic>>> getTransactionsForSync() async {
+    final db = await database;
+    // نستخدم JOIN لجلب sync_uuid الخاص بالعميل ودمجه في بيانات المعاملة
+    // هذا ضروري لربط المعاملة بالعميل الصحيح على الجهاز الآخر
+    final List<Map<String, dynamic>> result = await db.rawQuery('''
+      SELECT t.*, c.sync_uuid as customer_sync_uuid
+      FROM transactions t
+      LEFT JOIN customers c ON t.customer_id = c.id
+      WHERE (t.is_created_by_me = 1) AND (t.is_uploaded = 0 OR t.is_uploaded IS NULL)
+      ORDER BY t.transaction_date ASC, t.id ASC
+    ''');
+    
+    // تحويل النتائج إلى قائمة قابلة للتعديل (Mutable) لأن rawQuery تعيد Read-only
+    return result.map((row) => Map<String, dynamic>.from(row)).toList();
+  }
+
+  /// 🔄 الحصول على العملاء الذين يحتاجون للمزامنة (جدد أو تم تعديلهم)
+  Future<List<Customer>> getCustomersToSync() async {
     final db = await database;
     final maps = await db.query(
-      'transactions',
-      where: '(is_created_by_me = 1) AND (is_uploaded = 0 OR is_uploaded IS NULL)',
-      orderBy: 'transaction_date ASC, id ASC',
+      'customers',
+      where: 'synced_at IS NULL OR last_modified_at > synced_at',
     );
-    return maps.map((m) => DebtTransaction.fromMap(m)).toList();
+    return maps.map((m) => Customer.fromMap(m)).toList();
+  }
+
+  /// 🔄 تحديث حالة المزامنة للعملاء
+  Future<void> markCustomersAsSynced(List<String> syncUuids) async {
+    if (syncUuids.isEmpty) return;
+    final db = await database;
+    final placeholders = List.filled(syncUuids.length, '?').join(',');
+    final now = DateTime.now().toIso8601String();
+    await db.rawUpdate(
+      'UPDATE customers SET synced_at = ? WHERE sync_uuid IN ($placeholders)',
+      [now, ...syncUuids],
+    );
+  }
+
+  /// 🔄 البحث عن معرف العميل المحلي باستخدام UUID المزامنة
+  Future<int?> findCustomerIdBySyncUuid(String syncUuid) async {
+    final db = await database;
+    final results = await db.query(
+      'customers',
+      columns: ['id'],
+      where: 'sync_uuid = ?',
+      whereArgs: [syncUuid],
+      limit: 1,
+    );
+    if (results.isNotEmpty) {
+      return results.first['id'] as int;
+    }
+    return null;
+  }
+
+  /// 🔄 إدراج عميل مستورد من المزامنة (فقط إذا لم يكن موجوداً)
+  Future<int> insertImportedCustomer(Customer customer) async {
+    final db = await database;
+    // نتأكد من عدم وجوده مرة أخرى للأمان
+    final existingId = await findCustomerIdBySyncUuid(customer.syncUuid!);
+    if (existingId != null) return existingId;
+
+    // إدراج وحفظ المعرف الجديد
+    final newId = await db.insert('customers', {
+      ...customer.toMap(),
+      'id': null, // نترك قاعدة البيانات تولد معرفاً جديداً
+      'synced_at': DateTime.now().toIso8601String(), // نعتبره متزامناً لأنه قادم من السحابة
+    });
+    return newId;
   }
 
   /// جلب المعاملات حسب الفترة والنوع مع اسم العميل
@@ -9933,8 +10366,10 @@ class VerifiedBalanceResult {
 enum GroupedTransactionType {
   manual,           // معاملة يدوية (للعرض التفصيلي)
   invoice,          // فاتورة (مجمعة)
-  manualDebtGroup,  // مجموعة معاملات يدوية (إضافة دين)
-  manualPaymentGroup, // مجموعة معاملات يدوية (تسديد)
+  manualDebtGroup,  // مجموعة معاملات يدوية (إضافة دين) - محلية
+  manualPaymentGroup, // مجموعة معاملات يدوية (تسديد) - محلية
+  syncDebtGroup,    // 🔄 مجموعة معاملات مزامنة (إضافة دين) - من جهاز آخر
+  syncPaymentGroup, // 🔄 مجموعة معاملات مزامنة (تسديد) - من جهاز آخر
 }
 
 /// عنصر معاملة مجمع - يمثل إما معاملة يدوية أو فاتورة مجمعة
@@ -10009,6 +10444,15 @@ class GroupedTransactionItem {
   /// هل هذا العنصر مجموعة معاملات يدوية (أي نوع)؟
   bool get isManualGroup => isManualDebtGroup || isManualPaymentGroup;
   
+  /// 🔄 هل هذا العنصر مجموعة معاملات مزامنة (إضافة دين)؟
+  bool get isSyncDebtGroup => type == GroupedTransactionType.syncDebtGroup;
+  
+  /// 🔄 هل هذا العنصر مجموعة معاملات مزامنة (تسديد)؟
+  bool get isSyncPaymentGroup => type == GroupedTransactionType.syncPaymentGroup;
+  
+  /// 🔄 هل هذا العنصر مجموعة معاملات مزامنة (أي نوع)؟
+  bool get isSyncGroup => isSyncDebtGroup || isSyncPaymentGroup;
+  
   /// عدد المعاملات التفصيلية
   int get transactionCount => transactions.length;
   
@@ -10028,6 +10472,8 @@ class GroupedTransactionItem {
   String toString() {
     if (isInvoice) {
       return 'GroupedTransactionItem(فاتورة #$invoiceId, متبقي: $amount, معاملات: $transactionCount)';
+    } else if (isSyncGroup) {
+      return 'GroupedTransactionItem(مزامنة, مبلغ: $amount, نوع: $transactionType)';
     } else {
       return 'GroupedTransactionItem(يدوية, مبلغ: $amount, نوع: $transactionType)';
     }

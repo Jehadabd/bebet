@@ -19,15 +19,37 @@ class SyncTracker {
   SyncTracker([SyncLocalStorage? storage]) 
     : _storage = storage ?? SyncLocalStorage();
 
+  // متغير لتتبع حالة التهيئة
+  bool _isInitialized = false;
+  bool _isInitializing = false;
+
   /// تهيئة المتتبع
   Future<void> initialize() async {
-    // استخدام getOrCreateDeviceId لضمان وجود معرف ثابت
-    _deviceId = await SyncSecurity.getOrCreateDeviceId();
-    _secretKey = await SyncSecurity.getOrCreateSecretKey();
+    // تجنب التهيئة المتكررة
+    if (_isInitialized) return;
     
-    await _storage.ensureSyncTables();
-    _isEnabled = true;
-    print('✅ SyncTracker initialized for device: $_deviceId');
+    // تجنب التهيئة المتزامنة
+    if (_isInitializing) {
+      while (_isInitializing) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+      return;
+    }
+    
+    _isInitializing = true;
+    
+    try {
+      // استخدام getOrCreateDeviceId لضمان وجود معرف ثابت
+      _deviceId = await SyncSecurity.getOrCreateDeviceId();
+      _secretKey = await SyncSecurity.getOrCreateSecretKey();
+      
+      await _storage.ensureSyncTables();
+      _isEnabled = true;
+      _isInitialized = true;
+      print('✅ SyncTracker initialized for device: $_deviceId');
+    } finally {
+      _isInitializing = false;
+    }
   }
 
   /// هل التتبع مفعل؟
@@ -117,27 +139,39 @@ class SyncTracker {
   /// ═══════════════════════════════════════════════════════════════════════
   
   /// تسجيل إنشاء معاملة جديدة
+  /// يتضمن بيانات العميل للسماح بإنشائه تلقائياً على الجهاز الآخر
   Future<String?> trackTransactionCreate(
     Map<String, dynamic> transactionData,
-    String? customerSyncUuid,
-  ) async {
+    String? customerSyncUuid, {
+    String? customerName,
+    String? customerPhone,
+  }) async {
     if (!isEnabled) return null;
     
     final syncUuid = transactionData['sync_uuid'] as String? 
         ?? transactionData['transaction_uuid'] as String?
         ?? SyncSecurity.generateUuid();
     
+    // 🔄 تضمين بيانات العميل في المعاملة (Enriched Operation)
+    final enrichedData = _sanitizeTransactionData(transactionData);
+    if (customerName != null && customerName.isNotEmpty) {
+      enrichedData['customer_name'] = customerName;
+    }
+    if (customerPhone != null && customerPhone.isNotEmpty) {
+      enrichedData['customer_phone'] = customerPhone;
+    }
+    
     final operation = await _createOperation(
       operationType: SyncOperationType.transactionCreate,
       entityType: 'transaction',
       entityUuid: syncUuid,
       customerUuid: customerSyncUuid,
-      payloadAfter: _sanitizeTransactionData(transactionData),
+      payloadAfter: enrichedData,
     );
     
     if (operation != null) {
       await _storage.saveOperation(operation);
-      print('📝 تم تسجيل عملية إنشاء معاملة: $syncUuid');
+      print('📝 تم تسجيل عملية إنشاء معاملة: $syncUuid (عميل: $customerName)');
     }
     
     return syncUuid;

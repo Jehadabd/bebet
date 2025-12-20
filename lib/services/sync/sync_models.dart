@@ -79,11 +79,26 @@ class SyncLock {
   });
 
   /// هل انتهت صلاحية القفل؟
-  bool get isExpired => DateTime.now().toUtc().isAfter(expiresAt);
+  /// يعتبر القفل منتهياً إذا:
+  /// 1. تجاوز وقت انتهاء الصلاحية (expiresAt)
+  /// 2. أو إذا كان الـ heartbeat قديماً أكثر من 90 ثانية (الجهاز توقف)
+  bool get isExpired {
+    final now = DateTime.now().toUtc();
+    // فحص انتهاء الصلاحية العادي
+    if (now.isAfter(expiresAt)) return true;
+    // فحص الـ heartbeat - إذا لم يتم تحديثه لأكثر من 90 ثانية، الجهاز توقف
+    final heartbeatAge = now.difference(heartbeat).inSeconds;
+    if (heartbeatAge > 90) return true;
+    return false;
+  }
 
   /// الوقت المتبقي بالثواني
   int get remainingSeconds => 
     isExpired ? 0 : expiresAt.difference(DateTime.now().toUtc()).inSeconds;
+  
+  /// عمر الـ heartbeat بالثواني
+  int get heartbeatAgeSeconds => 
+    DateTime.now().toUtc().difference(heartbeat).inSeconds;
 
   Map<String, dynamic> toJson() => {
     'lock_id': lockId,

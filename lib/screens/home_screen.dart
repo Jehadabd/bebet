@@ -5,6 +5,8 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../providers/app_provider.dart';
 import '../models/customer.dart';
 import '../services/sync/sync_service.dart';
+import '../services/sync/sync_audit_service.dart';
+import '../services/settings_manager.dart';
 import 'customer_details_screen.dart';
 import 'add_customer_screen.dart';
 import 'saved_invoices_screen.dart';
@@ -52,6 +54,87 @@ class _HomeScreenState extends State<HomeScreen> {
   
   /// عرض حوار المزامنة المحسّن
   Future<void> _showSyncDialog(BuildContext context) async {
+    // التحقق من إعداد رسالة التأكيد
+    final settings = await SettingsManager.getAppSettings();
+    
+    if (settings.syncShowConfirmation) {
+      // الحصول على ملخص العمليات المعلقة
+      final summary = await _syncService.getPendingSyncSummary();
+      
+      // عرض رسالة التأكيد
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Row(
+            children: [
+              Icon(
+                settings.syncFullTransferMode ? Icons.cloud_upload : Icons.sync,
+                color: settings.syncFullTransferMode ? Colors.orange : Colors.blue,
+              ),
+              const SizedBox(width: 8),
+              Text(settings.syncFullTransferMode ? 'نقل كامل' : 'مزامنة'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (settings.syncFullTransferMode) ...[
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.orange.withOpacity(0.3)),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.warning_amber, color: Colors.orange),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'وضع النقل الكامل مفعل!\nسيتم رفع جميع البيانات.',
+                          style: TextStyle(color: Colors.orange),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+              const Text('ملخص العمليات المعلقة:'),
+              const SizedBox(height: 8),
+              Text('📊 إجمالي: ${summary['total']} عملية'),
+              if (summary['customers']! > 0)
+                Text('👥 عملاء: ${summary['customers']} عملية'),
+              if (summary['transactions']! > 0)
+                Text('💰 معاملات: ${summary['transactions']} عملية'),
+              const SizedBox(height: 16),
+              const Text('هل تريد المتابعة؟'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('إلغاء'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: settings.syncFullTransferMode ? Colors.orange : Colors.blue,
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(
+                settings.syncFullTransferMode ? 'بدء النقل' : 'بدء المزامنة',
+                style: const TextStyle(color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+      );
+      
+      if (confirmed != true) return;
+    }
+    
     // متغيرات الحالة
     final ValueNotifier<String> statusMessage = ValueNotifier('جاري التحضير...');
     final ValueNotifier<bool> isComplete = ValueNotifier(false);
@@ -101,23 +184,92 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ],
               ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(message),
-                  if (complete && syncResult != null) ...[
-                    const SizedBox(height: 16),
-                    if (syncResult.success) ...[
-                      Text('📥 تنزيل: ${syncResult.downloaded} عملية'),
-                      Text('📤 رفع: ${syncResult.uploaded} عملية'),
-                      Text('⏱️ المدة: ${syncResult.duration.inSeconds} ثانية'),
-                    ] else ...[
-                      Text('❌ ${syncResult.error ?? syncResult.message}',
-                        style: const TextStyle(color: Colors.red)),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(message),
+                    if (complete && syncResult != null) ...[
+                      const SizedBox(height: 16),
+                      if (syncResult.success) ...[
+                        Text('📥 تنزيل: ${syncResult.downloaded} عملية'),
+                        Text('📤 رفع: ${syncResult.uploaded} عملية'),
+                        if (syncResult.applied > 0)
+                          Text('✅ تطبيق: ${syncResult.applied} عملية'),
+                        Text('⏱️ المدة: ${syncResult.duration.inSeconds} ثانية'),
+                        // عرض العمليات الفاشلة إن وجدت
+                        if (syncResult.hasFailedOperations) ...[
+                          const SizedBox(height: 16),
+                          const Divider(),
+                          const SizedBox(height: 8),
+                          Text(
+                            '⚠️ عمليات فاشلة (${syncResult.failed}):',
+                            style: const TextStyle(
+                              color: Colors.orange,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          ...syncResult.failedOperations.map((op) => Container(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.orange.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.orange.withOpacity(0.3)),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    const Icon(Icons.person, size: 16, color: Colors.orange),
+                                    const SizedBox(width: 4),
+                                    Expanded(
+                                      child: Text(
+                                        op.customerName,
+                                        style: const TextStyle(fontWeight: FontWeight.bold),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                Row(
+                                  children: [
+                                    Text(
+                                      '${op.operationType} - ',
+                                      style: TextStyle(
+                                        color: op.operationType.contains('تسديد') 
+                                            ? Colors.green 
+                                            : Colors.red,
+                                      ),
+                                    ),
+                                    Text(
+                                      '${op.amount.abs().toStringAsFixed(0)} دينار',
+                                      style: const TextStyle(fontWeight: FontWeight.w500),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  '📅 ${op.date}',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey[600],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )),
+                        ],
+                      ] else ...[
+                        Text('❌ ${syncResult.error ?? syncResult.message}',
+                          style: const TextStyle(color: Colors.red)),
+                      ],
                     ],
                   ],
-                ],
+                ),
               ),
               actions: complete ? [
                 TextButton(
@@ -138,6 +290,148 @@ class _HomeScreenState extends State<HomeScreen> {
     SyncResult syncResult;
     try {
       await _syncService.initialize();
+      
+      // 🔒 إعداد callback للمعاملات الكبيرة
+      _syncService.onLargeTransactionsDetected = (largeTransactions) async {
+        // عرض حوار تأكيد للمعاملات الكبيرة
+        final confirmed = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.warning_amber, color: Colors.orange, size: 28),
+                SizedBox(width: 8),
+                Text('معاملات كبيرة'),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'تم اكتشاف ${largeTransactions.length} معاملة كبيرة (أكثر من 10 مليون):',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 12),
+                  ...largeTransactions.take(5).map((tx) => Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Card(
+                      color: Colors.orange[50],
+                      child: Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('👤 ${tx.customerName}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                            Text('💰 ${tx.transactionType}: ${NumberFormat('#,###').format(tx.amount.abs())} د.ع'),
+                            Text('📅 ${tx.date}', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  )),
+                  if (largeTransactions.length > 5)
+                    Text('... و ${largeTransactions.length - 5} معاملات أخرى', 
+                      style: TextStyle(color: Colors.grey[600])),
+                  const SizedBox(height: 12),
+                  const Text('هل تريد قبول هذه المعاملات؟'),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('رفض', style: TextStyle(color: Colors.red)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('قبول', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
+        );
+        return confirmed ?? false;
+      };
+      
+      // 🔍 إعداد callback للتحقق بعد المزامنة
+      _syncService.onVerificationComplete = (verificationResult) {
+        if (!verificationResult.isHealthy && context.mounted) {
+          // عرض تحذير للمستخدم
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '⚠️ وُجدت ${verificationResult.customersWithIssues} مشكلة في الأرصدة - راجع الإعدادات للإصلاح',
+              ),
+              backgroundColor: Colors.orange,
+              duration: const Duration(seconds: 5),
+              action: SnackBarAction(
+                label: 'التفاصيل',
+                textColor: Colors.white,
+                onPressed: () {
+                  // عرض تفاصيل المشاكل
+                  showDialog(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Row(
+                        children: [
+                          Icon(Icons.warning, color: Colors.orange),
+                          SizedBox(width: 8),
+                          Text('مشاكل في الأرصدة'),
+                        ],
+                      ),
+                      content: SingleChildScrollView(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('تم فحص ${verificationResult.customersChecked} عميل'),
+                            Text('وُجدت ${verificationResult.customersWithIssues} مشكلة:'),
+                            const SizedBox(height: 12),
+                            ...verificationResult.issues.take(10).map((issue) => Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: Card(
+                                color: Colors.red[50],
+                                child: Padding(
+                                  padding: const EdgeInsets.all(8),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text('👤 ${issue.customerName}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                                      Text('📊 مسجل: ${NumberFormat('#,###').format(issue.recordedBalance)}'),
+                                      Text('📊 محسوب: ${NumberFormat('#,###').format(issue.calculatedBalance)}'),
+                                      Text('⚠️ فرق: ${NumberFormat('#,###').format(issue.difference)}', 
+                                        style: const TextStyle(color: Colors.red)),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            )),
+                            const SizedBox(height: 12),
+                            const Text(
+                              'للإصلاح: اذهب للإعدادات ← أدوات الحماية ← فحص شامل',
+                              style: TextStyle(fontSize: 12, color: Colors.grey),
+                            ),
+                          ],
+                        ),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text('إغلاق'),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          );
+        }
+      };
+      
       syncResult = await _syncService.sync();
     } catch (e) {
       syncResult = SyncResult(

@@ -35,6 +35,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
+; Visual C++ Redistributable - يتم تثبيته تلقائياً إذا لم يكن موجوداً
+Source: "installer\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
+
+; ملفات التطبيق
 Source: "build\windows\x64\runner\Release\debt_book.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
@@ -43,4 +47,8 @@ Name: "{autoprograms}\Alnaser"; Filename: "{app}\debt_book.exe"
 Name: "{autodesktop}\Alnaser"; Filename: "{app}\debt_book.exe"; Tasks: desktopicon
 
 [Run]
+; تثبيت Visual C++ Runtime أولاً (بصمت - لن يظهر للمستخدم إلا إذا احتاج)
+Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "جاري تثبيت المتطلبات الأساسية..."; Flags: waituntilterminated
+
+; تشغيل التطبيق بعد التثبيت
 Filename: "{app}\debt_book.exe"; Description: "{cm:LaunchProgram,Alnaser}"; Flags: nowait postinstall skipifsilent

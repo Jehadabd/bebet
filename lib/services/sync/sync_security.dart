@@ -2,17 +2,28 @@
 // خدمات الأمان والتشفير لنظام المزامنة
 
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:googleapis/drive/v3.dart' as drive;
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 
 /// ═══════════════════════════════════════════════════════════════════════════
 /// خدمة الأمان للمزامنة
 /// ═══════════════════════════════════════════════════════════════════════════
 class SyncSecurity {
   static const _storage = FlutterSecureStorage();
-  static const String _secretKeyStorageKey = 'sync_shared_secret_v2';
+  static const String _secretKeyStorageKey = 'sync_shared_secret_v3';
   static const String _deviceIdStorageKey = 'sync_device_id_v2';
+  
+  // اسم ملف المفتاح المشترك على Google Drive
+  static const String _sharedSecretFileName = '.shared_secret.json';
+  static const String _syncFolderName = 'DebtBook_Sync_v3';
+  
+  // 🔐 المفتاح المشترك المضمن داخل التطبيق (ثابت لجميع الأجهزة)
+  static const String _embeddedSecretKey = 'DebtBook_Secure_Sync_Key_2024_v3_AlNaser_Edition';
   
   /// توليد مفتاح سري جديد
   static String generateSecretKey() {
@@ -21,24 +32,132 @@ class SyncSecurity {
     return base64Url.encode(values);
   }
   
-  /// حفظ المفتاح السري
+  /// حفظ المفتاح السري محلياً
   static Future<void> saveSecretKey(String key) async {
     await _storage.write(key: _secretKeyStorageKey, value: key);
+    print('🔐 تم حفظ المفتاح المشترك محلياً');
   }
   
-  /// قراءة المفتاح السري
+  /// قراءة المفتاح السري المحلي
   static Future<String?> getSecretKey() async {
     return await _storage.read(key: _secretKeyStorageKey);
   }
   
-  /// الحصول على المفتاح السري أو إنشاء واحد جديد
+  /// الحصول على المفتاح السري المضمن (ثابت - لا يحتاج مزامنة)
   static Future<String> getOrCreateSecretKey() async {
-    var key = await getSecretKey();
-    if (key == null || key.isEmpty) {
-      key = generateSecretKey();
-      await saveSecretKey(key);
+    // 🔐 إرجاع المفتاح المضمن مباشرة - لا حاجة للمزامنة
+    return _embeddedSecretKey;
+  }
+  
+  /// ═══════════════════════════════════════════════════════════════════════
+  /// 🔄 مزامنة المفتاح المشترك مع Google Drive
+  /// ═══════════════════════════════════════════════════════════════════════
+  
+  /// مزامنة المفتاح المشترك - يُستدعى عند كل مزامنة
+  /// 1. يتحقق من وجود المفتاح على Drive
+  /// 2. إذا وُجد: يُنزّله ويحفظه محلياً
+  /// 3. إذا لم يوجد: يرفع المفتاح المحلي إلى Drive
+  static Future<String> syncSharedSecret(drive.DriveApi driveApi, String syncFolderId) async {
+    print('🔄 جاري مزامنة المفتاح المشترك...');
+    
+    try {
+      // 1. البحث عن ملف المفتاح على Drive
+      final remoteKey = await _downloadSharedSecret(driveApi, syncFolderId);
+      
+      if (remoteKey != null && remoteKey.isNotEmpty) {
+        // المفتاح موجود على Drive - نحفظه محلياً
+        await saveSecretKey(remoteKey);
+        print('✅ تم تنزيل المفتاح المشترك من Google Drive');
+        return remoteKey;
+      }
+      
+      // 2. المفتاح غير موجود - نرفع المفتاح المحلي
+      var localKey = await getSecretKey();
+      if (localKey == null || localKey.isEmpty) {
+        localKey = generateSecretKey();
+        await saveSecretKey(localKey);
+      }
+      
+      // رفع المفتاح إلى Drive
+      await _uploadSharedSecret(driveApi, syncFolderId, localKey);
+      print('✅ تم رفع المفتاح المشترك إلى Google Drive');
+      
+      return localKey;
+      
+    } catch (e) {
+      print('⚠️ خطأ في مزامنة المفتاح: $e');
+      // في حالة الخطأ، نستخدم المفتاح المحلي
+      return await getOrCreateSecretKey();
     }
-    return key;
+  }
+  
+  /// تنزيل المفتاح المشترك من Google Drive
+  static Future<String?> _downloadSharedSecret(drive.DriveApi driveApi, String syncFolderId) async {
+    try {
+      final files = await driveApi.files.list(
+        q: "name = '$_sharedSecretFileName' and '$syncFolderId' in parents and trashed = false",
+        spaces: 'drive',
+        $fields: 'files(id,name)',
+      );
+      
+      if (files.files?.isEmpty ?? true) {
+        print('📭 لا يوجد مفتاح مشترك على Drive');
+        return null;
+      }
+      
+      final fileId = files.files!.first.id!;
+      final media = await driveApi.files.get(
+        fileId,
+        downloadOptions: drive.DownloadOptions.fullMedia,
+      ) as drive.Media;
+      
+      final bytes = <int>[];
+      await for (final chunk in media.stream) {
+        bytes.addAll(chunk);
+      }
+      
+      final json = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+      return json['secret_key'] as String?;
+      
+    } catch (e) {
+      print('⚠️ خطأ في تنزيل المفتاح: $e');
+      return null;
+    }
+  }
+  
+  /// رفع المفتاح المشترك إلى Google Drive
+  static Future<void> _uploadSharedSecret(drive.DriveApi driveApi, String syncFolderId, String secretKey) async {
+    try {
+      final data = {
+        'secret_key': secretKey,
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+        'version': 1,
+      };
+      
+      final content = jsonEncode(data);
+      final bytes = utf8.encode(content);
+      
+      // إنشاء ملف مؤقت
+      final tempDir = await getTemporaryDirectory();
+      final tempFile = File('${tempDir.path}/$_sharedSecretFileName');
+      await tempFile.writeAsBytes(bytes);
+      
+      final media = drive.Media(tempFile.openRead(), bytes.length);
+      
+      await driveApi.files.create(
+        drive.File()
+          ..name = _sharedSecretFileName
+          ..parents = [syncFolderId],
+        uploadMedia: media,
+      );
+      
+      await tempFile.delete();
+      print('📤 تم رفع المفتاح المشترك');
+      
+    } catch (e) {
+      print('❌ فشل رفع المفتاح: $e');
+      rethrow;
+    }
   }
   
   /// حفظ معرف الجهاز
