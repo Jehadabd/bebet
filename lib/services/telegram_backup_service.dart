@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'settings_manager.dart';
 
 class TelegramBackupService {
   static final TelegramBackupService _instance = TelegramBackupService._internal();
@@ -14,7 +15,8 @@ class TelegramBackupService {
 
   // القيم الثابتة (للاستخدام إذا فشل تحميل .env)
   static const String _fallbackBotToken = '8500250915:AAFl4ITzMuvEeC7hsSv0zk8UFZY6XsEysI8';
-  static const String _fallbackChannelId = '-1003625352513';
+  static const String _fallbackChannelIdElectric = '-1003625352513'; // كهربائيات
+  static const String _fallbackChannelIdHealth = '-1003392606317'; // صحيات
 
   // الحصول على البيانات من .env مع fallback
   String get _botToken {
@@ -22,17 +24,31 @@ class TelegramBackupService {
     return envToken.isNotEmpty ? envToken : _fallbackBotToken;
   }
   
-  String get _channelId {
+  String get _channelIdElectric {
     final envChannelId = dotenv.env['TELEGRAM_CHANNEL_ID'] ?? '';
-    return envChannelId.isNotEmpty ? envChannelId : _fallbackChannelId;
+    return envChannelId.isNotEmpty ? envChannelId : _fallbackChannelIdElectric;
+  }
+  
+  String get _channelIdHealth {
+    final envChannelId = dotenv.env['TELEGRAM_CHANNEL_ID_HEALTH'] ?? '';
+    return envChannelId.isNotEmpty ? envChannelId : _fallbackChannelIdHealth;
+  }
+
+  /// الحصول على Channel ID بناءً على قسم المحل المحدد في الإعدادات
+  Future<String> _getChannelId() async {
+    final settings = await SettingsManager.getAppSettings();
+    if (settings.storeSection == 'صحيات') {
+      return _channelIdHealth;
+    }
+    return _channelIdElectric;
   }
 
   // للتشخيص
   bool get botTokenExists => _botToken.isNotEmpty;
-  bool get channelIdExists => _channelId.isNotEmpty;
+  bool get channelIdExists => _channelIdElectric.isNotEmpty;
 
   // التحقق من صحة الإعدادات
-  bool get isConfigured => _botToken.isNotEmpty && _channelId.isNotEmpty;
+  bool get isConfigured => _botToken.isNotEmpty && _channelIdElectric.isNotEmpty;
 
   /// إرسال ملف إلى قناة Telegram
   Future<bool> sendDocument({
@@ -44,10 +60,11 @@ class TelegramBackupService {
     }
 
     try {
+      final channelId = await _getChannelId();
       final uri = Uri.parse('https://api.telegram.org/bot$_botToken/sendDocument');
       final request = http.MultipartRequest('POST', uri);
       
-      request.fields['chat_id'] = _channelId;
+      request.fields['chat_id'] = channelId;
       if (caption != null && caption.isNotEmpty) {
         request.fields['caption'] = caption;
       }
@@ -70,9 +87,10 @@ class TelegramBackupService {
     if (!isConfigured) return false;
 
     try {
+      final channelId = await _getChannelId();
       final uri = Uri.parse('https://api.telegram.org/bot$_botToken/sendMessage');
       final response = await http.post(uri, body: {
-        'chat_id': _channelId,
+        'chat_id': channelId,
         'text': text,
         'parse_mode': 'HTML',
       });

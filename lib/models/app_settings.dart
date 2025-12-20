@@ -35,6 +35,9 @@ class AppSettings {
   final bool syncFullTransferMode; // وضع النقل الكامل - رفع جميع البيانات عند المزامنة
   final bool syncShowConfirmation; // إظهار رسالة تأكيد قبل المزامنة
   final bool syncAutoCreateCustomers; // إنشاء العملاء تلقائياً عند استلام معاملات
+  
+  // 📱 إعدادات قسم المحل (للنسخ الاحتياطي على Telegram)
+  final String storeSection; // 'كهربائيات' أو 'صحيات'
 
   AppSettings({
     this.phoneNumbers = const [],
@@ -64,6 +67,7 @@ class AppSettings {
     bool? syncFullTransferMode,
     bool? syncShowConfirmation,
     bool? syncAutoCreateCustomers,
+    String? storeSection,
   }) : remainingAmountColor = remainingAmountColor ?? Colors.black.value,
        discountColor = discountColor ?? Colors.black.value,
        loadingFeesColor = loadingFeesColor ?? Colors.black.value,
@@ -89,7 +93,8 @@ class AppSettings {
        autoScrollInvoice = autoScrollInvoice ?? true,
        syncFullTransferMode = syncFullTransferMode ?? false,
        syncShowConfirmation = syncShowConfirmation ?? true,
-       syncAutoCreateCustomers = syncAutoCreateCustomers ?? true;
+       syncAutoCreateCustomers = syncAutoCreateCustomers ?? true,
+       storeSection = storeSection ?? 'كهربائيات';
 
   Map<String, dynamic> toJson() => {
         'phoneNumbers': phoneNumbers,
@@ -119,6 +124,7 @@ class AppSettings {
         'syncFullTransferMode': syncFullTransferMode,
         'syncShowConfirmation': syncShowConfirmation,
         'syncAutoCreateCustomers': syncAutoCreateCustomers,
+        'storeSection': storeSection,
       };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -149,6 +155,7 @@ class AppSettings {
         syncFullTransferMode: json['syncFullTransferMode'] ?? false,
         syncShowConfirmation: json['syncShowConfirmation'] ?? true,
         syncAutoCreateCustomers: json['syncAutoCreateCustomers'] ?? true,
+        storeSection: json['storeSection'] ?? 'كهربائيات',
       );
 
   AppSettings copyWith({
@@ -179,6 +186,7 @@ class AppSettings {
     bool? syncFullTransferMode,
     bool? syncShowConfirmation,
     bool? syncAutoCreateCustomers,
+    String? storeSection,
   }) {
     return AppSettings(
       phoneNumbers: phoneNumbers ?? this.phoneNumbers,
@@ -208,6 +216,7 @@ class AppSettings {
       syncFullTransferMode: syncFullTransferMode ?? this.syncFullTransferMode,
       syncShowConfirmation: syncShowConfirmation ?? this.syncShowConfirmation,
       syncAutoCreateCustomers: syncAutoCreateCustomers ?? this.syncAutoCreateCustomers,
+      storeSection: storeSection ?? this.storeSection,
     );
   }
 }

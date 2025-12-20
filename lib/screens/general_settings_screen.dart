@@ -55,6 +55,9 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
   bool _syncFullTransferMode = false;
   bool _syncShowConfirmation = true;
   bool _syncAutoCreateCustomers = true;
+  
+  // 📱 قسم المحل
+  String _storeSection = 'كهربائيات';
 
   @override
   void initState() {
@@ -96,6 +99,9 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
     _syncFullTransferMode = _appSettings.syncFullTransferMode;
     _syncShowConfirmation = _appSettings.syncShowConfirmation;
     _syncAutoCreateCustomers = _appSettings.syncAutoCreateCustomers;
+    
+    // تحميل قسم المحل
+    _storeSection = _appSettings.storeSection;
     
     // تحميل وصف الشركة
     _companyDescriptionController.text = _appSettings.companyDescription;
@@ -143,6 +149,7 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
       syncFullTransferMode: _syncFullTransferMode,
       syncShowConfirmation: _syncShowConfirmation,
       syncAutoCreateCustomers: _syncAutoCreateCustomers,
+      storeSection: _storeSection,
     );
     await SettingsManager.saveAppSettings(_appSettings);
     if (mounted) {
@@ -437,6 +444,96 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16.0),
         children: [
+          
+          // 📱 قسم المحل
+          _buildSettingsCard(
+            icon: Icons.store,
+            iconColor: Colors.deepPurple,
+            title: 'قسم المحل',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'اختر القسم لتحديد قناة Telegram للنسخ الاحتياطي',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: _storeSection,
+                  decoration: InputDecoration(
+                    labelText: 'قسم المحل',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: primaryColor, width: 2),
+                    ),
+                    prefixIcon: Icon(
+                      _storeSection == 'كهربائيات' ? Icons.electrical_services : Icons.plumbing,
+                      color: _storeSection == 'كهربائيات' ? Colors.amber : Colors.blue,
+                    ),
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'كهربائيات',
+                      child: Row(
+                        children: [
+                          Icon(Icons.electrical_services, color: Colors.amber, size: 20),
+                          SizedBox(width: 8),
+                          Text('كهربائيات'),
+                        ],
+                      ),
+                    ),
+                    DropdownMenuItem(
+                      value: 'صحيات',
+                      child: Row(
+                        children: [
+                          Icon(Icons.plumbing, color: Colors.blue, size: 20),
+                          SizedBox(width: 8),
+                          Text('صحيات'),
+                        ],
+                      ),
+                    ),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() {
+                        _storeSection = value;
+                      });
+                    }
+                  },
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: _storeSection == 'كهربائيات' ? Colors.amber[50] : Colors.blue[50],
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.info_outline,
+                        size: 16,
+                        color: _storeSection == 'كهربائيات' ? Colors.amber[700] : Colors.blue[700],
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _storeSection == 'كهربائيات'
+                              ? 'سيتم إرسال النسخ الاحتياطية إلى قناة: قاعدة بيانات الناصر'
+                              : 'سيتم إرسال النسخ الاحتياطية إلى قناة: قاعدة بيانات الناصر (الصحيات)',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: _storeSection == 'كهربائيات' ? Colors.amber[800] : Colors.blue[800],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
           
           _buildSettingsCard(
             icon: Icons.phone,
