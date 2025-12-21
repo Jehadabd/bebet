@@ -318,27 +318,33 @@ class DriveService {
     }
   }
 
-  Future<void> uploadDailyReport(File reportFile) async {
+  Future<void> uploadDailyReport(File reportFile, {String? branchName}) async {
     try {
       final client = await _getAuthenticatedClient();
       final driveApi = drive.DriveApi(client);
       final folderId = await _getFolderId();
       if (folderId == null) throw Exception('فشل الوصول لمجلد التقارير');
+      
+      // اسم الملف يتضمن اسم الفرع
+      final fileName = branchName != null && branchName.isNotEmpty
+          ? 'سجل الديون_$branchName.pdf'
+          : 'سجل الديون.pdf';
+      
       final existingFiles = await driveApi.files.list(
-        q: "name = 'سجل الديون.pdf' and '$folderId' in parents and trashed = false",
+        q: "name = '$fileName' and '$folderId' in parents and trashed = false",
         spaces: 'drive',
       );
       if (existingFiles.files?.isNotEmpty ?? false) {
         final fileId = existingFiles.files!.first.id;
         final media = drive.Media(reportFile.openRead(), await reportFile.length());
         await driveApi.files.update(
-          drive.File()..name = 'سجل الديون.pdf',
+          drive.File()..name = fileName,
           fileId!,
           uploadMedia: media,
         );
       } else {
         final driveFile = drive.File()
-          ..name = 'سجل الديون.pdf'
+          ..name = fileName
           ..parents = [folderId];
         final media = drive.Media(reportFile.openRead(), await reportFile.length());
         await driveApi.files.create(

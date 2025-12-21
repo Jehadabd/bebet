@@ -38,6 +38,9 @@ class AppSettings {
   
   // 📱 إعدادات قسم المحل (للنسخ الاحتياطي على Telegram)
   final String storeSection; // 'كهربائيات' أو 'صحيات'
+  
+  // 🏪 اسم الفرع (للتمييز بين الفروع عند الرفع)
+  final String branchName; // 'الفرع الرئيسي' أو 'الفرع الثاني' أو 'الفرع الثالث'
 
   AppSettings({
     this.phoneNumbers = const [],
@@ -68,6 +71,7 @@ class AppSettings {
     bool? syncShowConfirmation,
     bool? syncAutoCreateCustomers,
     String? storeSection,
+    String? branchName,
   }) : remainingAmountColor = remainingAmountColor ?? Colors.black.value,
        discountColor = discountColor ?? Colors.black.value,
        loadingFeesColor = loadingFeesColor ?? Colors.black.value,
@@ -94,7 +98,8 @@ class AppSettings {
        syncFullTransferMode = syncFullTransferMode ?? false,
        syncShowConfirmation = syncShowConfirmation ?? true,
        syncAutoCreateCustomers = syncAutoCreateCustomers ?? true,
-       storeSection = storeSection ?? 'كهربائيات';
+       storeSection = storeSection ?? 'كهربائيات',
+       branchName = branchName ?? 'الفرع الرئيسي';
 
   Map<String, dynamic> toJson() => {
         'phoneNumbers': phoneNumbers,
@@ -125,6 +130,7 @@ class AppSettings {
         'syncShowConfirmation': syncShowConfirmation,
         'syncAutoCreateCustomers': syncAutoCreateCustomers,
         'storeSection': storeSection,
+        'branchName': branchName,
       };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -156,6 +162,7 @@ class AppSettings {
         syncShowConfirmation: json['syncShowConfirmation'] ?? true,
         syncAutoCreateCustomers: json['syncAutoCreateCustomers'] ?? true,
         storeSection: json['storeSection'] ?? 'كهربائيات',
+        branchName: json['branchName'] ?? 'الفرع الرئيسي',
       );
 
   AppSettings copyWith({
@@ -187,6 +194,7 @@ class AppSettings {
     bool? syncShowConfirmation,
     bool? syncAutoCreateCustomers,
     String? storeSection,
+    String? branchName,
   }) {
     return AppSettings(
       phoneNumbers: phoneNumbers ?? this.phoneNumbers,
@@ -217,6 +225,7 @@ class AppSettings {
       syncShowConfirmation: syncShowConfirmation ?? this.syncShowConfirmation,
       syncAutoCreateCustomers: syncAutoCreateCustomers ?? this.syncAutoCreateCustomers,
       storeSection: storeSection ?? this.storeSection,
+      branchName: branchName ?? this.branchName,
     );
   }
 }

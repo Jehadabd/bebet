@@ -9,6 +9,7 @@ import '../services/drive_service.dart';
 import '../services/pdf_service.dart';
 import '../services/financial_audit_service.dart';
 import '../services/telegram_backup_service.dart';
+import '../services/settings_manager.dart';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:archive/archive_io.dart';
@@ -297,17 +298,21 @@ class AppProvider with ChangeNotifier {
     }
     _setLoading(true);
     try {
+      // جلب اسم الفرع من الإعدادات
+      final settings = await SettingsManager.getAppSettings();
+      final branchName = settings.branchName;
+      
       // رفع جميع العملاء الذين عليهم دين بدلاً من العملاء المعدلين اليوم فقط
       final allCustomersWithDebt = _customers
           .where((customer) => customer.currentTotalDebt > 0)
           .toList();
       if (allCustomersWithDebt.isNotEmpty) {
         final reportFile = await _pdf.generateDailyReport(allCustomersWithDebt);
-        await _drive.uploadDailyReport(reportFile);
+        await _drive.uploadDailyReport(reportFile, branchName: branchName);
       } else {
         // إذا لم يكن هناك عملاء عليهم دين، ارفع ملف فارغ أو رسالة
         final reportFile = await _pdf.generateDailyReport([]);
-        await _drive.uploadDailyReport(reportFile);
+        await _drive.uploadDailyReport(reportFile, branchName: branchName);
       }
     } finally {
       _setLoading(false);
@@ -514,10 +519,12 @@ class AppProvider with ChangeNotifier {
         }
       }
 
-      // 3) إنشاء ملف zip باسم التاريخ yyyy-MM-dd.zip
+      // 3) إنشاء ملف zip باسم التاريخ مع اسم الفرع
       onProgress?.call(0.45);
       final now = DateTime.now();
-      final zipName = '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}-${now.minute.toString().padLeft(2, '0')}-${now.second.toString().padLeft(2, '0')}.zip';
+      final settings = await SettingsManager.getAppSettings();
+      final branchName = settings.branchName;
+      final zipName = '${branchName}_${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}-${now.minute.toString().padLeft(2, '0')}-${now.second.toString().padLeft(2, '0')}.zip';
       final zipFile = File('${tempDir.path}/$zipName');
       final encoder = ZipFileEncoder();
       encoder.create(zipFile.path);
@@ -542,7 +549,7 @@ class AppProvider with ChangeNotifier {
       try {
         final telegramService = TelegramBackupService();
         if (telegramService.isConfigured) {
-          final caption = '📦 نسخة احتياطية - ${now.year}/${now.month}/${now.day} ${now.hour}:${now.minute.toString().padLeft(2, '0')}';
+          final caption = '📦 نسخة احتياطية - $branchName - ${now.year}/${now.month}/${now.day} ${now.hour}:${now.minute.toString().padLeft(2, '0')}';
           await telegramService.sendDocument(file: zipFile, caption: caption);
         }
       } catch (e) {

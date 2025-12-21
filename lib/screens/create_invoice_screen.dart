@@ -786,6 +786,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         paidAmountController.text = formatNumber(newTotal);
       }
       _calculateProfit(); // Update profit on discount change
+      // 🔧 إصلاح: تحديث الواجهة فوراً إذا كان الربح ظاهراً
+      if (_isProfitVisible) {
+        setState(() {});
+      }
       _scheduleLiveDebtSync();
     } catch (e) {
       print('Error in onDiscountChanged: $e');
@@ -4092,6 +4096,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                             discount = enteredDiscount;
                             _guardDiscount();
                             _updatePaidAmountIfCash();
+                            // 🔧 إصلاح: تحديث الربح فوراً عند تغيير الخصم
+                            _calculateProfit();
                           });
                           if (invoiceToManage != null &&
                               invoiceToManage!.status == 'معلقة' &&

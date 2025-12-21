@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import '../services/database_service.dart';
 import '../services/pdf_service.dart';
 import '../services/sync/sync_audit_service.dart';
+import '../services/password_service.dart';
 import '../models/account_statement_item.dart';
 
 class GeneralSettingsScreen extends StatefulWidget {
@@ -58,6 +59,12 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
   
   // 📱 قسم المحل
   String _storeSection = 'كهربائيات';
+  
+  // 🏪 اسم الفرع
+  String _branchName = 'الفرع الرئيسي';
+  
+  // 🔐 خدمة كلمة السر
+  final PasswordService _passwordService = PasswordService();
 
   @override
   void initState() {
@@ -102,6 +109,9 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
     
     // تحميل قسم المحل
     _storeSection = _appSettings.storeSection;
+    
+    // تحميل اسم الفرع
+    _branchName = _appSettings.branchName;
     
     // تحميل وصف الشركة
     _companyDescriptionController.text = _appSettings.companyDescription;
@@ -150,6 +160,7 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
       syncShowConfirmation: _syncShowConfirmation,
       syncAutoCreateCustomers: _syncAutoCreateCustomers,
       storeSection: _storeSection,
+      branchName: _branchName,
     );
     await SettingsManager.saveAppSettings(_appSettings);
     if (mounted) {
@@ -334,6 +345,103 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
     super.dispose();
   }
 
+  /// دالة لعرض حوار تأكيد محمي بكلمة سر
+  Future<bool> _showProtectedChangeDialog({
+    required String title,
+    required String message,
+  }) async {
+    // أولاً: عرض رسالة التحذير
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 28),
+            const SizedBox(width: 8),
+            Text(title, style: const TextStyle(fontSize: 18)),
+          ],
+        ),
+        content: Text(message, style: const TextStyle(fontSize: 16)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('إلغاء', style: TextStyle(fontSize: 16)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orange,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('متابعة', style: TextStyle(fontSize: 16)),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed != true) return false;
+    
+    // ثانياً: طلب كلمة السر
+    final passwordController = TextEditingController();
+    final passwordConfirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.lock, color: Colors.deepPurple, size: 28),
+            SizedBox(width: 8),
+            Text('أدخل كلمة السر', style: TextStyle(fontSize: 18)),
+          ],
+        ),
+        content: TextField(
+          controller: passwordController,
+          obscureText: true,
+          autofocus: true,
+          decoration: InputDecoration(
+            labelText: 'كلمة السر',
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            prefixIcon: const Icon(Icons.lock_outline),
+          ),
+          onSubmitted: (value) async {
+            final isCorrect = await _passwordService.verifyPassword(value);
+            Navigator.of(context).pop(isCorrect);
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('إلغاء', style: TextStyle(fontSize: 16)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: primaryColor,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () async {
+              final isCorrect = await _passwordService.verifyPassword(passwordController.text);
+              Navigator.of(context).pop(isCorrect);
+            },
+            child: const Text('تأكيد', style: TextStyle(fontSize: 16)),
+          ),
+        ],
+      ),
+    );
+    
+    if (passwordConfirmed != true) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('كلمة السر غير صحيحة'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return false;
+    }
+    
+    return true;
+  }
+
   static const Color primaryColor = Color(0xFF3F51B5);
 
   Widget _buildActionTile({
@@ -449,7 +557,7 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
           _buildSettingsCard(
             icon: Icons.store,
             iconColor: Colors.deepPurple,
-            title: 'قسم المحل',
+            title: 'قسم المحل والفرع',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -494,11 +602,18 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                       ),
                     ),
                   ],
-                  onChanged: (value) {
-                    if (value != null) {
-                      setState(() {
-                        _storeSection = value;
-                      });
+                  onChanged: (value) async {
+                    if (value != null && value != _storeSection) {
+                      // طلب تأكيد وكلمة سر
+                      final confirmed = await _showProtectedChangeDialog(
+                        title: 'تغيير قسم المحل',
+                        message: 'هل أنت متأكد من تغيير القسم من "$_storeSection" إلى "$value"؟\n\nسيؤثر هذا على قناة Telegram التي يتم إرسال النسخ الاحتياطية إليها.',
+                      );
+                      if (confirmed) {
+                        setState(() {
+                          _storeSection = value;
+                        });
+                      }
                     }
                   },
                 ),
@@ -526,6 +641,92 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                             fontSize: 11,
                             color: _storeSection == 'كهربائيات' ? Colors.amber[800] : Colors.blue[800],
                           ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Divider(),
+                const SizedBox(height: 16),
+                Text(
+                  'اختر الفرع لتمييز ملفات الرفع',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: _branchName,
+                  decoration: InputDecoration(
+                    labelText: 'اسم الفرع',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: primaryColor, width: 2),
+                    ),
+                    prefixIcon: const Icon(Icons.business, color: Colors.deepPurple),
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'الفرع الرئيسي',
+                      child: Row(
+                        children: [
+                          Icon(Icons.home_work, color: Colors.green, size: 20),
+                          SizedBox(width: 8),
+                          Text('الفرع الرئيسي'),
+                        ],
+                      ),
+                    ),
+                    DropdownMenuItem(
+                      value: 'الفرع الثاني',
+                      child: Row(
+                        children: [
+                          Icon(Icons.store, color: Colors.orange, size: 20),
+                          SizedBox(width: 8),
+                          Text('الفرع الثاني'),
+                        ],
+                      ),
+                    ),
+                    DropdownMenuItem(
+                      value: 'الفرع الثالث',
+                      child: Row(
+                        children: [
+                          Icon(Icons.storefront, color: Colors.purple, size: 20),
+                          SizedBox(width: 8),
+                          Text('الفرع الثالث'),
+                        ],
+                      ),
+                    ),
+                  ],
+                  onChanged: (value) async {
+                    if (value != null && value != _branchName) {
+                      // طلب تأكيد وكلمة سر
+                      final confirmed = await _showProtectedChangeDialog(
+                        title: 'تغيير اسم الفرع',
+                        message: 'هل أنت متأكد من تغيير الفرع من "$_branchName" إلى "$value"؟\n\nسيؤثر هذا على اسم ملفات النسخ الاحتياطي وسجل الديون.',
+                      );
+                      if (confirmed) {
+                        setState(() {
+                          _branchName = value;
+                        });
+                      }
+                    }
+                  },
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.deepPurple[50],
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.info_outline, size: 16, color: Colors.deepPurple[700]),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'سيتم إضافة "$_branchName" إلى اسم ملفات النسخ الاحتياطي وسجل الديون',
+                          style: TextStyle(fontSize: 11, color: Colors.deepPurple[800]),
                         ),
                       ),
                     ],

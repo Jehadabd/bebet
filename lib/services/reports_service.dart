@@ -429,6 +429,7 @@ class ReportsService {
     }
     
     // المعاملات اليدوية (جدول transactions)
+    // 🔧 إصلاح: فقط المعاملات اليدوية من هذا الجهاز وغير المرتبطة بفاتورة
     final manualDebt = await db.rawQuery('''
       SELECT 
         COUNT(*) as count,
@@ -436,6 +437,8 @@ class ReportsService {
       FROM transactions
       WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
         AND transaction_type IN ('manual_debt', 'opening_balance')
+        AND invoice_id IS NULL
+        AND is_created_by_me = 1
     ''', [startStr, endStr]);
     
     final manualPayment = await db.rawQuery('''
@@ -445,6 +448,8 @@ class ReportsService {
       FROM transactions
       WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
         AND transaction_type = 'manual_payment'
+        AND invoice_id IS NULL
+        AND is_created_by_me = 1
     ''', [startStr, endStr]);
     
     final inv = invoiceData.first;

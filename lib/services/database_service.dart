@@ -4803,11 +4803,12 @@ class DatabaseService {
             : '$year-${(month + 1).toString().padLeft(2, '0')}-01T00:00:00.000';
 
         // أضف الدين المبدئي والمعاملات اليدوية (إضافة دين) إلى البيع بالدين لهذا الشهر
+        // 🔧 إصلاح: فقط المعاملات اليدوية من هذا الجهاز وغير المرتبطة بفاتورة
         final List<Map<String, dynamic>> manualDebtTx = await db.query(
           'transactions',
           columns: ['amount_changed'],
           where:
-              "(transaction_type = 'manual_debt' OR transaction_type = 'opening_balance') AND transaction_date >= ? AND transaction_date < ?",
+              "(transaction_type = 'manual_debt' OR transaction_type = 'opening_balance') AND invoice_id IS NULL AND is_created_by_me = 1 AND transaction_date >= ? AND transaction_date < ?",
           whereArgs: [start, end],
         );
         for (final tx in manualDebtTx) {
@@ -4818,13 +4819,13 @@ class DatabaseService {
         manualDebtCount = manualDebtTx.length; // عدد معاملات إضافة الدين
         
         // حساب ربح المعاملات اليدوية (15% من إضافة الدين اليدوية فقط - بدون الدين المبدئي)
-        // الشرط: manual_debt فقط + غير مرتبطة بفاتورة (invoice_id IS NULL)
+        // 🔧 إصلاح: فقط المعاملات اليدوية من هذا الجهاز وغير المرتبطة بفاتورة
         double manualDebtProfitValue = 0.0;
         final List<Map<String, dynamic>> manualDebtOnlyTx = await db.query(
           'transactions',
           columns: ['amount_changed'],
           where:
-              "transaction_type = 'manual_debt' AND invoice_id IS NULL AND transaction_date >= ? AND transaction_date < ?",
+              "transaction_type = 'manual_debt' AND invoice_id IS NULL AND is_created_by_me = 1 AND transaction_date >= ? AND transaction_date < ?",
           whereArgs: [start, end],
         );
         for (final tx in manualDebtOnlyTx) {
@@ -4833,11 +4834,12 @@ class DatabaseService {
         }
 
         // جمع معاملات تسديد الديون لهذا الشهر (manual_payment)
+        // 🔧 إصلاح: فقط المعاملات اليدوية من هذا الجهاز وغير المرتبطة بفاتورة
         final List<Map<String, dynamic>> debtTxMaps = await db.query(
           'transactions',
           columns: ['amount_changed'],
           where:
-              "transaction_type = 'manual_payment' AND transaction_date >= ? AND transaction_date < ?",
+              "transaction_type = 'manual_payment' AND invoice_id IS NULL AND is_created_by_me = 1 AND transaction_date >= ? AND transaction_date < ?",
           whereArgs: [start, end],
         );
         for (final tx in debtTxMaps) {

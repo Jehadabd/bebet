@@ -1665,15 +1665,16 @@ class AIChatService {
       }
       
       // حساب المعاملات المالية اليدوية (تسديد دين وإضافة دين)
+      // 🔧 إصلاح: فقط المعاملات اليدوية من هذا الجهاز وغير المرتبطة بفاتورة
       final manualDebtTransactions = await db.query(
         'transactions',
-        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ?',
+        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1',
         whereArgs: [startStr, endStr, 'manual_debt'],
       );
       
       final manualPaymentTransactions = await db.query(
         'transactions',
-        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ?',
+        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1',
         whereArgs: [startStr, endStr, 'manual_payment'],
       );
       
@@ -1689,9 +1690,10 @@ class AIChatService {
       }
       
       // إضافة الدين المبدئي لليوم
+      // 🔧 إصلاح: فقط المعاملات من هذا الجهاز وغير المرتبطة بفاتورة
       final openingBalanceTransactions = await db.query(
         'transactions',
-        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ?',
+        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1',
         whereArgs: [startStr, endStr, 'opening_balance'],
       );
       
@@ -1700,11 +1702,11 @@ class AIChatService {
       }
       
       // حساب ربح المعاملات اليدوية (15% من إضافة الدين اليدوية فقط - بدون الدين المبدئي)
-      // الشرط: manual_debt فقط + غير مرتبطة بفاتورة (invoice_id IS NULL)
+      // 🔧 إصلاح: فقط المعاملات اليدوية من هذا الجهاز وغير المرتبطة بفاتورة
       double manualDebtProfit = 0.0;
       final manualDebtOnlyTransactions = await db.query(
         'transactions',
-        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL',
+        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1',
         whereArgs: [startStr, endStr, 'manual_debt'],
       );
       for (var trans in manualDebtOnlyTransactions) {
@@ -1852,15 +1854,16 @@ class AIChatService {
       }
       
       // حساب المعاملات المالية اليدوية (تسديد دين وإضافة دين)
+      // 🔧 إصلاح: فقط المعاملات اليدوية من هذا الجهاز وغير المرتبطة بفاتورة
       final manualDebtTransactions = await db.query(
         'transactions',
-        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ?',
+        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1',
         whereArgs: [startStr, endStr, 'manual_debt'],
       );
       
       final manualPaymentTransactions = await db.query(
         'transactions',
-        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ?',
+        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1',
         whereArgs: [startStr, endStr, 'manual_payment'],
       );
       
@@ -1876,9 +1879,10 @@ class AIChatService {
       }
       
       // إضافة الدين المبدئي للأسبوع
+      // 🔧 إصلاح: فقط المعاملات من هذا الجهاز وغير المرتبطة بفاتورة
       final openingBalanceTransactions = await db.query(
         'transactions',
-        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ?',
+        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1',
         whereArgs: [startStr, endStr, 'opening_balance'],
       );
       
@@ -1887,11 +1891,11 @@ class AIChatService {
       }
       
       // حساب ربح المعاملات اليدوية (15% من إضافة الدين اليدوية فقط - بدون الدين المبدئي)
-      // الشرط: manual_debt فقط + غير مرتبطة بفاتورة (invoice_id IS NULL)
+      // 🔧 إصلاح: فقط المعاملات اليدوية من هذا الجهاز وغير المرتبطة بفاتورة
       double manualDebtProfit = 0.0;
       final manualDebtOnlyTransactions = await db.query(
         'transactions',
-        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL',
+        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1',
         whereArgs: [startStr, endStr, 'manual_debt'],
       );
       for (var trans in manualDebtOnlyTransactions) {

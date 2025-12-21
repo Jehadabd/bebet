@@ -39,11 +39,6 @@ class TelegramInvoiceExportService {
 
       result.totalCount = invoices.length;
       
-      // إرسال رسالة بداية
-      final startMsg = '📋 بدء إرسال ${invoices.length} فاتورة جديدة\n'
-          '📅 منذ: ${_formatDateTime(afterDate)}';
-      await _telegram.sendMessage(startMsg);
-
       // تحميل الموارد
       onProgress?.call(0, invoices.length, 'جاري تحميل الموارد...');
       final logoBytes = await rootBundle.load('assets/icon/alnasser.jpg');
@@ -51,7 +46,19 @@ class TelegramInvoiceExportService {
       final font = pw.Font.ttf(await rootBundle.load('assets/fonts/Amiri-Regular.ttf'));
       final alnaserFont = pw.Font.ttf(await rootBundle.load('assets/fonts/PTBLDHAD.TTF'));
       final appSettings = await SettingsManager.getAppSettings();
+      final branchName = appSettings.branchName;
       final allProducts = await _db.getAllProducts();
+      
+      // إنشاء خريطة للمنتجات للبحث السريع
+      final Map<String, Product> productMap = {
+        for (var p in allProducts) p.name: p
+      };
+
+      // إرسال رسالة بداية
+      final startMsg = '📋 بدء إرسال ${invoices.length} فاتورة جديدة\n'
+          '🏪 $branchName\n'
+          '📅 منذ: ${_formatDateTime(afterDate)}';
+      await _telegram.sendMessage(startMsg);
 
       // إنشاء مجلد مؤقت
       final tempDir = await getTemporaryDirectory();
@@ -76,6 +83,9 @@ class TelegramInvoiceExportService {
           final itemsTotal = items.fold(0.0, (sum, item) => sum + item.itemTotal);
           final afterDiscount = (itemsTotal + invoice.loadingFee) - invoice.discount;
           final remaining = afterDiscount - invoice.amountPaidOnInvoice;
+          
+          // حساب إجمالي الربح - نفس منطق create_invoice_screen.dart
+          final invoiceProfit = _calculateInvoiceProfit(items, productMap, invoice.discount);
           
           double previousDebt = 0.0;
           double currentDebt = 0.0;
@@ -105,14 +115,17 @@ class TelegramInvoiceExportService {
 
           // حفظ PDF مؤقتاً
           final safeCustomerName = _sanitizeFileName(invoice.customerName);
-          final fileName = 'فاتورة_${invoice.id}_$safeCustomerName.pdf';
+          final safeBranchName = _sanitizeFileName(branchName);
+          final fileName = '${safeBranchName}_فاتورة_${invoice.id}_$safeCustomerName.pdf';
           final pdfFile = File('${exportDir.path}/$fileName');
           await pdfFile.writeAsBytes(await pdf.save());
 
           // إرسال إلى Telegram
           final caption = '🧾 فاتورة #${invoice.id}\n'
+              '🏪 $branchName\n'
               '👤 ${invoice.customerName}\n'
               '💰 ${_formatNumber(afterDiscount)} د.ع\n'
+              '📈 الربح: ${_formatNumber(invoiceProfit)} د.ع\n'
               '📅 ${_formatDate(invoice.invoiceDate)}';
           
           final sent = await _telegram.sendDocument(file: pdfFile, caption: caption);
@@ -123,8 +136,8 @@ class TelegramInvoiceExportService {
             result.failedCount++;
           }
 
-          // تأخير بسيط لتجنب rate limiting
-          await Future.delayed(const Duration(milliseconds: 300));
+          // تأخير 3.5 ثواني لتجنب rate limiting (حد Telegram: 20 رسالة/دقيقة)
+          await Future.delayed(const Duration(milliseconds: 3500));
           
         } catch (e) {
           result.failedCount++;
@@ -138,6 +151,7 @@ class TelegramInvoiceExportService {
 
       // إرسال رسالة نهاية
       final endMsg = '✅ تم إرسال ${result.sentCount} فاتورة بنجاح\n'
+          '🏪 $branchName\n'
           '${result.failedCount > 0 ? '❌ فشل: ${result.failedCount}\n' : ''}'
           '${result.skippedCount > 0 ? '⏭️ تم تخطي: ${result.skippedCount}\n' : ''}';
       await _telegram.sendMessage(endMsg);
@@ -453,6 +467,105 @@ class TelegramInvoiceExportService {
 
   String _formatDate(DateTime dt) {
     return '${dt.year}/${dt.month}/${dt.day}';
+  }
+
+  /// حساب إجمالي ربح الفاتورة - نفس منطق create_invoice_screen.dart
+  double _calculateInvoiceProfit(List<InvoiceItem> items, Map<String, Product> productMap, double discount) {
+    double totalProfit = 0.0;
+    
+    for (var item in items) {
+      final double sellingPrice = item.appliedPrice;
+      final double? acp = item.actualCostPrice;
+      final double itemBaseCost = item.costPrice ?? 0.0;
+      
+      final String saleType = item.saleType ?? '';
+      final double qi = item.quantityIndividual ?? 0.0;
+      final double ql = item.quantityLargeUnit ?? 0.0;
+      final double uilu = item.unitsInLargeUnit ?? 0.0;
+      
+      // جلب بيانات المنتج
+      final Product? product = productMap[item.productName];
+      final String productUnit = product?.unit ?? '';
+      final double lengthPerUnit = product?.lengthPerUnit ?? 1.0;
+      final double productBaseCost = product?.costPrice ?? 0.0;
+      final Map<String, double> unitCosts = product?.getUnitCostsMap() ?? {};
+      
+      final bool soldAsLargeUnit = ql > 0;
+      final double saleUnitsCount = soldAsLargeUnit ? ql : qi;
+      
+      double costPerSaleUnit;
+      
+      if (acp != null && acp > 0) {
+        // الأولوية 1: استخدام التكلفة الفعلية إذا كانت متوفرة
+        costPerSaleUnit = acp;
+      } else if (soldAsLargeUnit) {
+        // الأولوية 2 و 3: التعامل مع الوحدات الكبيرة
+        if (unitCosts.containsKey(saleType)) {
+          costPerSaleUnit = unitCosts[saleType]!;
+        } else if (productUnit == 'meter' && saleType == 'لفة') {
+          // حالة خاصة للفات: التكلفة = التكلفة الأساسية × الطول
+          costPerSaleUnit = productBaseCost * lengthPerUnit;
+        } else if (uilu > 0) {
+          // الافتراضي: التكلفة = التكلفة الأساسية × عدد الوحدات في الوحدة الكبيرة
+          costPerSaleUnit = productBaseCost * uilu;
+        } else {
+          // إذا كان uilu = 0، نحاول حساب من unit_hierarchy
+          costPerSaleUnit = _calculateCostFromHierarchy(
+            productCost: productBaseCost,
+            saleType: saleType,
+            unitHierarchyJson: product?.unitHierarchy,
+          );
+        }
+      } else {
+        // الأولوية 4: البيع بالوحدات الأساسية (قطعة، متر)
+        costPerSaleUnit = itemBaseCost > 0 ? itemBaseCost : productBaseCost;
+      }
+      
+      // إذا كانت التكلفة صفر، افترض أن الربح 10% فقط
+      if (costPerSaleUnit <= 0 && sellingPrice > 0) {
+        costPerSaleUnit = sellingPrice * 0.9; // 10% ربح
+      }
+      
+      final double lineAmount = sellingPrice * saleUnitsCount;
+      final double lineCostTotal = costPerSaleUnit * saleUnitsCount;
+      
+      totalProfit += (lineAmount - lineCostTotal);
+    }
+    
+    // طرح الخصم من الربح
+    return totalProfit - discount;
+  }
+
+  /// حساب التكلفة من unit_hierarchy عندما لا تتوفر بيانات أخرى
+  double _calculateCostFromHierarchy({
+    required double productCost,
+    required String saleType,
+    required String? unitHierarchyJson,
+  }) {
+    if (unitHierarchyJson == null || unitHierarchyJson.trim().isEmpty) {
+      return productCost;
+    }
+    
+    try {
+      final List<dynamic> hierarchy = json.decode(unitHierarchyJson.replaceAll("'", '"'));
+      double multiplier = 1.0;
+      
+      for (final level in hierarchy) {
+        final String unitName = (level['unit_name'] ?? level['name'] ?? '').toString();
+        final double qty = (level['quantity'] is num)
+            ? (level['quantity'] as num).toDouble()
+            : double.tryParse(level['quantity'].toString()) ?? 1.0;
+        multiplier *= qty;
+        
+        if (unitName == saleType) {
+          return productCost * multiplier;
+        }
+      }
+      
+      return productCost;
+    } catch (e) {
+      return productCost;
+    }
   }
 }
 

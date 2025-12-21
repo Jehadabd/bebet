@@ -404,6 +404,9 @@ class _MainScreenState extends State<MainScreen> {
                 // ابدأ الرفع في مهمة منفصلة وتحديث المؤشر ثم إغلاق الحوار
                 Future(() async {
                   try {
+                    // متغير لتتبع نجاح إرسال الفواتير لتيليجرام
+                    bool allInvoicesSentSuccessfully = true;
+                    
                     // 1) رفع قاعدة البيانات إلى Drive و Telegram
                     await context.read<AppProvider>().uploadDatabaseToDrive(
                       onProgress: (p) {
@@ -415,19 +418,33 @@ class _MainScreenState extends State<MainScreen> {
                     if (telegramService.isConfigured && lastUploadTime != null) {
                       statusNotifier.value = 'جاري إرسال الفواتير الجديدة...';
                       final exportService = TelegramInvoiceExportService();
-                      await exportService.exportAndSendNewInvoices(
+                      final exportResult = await exportService.exportAndSendNewInvoices(
                         afterDate: lastUploadTime,
                         onProgress: (current, total, status) {
                           if (total > 0) {
-                            progressNotifier.value = 0.5 + (current / total) * 0.45;
+                            progressNotifier.value = 0.5 + (current / total) * 0.40;
                             statusNotifier.value = status;
                           }
                         },
                       );
+                      
+                      // التحقق من نجاح إرسال جميع الفواتير
+                      if (exportResult.failedCount > 0) {
+                        allInvoicesSentSuccessfully = false;
+                      }
                     }
 
-                    // 3) حفظ وقت الرفع الحالي
-                    await telegramService.saveLastUploadTime();
+                    // 3) إرسال الملخص الشهري إلى Telegram
+                    if (telegramService.isConfigured) {
+                      statusNotifier.value = 'جاري إرسال الملخص الشهري...';
+                      progressNotifier.value = 0.92;
+                      await telegramService.sendMonthlySummary();
+                    }
+
+                    // 4) حفظ وقت الرفع الحالي فقط إذا نجح إرسال جميع الفواتير
+                    if (allInvoicesSentSuccessfully) {
+                      await telegramService.saveLastUploadTime();
+                    }
                     
                     progressNotifier.value = 1.0;
                     uploadSucceeded = true;
