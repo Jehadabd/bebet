@@ -12,6 +12,7 @@ import '../services/pdf_service.dart';
 import '../services/sync/sync_audit_service.dart';
 import '../services/password_service.dart';
 import '../models/account_statement_item.dart';
+import '../services/smart_search/smart_search.dart' as smart_search; // 🧠 البحث الذكي
 
 class GeneralSettingsScreen extends StatefulWidget {
   const GeneralSettingsScreen({super.key});
@@ -1020,6 +1021,40 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
             ),
           ),
           
+          // 🧠 البحث الذكي
+          _buildSettingsCard(
+            icon: Icons.psychology,
+            iconColor: Colors.deepPurple,
+            title: 'البحث الذكي (AI)',
+            child: Column(
+              children: [
+                _buildActionTile(
+                  icon: Icons.model_training,
+                  iconColor: Colors.purple,
+                  title: 'تدريب البحث الذكي',
+                  subtitle: 'تدريب النظام على جميع الفواتير السابقة',
+                  onTap: () => _trainSmartSearch(),
+                ),
+                const Divider(height: 1),
+                _buildActionTile(
+                  icon: Icons.info_outline,
+                  iconColor: Colors.blue,
+                  title: 'إحصائيات التدريب',
+                  subtitle: 'عرض معلومات آخر تدريب',
+                  onTap: () => _showSmartSearchStats(),
+                ),
+                const Divider(height: 1),
+                _buildActionTile(
+                  icon: Icons.label,
+                  iconColor: Colors.teal,
+                  title: 'إدارة الماركات',
+                  subtitle: 'عرض وإضافة وحذف الماركات المكتشفة',
+                  onTap: () => _showBrandsManagement(),
+                ),
+              ],
+            ),
+          ),
+          
           // 🛡️ أدوات الحماية والتدقيق المالي
           _buildSettingsCard(
             icon: Icons.verified_user,
@@ -1064,6 +1099,249 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
         ],
       ),
     );
+  }
+
+  // 🧠 دالة تدريب البحث الذكي
+  Future<void> _trainSmartSearch() async {
+    // تأكيد من المستخدم
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.psychology, color: Colors.deepPurple),
+            SizedBox(width: 8),
+            Text('تدريب البحث الذكي'),
+          ],
+        ),
+        content: const Text(
+          'سيقوم النظام بقراءة جميع الفواتير السابقة وتعلم:\n\n'
+          '• تفضيلات العملاء للعلامات التجارية\n'
+          '• تفضيلات المُركّبين\n'
+          '• المنتجات التي تُشترى معاً\n\n'
+          'قد يستغرق هذا بضع ثوانٍ.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.play_arrow),
+            label: const Text('بدء التدريب'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple),
+            onPressed: () => Navigator.pop(context, true),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    // عرض مؤشر التقدم
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const AlertDialog(
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('جاري التدريب على الفواتير...'),
+            SizedBox(height: 8),
+            Text(
+              'يرجى الانتظار',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      final stats = await smart_search.SmartSearchService.instance.trainOnAllInvoices(
+        onProgress: (current, total, message) {
+          print('🧠 $message ($current/$total)');
+        },
+      );
+
+      if (mounted) Navigator.pop(context);
+
+      if (!mounted) return;
+
+      // عرض النتائج
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.green),
+              SizedBox(width: 8),
+              Text('اكتمل التدريب'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildStatRow('📄 الفواتير', '${stats.totalInvoices}'),
+              _buildStatRow('📦 الأصناف', '${stats.totalItems}'),
+              _buildStatRow('🔗 العلاقات', '${stats.totalAssociations}'),
+              _buildStatRow('👥 تفضيلات العملاء', '${stats.totalCustomerPreferences}'),
+              _buildStatRow('🔧 تفضيلات المُركّبين', '${stats.totalInstallerPreferences}'),
+              _buildStatRow('🏷️ العلامات التجارية', '${stats.uniqueBrands}'),
+              _buildStatRow('⏱️ وقت التدريب', '${stats.trainingDuration.inSeconds} ثانية'),
+            ],
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('حسناً'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ في التدريب: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  // 🧠 دالة عرض إحصائيات البحث الذكي
+  Future<void> _showSmartSearchStats() async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const AlertDialog(
+        content: Row(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(width: 16),
+            Text('جاري تحميل الإحصائيات...'),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      final stats = await smart_search.SmartSearchService.instance.getTrainingStats();
+
+      if (mounted) Navigator.pop(context);
+
+      if (!mounted) return;
+
+      if (stats == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('لم يتم تدريب النظام بعد. اضغط على "تدريب البحث الذكي" أولاً.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        return;
+      }
+
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.analytics, color: Colors.blue),
+              SizedBox(width: 8),
+              Text('إحصائيات البحث الذكي'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildStatRow('📄 الفواتير', '${stats.totalInvoices}'),
+              _buildStatRow('📦 الأصناف', '${stats.totalItems}'),
+              _buildStatRow('🔗 العلاقات', '${stats.totalAssociations}'),
+              _buildStatRow('👥 تفضيلات العملاء', '${stats.totalCustomerPreferences}'),
+              _buildStatRow('🔧 تفضيلات المُركّبين', '${stats.totalInstallerPreferences}'),
+              _buildStatRow('🏷️ العلامات التجارية', '${stats.uniqueBrands}'),
+              const Divider(),
+              _buildStatRow('📅 آخر تدريب', _formatDate(stats.trainedAt)),
+            ],
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('حسناً'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Widget _buildStatRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label),
+          Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+
+  String _formatDate(DateTime date) {
+    return '${date.year}/${date.month}/${date.day} ${date.hour}:${date.minute.toString().padLeft(2, '0')}';
+  }
+
+  // 🏷️ دالة إدارة الماركات
+  Future<void> _showBrandsManagement() async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const AlertDialog(
+        content: Row(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(width: 16),
+            Text('جاري تحميل الماركات...'),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      final brands = await smart_search.SmartSearchService.instance.getAllBrandsWithCount();
+      
+      if (mounted) Navigator.pop(context);
+      if (!mounted) return;
+
+      await showDialog(
+        context: context,
+        builder: (context) => _BrandsManagementDialog(brands: brands),
+      );
+      
+      // إعادة تحميل الماركات بعد الإغلاق
+      await smart_search.SmartSearchService.instance.loadAutoDiscoveredBrands();
+      
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   // 🛡️ دالة الفحص الشامل
@@ -2455,6 +2733,287 @@ class _SyncAuditLogDialogState extends State<_SyncAuditLogDialog> {
           ],
         ),
       ),
+    );
+  }
+}
+
+// 🏷️ Dialog لإدارة الماركات
+class _BrandsManagementDialog extends StatefulWidget {
+  final List<Map<String, dynamic>> brands;
+  
+  const _BrandsManagementDialog({required this.brands});
+  
+  @override
+  State<_BrandsManagementDialog> createState() => _BrandsManagementDialogState();
+}
+
+class _BrandsManagementDialogState extends State<_BrandsManagementDialog> {
+  late List<Map<String, dynamic>> _brands;
+  final TextEditingController _newBrandController = TextEditingController();
+  bool _isLoading = false;
+  String _searchQuery = '';
+  
+  @override
+  void initState() {
+    super.initState();
+    _brands = List.from(widget.brands);
+  }
+  
+  @override
+  void dispose() {
+    _newBrandController.dispose();
+    super.dispose();
+  }
+  
+  List<Map<String, dynamic>> get _filteredBrands {
+    if (_searchQuery.isEmpty) return _brands;
+    return _brands.where((b) => 
+      (b['brand'] as String).toLowerCase().contains(_searchQuery.toLowerCase())
+    ).toList();
+  }
+  
+  Future<void> _addBrand() async {
+    final brandName = _newBrandController.text.trim();
+    if (brandName.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('أدخل اسم الماركة'), backgroundColor: Colors.orange),
+      );
+      return;
+    }
+    
+    // التحقق من عدم وجود الماركة
+    final exists = _brands.any((b) => 
+      (b['brand'] as String).toLowerCase() == brandName.toLowerCase()
+    );
+    if (exists) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('الماركة موجودة بالفعل'), backgroundColor: Colors.orange),
+      );
+      return;
+    }
+    
+    setState(() => _isLoading = true);
+    
+    try {
+      await smart_search.SmartSearchService.instance.addManualBrand(brandName);
+      
+      setState(() {
+        _brands.insert(0, {
+          'brand': brandName,
+          'count': 999,
+          'created_at': DateTime.now().toIso8601String(),
+        });
+        _newBrandController.clear();
+        _isLoading = false;
+      });
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('تمت إضافة الماركة: $brandName'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() => _isLoading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+  
+  Future<void> _deleteBrand(String brand) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.warning, color: Colors.orange),
+            SizedBox(width: 8),
+            Text('حذف الماركة'),
+          ],
+        ),
+        content: Text('هل تريد حذف الماركة "$brand"؟'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('حذف'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed != true) return;
+    
+    setState(() => _isLoading = true);
+    
+    try {
+      await smart_search.SmartSearchService.instance.deleteBrand(brand);
+      
+      setState(() {
+        _brands.removeWhere((b) => b['brand'] == brand);
+        _isLoading = false;
+      });
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('تم حذف الماركة: $brand'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() => _isLoading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Row(
+        children: [
+          const Icon(Icons.label, color: Colors.teal),
+          const SizedBox(width: 8),
+          const Expanded(child: Text('إدارة الماركات')),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.teal[50],
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              '${_brands.length}',
+              style: TextStyle(fontSize: 14, color: Colors.teal[700], fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: double.maxFinite,
+        height: 450,
+        child: Column(
+          children: [
+            // حقل إضافة ماركة جديدة
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _newBrandController,
+                    decoration: InputDecoration(
+                      hintText: 'اسم الماركة الجديدة',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      prefixIcon: const Icon(Icons.add, size: 20),
+                    ),
+                    onSubmitted: (_) => _addBrand(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.teal,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  ),
+                  onPressed: _isLoading ? null : _addBrand,
+                  child: const Text('إضافة'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            // حقل البحث
+            TextField(
+              decoration: InputDecoration(
+                hintText: 'بحث في الماركات...',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                prefixIcon: const Icon(Icons.search, size: 20),
+              ),
+              onChanged: (value) => setState(() => _searchQuery = value),
+            ),
+            const SizedBox(height: 12),
+            // قائمة الماركات
+            Expanded(
+              child: _isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _filteredBrands.isEmpty
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.label_off, size: 48, color: Colors.grey[400]),
+                              const SizedBox(height: 8),
+                              Text(
+                                _searchQuery.isEmpty 
+                                    ? 'لا توجد ماركات مكتشفة\nقم بتدريب البحث الذكي أولاً'
+                                    : 'لا توجد نتائج للبحث',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: Colors.grey[600]),
+                              ),
+                            ],
+                          ),
+                        )
+                      : ListView.builder(
+                          itemCount: _filteredBrands.length,
+                          itemBuilder: (context, index) {
+                            final brand = _filteredBrands[index];
+                            final brandName = brand['brand'] as String;
+                            final count = brand['count'] as int;
+                            final isManual = count >= 999;
+                            
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 4),
+                              child: ListTile(
+                                dense: true,
+                                leading: CircleAvatar(
+                                  radius: 16,
+                                  backgroundColor: isManual ? Colors.teal[100] : Colors.grey[200],
+                                  child: Icon(
+                                    isManual ? Icons.person_add : Icons.auto_awesome,
+                                    size: 16,
+                                    color: isManual ? Colors.teal : Colors.grey[600],
+                                  ),
+                                ),
+                                title: Text(
+                                  brandName,
+                                  style: const TextStyle(fontWeight: FontWeight.w500),
+                                ),
+                                subtitle: Text(
+                                  isManual ? 'مضافة يدوياً' : 'مكتشفة ($count منتج)',
+                                  style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                                ),
+                                trailing: IconButton(
+                                  icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
+                                  onPressed: () => _deleteBrand(brandName),
+                                  tooltip: 'حذف',
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('إغلاق'),
+        ),
+      ],
     );
   }
 }

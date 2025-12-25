@@ -41,6 +41,7 @@ import 'invoice_actions.dart';
 import 'invoice_history_screen.dart';
 import '../services/password_service.dart'; // Added for password protection
 import '../utils/money_calculator.dart'; // Added for profit calculation fix
+import '../services/smart_search/smart_search.dart'; // 🧠 البحث الذكي
 
 // Helper: format product ID - show raw value without zero-padding
 String formatProductId5(int? id) {
@@ -367,6 +368,31 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     }
   }
   
+  // 🧠 تهيئة سياق البحث الذكي
+  void _initSmartSearchContext() async {
+    // 🆕 تحميل الماركات المكتشفة تلقائياً أولاً
+    await SmartSearchService.instance.loadAutoDiscoveredBrands();
+    
+    // بدء جلسة جديدة
+    SmartSearchService.instance.startNewSession(
+      customerName: invoiceToManage?.customerName,
+      customerId: invoiceToManage?.customerId,
+      installerName: invoiceToManage?.installerName,
+    );
+    
+    // إذا كانت فاتورة موجودة، أضف المنتجات الحالية للسياق
+    if (invoiceToManage != null && invoiceItems.isNotEmpty) {
+      for (final item in invoiceItems) {
+        if (item.productName.isNotEmpty) {
+          SmartSearchService.instance.addProductToSession(
+            item.productId,
+            item.productName,
+          );
+        }
+      }
+    }
+  }
+  
   // تحميل القيمة الافتراضية لمعدل النقاط من الإعدادات
   Future<void> _loadDefaultPointsRate() async {
     try {
@@ -527,6 +553,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         _loadDefaultPointsRate();
       }
       
+      // 🧠 تهيئة سياق البحث الذكي
+      _initSmartSearchContext();
+      
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         try {
           _allProductsForUnits = await db.getAllProducts();
@@ -543,9 +572,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
 
       // إضافة استماع للتغيرات في الحقول
       customerNameController.addListener(_onFieldChanged);
+      customerNameController.addListener(_onCustomerChanged); // 🧠 تحديث سياق البحث الذكي
       customerPhoneController.addListener(_onFieldChanged);
       customerAddressController.addListener(_onFieldChanged);
       installerNameController.addListener(_onFieldChanged);
+      installerNameController.addListener(_onInstallerChanged); // 🧠 تحديث سياق البحث الذكي
       paidAmountController.addListener(_onFieldChanged);
       discountController.addListener(_onFieldChanged);
       discountController.addListener(_onDiscountChanged);
@@ -767,6 +798,21 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     }
   }
 
+  // 🧠 معالج تغيير اسم العميل (للبحث الذكي)
+  void _onCustomerChanged() {
+    SmartSearchService.instance.updateSessionCustomer(
+      customerName: customerNameController.text.trim(),
+      customerId: null, // سيتم تحديثه عند الحفظ
+    );
+  }
+
+  // 🧠 معالج تغيير اسم المُركّب (للبحث الذكي)
+  void _onInstallerChanged() {
+    SmartSearchService.instance.updateSessionInstaller(
+      installerNameController.text.trim(),
+    );
+  }
+
   // معالج تغيير الخصم
   void _onDiscountChanged() {
     try {
@@ -920,9 +966,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         });
         return;
       }
-      // استخدام البحث الذكي المخصص لشاشة إنشاء الفاتورة
-      // يدعم البحث عن الكلمات في ترتيب مختلف والكلمات الوسيطة
-      final results = await db.searchProductsSmart(query);
+      // 🧠 استخدام البحث الذكي مع تمرير قائمة المنتجات الحالية في الفاتورة
+      // هذا يضمن دقة التحقق من المنتجات المضافة (حتى لو تم حذفها)
+      final currentProductNames = invoiceItems
+          .where((item) => item.productName.isNotEmpty)
+          .map((item) => item.productName)
+          .toList();
+      final results = await SmartSearchService.instance.smartSearch(
+        query,
+        currentInvoiceProductNames: currentProductNames,
+      );
       setState(() {
         _searchResults = results;
       });
@@ -1777,8 +1830,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                             },
                             onSelected: (String selection) {
                               try {
-                                // البحث عن المنتج المحدد وتطبيق التعبئة التلقائية
-                                db.searchProductsSmart(selection).then((products) {
+                                // 🧠 البحث عن المنتج المحدد وتطبيق التعبئة التلقائية (باستخدام البحث الذكي)
+                                final currentProductNames = invoiceItems
+                                    .where((item) => item.productName.isNotEmpty)
+                                    .map((item) => item.productName)
+                                    .toList();
+                                SmartSearchService.instance.smartSearch(
+                                  selection,
+                                  currentInvoiceProductNames: currentProductNames,
+                                ).then((products) {
                                   if (products.isNotEmpty) {
                                     _applySettlementProductSelection(products.first);
                                   }
@@ -1794,8 +1854,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                               if (textEditingValue.text.isEmpty) {
                                 return const Iterable<String>.empty();
                               }
-                              final db = DatabaseService();
-                              final results = await db.searchProductsSmart(textEditingValue.text);
+                              // 🧠 استخدام البحث الذكي مع قائمة المنتجات الحالية
+                              final currentProductNames = invoiceItems
+                                  .where((item) => item.productName.isNotEmpty)
+                                  .map((item) => item.productName)
+                                  .toList();
+                              final results = await SmartSearchService.instance.smartSearch(
+                                textEditingValue.text,
+                                currentInvoiceProductNames: currentProductNames,
+                              );
                               return results.map((p) => p.name);
                             },
                             fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
@@ -1817,8 +1884,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                             },
                             onSelected: (String selection) {
                               try {
-                                // البحث عن المنتج المحدد وتطبيق التعبئة التلقائية
-                                db.searchProductsSmart(selection).then((products) {
+                                // 🧠 البحث عن المنتج المحدد وتطبيق التعبئة التلقائية (باستخدام البحث الذكي)
+                                final currentProductNames = invoiceItems
+                                    .where((item) => item.productName.isNotEmpty)
+                                    .map((item) => item.productName)
+                                    .toList();
+                                SmartSearchService.instance.smartSearch(
+                                  selection,
+                                  currentInvoiceProductNames: currentProductNames,
+                                ).then((products) {
                                   if (products.isNotEmpty) {
                                     _applySettlementProductSelection(products.first);
                                   }
@@ -2494,6 +2568,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         _searchResults = [];
         quantityAutofocus = true;
       });
+      
+      // 🧠 تحديث سياق البحث الذكي
+      SmartSearchService.instance.addProductToSession(product.id, product.name);
       
       // 🔧 نقل التركيز إلى حقل الكمية العلوي بعد اختيار المنتج
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -4253,9 +4330,17 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     List<Product> productSuggestions = [];
 
     Future<void> fetchSuggestions(String q) async {
+      // 🧠 استخدام البحث الذكي مع قائمة المنتجات الحالية
+      final currentProductNames = invoiceItems
+          .where((item) => item.productName.isNotEmpty)
+          .map((item) => item.productName)
+          .toList();
       productSuggestions = q.trim().isEmpty
           ? []
-          : (await db.searchProductsSmart(q.trim())).take(10).toList();
+          : (await SmartSearchService.instance.smartSearch(
+              q.trim(),
+              currentInvoiceProductNames: currentProductNames,
+            )).take(10).toList();
       if (mounted) setState(() {});
     }
 
@@ -4748,44 +4833,22 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     }
 
     // تعيين أول خيار كقيمة افتراضية قبل فتح القائمة
-    // هذا يجعل الضغط على Enter يختار أول خيار مباشرة
     if (_currentItem.saleType == null || _currentItem.saleType!.isEmpty) {
       _updateSaleType(options.first);
     }
 
-    // فتح القائمة المنبثقة مع دعم التنقل بالكيبورد
-    final String? selected = await showMenu<String>(
+    // فتح القائمة المنبثقة المخصصة مع دعم التنقل بالكيبورد
+    final String? selected = await showDialog<String>(
       context: context,
-      position: RelativeRect.fromLTRB(
-        offset.dx,
-        offset.dy + size.height,
-        offset.dx + size.width,
-        offset.dy + size.height + 200,
-      ),
-      items: options.asMap().entries.map((entry) {
-        final index = entry.key;
-        final option = entry.value;
-        return PopupMenuItem<String>(
-          value: option,
-          height: 40,
-          // أول عنصر يكون محدد افتراضياً
-          child: Container(
-            color: index == 0 ? Colors.blue.shade50 : null,
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: Center(
-              child: Text(
-                option,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontWeight: index == 0 ? FontWeight.bold : FontWeight.normal,
-                ),
-              ),
-            ),
-          ),
+      barrierColor: Colors.transparent,
+      builder: (BuildContext dialogContext) {
+        return _SaleTypeDropdownDialog(
+          options: options,
+          initialValue: _currentItem.saleType ?? options.first,
+          position: offset,
+          size: size,
         );
-      }).toList(),
-      elevation: 8,
-      initialValue: options.first, // تحديد أول خيار كقيمة أولية
+      },
     );
 
     if (selected != null) {
@@ -5232,14 +5295,12 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                             return const Iterable<String>.empty();
                           }
                           try {
-                            if (widget.databaseService != null) {
-                              final products = await widget.databaseService!.searchProductsSmart(textEditingValue.text);
-                              return products.map((p) => p.name);
-                            } else {
-                              return widget.allProducts
-                                  .map((p) => p.name)
-                                  .where((option) => option.contains(textEditingValue.text));
-                            }
+                            // 🧠 استخدام البحث الذكي (بدون تمرير القائمة - سيستخدم الجلسة الداخلية)
+                            // هذا الـ widget منفصل ولا يملك وصولاً مباشراً لقائمة الفاتورة
+                            final products = await SmartSearchService.instance.smartSearch(
+                              textEditingValue.text,
+                            );
+                            return products.map((p) => p.name);
                           } catch (e) {
                             print('Error in smart search: $e');
                             return widget.allProducts
@@ -5308,6 +5369,8 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                           try {
                             final p = widget.allProducts.firstWhere((pr) => pr.name == selection);
                             _idController.text = p.id?.toString() ?? '';
+                            // 🧠 تحديث سياق البحث الذكي عند اختيار منتج من عمود التفاصيل
+                            SmartSearchService.instance.addProductToSession(p.id, selection);
                           } catch (e) {}
                           FocusScope.of(context).requestFocus(_quantityFocusNode);
                         },
@@ -5666,6 +5729,145 @@ class _AutoScrollListViewState extends State<_AutoScrollListView> {
           ),
         );
       },
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔧 Widget مخصص لقائمة نوع البيع مع دعم التنقل بالكيبورد
+// ═══════════════════════════════════════════════════════════════════════════
+class _SaleTypeDropdownDialog extends StatefulWidget {
+  final List<String> options;
+  final String initialValue;
+  final Offset position;
+  final Size size;
+
+  const _SaleTypeDropdownDialog({
+    required this.options,
+    required this.initialValue,
+    required this.position,
+    required this.size,
+  });
+
+  @override
+  State<_SaleTypeDropdownDialog> createState() => _SaleTypeDropdownDialogState();
+}
+
+class _SaleTypeDropdownDialogState extends State<_SaleTypeDropdownDialog> {
+  late int _selectedIndex;
+  late FocusNode _focusNode;
+
+  @override
+  void initState() {
+    super.initState();
+    // البدء من أول خيار (أصغر وحدة)
+    _selectedIndex = 0;
+    _focusNode = FocusNode();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _focusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _selectAndClose() {
+    Navigator.of(context).pop(widget.options[_selectedIndex]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        // خلفية شفافة للإغلاق عند النقر خارج القائمة
+        Positioned.fill(
+          child: GestureDetector(
+            onTap: () => Navigator.of(context).pop(null),
+            child: Container(color: Colors.transparent),
+          ),
+        ),
+        // القائمة المنسدلة
+        Positioned(
+          left: widget.position.dx,
+          top: widget.position.dy + widget.size.height,
+          width: widget.size.width,
+          child: Material(
+            elevation: 8,
+            borderRadius: BorderRadius.circular(4),
+            child: Focus(
+              focusNode: _focusNode,
+              autofocus: true,
+              onKeyEvent: (node, event) {
+                if (event is! KeyDownEvent) return KeyEventResult.ignored;
+
+                if (event.logicalKey.keyLabel == 'Arrow Down') {
+                  setState(() {
+                    _selectedIndex = (_selectedIndex + 1) % widget.options.length;
+                  });
+                  return KeyEventResult.handled;
+                } else if (event.logicalKey.keyLabel == 'Arrow Up') {
+                  setState(() {
+                    _selectedIndex = (_selectedIndex - 1 + widget.options.length) % widget.options.length;
+                  });
+                  return KeyEventResult.handled;
+                } else if (event.logicalKey.keyLabel == 'Enter') {
+                  _selectAndClose();
+                  return KeyEventResult.handled;
+                } else if (event.logicalKey.keyLabel == 'Escape') {
+                  Navigator.of(context).pop(null);
+                  return KeyEventResult.handled;
+                }
+                return KeyEventResult.ignored;
+              },
+              child: Container(
+                constraints: const BoxConstraints(maxHeight: 200),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  itemCount: widget.options.length,
+                  itemBuilder: (context, index) {
+                    final isSelected = index == _selectedIndex;
+                    return InkWell(
+                      onTap: () {
+                        setState(() {
+                          _selectedIndex = index;
+                        });
+                        _selectAndClose();
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: isSelected ? Colors.red.shade50 : Colors.white,
+                          border: isSelected
+                              ? Border.all(color: Colors.red, width: 2)
+                              : null,
+                        ),
+                        child: Text(
+                          widget.options[index],
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: isSelected ? Colors.red : Colors.black87,
+                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

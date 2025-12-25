@@ -1376,7 +1376,7 @@ class AIChatService {
             p.unit_costs AS unit_costs,
             p.name AS product_name
           FROM invoice_items ii
-          JOIN products p ON p.name = ii.product_name
+          LEFT JOIN products p ON p.name = ii.product_name
           WHERE ii.invoice_id = ?
         ''', [invoiceId]);
         
@@ -1604,7 +1604,7 @@ class AIChatService {
             p.unit_costs AS unit_costs,
             p.unit_hierarchy AS unit_hierarchy
           FROM invoice_items ii
-          JOIN products p ON p.name = ii.product_name
+          LEFT JOIN products p ON p.name = ii.product_name
           WHERE ii.invoice_id = ?
         ''', [invoiceId]);
         
@@ -1793,7 +1793,7 @@ class AIChatService {
             p.unit_costs AS unit_costs,
             p.unit_hierarchy AS unit_hierarchy
           FROM invoice_items ii
-          JOIN products p ON p.name = ii.product_name
+          LEFT JOIN products p ON p.name = ii.product_name
           WHERE ii.invoice_id = ?
         ''', [invoiceId]);
         

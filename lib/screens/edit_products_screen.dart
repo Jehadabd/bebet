@@ -461,14 +461,103 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     }
   }
 
+  // دالة مساعدة قوية لتنظيف الأرقام وإزالة جميع الفواصل والأحرف غير الرقمية
+  String _cleanNumber(String text) {
+    if (text.isEmpty) return '';
+    // إزالة جميع أنواع الفواصل والمسافات
+    String cleaned = text
+        .replaceAll(',', '')      // فاصلة إنجليزية
+        .replaceAll('٬', '')      // فاصلة عربية
+        .replaceAll(' ', '')      // مسافة عادية
+        .replaceAll('\u00A0', '') // مسافة غير قابلة للكسر (non-breaking space)
+        .replaceAll('\u200B', '') // مسافة صفرية العرض (zero-width space)
+        .replaceAll('\u200C', '') // non-joiner
+        .replaceAll('\u200D', '') // joiner
+        .replaceAll('،', '')      // فاصلة عربية أخرى
+        .trim();
+    
+    // التحقق من أن النتيجة رقم صالح (مع نقطة عشرية اختيارية)
+    // إذا كان هناك أحرف غير رقمية (ما عدا النقطة والسالب)، نحاول استخراج الرقم
+    if (cleaned.isNotEmpty && double.tryParse(cleaned) == null) {
+      // محاولة استخراج الأرقام والنقطة فقط
+      final numericOnly = cleaned.replaceAll(RegExp(r'[^\d.]'), '');
+      // التأكد من وجود نقطة عشرية واحدة فقط
+      final parts = numericOnly.split('.');
+      if (parts.length > 2) {
+        // أكثر من نقطة عشرية - نأخذ الجزء الأول والثاني فقط
+        cleaned = '${parts[0]}.${parts[1]}';
+      } else {
+        cleaned = numericOnly;
+      }
+    }
+    
+    return cleaned;
+  }
+
   // دالة مساعدة لإزالة الفواصل من النص قبل التحويل لرقم
   String _removeCommas(String text) {
-    return text.replaceAll(',', '');
+    return _cleanNumber(text);
   }
   
   Future<void> _save() async {
     final db = DatabaseService();
     final inputName = _nameController.text.trim();
+    
+    // === التحقق من صحة البيانات المدخلة ===
+    final List<String> validationErrors = [];
+    
+    // التحقق من اسم المنتج
+    if (inputName.isEmpty) {
+      validationErrors.add('اسم المنتج مطلوب');
+    }
+    
+    // التحقق من سعر 1 (المفرد)
+    final price1Text = _removeCommas(_price1Controller.text.trim());
+    if (price1Text.isEmpty) {
+      validationErrors.add('سعر 1 (المفرد) مطلوب');
+    } else if (double.tryParse(price1Text) == null) {
+      validationErrors.add('سعر 1 (المفرد) غير صالح: "$price1Text"');
+    }
+    
+    // التحقق من سعر التكلفة (اختياري لكن يجب أن يكون رقم صحيح إذا أُدخل)
+    final costPriceText = _removeCommas(_costPriceController.text.trim());
+    if (costPriceText.isNotEmpty && double.tryParse(costPriceText) == null) {
+      validationErrors.add('سعر التكلفة غير صالح: "$costPriceText"');
+    }
+    
+    // التحقق من الأسعار الأخرى
+    final priceFields = [
+      ('سعر 2', _price2Controller.text.trim()),
+      ('سعر 3', _price3Controller.text.trim()),
+      ('سعر 4', _price4Controller.text.trim()),
+      ('سعر 5', _price5Controller.text.trim()),
+    ];
+    for (final (label, value) in priceFields) {
+      if (value.isNotEmpty && double.tryParse(_removeCommas(value)) == null) {
+        validationErrors.add('$label غير صالح: "$value"');
+      }
+    }
+    
+    // التحقق من طول اللفة للمنتجات المباعة بالمتر
+    if (_selectedUnit == 'meter') {
+      final lengthText = _removeCommas(_lengthPerUnitController.text.trim());
+      if (lengthText.isNotEmpty && double.tryParse(lengthText) == null) {
+        validationErrors.add('طول اللفة غير صالح: "$lengthText"');
+      }
+    }
+    
+    // عرض أخطاء التحقق إن وجدت
+    if (validationErrors.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('أخطاء في البيانات:\n${validationErrors.join('\n')}'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 5),
+        ),
+      );
+      return;
+    }
+    
     String? unitHierarchyJson;
     String? unitCostsJson;
     
@@ -488,7 +577,7 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
             .toList());
         
         // حساب unit_costs تلقائياً
-        final baseCost = double.tryParse(_removeCommas(_costPriceController.text.trim())) ?? (widget.product.costPrice ?? 0.0);
+        final baseCost = double.tryParse(costPriceText) ?? (widget.product.costPrice ?? 0.0);
         if (baseCost > 0) {
           final Map<String, double> unitCosts = {};
           double currentCost = baseCost;
@@ -510,7 +599,7 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     if (_selectedUnit == 'meter') {
       unitHierarchyJson = null;
       // حساب unit_costs للمنتجات المباعة بالمتر
-      final baseCost = double.tryParse(_removeCommas(_costPriceController.text.trim())) ?? (widget.product.costPrice ?? 0.0);
+      final baseCost = double.tryParse(costPriceText) ?? (widget.product.costPrice ?? 0.0);
       final length = double.tryParse(_removeCommas(_lengthPerUnitController.text.trim())) ?? (widget.product.lengthPerUnit ?? 0.0);
       if (baseCost > 0 && length > 0) {
         unitCostsJson = json.encode({
@@ -524,7 +613,7 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
       name: inputName,
       unit: _selectedUnit,
       unitPrice: double.tryParse(_removeCommas(_unitPriceController.text.trim())) ?? 0.0,
-      price1: double.tryParse(_removeCommas(_price1Controller.text.trim())) ?? 0.0,
+      price1: double.tryParse(price1Text) ?? 0.0,
       price2: _price2Controller.text.trim().isNotEmpty
           ? double.tryParse(_removeCommas(_price2Controller.text.trim()))
           : null,
@@ -537,8 +626,8 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
       price5: _price5Controller.text.trim().isNotEmpty
           ? double.tryParse(_removeCommas(_price5Controller.text.trim()))
           : null,
-      costPrice: _showCostPrice && _costPriceController.text.trim().isNotEmpty
-          ? double.tryParse(_removeCommas(_costPriceController.text.trim()))
+      costPrice: _showCostPrice && costPriceText.isNotEmpty
+          ? double.tryParse(costPriceText)
           : widget.product.costPrice,
       piecesPerUnit: _selectedUnit == 'piece' &&
               _piecesPerUnitController.text.trim().isNotEmpty
@@ -552,6 +641,8 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
       unitHierarchy: unitHierarchyJson,
       unitCosts: unitCostsJson, // إضافة unit_costs المحسوبة
     );
+    
+    // التحقق من عدم وجود منتج آخر بنفس الاسم
     final allProducts = await db.getAllProducts();
     final inputNameForCompare = normalizeProductNameForCompare(inputName);
     final exists = allProducts.any((p) =>
@@ -560,12 +651,64 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     if (exists) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content: Text('يوجد منتج آخر بنفس الاسم (بغض النظر عن الفراغات)!')),
+            content: Text('يوجد منتج آخر بنفس الاسم (بغض النظر عن الفراغات)!'),
+            backgroundColor: Colors.red),
       );
       return;
     }
-    await db.updateProduct(updatedProduct);
-    if (mounted) Navigator.pop(context, true);
+    
+    // حفظ التعديلات
+    try {
+      await db.updateProduct(updatedProduct);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('تم حفظ التعديلات بنجاح!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        Navigator.pop(context, true);
+      }
+    } catch (e) {
+      // تحسين رسالة الخطأ
+      String errorMessage;
+      final errorStr = e.toString();
+      
+      if (errorStr.contains('UNIQUE constraint failed')) {
+        errorMessage = 'فشل الحفظ: يوجد منتج بنفس الاسم أو البيانات!';
+      } else if (errorStr.contains('NOT NULL constraint failed')) {
+        // استخراج اسم العمود من رسالة الخطأ
+        final match = RegExp(r'NOT NULL constraint failed: products\.(\w+)').firstMatch(errorStr);
+        final columnName = match?.group(1) ?? 'غير معروف';
+        final arabicColumnNames = {
+          'name': 'اسم المنتج',
+          'unit': 'وحدة البيع',
+          'price1': 'سعر 1 (المفرد)',
+          'unit_price': 'سعر الوحدة',
+          'created_at': 'تاريخ الإنشاء',
+          'last_modified_at': 'تاريخ التعديل',
+        };
+        final arabicName = arabicColumnNames[columnName] ?? columnName;
+        errorMessage = 'فشل الحفظ: الحقل "$arabicName" مطلوب ولم يتم إدخاله!';
+      } else if (errorStr.contains('FOREIGN KEY constraint failed')) {
+        errorMessage = 'فشل الحفظ: خطأ في ربط البيانات!';
+      } else if (errorStr.contains('database is locked')) {
+        errorMessage = 'فشل الحفظ: قاعدة البيانات مشغولة، حاول مرة أخرى!';
+      } else {
+        errorMessage = 'فشل حفظ التعديلات: ${errorStr.replaceAll('Exception: ', '')}';
+      }
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(errorMessage),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 5),
+        ),
+      );
+      
+      // طباعة الخطأ للتشخيص
+      print('ERROR updating product: $e');
+    }
   }
 
   void _addUnitHierarchyRow() {

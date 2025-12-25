@@ -26,6 +26,37 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
     return NumberFormat('#,##0.##', 'en_US').format(value);
   }
   
+  // دالة مساعدة قوية لتنظيف الأرقام وإزالة جميع الفواصل والأحرف غير الرقمية
+  String _cleanNumber(String text) {
+    if (text.isEmpty) return '';
+    // إزالة جميع أنواع الفواصل والمسافات
+    String cleaned = text
+        .replaceAll(',', '')      // فاصلة إنجليزية
+        .replaceAll('٬', '')      // فاصلة عربية
+        .replaceAll(' ', '')      // مسافة عادية
+        .replaceAll('\u00A0', '') // مسافة غير قابلة للكسر (non-breaking space)
+        .replaceAll('\u200B', '') // مسافة صفرية العرض (zero-width space)
+        .replaceAll('\u200C', '') // non-joiner
+        .replaceAll('\u200D', '') // joiner
+        .replaceAll('،', '')      // فاصلة عربية أخرى
+        .trim();
+    
+    // التحقق من أن النتيجة رقم صالح (مع نقطة عشرية اختيارية)
+    if (cleaned.isNotEmpty && double.tryParse(cleaned) == null) {
+      // محاولة استخراج الأرقام والنقطة فقط
+      final numericOnly = cleaned.replaceAll(RegExp(r'[^\d.]'), '');
+      // التأكد من وجود نقطة عشرية واحدة فقط
+      final parts = numericOnly.split('.');
+      if (parts.length > 2) {
+        cleaned = '${parts[0]}.${parts[1]}';
+      } else {
+        cleaned = numericOnly;
+      }
+    }
+    
+    return cleaned;
+  }
+  
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
   String _selectedUnit = 'piece'; // Default unit
@@ -97,7 +128,7 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
   void _calculateUnitCosts() {
     if (_costPriceController.text.trim().isEmpty) return;
     
-    final baseCost = double.tryParse(_costPriceController.text.trim().replaceAll(',', ''));
+    final baseCost = double.tryParse(_cleanNumber(_costPriceController.text.trim()));
     if (baseCost == null) return;
 
     double currentCost = baseCost;
@@ -123,13 +154,13 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
     
     // إضافة تكلفة الوحدة الأساسية
     if (_costPriceController.text.trim().isNotEmpty) {
-      unitCostsMap['قطعة'] = double.tryParse(_costPriceController.text.trim().replaceAll(',', '')) ?? 0.0;
+      unitCostsMap['قطعة'] = double.tryParse(_cleanNumber(_costPriceController.text.trim())) ?? 0.0;
     }
 
     // إضافة تكلفة الوحدات الإضافية (المحسوبة تلقائياً)
     for (var entry in _unitCostControllers.entries) {
       if (entry.key != 'قطعة' && entry.value.text.trim().isNotEmpty) {
-        unitCostsMap[entry.key] = double.tryParse(entry.value.text.trim().replaceAll(',', '')) ?? 0.0;
+        unitCostsMap[entry.key] = double.tryParse(_cleanNumber(entry.value.text.trim())) ?? 0.0;
       }
     }
 
@@ -236,6 +267,61 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
     if (_formKey.currentState!.validate()) {
       final inputName = _nameController.text.trim();
       
+      // === التحقق من صحة البيانات المدخلة ===
+      final List<String> validationErrors = [];
+      
+      // التحقق من اسم المنتج
+      if (inputName.isEmpty) {
+        validationErrors.add('اسم المنتج مطلوب');
+      }
+      
+      // التحقق من سعر 1 (المفرد)
+      final price1Text = _cleanNumber(_price1Controller.text.trim());
+      if (price1Text.isEmpty) {
+        validationErrors.add('سعر 1 (المفرد) مطلوب');
+      } else if (double.tryParse(price1Text) == null) {
+        validationErrors.add('سعر 1 (المفرد) غير صالح: "${_price1Controller.text.trim()}"');
+      }
+      
+      // التحقق من سعر التكلفة (اختياري لكن يجب أن يكون رقم صحيح إذا أُدخل)
+      final costPriceText = _cleanNumber(_costPriceController.text.trim());
+      if (costPriceText.isNotEmpty && double.tryParse(costPriceText) == null) {
+        validationErrors.add('سعر التكلفة غير صالح: "${_costPriceController.text.trim()}"');
+      }
+      
+      // التحقق من الأسعار الأخرى
+      final priceFields = [
+        ('سعر 2', _price2Controller.text.trim()),
+        ('سعر 3', _price3Controller.text.trim()),
+        ('سعر 4', _price4Controller.text.trim()),
+        ('سعر 5', _price5Controller.text.trim()),
+      ];
+      for (final (label, value) in priceFields) {
+        if (value.isNotEmpty && double.tryParse(_cleanNumber(value)) == null) {
+          validationErrors.add('$label غير صالح: "$value"');
+        }
+      }
+      
+      // التحقق من طول اللفة للمنتجات المباعة بالمتر
+      if (_selectedUnit == 'meter') {
+        final lengthText = _cleanNumber(_lengthPerUnitController.text.trim());
+        if (lengthText.isNotEmpty && double.tryParse(lengthText) == null) {
+          validationErrors.add('طول اللفة غير صالح: "${_lengthPerUnitController.text.trim()}"');
+        }
+      }
+      
+      // عرض أخطاء التحقق إن وجدت
+      if (validationErrors.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('أخطاء في البيانات:\n${validationErrors.join('\n')}'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+        return;
+      }
+      
       // --- تحويل هرمية الوحدات إلى JSON ---
       String? unitHierarchyJson;
       String? unitCostsJson;
@@ -258,7 +344,7 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
         }
       } else if (_selectedUnit == 'meter' && _lengthPerUnitController.text.trim().isNotEmpty) {
         // بناء التسلسل الهرمي التلقائي للمنتجات المباعة بالمتر
-        final lengthPerUnit = double.tryParse(_lengthPerUnitController.text.trim());
+        final lengthPerUnit = double.tryParse(_cleanNumber(_lengthPerUnitController.text.trim()));
         if (lengthPerUnit != null && lengthPerUnit > 0) {
           unitHierarchyJson = json.encode([
             {
@@ -268,7 +354,7 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
           ]);
           
           // بناء تكلفة الوحدات التلقائية
-          final costPrice = double.tryParse(_costPriceController.text.trim()) ?? 0.0;
+          final costPrice = double.tryParse(costPriceText) ?? 0.0;
           if (costPrice > 0) {
             unitCostsJson = json.encode({
               'متر': costPrice,
@@ -311,40 +397,40 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
         return;
       }
       
-      // دالة مساعدة لإزالة الفواصل
-      String removeCommas(String text) => text.replaceAll(',', '');
-      
+      // إنشاء كائن المنتج
       final newProduct = Product(
         name: inputName,
         unit: _selectedUnit,
-        unitPrice: double.tryParse(removeCommas(_unitPriceController.text.trim())) ?? 0.0,
-        costPrice: double.tryParse(removeCommas(_costPriceController.text.trim())),
+        unitPrice: double.tryParse(_cleanNumber(_unitPriceController.text.trim())) ?? 0.0,
+        costPrice: costPriceText.isNotEmpty ? double.tryParse(costPriceText) : null,
         piecesPerUnit: _selectedUnit == 'piece' &&
                 _piecesPerUnitController.text.trim().isNotEmpty
             ? int.tryParse(_piecesPerUnitController.text.trim())
             : null,
         lengthPerUnit: _selectedUnit == 'meter' &&
                 _lengthPerUnitController.text.trim().isNotEmpty
-            ? double.tryParse(removeCommas(_lengthPerUnitController.text.trim()))
+            ? double.tryParse(_cleanNumber(_lengthPerUnitController.text.trim()))
             : null,
-        price1: double.tryParse(removeCommas(_price1Controller.text.trim())) ?? 0.0,
+        price1: double.tryParse(price1Text) ?? 0.0,
         price2: _price2Controller.text.trim().isNotEmpty
-            ? double.tryParse(removeCommas(_price2Controller.text.trim()))
+            ? double.tryParse(_cleanNumber(_price2Controller.text.trim()))
             : null,
         price3: _price3Controller.text.trim().isNotEmpty
-            ? double.tryParse(removeCommas(_price3Controller.text.trim()))
+            ? double.tryParse(_cleanNumber(_price3Controller.text.trim()))
             : null,
         price4: _price4Controller.text.trim().isNotEmpty
-            ? double.tryParse(removeCommas(_price4Controller.text.trim()))
+            ? double.tryParse(_cleanNumber(_price4Controller.text.trim()))
             : null,
         price5: _price5Controller.text.trim().isNotEmpty
-            ? double.tryParse(removeCommas(_price5Controller.text.trim()))
+            ? double.tryParse(_cleanNumber(_price5Controller.text.trim()))
             : null,
         createdAt: DateTime.now(),
         lastModifiedAt: DateTime.now(),
         unitHierarchy: unitHierarchyJson,
         unitCosts: unitCostsJson,
       );
+      
+      // التحقق من عدم وجود منتج بنفس الاسم
       final allProducts = await _db.getAllProducts();
       final inputNameForCompare = normalizeProductNameForCompare(inputName);
       final exists = allProducts.any(
@@ -360,6 +446,8 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
         );
         return;
       }
+      
+      // حفظ المنتج في قاعدة البيانات
       try {
         await _db.insertProduct(newProduct);
         ScaffoldMessenger.of(context).showSnackBar(
@@ -383,21 +471,46 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
         setState(() {
           _selectedUnit = 'piece';
           _unitHierarchyList.clear();
-          // لا يتم مسح _unitHierarchyList هنا للحفاظ على السلوك الأصلي للواجهة.
         });
       } catch (e) {
-        String errorMessage = 'فشل حفظ المنتج: ${e.toString()}';
-        if (e is Exception) {
-          errorMessage = e.toString();
+        // تحسين رسالة الخطأ
+        String errorMessage;
+        final errorStr = e.toString();
+        
+        if (errorStr.contains('UNIQUE constraint failed')) {
+          errorMessage = 'فشل الحفظ: يوجد منتج بنفس الاسم أو البيانات!';
+        } else if (errorStr.contains('NOT NULL constraint failed')) {
+          // استخراج اسم العمود من رسالة الخطأ
+          final match = RegExp(r'NOT NULL constraint failed: products\.(\w+)').firstMatch(errorStr);
+          final columnName = match?.group(1) ?? 'غير معروف';
+          final arabicColumnNames = {
+            'name': 'اسم المنتج',
+            'unit': 'وحدة البيع',
+            'price1': 'سعر 1 (المفرد)',
+            'unit_price': 'سعر الوحدة',
+            'created_at': 'تاريخ الإنشاء',
+            'last_modified_at': 'تاريخ التعديل',
+          };
+          final arabicName = arabicColumnNames[columnName] ?? columnName;
+          errorMessage = 'فشل الحفظ: الحقل "$arabicName" مطلوب ولم يتم إدخاله!';
+        } else if (errorStr.contains('FOREIGN KEY constraint failed')) {
+          errorMessage = 'فشل الحفظ: خطأ في ربط البيانات!';
+        } else if (errorStr.contains('database is locked')) {
+          errorMessage = 'فشل الحفظ: قاعدة البيانات مشغولة، حاول مرة أخرى!';
+        } else {
+          errorMessage = 'فشل حفظ المنتج: ${errorStr.replaceAll('Exception: ', '')}';
         }
+        
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(errorMessage),
-            backgroundColor: Theme.of(context)
-                .colorScheme
-                .error, // استخدام لون الخطأ من الثيم
+            backgroundColor: Theme.of(context).colorScheme.error,
+            duration: const Duration(seconds: 5),
           ),
         );
+        
+        // طباعة الخطأ للتشخيص
+        print('ERROR saving product: $e');
       }
     }
   }

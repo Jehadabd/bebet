@@ -57,6 +57,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   late FocusNode _saleTypeFocusNode;
   bool _openSaleTypeDropdown = false;
   bool _openPriceDropdown = false;
+  bool _isSaleTypeDropdownOpen = false;
+  int _selectedSaleTypeIndex = 0;
+  final GlobalKey _saleTypeDropdownKey = GlobalKey();
+  OverlayEntry? _saleTypeOverlayEntry;
 
   @override
   void initState() {
@@ -138,6 +142,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
 
   @override
   void dispose() {
+    _closeSaleTypeDropdown();
     _quantityController.dispose();
     _priceController.dispose();
     if (widget.detailsFocusNode == null) {
@@ -153,7 +158,65 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     super.dispose();
   }
 
-  List<DropdownMenuItem<String>> _getUnitOptions() {
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔧 قائمة منسدلة مخصصة لنوع البيع مع دعم لوحة المفاتيح
+  // ═══════════════════════════════════════════════════════════════════════════
+  void _openSaleTypeDropdownMenu() {
+    if (_isSaleTypeDropdownOpen) return;
+    
+    final options = _getUnitValues();
+    if (options.isEmpty) return;
+    
+    // تحديد الفهرس الحالي (أصغر وحدة = الأول)
+    _selectedSaleTypeIndex = options.indexOf(_currentItem.saleType ?? options.first);
+    if (_selectedSaleTypeIndex < 0) _selectedSaleTypeIndex = 0;
+    
+    final RenderBox? renderBox = _saleTypeDropdownKey.currentContext?.findRenderObject() as RenderBox?;
+    if (renderBox == null) return;
+    
+    final position = renderBox.localToGlobal(Offset.zero);
+    final size = renderBox.size;
+    
+    _saleTypeOverlayEntry = OverlayEntry(
+      builder: (context) => _SaleTypeDropdownOverlay(
+        options: options,
+        selectedIndex: _selectedSaleTypeIndex,
+        position: position,
+        size: size,
+        onSelect: (value) {
+          _closeSaleTypeDropdown();
+          _updateSaleType(value);
+          // الانتقال للسعر بعد الاختيار
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _priceFocusNode.requestFocus();
+          });
+        },
+        onClose: () {
+          _closeSaleTypeDropdown();
+        },
+        onIndexChanged: (index) {
+          _selectedSaleTypeIndex = index;
+        },
+      ),
+    );
+    
+    Overlay.of(context).insert(_saleTypeOverlayEntry!);
+    setState(() {
+      _isSaleTypeDropdownOpen = true;
+    });
+  }
+  
+  void _closeSaleTypeDropdown() {
+    _saleTypeOverlayEntry?.remove();
+    _saleTypeOverlayEntry = null;
+    if (mounted) {
+      setState(() {
+        _isSaleTypeDropdownOpen = false;
+      });
+    }
+  }
+
+  List<String> _getUnitValues() {
     Product? product = widget.allProducts.firstWhere(
       (p) => p.name == _currentItem.productName,
       orElse: () => Product(
@@ -188,7 +251,11 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         !options.contains(_currentItem.saleType)) {
       options.add(_currentItem.saleType!);
     }
-    return options
+    return options;
+  }
+
+  List<DropdownMenuItem<String>> _getUnitOptions() {
+    return _getUnitValues()
         .map((unit) => DropdownMenuItem(
               value: unit,
               child: Text(unit, textAlign: TextAlign.center),
@@ -285,7 +352,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
       _priceController.text =
           (newAppliedPrice > 0) ? NumberFormat('#,##0.##', 'en_US').format(newAppliedPrice) : '';
       widget.onItemUpdated(_currentItem);
-      FocusScope.of(context).requestFocus(_priceFocusNode);
+      // FocusScope.of(context).requestFocus(_priceFocusNode); // <-- Removed auto focus to price here to allow user to confirm with Enter
       setState(() {
         _openPriceDropdown = true;
       });
@@ -517,8 +584,11 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                           focusNode: _quantityFocusNode,
                           onFieldSubmitted: (val) {
                             // عند الضغط على Enter في حقل العدد
-                            // اختر أصغر وحدة تلقائياً وانتقل للسعر
-                            _selectDefaultSaleTypeAndMoveToPrice();
+                            // انتقل إلى حقل الوحدة وافتح القائمة المنسدلة
+                            _saleTypeFocusNode.requestFocus();
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              _openSaleTypeDropdownMenu();
+                            });
                           },
                           style: Theme.of(context).textTheme.bodyMedium,
                           decoration: const InputDecoration(
@@ -544,32 +614,81 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                           style: Theme.of(context).textTheme.bodyMedium,
                         )
                       : Focus(
+                          focusNode: _saleTypeFocusNode,
+                          onFocusChange: (hasFocus) {
+                            if (!hasFocus && _isSaleTypeDropdownOpen) {
+                              _closeSaleTypeDropdown();
+                            }
+                          },
                           onKeyEvent: (node, event) {
-                            // عند الضغط على Enter في قائمة نوع البيع
+                            if (event is! KeyDownEvent) return KeyEventResult.ignored;
+
                             if (event.logicalKey.keyLabel == 'Enter') {
-                              _selectDefaultSaleTypeAndMoveToPrice();
-                              return KeyEventResult.handled;
+                                // إذا القائمة مفتوحة، أغلقها وانتقل للسعر
+                                if (_isSaleTypeDropdownOpen) {
+                                  _closeSaleTypeDropdown();
+                                }
+                                _priceFocusNode.requestFocus();
+                                return KeyEventResult.handled;
+                            } else if (event.logicalKey.keyLabel == 'Arrow Down') {
+                                // الوحدة التالية
+                                final options = _getUnitValues();
+                                if (options.isNotEmpty) {
+                                    int currentIndex = options.indexOf(_currentItem.saleType ?? '');
+                                    int nextIndex = (currentIndex + 1) % options.length;
+                                    _updateSaleType(options[nextIndex]);
+                                }
+                                return KeyEventResult.handled;
+                            } else if (event.logicalKey.keyLabel == 'Arrow Up') {
+                                // الوحدة السابقة
+                                final options = _getUnitValues();
+                                if (options.isNotEmpty) {
+                                    int currentIndex = options.indexOf(_currentItem.saleType ?? '');
+                                    int prevIndex = (currentIndex - 1 + options.length) % options.length;
+                                    _updateSaleType(options[prevIndex]);
+                                }
+                                return KeyEventResult.handled;
+                            } else if (event.logicalKey.keyLabel == ' ') {
+                                // فتح القائمة بالمسافة
+                                _openSaleTypeDropdownMenu();
+                                return KeyEventResult.handled;
                             }
                             return KeyEventResult.ignored;
                           },
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButton<String>(
-                              value: _currentItem.saleType,
-                              items: _getUnitOptions(),
-                              onChanged: widget.isViewOnly
-                                  ? null
-                                  : (value) => _updateSaleType(value!),
-                              isExpanded: true,
-                              alignment: AlignmentDirectional.center,
-                              style: Theme.of(context).textTheme.bodyMedium,
-                              itemHeight: 48,
-                              autofocus: _openSaleTypeDropdown,
-                              focusNode: _saleTypeFocusNode,
-                              onTap: () {
-                                setState(() {
-                                  _openSaleTypeDropdown = false;
-                                });
-                              },
+                          child: GestureDetector(
+                            key: _saleTypeDropdownKey,
+                            onTap: () {
+                              _saleTypeFocusNode.requestFocus();
+                              _openSaleTypeDropdownMenu();
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                              decoration: BoxDecoration(
+                                border: _saleTypeFocusNode.hasFocus
+                                    ? Border.all(color: Colors.red, width: 2)
+                                    : null,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      _currentItem.saleType ?? '',
+                                      textAlign: TextAlign.center,
+                                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                        color: _saleTypeFocusNode.hasFocus ? Colors.red : null,
+                                        fontWeight: _saleTypeFocusNode.hasFocus ? FontWeight.bold : null,
+                                      ),
+                                    ),
+                                  ),
+                                  Icon(
+                                    Icons.arrow_drop_down,
+                                    size: 20,
+                                    color: _saleTypeFocusNode.hasFocus ? Colors.red : Colors.grey,
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
@@ -602,6 +721,8 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                           onFieldSubmitted: (val) {
                             // عند الضغط على Enter في حقل السعر، انتقل للصف التالي
                             widget.onPriceSubmitted?.call();
+                            // العودة للتركيز على حقل العدد للصف الجديد أو الحالي إذا تطلب الأمر
+                            // (يتم التعامل مع إنشاء صف جديد في create_invoice_screen)
                           },
                           style: Theme.of(context).textTheme.bodyMedium,
                           decoration: const InputDecoration(
@@ -654,21 +775,145 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     );
   }
 
-  // دالة لاختيار نوع البيع الافتراضي (أصغر وحدة) والانتقال للسعر
+  // دالة لاختيار نوع البيع الافتراضي (أصغر وحدة) والانتقال للسعر (لم تعد مستخدمة في onFieldSubmitted للكمية)
   void _selectDefaultSaleTypeAndMoveToPrice() {
-    // الحصول على خيارات الوحدات
-    final options = _getUnitOptions();
-    if (options.isEmpty) return;
-    
-    // اختيار أول وحدة (أصغر وحدة) إذا لم يكن هناك نوع بيع محدد
-    final firstOption = options.first.value;
-    if (firstOption != null && (_currentItem.saleType == null || _currentItem.saleType!.isEmpty)) {
-      _updateSaleType(firstOption);
-    }
-    
-    // الانتقال مباشرة إلى حقل السعر
+     // ... logic kept or removed as needed, currently not called by Quantity Enter anymore ...
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔧 Widget مخصص للقائمة المنسدلة مع دعم لوحة المفاتيح
+// ═══════════════════════════════════════════════════════════════════════════
+class _SaleTypeDropdownOverlay extends StatefulWidget {
+  final List<String> options;
+  final int selectedIndex;
+  final Offset position;
+  final Size size;
+  final Function(String) onSelect;
+  final VoidCallback onClose;
+  final Function(int) onIndexChanged;
+
+  const _SaleTypeDropdownOverlay({
+    required this.options,
+    required this.selectedIndex,
+    required this.position,
+    required this.size,
+    required this.onSelect,
+    required this.onClose,
+    required this.onIndexChanged,
+  });
+
+  @override
+  State<_SaleTypeDropdownOverlay> createState() => _SaleTypeDropdownOverlayState();
+}
+
+class _SaleTypeDropdownOverlayState extends State<_SaleTypeDropdownOverlay> {
+  late int _currentIndex;
+  late FocusNode _focusNode;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.selectedIndex;
+    _focusNode = FocusNode();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _priceFocusNode.requestFocus();
+      _focusNode.requestFocus();
     });
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        // خلفية شفافة للإغلاق عند النقر خارج القائمة
+        Positioned.fill(
+          child: GestureDetector(
+            onTap: widget.onClose,
+            child: Container(color: Colors.transparent),
+          ),
+        ),
+        // القائمة المنسدلة
+        Positioned(
+          left: widget.position.dx,
+          top: widget.position.dy + widget.size.height,
+          width: widget.size.width,
+          child: Material(
+            elevation: 8,
+            borderRadius: BorderRadius.circular(4),
+            child: Focus(
+              focusNode: _focusNode,
+              autofocus: true,
+              onKeyEvent: (node, event) {
+                if (event is! KeyDownEvent) return KeyEventResult.ignored;
+
+                if (event.logicalKey.keyLabel == 'Arrow Down') {
+                  setState(() {
+                    _currentIndex = (_currentIndex + 1) % widget.options.length;
+                    widget.onIndexChanged(_currentIndex);
+                  });
+                  return KeyEventResult.handled;
+                } else if (event.logicalKey.keyLabel == 'Arrow Up') {
+                  setState(() {
+                    _currentIndex = (_currentIndex - 1 + widget.options.length) % widget.options.length;
+                    widget.onIndexChanged(_currentIndex);
+                  });
+                  return KeyEventResult.handled;
+                } else if (event.logicalKey.keyLabel == 'Enter') {
+                  widget.onSelect(widget.options[_currentIndex]);
+                  return KeyEventResult.handled;
+                } else if (event.logicalKey.keyLabel == 'Escape') {
+                  widget.onClose();
+                  return KeyEventResult.handled;
+                }
+                return KeyEventResult.ignored;
+              },
+              child: Container(
+                constraints: const BoxConstraints(maxHeight: 200),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  itemCount: widget.options.length,
+                  itemBuilder: (context, index) {
+                    final isSelected = index == _currentIndex;
+                    return InkWell(
+                      onTap: () => widget.onSelect(widget.options[index]),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: isSelected ? Colors.red.shade50 : Colors.white,
+                          border: isSelected
+                              ? Border.all(color: Colors.red, width: 2)
+                              : null,
+                        ),
+                        child: Text(
+                          widget.options[index],
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: isSelected ? Colors.red : Colors.black87,
+                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }

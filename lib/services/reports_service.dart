@@ -274,7 +274,7 @@ class ReportsService {
         p.unit_hierarchy AS unit_hierarchy
       FROM invoice_items ii
       INNER JOIN invoices i ON ii.invoice_id = i.id
-      JOIN products p ON p.name = ii.product_name
+      LEFT JOIN products p ON p.name = ii.product_name
       WHERE DATE(i.invoice_date) >= ? AND DATE(i.invoice_date) <= ?
         AND i.status = 'محفوظة'
     ''', [startStr, endStr]);
@@ -394,7 +394,8 @@ class ReportsService {
       final totalAmount = (invoice['total_amount'] as num?)?.toDouble() ?? 0.0;
       final returnAmount = (invoice['return_amount'] as num?)?.toDouble() ?? 0.0;
       
-      // جلب بنود الفاتورة مع بيانات المنتج (JOIN وليس LEFT JOIN لضمان وجود بيانات المنتج)
+      // 🔧 إصلاح: استخدام LEFT JOIN لتشمل المنتجات غير الموجودة في قاعدة البيانات
+      // المنتجات غير المسجلة ستستخدم 10% كنسبة ربح افتراضية
       final items = await db.rawQuery('''
         SELECT 
           ii.quantity_individual AS qi,
@@ -410,7 +411,7 @@ class ReportsService {
           p.unit_costs AS unit_costs,
           p.unit_hierarchy AS unit_hierarchy
         FROM invoice_items ii
-        JOIN products p ON p.name = ii.product_name
+        LEFT JOIN products p ON p.name = ii.product_name
         WHERE ii.invoice_id = ?
       ''', [invoiceId]);
       
@@ -856,7 +857,7 @@ class ReportsService {
       
       grandTotalSales += totalAmount;
       
-      // جلب بنود الفاتورة
+      // جلب بنود الفاتورة - استخدام LEFT JOIN لتشمل المنتجات غير المسجلة
       final items = await db.rawQuery('''
         SELECT 
           ii.product_name,
@@ -873,7 +874,7 @@ class ReportsService {
           p.unit_costs AS unit_costs,
           p.unit_hierarchy AS unit_hierarchy
         FROM invoice_items ii
-        JOIN products p ON p.name = ii.product_name
+        LEFT JOIN products p ON p.name = ii.product_name
         WHERE ii.invoice_id = ?
       ''', [invoiceId]);
       
@@ -1013,7 +1014,7 @@ class ReportsService {
         p.unit_hierarchy AS unit_hierarchy
       FROM invoice_items ii
       JOIN invoices i ON ii.invoice_id = i.id
-      JOIN products p ON p.name = ii.product_name
+      LEFT JOIN products p ON p.name = ii.product_name
       WHERE $whereClause AND i.status = 'محفوظة'
       ORDER BY i.invoice_date DESC
       LIMIT 20

@@ -17,6 +17,7 @@ import 'package:path_provider/path_provider.dart';
 import '../services/invoice_pdf_service.dart';
 import 'package:alnaser/services/settings_manager.dart';
 import 'package:alnaser/models/app_settings.dart';
+import '../services/smart_search/smart_search.dart'; // 🧠 البحث الذكي
 
 class EditInvoicesScreen extends StatefulWidget {
   const EditInvoicesScreen({super.key});
@@ -578,7 +579,8 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
       if (q.trim().isEmpty) {
         productSuggestions = [];
       } else {
-        productSuggestions = (await db.searchProductsSmart(q.trim())).take(10).toList();
+        // 🧠 استخدام البحث الذكي بدلاً من البحث العادي
+        productSuggestions = (await SmartSearchService.instance.smartSearch(q.trim())).take(10).toList();
       }
     }
 

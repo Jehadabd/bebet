@@ -26,6 +26,7 @@ import '../services/pdf_header.dart';
 import '../services/pdf_service.dart';
 import '../services/printing_service.dart';
 import '../services/settings_manager.dart';
+import '../services/smart_search/smart_search.dart'; // 🧠 البحث الذكي
 import 'create_invoice_screen.dart';
 
 /// واجهة تحدد المتغيرات المطلوبة للتعامل مع الفواتير
@@ -1130,6 +1131,19 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
       await storage.delete(key: 'temp_invoice_data');
       savedOrSuspended = true;
       hasUnsavedChanges = false;
+
+      // 🧠 التدريب التلقائي على الفاتورة الجديدة (البحث الذكي)
+      if (savedInvoice != null && savedInvoice!.id != null) {
+        try {
+          await SmartSearchService.instance.trainOnNewInvoice(savedInvoice!.id!);
+        } catch (e) {
+          print('⚠️ Smart Search training error (non-blocking): $e');
+        }
+      }
+      
+      // 🧠 مسح جلسة البحث الذكي بعد حفظ الفاتورة بنجاح
+      // الجلسة الجديدة ستبدأ عند إنشاء فاتورة جديدة
+      SmartSearchService.instance.forceNewSession();
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

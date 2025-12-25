@@ -6,7 +6,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 import 'settings_manager.dart';
 import 'database_service.dart';
-import 'reports_service.dart';
 
 class TelegramBackupService {
   static final TelegramBackupService _instance = TelegramBackupService._internal();
@@ -159,30 +158,96 @@ class TelegramBackupService {
       
       final db = DatabaseService();
       final database = await db.database;
-      final reportsService = ReportsService();
       final nf = NumberFormat('#,##0', 'en_US');
       
-      // 1) بيانات الفواتير
-      final invoiceData = await database.rawQuery('''
+      // جلب جميع الفواتير المحفوظة في الفترة
+      final invoices = await database.rawQuery('''
         SELECT 
-          COUNT(*) as invoice_count,
-          COALESCE(SUM(total_amount), 0) as total_sales
+          id, total_amount, discount, amount_paid_on_invoice, payment_type
         FROM invoices
         WHERE DATE(invoice_date) >= ? AND DATE(invoice_date) <= ?
           AND status = 'محفوظة'
       ''', [startStr, endStr]);
       
-      final invoiceCount = invoiceData.first['invoice_count'] as int? ?? 0;
-      final totalSales = (invoiceData.first['total_sales'] as num?)?.toDouble() ?? 0.0;
+      // تصنيف الفواتير
+      int cashCount = 0;
+      double cashTotal = 0.0;
+      List<int> cashInvoiceIds = [];
       
-      // 2) حساب أرباح الفواتير باستخدام ReportsService
-      final periodSummary = await reportsService.getPeriodSummary(
-        startDate: startOfMonth,
-        endDate: now,
-      );
-      final invoiceProfit = periodSummary['netProfit'] as double? ?? 0.0;
+      int debtCount = 0;
+      double debtTotal = 0.0;
+      List<int> debtInvoiceIds = [];
       
-      // 3) معاملات إضافة الدين اليدوية (من هذا الجهاز فقط، غير مرتبطة بفاتورة)
+      int mixedCount = 0;
+      double mixedTotal = 0.0;
+      double mixedPaidAmount = 0.0;
+      double mixedDebtAmount = 0.0;
+      List<int> mixedInvoiceIds = [];
+      
+      for (final inv in invoices) {
+        final id = inv['id'] as int;
+        final total = (inv['total_amount'] as num?)?.toDouble() ?? 0.0;
+        final discount = (inv['discount'] as num?)?.toDouble() ?? 0.0;
+        final paid = (inv['amount_paid_on_invoice'] as num?)?.toDouble() ?? 0.0;
+        final netTotal = total - discount;
+        
+        // تصنيف الفاتورة
+        if (paid >= netTotal && netTotal > 0) {
+          // نقدية بالكامل
+          cashCount++;
+          cashTotal += netTotal;
+          cashInvoiceIds.add(id);
+        } else if (paid <= 0) {
+          // دين بالكامل
+          debtCount++;
+          debtTotal += netTotal;
+          debtInvoiceIds.add(id);
+        } else {
+          // مدمجة (نقد + دين)
+          mixedCount++;
+          mixedTotal += netTotal;
+          mixedPaidAmount += paid;
+          mixedDebtAmount += (netTotal - paid);
+          mixedInvoiceIds.add(id);
+        }
+      }
+      
+      // حساب الأرباح لكل نوع
+      double cashProfit = 0.0;
+      double debtProfit = 0.0;
+      double mixedProfit = 0.0;
+      
+      // جلب جميع المنتجات لحساب الأرباح
+      final products = await db.getAllProducts();
+      final productMap = <String, dynamic>{};
+      for (final p in products) {
+        productMap[p.name] = p;
+      }
+      
+      // حساب أرباح الفواتير النقدية
+      for (final invId in cashInvoiceIds) {
+        final profit = await _calculateInvoiceProfitById(db, invId, productMap);
+        cashProfit += profit;
+      }
+      
+      // حساب أرباح فواتير الدين
+      for (final invId in debtInvoiceIds) {
+        final profit = await _calculateInvoiceProfitById(db, invId, productMap);
+        debtProfit += profit;
+      }
+      
+      // حساب أرباح الفواتير المدمجة
+      for (final invId in mixedInvoiceIds) {
+        final profit = await _calculateInvoiceProfitById(db, invId, productMap);
+        mixedProfit += profit;
+      }
+      
+      final invoiceTotalProfit = cashProfit + debtProfit + mixedProfit;
+      final totalCount = cashCount + debtCount + mixedCount;
+      final totalAmount = cashTotal + debtTotal + mixedTotal;
+      
+      // معاملات إضافة الدين اليدوية (من هذا الجهاز فقط، غير مرتبطة بفاتورة)
+      // تشمل manual_debt + opening_balance للعدد والمبلغ
       final manualDebtData = await database.rawQuery('''
         SELECT 
           COUNT(*) as count,
@@ -196,9 +261,23 @@ class TelegramBackupService {
       
       final manualDebtCount = manualDebtData.first['count'] as int? ?? 0;
       final manualDebtTotal = (manualDebtData.first['total'] as num?)?.toDouble() ?? 0.0;
-      final manualDebtProfit = manualDebtTotal * 0.15; // 15% أرباح
       
-      // 4) معاملات تسديد الدين اليدوية (من هذا الجهاز فقط، غير مرتبطة بفاتورة)
+      // حساب ربح المعاملات اليدوية (15% من manual_debt فقط - بدون opening_balance)
+      // هذا يطابق الحساب في database_service.dart وشاشة الجرد
+      final manualDebtProfitData = await database.rawQuery('''
+        SELECT 
+          COALESCE(SUM(amount_changed), 0) as total
+        FROM transactions
+        WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
+          AND transaction_type = 'manual_debt'
+          AND is_created_by_me = 1
+          AND invoice_id IS NULL
+      ''', [startStr, endStr]);
+      
+      final manualDebtOnlyTotal = (manualDebtProfitData.first['total'] as num?)?.toDouble() ?? 0.0;
+      final manualDebtProfit = manualDebtOnlyTotal * 0.15; // 15% أرباح من manual_debt فقط
+      
+      // معاملات تسديد الدين اليدوية (من هذا الجهاز فقط، غير مرتبطة بفاتورة)
       final manualPaymentData = await database.rawQuery('''
         SELECT 
           COUNT(*) as count,
@@ -213,11 +292,14 @@ class TelegramBackupService {
       final manualPaymentCount = manualPaymentData.first['count'] as int? ?? 0;
       final manualPaymentTotal = (manualPaymentData.first['total'] as num?)?.toDouble() ?? 0.0;
       
-      // 5) جلب اسم الفرع من الإعدادات
+      // إجمالي الأرباح الكلي
+      final grandTotalProfit = invoiceTotalProfit + manualDebtProfit;
+      
+      // جلب اسم الفرع من الإعدادات
       final settings = await SettingsManager.getAppSettings();
       final branchName = settings.branchName;
       
-      // 6) بناء الرسالة
+      // بناء الرسالة
       final monthNames = [
         'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
         'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'
@@ -229,26 +311,131 @@ class TelegramBackupService {
 🏪 <b>$branchName</b>
 📅 من ${startOfMonth.day}/${startOfMonth.month}/${startOfMonth.year} إلى ${now.day}/${now.month}/${now.year}
 
+═══════════════════════════════
 🧾 <b>الفواتير:</b>
-   • العدد: $invoiceCount فاتورة
-   • المبالغ: ${nf.format(totalSales)} د.ع
-   • الأرباح: ${nf.format(invoiceProfit)} د.ع
+═══════════════════════════════
+💵 نقدية: $cashCount فاتورة | ${nf.format(cashTotal)} د.ع
+📝 دين: $debtCount فاتورة | ${nf.format(debtTotal)} د.ع
+🔄 مدمجة: $mixedCount فاتورة | ${nf.format(mixedTotal)} د.ع
+   • المدفوع منها: ${nf.format(mixedPaidAmount)} د.ع
+   • الدين منها: ${nf.format(mixedDebtAmount)} د.ع
+───────────────────────────────
+📦 <b>الإجمالي:</b> $totalCount فاتورة | ${nf.format(totalAmount)} د.ع
 
-💰 <b>معاملات إضافة الدين (يدوية):</b>
+═══════════════════════════════
+📈 <b>أرباح الفواتير:</b>
+═══════════════════════════════
+💵 أرباح النقدية: ${nf.format(cashProfit)} د.ع
+📝 أرباح الدين: ${nf.format(debtProfit)} د.ع
+🔄 أرباح المدمجة: ${nf.format(mixedProfit)} د.ع
+───────────────────────────────
+💰 <b>إجمالي أرباح الفواتير:</b> ${nf.format(invoiceTotalProfit)} د.ع
+
+═══════════════════════════════
+💳 <b>معاملات إضافة الدين (يدوية):</b>
+═══════════════════════════════
    • العدد: $manualDebtCount معاملة
    • المبلغ: ${nf.format(manualDebtTotal)} د.ع
    • الأرباح (15%): ${nf.format(manualDebtProfit)} د.ع
 
+═══════════════════════════════
 💵 <b>معاملات تسديد الدين (يدوية):</b>
+═══════════════════════════════
    • العدد: $manualPaymentCount معاملة
    • المبلغ: ${nf.format(manualPaymentTotal)} د.ع
 
-📈 <b>إجمالي الأرباح:</b> ${nf.format(invoiceProfit + manualDebtProfit)} د.ع
+═══════════════════════════════
+🏆 <b>إجمالي الأرباح الكلي:</b> ${nf.format(grandTotalProfit)} د.ع
+═══════════════════════════════
 ''';
       
       return await sendMessage(message);
     } catch (e) {
+      print('Error sending monthly summary: $e');
       return false;
+    }
+  }
+  
+  /// حساب ربح فاتورة معينة بناءً على ID
+  Future<double> _calculateInvoiceProfitById(
+    DatabaseService db,
+    int invoiceId,
+    Map<String, dynamic> productMap,
+  ) async {
+    try {
+      final database = await db.database;
+      
+      // جلب الخصم
+      final invoiceData = await database.rawQuery(
+        'SELECT discount FROM invoices WHERE id = ?',
+        [invoiceId],
+      );
+      final discount = invoiceData.isNotEmpty
+          ? (invoiceData.first['discount'] as num?)?.toDouble() ?? 0.0
+          : 0.0;
+      
+      // جلب عناصر الفاتورة
+      final items = await database.rawQuery(
+        'SELECT * FROM invoice_items WHERE invoice_id = ?',
+        [invoiceId],
+      );
+      
+      double totalProfit = 0.0;
+      
+      for (final item in items) {
+        final sellingPrice = (item['applied_price'] as num?)?.toDouble() ?? 0.0;
+        final acp = (item['actual_cost_price'] as num?)?.toDouble();
+        final itemBaseCost = (item['cost_price'] as num?)?.toDouble() ?? 0.0;
+        
+        final saleType = item['sale_type'] as String? ?? '';
+        final qi = (item['quantity_individual'] as num?)?.toDouble() ?? 0.0;
+        final ql = (item['quantity_large_unit'] as num?)?.toDouble() ?? 0.0;
+        final uilu = (item['units_in_large_unit'] as num?)?.toDouble() ?? 0.0;
+        
+        final productName = item['product_name'] as String? ?? '';
+        final product = productMap[productName];
+        
+        final String productUnit = product?.unit ?? '';
+        final double lengthPerUnit = product?.lengthPerUnit ?? 1.0;
+        final double productBaseCost = product?.costPrice ?? 0.0;
+        final Map<String, double> unitCosts = product?.getUnitCostsMap() ?? {};
+        
+        final bool soldAsLargeUnit = ql > 0;
+        final double saleUnitsCount = soldAsLargeUnit ? ql : qi;
+        
+        double costPerSaleUnit;
+        
+        if (acp != null && acp > 0) {
+          costPerSaleUnit = acp;
+        } else if (soldAsLargeUnit) {
+          if (unitCosts.containsKey(saleType)) {
+            costPerSaleUnit = unitCosts[saleType]!;
+          } else if (productUnit == 'meter' && saleType == 'لفة') {
+            costPerSaleUnit = productBaseCost * lengthPerUnit;
+          } else if (uilu > 0) {
+            costPerSaleUnit = productBaseCost * uilu;
+          } else {
+            costPerSaleUnit = productBaseCost;
+          }
+        } else {
+          costPerSaleUnit = itemBaseCost > 0 ? itemBaseCost : productBaseCost;
+        }
+        
+        // إذا كانت التكلفة صفر، افترض أن الربح 10%
+        if (costPerSaleUnit <= 0 && sellingPrice > 0) {
+          costPerSaleUnit = sellingPrice * 0.9;
+        }
+        
+        final lineAmount = sellingPrice * saleUnitsCount;
+        final lineCostTotal = costPerSaleUnit * saleUnitsCount;
+        
+        totalProfit += (lineAmount - lineCostTotal);
+      }
+      
+      return totalProfit - discount;
+    } catch (e) {
+      print('Error calculating invoice profit: $e');
+      return 0.0;
     }
   }
 }

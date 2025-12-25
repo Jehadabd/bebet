@@ -4717,8 +4717,9 @@ class DatabaseService {
               creditSalesValue += invoice.totalAmount;
             }
 
-            // احسب تكلفة البنود في الفاتورة بمنطق مطابق لتقارير البضاعة عبر JOIN لضمان توافر بيانات المنتج
-            // 🔧 إصلاح: إذا كانت التكلفة صفر، افترض أن الربح 10% فقط (مصاريف كهرباء/تشغيل)
+            // احسب تكلفة البنود في الفاتورة
+            // 🔧 إصلاح: استخدام LEFT JOIN لتشمل المنتجات غير الموجودة في قاعدة البيانات
+            // المنتجات غير المسجلة ستستخدم 10% كنسبة ربح افتراضية
             double totalCost = 0.0;
             final List<Map<String, dynamic>> itemRows = await db.rawQuery('''
               SELECT 
@@ -4734,7 +4735,7 @@ class DatabaseService {
                 p.length_per_unit AS length_per_unit,
                 p.unit_costs AS unit_costs
               FROM invoice_items ii
-              JOIN products p ON p.name = ii.product_name
+              LEFT JOIN products p ON p.name = ii.product_name
               WHERE ii.invoice_id = ?
             ''', [invoice.id!]);
 
@@ -5029,7 +5030,7 @@ class DatabaseService {
       }
       
       // ترتيب النتائج حسب الأولوية
-      return allResults.take(50).toList();
+      return allResults.take(100).toList();
       
     } catch (e) {
       print('Error in smart search: $e');
@@ -5058,13 +5059,14 @@ class DatabaseService {
       // إنشاء استعلام FTS5 - البحث عن أي من الكلمات
       final ftsQuery = cleanedTerms.map((term) => '$term*').join(' OR ');
       
+      // 🆕 زيادة LIMIT إلى 300 لإعطاء النظام الذكي مجال أكبر للترتيب
       final List<Map<String, dynamic>> maps = await db.rawQuery('''
         SELECT p.*, bm25(products_fts) AS rank_score
         FROM products_fts
         JOIN products p ON p.id = products_fts.rowid
         WHERE products_fts MATCH ?
         ORDER BY rank_score ASC
-        LIMIT 30
+        LIMIT 500
       ''', [ftsQuery]);
       
       return List.generate(maps.length, (i) => Product.fromMap(maps[i]));

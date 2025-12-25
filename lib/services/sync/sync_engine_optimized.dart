@@ -80,7 +80,7 @@ class OptimizedSyncConfig {
     this.maxOperationFilesToKeep = 10, // فقط 10 ملفات عمليات
     
     // التنظيف
-    this.keepOperationsDays = 14, // أسبوعين فقط
+    this.keepOperationsDays = 30, // شهر كامل
     this.maxStorageMB = 500, // 500MB كحد أقصى (10% من 5GB)
     this.cleanupThresholdPercent = 0.8, // تنظيف عند 80%
     
@@ -152,6 +152,10 @@ class OptimizedSyncEngine {
   Duration _serverTimeOffset = Duration.zero; // لتصحيح التوقيت
   final String _currentAppVersion = '1.0.0'; // يجب أن يأتي من package_info
   int? _currentSyncLogId; // معرف سجل المزامنة الحالي
+
+  
+  /// الحصول على الوقت الحالي مصححاً حسب توقيت السيرفر
+  DateTime get _serverNow => DateTime.now().toUtc().add(_serverTimeOffset);
   
   // Cache للمجلدات
   String? _syncFolderId;
@@ -258,17 +262,23 @@ class OptimizedSyncEngine {
         return {'status': 'free', 'message': 'القفل متاح'};
       }
       
+      final now = _serverNow;
+      final isExpired = now.isAfter(existingLock.expiresAt) || 
+                       now.difference(existingLock.heartbeat).inSeconds > 90;
+                       
+      final remainingSeconds = isExpired ? 0 : existingLock.expiresAt.difference(now).inSeconds;
+      
       return {
-        'status': existingLock.isExpired ? 'expired' : 'busy',
+        'status': isExpired ? 'expired' : 'busy',
         'device_name': existingLock.deviceName,
         'device_id': existingLock.deviceId,
         'is_mine': existingLock.deviceId == _deviceId,
         'acquired_at': existingLock.acquiredAt.toIso8601String(),
         'expires_at': existingLock.expiresAt.toIso8601String(),
-        'heartbeat_age_seconds': existingLock.heartbeatAgeSeconds,
-        'remaining_seconds': existingLock.remainingSeconds,
-        'is_expired': existingLock.isExpired,
-        'message': existingLock.isExpired 
+        'heartbeat_age_seconds': now.difference(existingLock.heartbeat).inSeconds,
+        'remaining_seconds': remainingSeconds,
+        'is_expired': isExpired,
+        'message': isExpired 
             ? 'القفل منتهي الصلاحية'
             : 'القفل مشغول بواسطة ${existingLock.deviceName}',
       };
@@ -355,11 +365,16 @@ class OptimizedSyncEngine {
         final existingLock = await _readLock();
         
         if (existingLock != null) {
-          if (existingLock.isExpired) {
+          // Manual check using server time (to handle clock skew)
+          final now = _serverNow;
+          final isLockExpired = now.isAfter(existingLock.expiresAt) || 
+                               now.difference(existingLock.heartbeat).inSeconds > 90;
+
+          if (isLockExpired) {
             // القفل منتهي الصلاحية أو الـ heartbeat قديم
-            final reason = DateTime.now().toUtc().isAfter(existingLock.expiresAt)
+            final reason = now.isAfter(existingLock.expiresAt)
                 ? 'انتهت صلاحيته'
-                : 'الجهاز الآخر توقف (heartbeat قديم: ${existingLock.heartbeatAgeSeconds} ثانية)';
+                : 'الجهاز الآخر توقف (heartbeat قديم: ${now.difference(existingLock.heartbeat).inSeconds} ثانية)';
             print('🔓 القفل منتهي: $reason، جاري الحذف...');
             await _forceDeleteLock();
             // بعد حذف القفل المنتهي، نحاول مباشرة إنشاء قفل جديد
@@ -410,7 +425,7 @@ class OptimizedSyncEngine {
 
   /// إنشاء قفل مع التحقق بعد الكتابة (Verify-After-Write)
   Future<SyncLock?> _createLockWithVerification() async {
-    final now = DateTime.now().toUtc();
+    final now = _serverNow;
     final lockId = '${_deviceId}_${now.millisecondsSinceEpoch}';
     
     final lock = SyncLock(
@@ -522,7 +537,7 @@ class OptimizedSyncEngine {
   }
 
   Future<SyncLock> _renewLock(SyncLock existingLock) async {
-    final now = DateTime.now().toUtc();
+    final now = _serverNow;
     final renewed = SyncLock(
       lockId: existingLock.lockId,
       deviceId: existingLock.deviceId,
@@ -2865,6 +2880,25 @@ class OptimizedSyncEngine {
   void dispose() {
     _stopHeartbeat();
     _httpClient?.close();
+  }
+
+  /// تحديث فرق التوقيت مع سيرفر Google
+  Future<void> _updateServerTimeOffset() async {
+    try {
+      final client = http.Client();
+      final response = await client.head(Uri.parse('https://www.google.com'));
+      final dateHeader = response.headers['date'];
+      if (dateHeader != null) {
+        // صيغة التاريخ: Mon, 25 Dec 2025 17:30:00 GMT
+        final serverTime = HttpDate.parse(dateHeader);
+        final deviceTime = DateTime.now().toUtc();
+        _serverTimeOffset = serverTime.difference(deviceTime);
+        print('⏰ فرق التوقيت مع السيرفر: ${_serverTimeOffset.inSeconds} ثانية');
+      }
+      client.close();
+    } catch (e) {
+      print('⚠️ فشل تحديد توقيت السيرفر، سيتم استخدام توقيت الجهاز: $e');
+    }
   }
 }
 
