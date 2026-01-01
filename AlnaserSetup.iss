@@ -38,6 +38,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Visual C++ Redistributable - يتم تثبيته تلقائياً إذا لم يكن موجوداً
 Source: "installer\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
+; ملف الإعدادات البيئية (.env) - مهم لإعدادات Telegram
+Source: ".env"; DestDir: "{app}"; Flags: ignoreversion
+
 ; ملفات التطبيق
 Source: "build\windows\x64\runner\Release\debt_book.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

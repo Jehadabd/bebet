@@ -395,17 +395,24 @@ class _MainScreenState extends State<MainScreen> {
               onTap: () async {
                 final progressNotifier = ValueNotifier<double>(0.0);
                 final statusNotifier = ValueNotifier<String>('جاري رفع قاعدة البيانات...');
+                final errorNotifier = ValueNotifier<String?>(''); // لتتبع الأخطاء
                 bool uploadSucceeded = false;
 
                 // جلب وقت آخر رفع
                 final telegramService = TelegramBackupService();
                 final lastUploadTime = await telegramService.getLastUploadTime();
+                
+                // طباعة معلومات التشخيص
+                final diagnostics = await telegramService.getDiagnostics();
+                print('📊 معلومات تشخيص Telegram:');
+                diagnostics.forEach((key, value) => print('   $key: $value'));
 
                 // ابدأ الرفع في مهمة منفصلة وتحديث المؤشر ثم إغلاق الحوار
                 Future(() async {
                   try {
                     // متغير لتتبع نجاح إرسال الفواتير لتيليجرام
                     bool allInvoicesSentSuccessfully = true;
+                    List<String> errors = [];
                     
                     // 1) رفع قاعدة البيانات إلى Drive و Telegram
                     await context.read<AppProvider>().uploadDatabaseToDrive(
@@ -431,34 +438,53 @@ class _MainScreenState extends State<MainScreen> {
                       // التحقق من نجاح إرسال جميع الفواتير
                       if (exportResult.failedCount > 0) {
                         allInvoicesSentSuccessfully = false;
+                        errors.add('فشل إرسال ${exportResult.failedCount} فاتورة');
                       }
+                    } else if (!telegramService.isConfigured) {
+                      errors.add('إعدادات Telegram غير مكتملة');
                     }
 
                     // 3) إرسال الملخص الشهري إلى Telegram
                     if (telegramService.isConfigured) {
                       statusNotifier.value = 'جاري إرسال الملخص الشهري...';
                       progressNotifier.value = 0.92;
-                      await telegramService.sendMonthlySummary();
+                      final summaryResult = await telegramService.sendMonthlySummaryWithDetails();
+                      if (!summaryResult.success) {
+                        errors.add('فشل إرسال الملخص الشهري: ${summaryResult.errorMessage}');
+                        if (summaryResult.errorDetails != null) {
+                          errors.add('التفاصيل: ${summaryResult.errorDetails}');
+                        }
+                      }
                     }
 
                     // 4) حفظ وقت الرفع الحالي فقط إذا نجح إرسال جميع الفواتير
-                    if (allInvoicesSentSuccessfully) {
+                    if (allInvoicesSentSuccessfully && errors.isEmpty) {
                       await telegramService.saveLastUploadTime();
                     }
                     
                     progressNotifier.value = 1.0;
-                    uploadSucceeded = true;
+                    
+                    if (errors.isNotEmpty) {
+                      errorNotifier.value = errors.join('\n');
+                      uploadSucceeded = false;
+                    } else {
+                      uploadSucceeded = true;
+                    }
                   } catch (e) {
                     print('Upload error: $e');
+                    errorNotifier.value = 'خطأ: $e';
                     uploadSucceeded = false;
                   } finally {
                     if (Navigator.of(context, rootNavigator: true).canPop()) {
-                      Navigator.of(context, rootNavigator: true).pop(uploadSucceeded);
+                      Navigator.of(context, rootNavigator: true).pop({
+                        'success': uploadSucceeded,
+                        'error': errorNotifier.value,
+                      });
                     }
                   }
                 });
 
-                final result = await showDialog<bool>(
+                final result = await showDialog<Map<String, dynamic>>(
                   context: context,
                   barrierDismissible: false,
                   builder: (ctx) => AlertDialog(
@@ -482,16 +508,61 @@ class _MainScreenState extends State<MainScreen> {
                   ),
                 );
 
-                if (result == true) {
+                if (result?['success'] == true) {
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                     content: Text('تم رفع قاعدة البيانات وإرسال الفواتير بنجاح'),
                     duration: Duration(seconds: 3),
                   ));
                 } else {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                    content: Text('فشل الرفع - تحقق من رسائل التصحيح في وحدة التحكم'),
-                    backgroundColor: Colors.red,
-                  ));
+                  final errorMsg = result?['error'] as String?;
+                  // عرض dialog مفصل للخطأ
+                  showDialog(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Row(
+                        children: [
+                          Icon(Icons.error_outline, color: Colors.red),
+                          SizedBox(width: 8),
+                          Text('فشل الإرسال'),
+                        ],
+                      ),
+                      content: SingleChildScrollView(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('حدث خطأ أثناء إرسال البيانات إلى Telegram:',
+                                style: TextStyle(fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 12),
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.red.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: Colors.red.withOpacity(0.3)),
+                              ),
+                              child: Text(
+                                errorMsg ?? 'خطأ غير معروف - تحقق من اتصال الإنترنت',
+                                style: const TextStyle(fontSize: 13),
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            const Text('الحلول المقترحة:', style: TextStyle(fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 8),
+                            const Text('• تأكد من اتصال الإنترنت'),
+                            const Text('• تأكد من اختيار القسم الصحيح (كهربائيات/صحيات)'),
+                            const Text('• حاول مرة أخرى بعد قليل'),
+                          ],
+                        ),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text('حسناً'),
+                        ),
+                      ],
+                    ),
+                  );
                 }
               },
               color: const Color(0xFF0D47A1),

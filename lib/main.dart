@@ -1,4 +1,5 @@
 // main.dart
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
@@ -32,11 +33,32 @@ void main() async {
   // تهيئة GetStorage
   await GetStorage.init();
 
-  // تحميل ملف .env
+  // تحميل ملف .env من عدة مواقع محتملة
+  bool envLoaded = false;
   try {
-    await dotenv.load();
+    // محاولة 1: من مجلد التطبيق الحالي (للـ EXE)
+    final exeDir = Platform.resolvedExecutable;
+    final exePath = exeDir.substring(0, exeDir.lastIndexOf(Platform.pathSeparator));
+    final envFile = File('$exePath${Platform.pathSeparator}.env');
+    
+    if (await envFile.exists()) {
+      await dotenv.load(fileName: envFile.path);
+      envLoaded = true;
+      print('✅ تم تحميل .env من مجلد التطبيق: ${envFile.path}');
+    }
   } catch (e) {
-    // تجاهل الخطأ - ملف .env اختياري
+    print('⚠️ فشل تحميل .env من مجلد التطبيق: $e');
+  }
+  
+  // محاولة 2: من المجلد الافتراضي (للتطوير)
+  if (!envLoaded) {
+    try {
+      await dotenv.load();
+      envLoaded = true;
+      print('✅ تم تحميل .env من المجلد الافتراضي');
+    } catch (e) {
+      print('⚠️ ملف .env غير موجود - سيتم استخدام القيم الافتراضية المُضمنة');
+    }
   }
 
   // تهيئة sqflite_common_ffi على ويندوز فقط
