@@ -1,4 +1,5 @@
 // screens/home_screen.dart
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -7,6 +8,7 @@ import '../models/customer.dart';
 import '../services/sync/sync_service.dart';
 import '../services/sync/sync_audit_service.dart';
 import '../services/settings_manager.dart';
+import '../services/firebase_sync/firebase_sync_service.dart';
 import 'customer_details_screen.dart';
 import 'add_customer_screen.dart';
 import 'saved_invoices_screen.dart';
@@ -39,6 +41,9 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final SyncService _syncService = SyncService();
   
+  // 🔄 الاستماع لإشعارات المزامنة الفورية
+  StreamSubscription<Map<String, dynamic>>? _transactionSubscription;
+  
   @override
   void initState() {
     super.initState();
@@ -49,6 +54,53 @@ class _HomeScreenState extends State<HomeScreen> {
       // تأكد من تصفية البحث الفارغة عند الدخول للشاشة لتجنب بقاء فلتر قديم
       app.setSearchQuery('');
       app.initialize();
+    });
+    
+    // 🔄 الاستماع لإشعارات المعاملات الجديدة من Firebase
+    _setupFirebaseSyncListener();
+  }
+  
+  @override
+  void dispose() {
+    _transactionSubscription?.cancel();
+    super.dispose();
+  }
+  
+  /// 🔄 إعداد الاستماع لإشعارات المزامنة الفورية
+  void _setupFirebaseSyncListener() {
+    final firebaseSync = FirebaseSyncService();
+    
+    _transactionSubscription = firebaseSync.onTransactionReceived.listen((data) {
+      if (mounted) {
+        print('🔄 تحديث قائمة العملاء: معاملة جديدة من جهاز آخر');
+        
+        // إعادة تحميل قائمة العملاء لتحديث الأرصدة
+        context.read<AppProvider>().initialize();
+        
+        // إظهار إشعار صغير
+        final customerName = data['customerName'] as String? ?? 'عميل';
+        final amountChanged = data['amountChanged'] as double? ?? 0;
+        final typeLabel = amountChanged >= 0 ? 'إضافة دين' : 'تسديد';
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.sync, color: Colors.white, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '🔄 $typeLabel: ${amountChanged.abs().toStringAsFixed(0)} - $customerName',
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: Colors.blue.shade700,
+            duration: const Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     });
   }
   

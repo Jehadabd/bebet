@@ -21,6 +21,8 @@ import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:convert';
 import 'sync/sync_tracker.dart'; // 🔄 تتبع المزامنة
+import 'sync/sync_security.dart'; // 🔄 أمان المزامنة (لتوليد UUID)
+import 'firebase_sync/firebase_sync_helper.dart'; // 🔥 مزامنة Firebase
 
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
@@ -1910,9 +1912,20 @@ class DatabaseService {
       print('⚠️ تحذير: فشل تسجيل المزامنة للعميل: $e');
     }
     
+    // 🔥 Firebase Sync: رفع العميل الجديد
+    try {
+      final customerRows = await db.query('customers', where: 'id = ?', whereArgs: [customerId], limit: 1);
+      if (customerRows.isNotEmpty) {
+        firebaseSyncHelper.syncCustomer(customerRows.first);
+      }
+    } catch (e) {
+      print('⚠️ Firebase Sync: فشل رفع العميل: $e');
+    }
+    
     // إذا كان هناك دين مبدئي، أضف معاملة تلقائية
     if (customer.currentTotalDebt > 0) {
       final now = DateTime.now();
+      final txSyncUuid = SyncSecurity.generateUuid(); // 🔄 توليد sync_uuid للمعاملة
       final transactionId = await db.insert('transactions', {
         'customer_id': customerId,
         'transaction_date': now.toIso8601String(),
@@ -1923,6 +1936,7 @@ class DatabaseService {
         'description': 'رصيد افتتاحي',
         'created_at': now.toIso8601String(),
         'invoice_id': null,
+        'sync_uuid': txSyncUuid, // 🔄 إضافة sync_uuid
       });
       
       // 🔄 تتبع المزامنة: تسجيل معاملة الدين المبدئي (غير متزامن)
@@ -2112,6 +2126,16 @@ class DatabaseService {
         }
       } catch (e) {
         print('⚠️ تحذير: فشل تسجيل مزامنة تحديث العميل: $e');
+      }
+      
+      // 🔥 Firebase Sync: رفع تحديث العميل
+      try {
+        final customerRows = await db.query('customers', where: 'id = ?', whereArgs: [customer.id], limit: 1);
+        if (customerRows.isNotEmpty) {
+          firebaseSyncHelper.syncCustomer(customerRows.first);
+        }
+      } catch (e) {
+        print('⚠️ Firebase Sync: فشل رفع تحديث العميل: $e');
       }
     }
     
@@ -2716,14 +2740,21 @@ class DatabaseService {
           );
           
           // 4. تجهيز المعاملة بالأرصدة الصحيحة
+          // 🔄 تعيين sync_uuid إذا لم يكن موجوداً (مهم للمزامنة)
+          final syncUuid = transaction.syncUuid 
+              ?? transaction.transactionUuid 
+              ?? SyncSecurity.generateUuid();
+          
           final updatedTransaction = transaction.copyWith(
             balanceBeforeTransaction: verifiedBalanceBefore,
             newBalanceAfterTransaction: newBalanceAfterTransaction,
+            syncUuid: syncUuid,
           );
           
-          // 5. إدراج المعاملة مع Checksum
+          // 5. إدراج المعاملة مع Checksum و sync_uuid
           final transactionMap = updatedTransaction.toMap();
           transactionMap['checksum'] = checksum;
+          transactionMap['sync_uuid'] = syncUuid; // 🔄 ضمان وجود sync_uuid
           final id = await txn.insert('transactions', transactionMap);
 
           // 6. تحديث رصيد العميل
@@ -2833,6 +2864,18 @@ class DatabaseService {
         }
       } catch (e) {
         print('⚠️ تحذير: فشل تسجيل المزامنة للمعاملة: $e');
+      }
+      
+      // 🔥 Firebase Sync: رفع المعاملة الجديدة
+      try {
+        if (customerSyncUuid != null) {
+          final txRows = await db.query('transactions', where: 'id = ?', whereArgs: [transactionId], limit: 1);
+          if (txRows.isNotEmpty) {
+            firebaseSyncHelper.syncTransaction(txRows.first, customerSyncUuid);
+          }
+        }
+      } catch (e) {
+        print('⚠️ Firebase Sync: فشل رفع المعاملة: $e');
       }
       
       return transactionId;
@@ -3882,6 +3925,7 @@ class DatabaseService {
                       'description': 'فاتورة مبيعات (تعديل)',
                       'created_at': DateTime.now().toIso8601String(),
                       'invoice_id': invoiceId,
+                      'sync_uuid': SyncSecurity.generateUuid(), // 🔄 إضافة sync_uuid
                    });
                  }
                } else {
@@ -3897,6 +3941,7 @@ class DatabaseService {
                       'description': 'فاتورة مبيعات',
                       'created_at': DateTime.now().toIso8601String(),
                       'invoice_id': invoiceId,
+                      'sync_uuid': SyncSecurity.generateUuid(), // 🔄 إضافة sync_uuid
                    });
                  }
                }
@@ -3991,6 +4036,7 @@ class DatabaseService {
                     'description': 'Invoice settlement adjustment',
                     'created_at': DateTime.now().toIso8601String(),
                     'invoice_id': invoice.id,
+                    'sync_uuid': SyncSecurity.generateUuid(), // 🔄 إضافة sync_uuid
                   });
                 }
               });
@@ -4046,6 +4092,7 @@ class DatabaseService {
                         'description': 'Invoice settlement adjustment',
                         'created_at': DateTime.now().toIso8601String(),
                         'invoice_id': invoice.id,
+                        'sync_uuid': SyncSecurity.generateUuid(), // 🔄 إضافة sync_uuid
                       });
                     }
                   });
@@ -4461,6 +4508,7 @@ class DatabaseService {
         'invoice_id': invoiceId,
         'created_at': DateTime.now().toIso8601String(),
         'audio_note_path': null,
+        'sync_uuid': SyncSecurity.generateUuid(), // 🔄 إضافة sync_uuid
       });
     });
   }
@@ -5562,11 +5610,16 @@ class DatabaseService {
   // --- دوال معاملات الدين ---
   Future<int> insertDebtTransaction(DebtTransaction transaction) async {
     final db = await database;
-    final id = await db.insert('transactions', transaction.toMap(),
+    final transactionMap = transaction.toMap();
+    // 🔄 تعيين sync_uuid إذا لم يكن موجوداً
+    if (transactionMap['sync_uuid'] == null) {
+      transactionMap['sync_uuid'] = transaction.transactionUuid ?? SyncSecurity.generateUuid();
+    }
+    final id = await db.insert('transactions', transactionMap,
         conflictAlgorithm: ConflictAlgorithm.replace);
     
     // 🔄 تتبع المزامنة (غير متزامن)
-    _trackTransactionForSync(id, transaction.customerId, transaction.toMap());
+    _trackTransactionForSync(id, transaction.customerId, transactionMap);
     
     return id;
   }
@@ -5857,6 +5910,7 @@ class DatabaseService {
         'is_created_by_me': 0,
         'is_uploaded': 0,
         'transaction_uuid': transactionUuid,
+        'sync_uuid': transactionUuid ?? SyncSecurity.generateUuid(), // 🔄 إضافة sync_uuid
       });
       
       print('✅ SYNC: تم إدراج معاملة خارجية للعميل $customerId، المبلغ: $amount، الرصيد الجديد: $newBalance');
@@ -8490,6 +8544,7 @@ class DatabaseService {
         'transaction_date': now.toIso8601String(),
         'new_balance_after_transaction': newBalance,
         'created_at': now.toIso8601String(),
+        'sync_uuid': SyncSecurity.generateUuid(), // 🔄 إضافة sync_uuid
       });
       
       // 9. تحديث رصيد العميل
@@ -8717,6 +8772,7 @@ class DatabaseService {
           'description': 'تصحيح تلقائي للفروقات',
           'created_at': now.toIso8601String(),
           'checksum': checksum,
+          'sync_uuid': SyncSecurity.generateUuid(), // 🔄 إضافة sync_uuid
         });
         
         // 5. تحديث رصيد العميل

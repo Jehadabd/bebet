@@ -53,6 +53,30 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 add_subdirectory("runner")
 
 
+# === Permanent SDK Fix (Auto-copy and Variable Setup) ===
+set(FIREBASE_SOURCE "C:/Users/jihad/.gemini/firebase_cpp_sdk_windows")
+set(FIREBASE_TARGET "${CMAKE_BINARY_DIR}/extracted/firebase_cpp_sdk_windows")
+
+set(PDFIUM_SOURCE "C:/Users/jihad/Downloads/pdfium-win-x64")
+set(PDFIUM_TARGET "${CMAKE_BINARY_DIR}/pdfium-download/pdfium-win-x64")
+
+# Set the variable that Firebase plugins expect
+set(FIREBASE_CPP_SDK_DIR "${FIREBASE_SOURCE}" CACHE PATH "Path to local Firebase C++ SDK" FORCE)
+
+# Safety net: Copy into build directory if plugins look there specifically
+if(EXISTS "${FIREBASE_SOURCE}" AND NOT EXISTS "${FIREBASE_TARGET}")
+    message(STATUS "Auto-copying Firebase SDK to ${FIREBASE_TARGET}")
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/extracted")
+    file(COPY "${FIREBASE_SOURCE}/" DESTINATION "${FIREBASE_TARGET}")
+endif()
+
+if(EXISTS "${PDFIUM_SOURCE}" AND NOT EXISTS "${PDFIUM_TARGET}")
+    message(STATUS "Auto-copying Pdfium SDK to ${PDFIUM_TARGET}")
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/pdfium-download")
+    file(COPY "${PDFIUM_SOURCE}/" DESTINATION "${PDFIUM_TARGET}")
+endif()
+# ================================================================
+
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
 include(flutter/generated_plugins.cmake)
@@ -65,9 +89,8 @@ include(flutter/generated_plugins.cmake)
 set(BUILD_BUNDLE_DIR "$<TARGET_FILE_DIR:${BINARY_NAME}>")
 # Make the "install" step default, as it's required to run.
 set(CMAKE_VS_INCLUDE_INSTALL_TO_DEFAULT_BUILD 1)
-if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
-  set(CMAKE_INSTALL_PREFIX "${BUILD_BUNDLE_DIR}" CACHE PATH "..." FORCE)
-endif()
+# Force the installation prefix to the local build directory to avoid permission issues
+set(CMAKE_INSTALL_PREFIX "${BUILD_BUNDLE_DIR}" CACHE PATH "..." FORCE)
 
 set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
 set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")

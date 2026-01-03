@@ -905,6 +905,15 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
             title: 'إعدادات المزامنة',
             child: Column(
               children: [
+                // 🔥 مزامنة Firebase الفورية
+                _buildActionTile(
+                  icon: Icons.cloud_sync,
+                  iconColor: Colors.deepOrange,
+                  title: 'مزامنة Firebase الفورية',
+                  subtitle: 'مزامنة تلقائية في الخلفية بين الأجهزة',
+                  onTap: () => Navigator.pushNamed(context, '/firebase_sync_settings'),
+                ),
+                const Divider(height: 1),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('وضع النقل الكامل'),

@@ -22,10 +22,11 @@ class SyncSecurity {
   static const String _sharedSecretFileName = '.shared_secret.json';
   static const String _syncFolderName = 'DebtBook_Sync_v3';
   
-  // 🔐 المفتاح المشترك المضمن داخل التطبيق (ثابت لجميع الأجهزة)
-  static const String _embeddedSecretKey = 'DebtBook_Secure_Sync_Key_2024_v3_AlNaser_Edition';
+  // 🔐 مفتاح احتياطي (يُستخدم فقط إذا لم يتم إنشاء مفتاح للمجموعة)
+  // ⚠️ هذا المفتاح للتوافق مع الإصدارات القديمة فقط
+  static const String _legacyFallbackKey = 'DebtBook_Legacy_Key_v3';
   
-  /// توليد مفتاح سري جديد
+  /// توليد مفتاح سري جديد (256-bit)
   static String generateSecretKey() {
     final random = Random.secure();
     final values = List<int>.generate(32, (i) => random.nextInt(256));
@@ -43,10 +44,48 @@ class SyncSecurity {
     return await _storage.read(key: _secretKeyStorageKey);
   }
   
-  /// الحصول على المفتاح السري المضمن (ثابت - لا يحتاج مزامنة)
+  /// الحصول على المفتاح السري أو إنشاء واحد جديد
+  /// 🔐 الآن يُولّد مفتاح فريد لكل تثبيت بدلاً من مفتاح ثابت
   static Future<String> getOrCreateSecretKey() async {
-    // 🔐 إرجاع المفتاح المضمن مباشرة - لا حاجة للمزامنة
-    return _embeddedSecretKey;
+    // 1. محاولة قراءة المفتاح المحفوظ
+    var key = await getSecretKey();
+    
+    if (key != null && key.isNotEmpty && key != _legacyFallbackKey) {
+      return key;
+    }
+    
+    // 2. إنشاء مفتاح جديد
+    key = generateSecretKey();
+    await saveSecretKey(key);
+    print('🆕 تم إنشاء مفتاح سري جديد');
+    
+    return key;
+  }
+  
+  /// الحصول على مفتاح لمجموعة معينة
+  /// يُستخدم مع Firebase Sync حيث كل مجموعة لها مفتاح خاص
+  static Future<String> getGroupSecretKey(String groupId) async {
+    final groupKeyStorageKey = 'sync_group_secret_$groupId';
+    
+    var key = await _storage.read(key: groupKeyStorageKey);
+    
+    if (key != null && key.isNotEmpty) {
+      return key;
+    }
+    
+    // إنشاء مفتاح جديد للمجموعة
+    key = generateSecretKey();
+    await _storage.write(key: groupKeyStorageKey, value: key);
+    print('🆕 تم إنشاء مفتاح للمجموعة: $groupId');
+    
+    return key;
+  }
+  
+  /// حفظ مفتاح مجموعة (عند استيراده من جهاز آخر)
+  static Future<void> saveGroupSecretKey(String groupId, String key) async {
+    final groupKeyStorageKey = 'sync_group_secret_$groupId';
+    await _storage.write(key: groupKeyStorageKey, value: key);
+    print('🔐 تم حفظ مفتاح المجموعة: $groupId');
   }
   
   /// ═══════════════════════════════════════════════════════════════════════

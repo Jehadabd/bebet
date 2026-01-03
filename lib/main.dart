@@ -6,6 +6,8 @@ import 'package:provider/provider.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:get_storage/get_storage.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
 import 'providers/app_provider.dart';
 import 'screens/home_screen.dart';
 import 'screens/main_screen.dart';
@@ -19,6 +21,7 @@ import 'screens/reports_screen.dart';
 // removed font settings screen import
 import 'screens/suppliers_list_screen.dart';
 import 'screens/ai_chat_screen.dart';
+import 'screens/firebase_sync_settings_screen.dart';
 import 'services/password_service.dart';
 import 'services/database_service.dart';
 import 'screens/password_setup_screen.dart';
@@ -26,6 +29,8 @@ import 'screens/general_settings_screen.dart';
 import 'services/printing_service_windows.dart';
 import 'services/printing_service.dart';
 import 'services/sync/sync_tracker.dart'; // 🔄 تتبع المزامنة
+import 'services/firebase_sync/firebase_sync.dart'; // 🔥 مزامنة Firebase
+import 'services/firebase_sync/firebase_auth_service.dart'; // 🔐 مصادقة Firebase
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -80,6 +85,34 @@ void main() async {
   } catch (e) {
     print('⚠️ تحذير: فشل تهيئة نظام تتبع المزامنة: $e');
     // لا نوقف التطبيق - المزامنة اختيارية
+  }
+
+  // 🔥 تهيئة Firebase
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    print('✅ تم تهيئة Firebase');
+    
+    // 🔐 تسجيل الدخول المجهول (للحماية)
+    final authService = FirebaseAuthService();
+    final uid = await authService.signInAnonymously();
+    if (uid != null) {
+      print('✅ تم تسجيل الدخول المجهول: $uid');
+    } else {
+      print('⚠️ فشل تسجيل الدخول المجهول - المزامنة قد لا تعمل');
+    }
+    
+    // تهيئة مزامنة Firebase (في الخلفية)
+    final firebaseSync = FirebaseSyncService();
+    firebaseSync.initialize().then((success) {
+      if (success) {
+        print('✅ تم تهيئة مزامنة Firebase');
+      }
+    });
+  } catch (e) {
+    print('⚠️ تحذير: فشل تهيئة Firebase: $e');
+    // لا نوقف التطبيق - Firebase اختياري
   }
 
   // Check if passwords are set
@@ -161,6 +194,7 @@ class MyApp extends StatelessWidget {
           '/reports': (context) => const ReportsScreen(),
           '/suppliers': (context) => const SuppliersListScreen(),
           '/ai_chat': (context) => const AIChatScreen(),
+          '/firebase_sync_settings': (context) => const FirebaseSyncSettingsScreen(),
         },
         initialRoute: initialRoute,
       ),

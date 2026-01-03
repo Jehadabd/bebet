@@ -1,5 +1,6 @@
 // screens/customer_details_screen.dart
 // screens/customer_details_screen.dart
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/app_provider.dart';
@@ -25,6 +26,7 @@ import 'commercial_statement_screen.dart';
 import '../services/commercial_statement_service.dart';
 import '../services/password_service.dart';
 import 'package:pdf/widgets.dart' as pw;
+import '../services/firebase_sync/firebase_sync_service.dart';
 
 class CustomerDetailsScreen extends StatefulWidget {
   final Customer customer;
@@ -47,6 +49,9 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
   // 📊 المعاملات المجمعة (فواتير مجمعة + معاملات يدوية)
   List<GroupedTransactionItem> _groupedTransactions = [];
   bool _useGroupedView = true; // استخدام العرض المجمع افتراضياً
+  
+  // 🔄 الاستماع لإشعارات المزامنة الفورية
+  StreamSubscription<Map<String, dynamic>>? _transactionSubscription;
 
   @override
   void initState() {
@@ -57,6 +62,50 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
       await _loadTransactions();
       // 🔒 التحقق التلقائي من الرصيد عند فتح الصفحة
       await _verifyAndAutoFixBalance();
+    });
+    
+    // 🔄 الاستماع لإشعارات المعاملات الجديدة من Firebase
+    _setupFirebaseSyncListener();
+  }
+  
+  /// 🔄 إعداد الاستماع لإشعارات المزامنة الفورية
+  void _setupFirebaseSyncListener() {
+    final firebaseSync = FirebaseSyncService();
+    
+    _transactionSubscription = firebaseSync.onTransactionReceived.listen((data) {
+      // التحقق من أن المعاملة تخص هذا العميل
+      final customerId = data['customerId'] as int?;
+      
+      if (customerId == widget.customer.id && mounted) {
+        print('🔄 تحديث فوري: معاملة جديدة للعميل ${widget.customer.name}');
+        
+        // إعادة تحميل البيانات
+        _loadTransactions();
+        context.read<AppProvider>().selectCustomer(widget.customer);
+        
+        // إظهار إشعار صغير
+        final amountChanged = data['amountChanged'] as double? ?? 0;
+        final typeLabel = amountChanged >= 0 ? 'إضافة دين' : 'تسديد';
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.sync, color: Colors.white, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '🔄 $typeLabel جديد: ${amountChanged.abs().toStringAsFixed(0)} (من جهاز آخر)',
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: Colors.blue.shade700,
+            duration: const Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     });
   }
   
@@ -111,6 +160,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
 
   @override
   void dispose() {
+    _transactionSubscription?.cancel();
     _audioPlayer?.dispose();
     super.dispose();
   }

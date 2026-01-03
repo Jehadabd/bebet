@@ -1,0 +1,62 @@
+// قواعد أمان Firestore لتطبيق دفتر الديون
+// تستخدم groupSecret للتحقق من صلاحية الوصول
+// انسخ هذه القواعد إلى Firebase Console -> Firestore -> Rules
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ═══════════════════════════════════════════════════════════════════════
+    // قواعد مجموعات المزامنة (sync_groups)
+    // ═══════════════════════════════════════════════════════════════════════
+    
+    // العملاء (customers)
+    match /sync_groups/{groupId}/customers/{docId} {
+      allow read: if true;
+      
+      // السماح بالكتابة إذا كان groupSecret موجود وطوله 32 حرف على الأقل
+      allow create, update: if request.resource.data.groupSecret is string &&
+                               request.resource.data.groupSecret.size() >= 32;
+      
+      allow delete: if false;
+    }
+    
+    // المعاملات (transactions)
+    match /sync_groups/{groupId}/transactions/{docId} {
+      allow read: if true;
+      
+      // السماح بالكتابة إذا كان groupSecret موجود وطوله 32 حرف على الأقل
+      allow create, update: if request.resource.data.groupSecret is string &&
+                               request.resource.data.groupSecret.size() >= 32;
+      
+      allow delete: if false;
+    }
+    
+    // الأجهزة المتصلة (devices)
+    match /sync_groups/{groupId}/devices/{deviceId} {
+      allow read: if true;
+      
+      // السماح بالكتابة إذا كان groupSecret موجود وطوله 32 حرف على الأقل
+      allow create, update: if request.resource.data.groupSecret is string &&
+                               request.resource.data.groupSecret.size() >= 32;
+      
+      allow delete: if false;
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════
+    // فحص التوقيت (_time_check) - للمزامنة
+    // ═══════════════════════════════════════════════════════════════════════
+    match /sync_groups/{groupId}/_time_check/{deviceId} {
+      allow read: if true;
+      allow write: if request.resource.data.groupSecret is string &&
+                      request.resource.data.groupSecret.size() >= 32;
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════
+    // منع الوصول لأي شيء آخر
+    // ═══════════════════════════════════════════════════════════════════════
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
