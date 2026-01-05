@@ -353,7 +353,7 @@ class _MainScreenState extends State<MainScreen> {
                   final customers = await db.getCustomersForMonth(year, month);
                   final file =
                       await db.generateMonthlyDebtsPdf(customers, year, month);
-                  await Share.shareFiles([file.path],
+                  await Share.shareXFiles([XFile(file.path)],
                       text: 'سجل ديون شهر $selectedMonth');
                   showDialog(
                     context: context,

@@ -181,6 +181,24 @@ class FirebaseSyncCoordinator {
     return result.first['firebase_synced'] == 1;
   }
   
+  /// الحصول على وقت آخر مزامنة لكيان معين
+  Future<String?> getLastSyncTime(String entityType, String syncUuid) async {
+    await initialize();
+    final db = await _db.database;
+    
+    final result = await db.query(
+      'sync_coordination',
+      columns: ['firebase_synced_at'],
+      where: 'entity_type = ? AND sync_uuid = ?',
+      whereArgs: [entityType, syncUuid],
+    );
+    
+    if (result.isNotEmpty && result.first['firebase_synced_at'] != null) {
+      return result.first['firebase_synced_at'] as String;
+    }
+    return null;
+  }
+  
   /// هل تم رفع العملية على Google Drive؟
   Future<bool> isDriveSynced(String entityType, String syncUuid) async {
     await initialize();

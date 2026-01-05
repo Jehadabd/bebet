@@ -64,6 +64,9 @@ class FirebaseSyncHelper {
       print('⚠️ Firebase Sync: فشل حذف المعاملة: $e');
     }
   }
+
+  /// الاستماع لأحداث المزامنة
+  Stream<String> get syncEvents => _syncService.syncEvents;
 }
 
 /// Instance عام للوصول السريع

@@ -1169,6 +1169,7 @@ class CustomerListTile extends StatelessWidget {
             ),
           ).then((_) {
             // After returning: clear search filter and refresh full list
+            if (!context.mounted) return;
             final app = Provider.of<AppProvider>(context, listen: false);
             app.setSearchQuery('');
             app.initialize();

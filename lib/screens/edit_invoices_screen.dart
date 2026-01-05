@@ -553,7 +553,7 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
       final file = File(filePath);
       await file.writeAsBytes(await doc.save());
 
-      await Share.shareFiles([file.path], text: 'فاتورة ${invoice.customerName}');
+      await Share.shareXFiles([XFile(file.path)], text: 'فاتورة ${invoice.customerName}');
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

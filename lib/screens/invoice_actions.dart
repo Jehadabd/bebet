@@ -27,6 +27,8 @@ import '../services/pdf_service.dart';
 import '../services/printing_service.dart';
 import '../services/settings_manager.dart';
 import '../services/smart_search/smart_search.dart'; // 🧠 البحث الذكي
+import '../services/firebase_sync/firebase_sync_helper.dart'; // 🔥 Firebase Sync
+import '../services/sync/sync_security.dart'; // 🔐 Sync UUID Generation
 import 'create_invoice_screen.dart';
 
 /// واجهة تحدد المتغيرات المطلوبة للتعامل مع الفواتير
@@ -600,6 +602,9 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           }
 
           if (customer == null) {
+            // 🔄 إنشاء sync_uuid للعميل الجديد لتمكين المزامنة
+            final customerSyncUuid = SyncSecurity.generateUuid();
+            
             customer = Customer(
               id: null,
               name: customerNameController.text.trim(),
@@ -608,9 +613,17 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
               createdAt: DateTime.now(),
               lastModifiedAt: DateTime.now(),
               currentTotalDebt: 0.0,
+              syncUuid: customerSyncUuid, // 🔄 تضمين sync_uuid
             );
-            final insertedId = await txn.insert('customers', customer.toMap());
-            customer = customer.copyWith(id: insertedId);
+            
+            // إدراج العميل مع sync_uuid
+            final customerMap = customer.toMap();
+            customerMap['sync_uuid'] = customerSyncUuid;
+            final insertedId = await txn.insert('customers', customerMap);
+            customer = customer.copyWith(id: insertedId, syncUuid: customerSyncUuid);
+            
+            // 🔥 تسجيل أن هذا عميل جديد يحتاج رفع
+            print('🆕 تم إنشاء عميل جديد من الفاتورة: ${customer.name} (UUID: $customerSyncUuid)');
           }
         }
 
@@ -995,7 +1008,9 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
             }, where: 'id = ?', whereArgs: [customer.id]);
             
             final txUuid = await DriveService().generateTransactionUuid();
-            await txn.insert('transactions', {
+            final txSyncUuid = SyncSecurity.generateUuid(); // 🔄 sync_uuid للمزامنة
+            
+            final transactionId = await txn.insert('transactions', {
               'customer_id': customer.id,
               'transaction_date': DateTime.now().toIso8601String(),
               'amount_changed': newRemaining,
@@ -1005,8 +1020,11 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
               'description': 'دين فاتورة جديدة رقم $invoiceId',
               'invoice_id': invoiceId,
               'transaction_uuid': txUuid,
+              'sync_uuid': txSyncUuid, // 🔄 إضافة sync_uuid
               'created_at': DateTime.now().toIso8601String(),
             });
+            
+            print('🆕 تم إنشاء معاملة دين فاتورة: $newRemaining (Transaction ID: $transactionId, Sync UUID: $txSyncUuid)');
           }
         }
 
@@ -1014,6 +1032,51 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
             .query('invoices', where: 'id = ?', whereArgs: [invoiceId]);
         savedInvoice = Invoice.fromMap(maps.first);
       });
+
+      // ═══════════════════════════════════════════════════════════════════════════
+      // 🔥 Firebase Sync: رفع العميل والمعاملات الجديدة
+      // ═══════════════════════════════════════════════════════════════════════════
+      if (savedInvoice != null && savedInvoice!.customerId != null) {
+        try {
+          final syncHelper = FirebaseSyncHelper();
+          final database = await db.database;
+          
+          // جلب بيانات العميل للرفع
+          final customerRows = await database.query(
+            'customers',
+            where: 'id = ?',
+            whereArgs: [savedInvoice!.customerId],
+          );
+          
+          if (customerRows.isNotEmpty) {
+            final customerData = customerRows.first;
+            final customerSyncUuid = customerData['sync_uuid'] as String?;
+            
+            // رفع العميل إلى Firebase
+            if (customerSyncUuid != null && customerSyncUuid.isNotEmpty) {
+              syncHelper.syncCustomer(customerData);
+              print('🔥 Firebase: تم رفع/تحديث العميل: ${customerData['name']}');
+            }
+            
+            // جلب المعاملات المرتبطة بهذه الفاتورة ورفعها
+            final transactionRows = await database.query(
+              'transactions',
+              where: 'invoice_id = ? AND sync_uuid IS NOT NULL',
+              whereArgs: [savedInvoice!.id],
+            );
+            
+            for (final txData in transactionRows) {
+              final txSyncUuid = txData['sync_uuid'] as String?;
+              if (txSyncUuid != null && customerSyncUuid != null) {
+                syncHelper.syncTransaction(Map<String, dynamic>.from(txData), customerSyncUuid);
+                print('🔥 Firebase: تم رفع معاملة: ${txData['amount_changed']} (Sync UUID: $txSyncUuid)');
+              }
+            }
+          }
+        } catch (syncError) {
+          print('⚠️ Firebase Sync Error (non-blocking): $syncError');
+        }
+      }
 
       // Update Installer Points
       if (savedInvoice != null && 

@@ -8,7 +8,7 @@ import '../models/customer.dart';
 import '../models/transaction.dart';
 import 'package:intl/intl.dart'; // For currency formatting
 import '../widgets/formatters.dart';
-import 'package:flutter_sound/flutter_sound.dart';
+// import 'package:flutter_sound/flutter_sound.dart'; // Removed to fix Windows build
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:audioplayers/audioplayers.dart';
@@ -39,7 +39,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   final _noteController = TextEditingController();
   bool _isDebt = true; // true for adding debt, false for paying debt
   final AudioRecorder _recorder = AudioRecorder();
-  FlutterSoundPlayer? _audioPlayer;
+  // FlutterSoundPlayer? _audioPlayer; // Removed
   AudioPlayer? _audioPlayer2;
   bool _isRecording = false;
   String? _audioNotePath; // stores fileName only
@@ -47,22 +47,22 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   @override
   void initState() {
     super.initState();
-    _audioPlayer = FlutterSoundPlayer();
+    // _audioPlayer = FlutterSoundPlayer();
     _audioPlayer2 = AudioPlayer();
     _initAudio();
   }
 
   Future<void> _initAudio() async {
-    if (!Platform.isWindows) {
-      await _audioPlayer!.openPlayer();
-    }
+    // if (!Platform.isWindows) {
+    //   await _audioPlayer!.openPlayer();
+    // }
   }
 
   @override
   void dispose() {
-    if (!Platform.isWindows) {
-      _audioPlayer?.closePlayer();
-    }
+    // if (!Platform.isWindows) {
+    //   _audioPlayer?.closePlayer();
+    // }
     _audioPlayer2?.dispose();
     _recorder.dispose();
     super.dispose();

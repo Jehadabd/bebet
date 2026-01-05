@@ -14,30 +14,30 @@ dependencies:
   cupertino_icons: ^1.0.6
   sqflite: ^2.4.2
   # Firebase للمزامنة الفورية
-  firebase_core: ^3.8.1
-  cloud_firestore: ^5.6.0
-  firebase_auth: ^5.3.4
-  connectivity_plus: ^6.1.3
+  firebase_core: ^4.3.0
+  cloud_firestore: ^6.1.1
+  firebase_auth: ^6.1.3
+  connectivity_plus: ^7.0.0
   sqflite_common_ffi: ^2.3.0
   path: ^1.8.3
   path_provider: ^2.0.11
   url_launcher: ^6.2.1
-  google_sign_in: ^6.1.5
+  google_sign_in: ^6.2.1
   google_api_availability: ^3.0.0
   googleapis: ^11.0.0
-  extension_google_sign_in_as_googleapis_auth: ^2.0.0
-  file_picker: ^6.0.0
+  extension_google_sign_in_as_googleapis_auth: ^2.0.7
+  file_picker: ^10.3.8
   permission_handler: ^12.0.0+1
-  flutter_dotenv: ^5.1.0
+  flutter_dotenv: ^6.0.0
   pdf: ^3.10.4
   printing: ^5.11.1
   intl: ^0.20.2
   provider: ^6.1.1
   http: ^1.1.0
   font_awesome_flutter: ^10.7.0
-  workmanager: ^0.5.1
-  flutter_secure_storage: ^9.0.0
-  share_plus: ^7.2.1
+  workmanager: ^0.9.0+3
+  flutter_secure_storage: ^10.0.0
+  share_plus: ^12.0.1
   shared_preferences: ^2.2.2
   image: ^4.1.4
   esc_pos_utils_plus: ^2.0.4
@@ -47,24 +47,24 @@ dependencies:
   ffi: ^2.1.2
   flutter_nsd: ^1.6.0
   get_storage: ^2.1.1
-  process: ^4.2.4
-  flutter_sound: ^9.28.0
-  audioplayers: ^6.5.0
+  process: ^5.0.5
+  # flutter_sound: ^9.28.0 # Removed to fix Windows build
+  audioplayers: ^6.5.1
   record: ^6.0.0
-  network_info_plus: ^5.0.3
-  archive: ^3.6.1
+  network_info_plus: ^7.0.0
+  archive: ^4.0.7
   flutter_colorpicker: ^1.1.0
   decimal: ^3.2.4
   crypto: ^3.0.3
-  googleapis_auth: ^1.4.1
+  googleapis_auth: ^2.0.0
   encrypt: ^5.0.3  # 🔐 للتشفير AES-256
   # google_mlkit_text_recognition: ^0.13.1  # OCR محلي - لا يدعم Windows Desktop
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^2.0.0
-  flutter_launcher_icons: ^0.13.1
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
 
 flutter:
   uses-material-design: true

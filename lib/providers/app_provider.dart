@@ -13,6 +13,7 @@ import '../services/settings_manager.dart';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:archive/archive_io.dart';
+import '../services/firebase_sync/firebase_sync_helper.dart'; // Import SyncHelper
 
 // أنواع ترتيب العملاء
 enum CustomerSortType {
@@ -84,7 +85,17 @@ class AppProvider with ChangeNotifier {
         _isDriveSignedInSync = await _drive.isSignedIn();
       }
       await _loadCustomers();
+      await _loadCustomers();
       await ensureAudioNotesDirectory();
+      
+      // Listen to sync events from Firebase
+      FirebaseSyncHelper().syncEvents.listen((event) {
+        print('🔔 AppProvider: New sync event: $event');
+        _loadCustomers(); // Reload to reflect changes
+        if (_selectedCustomer != null) {
+          loadCustomerTransactions(_selectedCustomer!.id!);
+        }
+      });
     } finally {
       _setLoading(false);
     }

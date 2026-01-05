@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../services/firebase_sync/firebase_sync_config.dart';
 import '../services/firebase_sync/firebase_sync_service.dart';
 import '../services/password_service.dart';
+import 'sync_stats_screen.dart';
 
 class FirebaseSyncSettingsScreen extends StatefulWidget {
   const FirebaseSyncSettingsScreen({super.key});
@@ -15,30 +16,148 @@ class FirebaseSyncSettingsScreen extends StatefulWidget {
 }
 
 class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen> {
-  bool _isLoading = true;
+  bool _isLoading = false; // 🔧 تغيير: لا نبدأ بالتحميل
+  bool _isLoadingStats = false; // 🆕 تحميل الإحصائيات منفصل
   bool _isEnabled = false;
   String? _currentGroupId;
   Map<String, dynamic>? _syncStats;
+  String _loadingMessage = ''; // 🆕 رسالة التحميل
+  double _loadingProgress = 0.0; // 🆕 نسبة التقدم (0.0 - 1.0)
+  
+  // 🔒 إعدادات الأمان
+  bool _rejectOldTransactions = false;
+  int _maxTransactionAgeDays = 30;
+  bool _postSyncVerification = true;
+  
+  // 🔄 حالة تحميل كل زر
+  bool _isSyncing = false;
+  bool _isVerifying = false;
+  bool _isCleaning = false;
+  bool _isRepairing = false;
+  bool _isLoadingDevices = false;
+  bool _isLoadingTrackingStats = false;
   
   final _firebaseSync = FirebaseSyncService();
 
   @override
   void initState() {
     super.initState();
-    _loadSettings();
+    _loadSettingsQuick(); // 🔧 تحميل سريع أولاً
+  }
+
+  /// 🔧 تحميل سريع للإعدادات الأساسية فقط (بدون Firebase)
+  Future<void> _loadSettingsQuick() async {
+    _isEnabled = await FirebaseSyncConfig.isEnabled();
+    _currentGroupId = await FirebaseSyncConfig.getSyncGroupId();
+    
+    // 🔒 تحميل إعدادات الأمان
+    _rejectOldTransactions = await FirebaseSyncSecuritySettings.isRejectOldTransactionsEnabled();
+    _maxTransactionAgeDays = await FirebaseSyncSecuritySettings.getMaxTransactionAgeDays();
+    _postSyncVerification = await FirebaseSyncSecuritySettings.isPostSyncVerificationEnabled();
+    
+    if (mounted) {
+      setState(() {});
+    }
+    
+    // تحميل الإحصائيات في الخلفية
+    if (_isEnabled && _currentGroupId != null) {
+      _loadStatsInBackground();
+    }
+  }
+
+  /// 🆕 تحميل الإحصائيات في الخلفية مع مؤشر التقدم
+  Future<void> _loadStatsInBackground() async {
+    if (!mounted) return;
+    setState(() {
+      _isLoadingStats = true;
+      _loadingProgress = 0.0;
+      _loadingMessage = 'جاري الاتصال بـ Firebase...';
+    });
+    
+    try {
+      // 🔄 محاولة إعادة التهيئة إذا لم تكن مكتملة
+      if (_firebaseSync.status == FirebaseSyncStatus.notConfigured ||
+          _firebaseSync.status == FirebaseSyncStatus.idle ||
+          _firebaseSync.status == FirebaseSyncStatus.error) {
+        if (mounted) setState(() { _loadingProgress = 0.1; _loadingMessage = 'جاري تهيئة المزامنة...'; });
+        await _firebaseSync.initialize();
+      }
+      
+      // المرحلة 1: الاتصال (20%)
+      await Future.delayed(const Duration(milliseconds: 100));
+      if (mounted) setState(() { _loadingProgress = 0.2; _loadingMessage = 'جاري تحميل بيانات المجموعة...'; });
+      
+      // المرحلة 2: تحميل الإحصائيات (20% -> 80%)
+      _syncStats = await _firebaseSync.getSyncStats(
+        onProgress: (progress, message) {
+          if (mounted) {
+            setState(() {
+              // التقدم من 20% إلى 80%
+              _loadingProgress = 0.2 + (progress * 0.6);
+              _loadingMessage = message;
+            });
+          }
+        },
+      ); // تم إزالة timeout الطويل
+      
+      // المرحلة 3: الانتهاء (100%)
+      if (mounted) setState(() { _loadingProgress = 1.0; _loadingMessage = 'تم التحميل!'; });
+      await Future.delayed(const Duration(milliseconds: 300));
+      
+    } catch (e) {
+      _syncStats = {'error': e.toString()};
+    }
+    
+    if (mounted) {
+      setState(() {
+        _isLoadingStats = false;
+        _loadingProgress = 0.0;
+        _loadingMessage = '';
+      });
+    }
   }
 
   Future<void> _loadSettings() async {
-    setState(() => _isLoading = true);
+    if (!mounted) return;
+    setState(() {
+      _isLoading = true;
+      _loadingProgress = 0.0;
+      _loadingMessage = 'جاري تحميل الإعدادات...';
+    });
     
     _isEnabled = await FirebaseSyncConfig.isEnabled();
     _currentGroupId = await FirebaseSyncConfig.getSyncGroupId();
     
     if (_isEnabled && _currentGroupId != null) {
-      _syncStats = await _firebaseSync.getSyncStats();
+      if (mounted) {
+        setState(() {
+          _loadingProgress = 0.2;
+          _loadingMessage = 'جاري تحميل الإحصائيات...';
+        });
+      }
+      
+      try {
+        _syncStats = await _firebaseSync.getSyncStats(
+          onProgress: (progress, message) {
+            if (mounted) {
+              setState(() {
+                _loadingProgress = 0.2 + (progress * 0.8);
+                _loadingMessage = message;
+              });
+            }
+          },
+        );
+      } catch (e) {
+        _syncStats = {'error': e.toString()};
+      }
     }
     
-    setState(() => _isLoading = false);
+    if (!mounted) return;
+    setState(() {
+      _isLoading = false;
+      _loadingProgress = 0.0;
+      _loadingMessage = '';
+    });
   }
 
   @override
@@ -67,8 +186,14 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
                     const SizedBox(height: 16),
                     
                     // بطاقة الإحصائيات
-                    if (_isEnabled && _syncStats != null)
+                    if (_isEnabled)
                       _buildStatsCard(),
+                    
+                    const SizedBox(height: 16),
+                    
+                    // 🔒 بطاقة إعدادات الأمان
+                    if (_isEnabled)
+                      _buildSecuritySettingsCard(),
                     
                     const SizedBox(height: 16),
                     
@@ -195,97 +320,272 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'إحصائيات المزامنة',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'إحصائيات المزامنة',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                // 🔧 مؤشر تحميل الإحصائيات مع النسبة
+                if (_isLoadingStats)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        '${(_loadingProgress * 100).toInt()}%',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.deepOrange,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          value: _loadingProgress > 0 ? _loadingProgress : null,
+                          backgroundColor: Colors.grey.shade200,
+                          valueColor: const AlwaysStoppedAnimation<Color>(Colors.deepOrange),
+                        ),
+                      ),
+                    ],
+                  ),
+              ],
             ),
             const Divider(),
             
-            _buildStatRow('المجموعة', _syncStats?['groupId'] ?? '-'),
-            _buildStatRow('العملاء في السحابة', '${_syncStats?['customersInCloud'] ?? 0}'),
-            _buildStatRow('المعاملات في السحابة', '${_syncStats?['transactionsInCloud'] ?? 0}'),
-            _buildStatRow('آخر مزامنة', _formatLastSync(_syncStats?['lastSync'])),
+            // 🔧 عرض حالة التحميل أو الإحصائيات
+            if (_isLoadingStats && _syncStats == null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: Column(
+                  children: [
+                    // شريط التقدم الخطي
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: LinearProgressIndicator(
+                        value: _loadingProgress > 0 ? _loadingProgress : null,
+                        backgroundColor: Colors.grey.shade200,
+                        valueColor: const AlwaysStoppedAnimation<Color>(Colors.deepOrange),
+                        minHeight: 8,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    // النسبة المئوية
+                    Text(
+                      '${(_loadingProgress * 100).toInt()}%',
+                      style: const TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.deepOrange,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    // رسالة التحميل
+                    Text(
+                      _loadingMessage,
+                      style: const TextStyle(color: Colors.grey, fontSize: 12),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              )
+            else if (_syncStats?['error'] != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Row(
+                  children: [
+                    const Icon(Icons.warning, color: Colors.orange, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _syncStats!['timeout'] == true 
+                            ? 'انتهت مهلة التحميل - اضغط مزامنة الآن'
+                            : 'خطأ: ${_syncStats!['error']}',
+                        style: const TextStyle(color: Colors.orange, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else ...[
+              _buildStatRow('المجموعة', _syncStats?['groupId'] ?? '-'),
+              _buildStatRow('العملاء في السحابة', '${_syncStats?['customersInCloud'] ?? 0}'),
+              _buildStatRow('المعاملات في السحابة', '${_syncStats?['transactionsInCloud'] ?? 0}'),
+              _buildStatRow('آخر مزامنة', _formatLastSync(_syncStats?['lastSync'])),
+            ],
             
             const SizedBox(height: 16),
             
-            // زر المزامنة اليدوية
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: _performManualSync,
-                icon: const Icon(Icons.sync),
-                label: const Text('مزامنة الآن'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.deepOrange,
-                  foregroundColor: Colors.white,
-                ),
-              ),
+            // زر المزامنة اليدوية مع مؤشر التقدم
+            _buildActionButton(
+              icon: Icons.sync,
+              label: 'مزامنة الآن',
+              isLoading: _isSyncing,
+              progress: _isSyncing ? _loadingProgress : null,
+              message: _isSyncing ? _loadingMessage : null,
+              color: Colors.deepOrange,
+              onPressed: _isSyncing ? null : _performManualSync,
+              isPrimary: true,
+            ),
+            
+            const SizedBox(height: 8),
+            
+            // 📊 زر إحصائيات المزامنة (جديد)
+            _buildActionButton(
+              icon: Icons.analytics,
+              label: '📊 إحصائيات المزامنة',
+              isLoading: false,
+              color: Colors.purple,
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SyncStatsScreen()),
+                );
+              },
             ),
             
             const SizedBox(height: 8),
             
             // 🔒 زر التحقق من سلامة البيانات
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: _verifyDataIntegrity,
-                icon: const Icon(Icons.verified_user),
-                label: const Text('التحقق من سلامة البيانات'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.blue,
-                ),
-              ),
+            _buildActionButton(
+              icon: Icons.verified_user,
+              label: 'التحقق من سلامة البيانات',
+              isLoading: _isVerifying,
+              progress: _isVerifying ? _loadingProgress : null,
+              message: _isVerifying ? _loadingMessage : null,
+              color: Colors.blue,
+              onPressed: _isVerifying ? null : _verifyDataIntegrity,
             ),
             
             const SizedBox(height: 8),
             
             // 🧹 زر تنظيف البيانات القديمة
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: _cleanupOldData,
-                icon: const Icon(Icons.cleaning_services),
-                label: const Text('تنظيف البيانات القديمة'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.orange,
-                ),
-              ),
+            _buildActionButton(
+              icon: Icons.cleaning_services,
+              label: 'تنظيف البيانات القديمة',
+              isLoading: _isCleaning,
+              progress: _isCleaning ? _loadingProgress : null,
+              message: _isCleaning ? _loadingMessage : null,
+              color: Colors.orange,
+              onPressed: _isCleaning ? null : _cleanupOldData,
             ),
             
             const SizedBox(height: 8),
             
             // 🔧 زر إصلاح ورفع جميع المعاملات
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: _repairAndSyncAll,
-                icon: const Icon(Icons.build_circle),
-                label: const Text('إصلاح ورفع جميع البيانات'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.purple,
-                ),
-              ),
+            _buildActionButton(
+              icon: Icons.build_circle,
+              label: 'إصلاح ورفع جميع البيانات',
+              isLoading: _isRepairing,
+              progress: _isRepairing ? _loadingProgress : null,
+              message: _isRepairing ? _loadingMessage : null,
+              color: Colors.purple,
+              onPressed: _isRepairing ? null : _repairAndSyncAll,
             ),
             
             const SizedBox(height: 8),
             
             // 📱 زر عرض الأجهزة المتصلة
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: _showConnectedDevices,
-                icon: const Icon(Icons.devices),
-                label: const Text('الأجهزة المتصلة'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.teal,
-                ),
-              ),
+            _buildActionButton(
+              icon: Icons.devices,
+              label: 'الأجهزة المتصلة',
+              isLoading: _isLoadingDevices,
+              color: Colors.teal,
+              onPressed: _isLoadingDevices ? null : _showConnectedDevices,
+            ),
+            
+            const SizedBox(height: 8),
+            
+            // 📊 زر عرض إحصائيات التتبع والإقرار
+            _buildActionButton(
+              icon: Icons.analytics,
+              label: 'إحصائيات التتبع والإقرار',
+              isLoading: _isLoadingTrackingStats,
+              color: Colors.indigo,
+              onPressed: _isLoadingTrackingStats ? null : _showTrackingStats,
             ),
           ],
         ),
+      ),
+    );
+  }
+  
+  /// 🆕 Widget لبناء زر مع مؤشر تقدم
+  Widget _buildActionButton({
+    required IconData icon,
+    required String label,
+    required bool isLoading,
+    double? progress,
+    String? message,
+    required Color color,
+    required VoidCallback? onPressed,
+    bool isPrimary = false,
+  }) {
+    return SizedBox(
+      width: double.infinity,
+      child: Column(
+        children: [
+          if (isPrimary)
+            ElevatedButton.icon(
+              onPressed: onPressed,
+              icon: isLoading 
+                  ? SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        value: progress,
+                        valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                    )
+                  : Icon(icon),
+              label: Text(isLoading && progress != null 
+                  ? '$label (${(progress * 100).toInt()}%)'
+                  : label),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: color,
+                foregroundColor: Colors.white,
+              ),
+            )
+          else
+            OutlinedButton.icon(
+              onPressed: onPressed,
+              icon: isLoading 
+                  ? SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        value: progress,
+                        valueColor: AlwaysStoppedAnimation<Color>(color),
+                      ),
+                    )
+                  : Icon(icon),
+              label: Text(isLoading && progress != null 
+                  ? '$label (${(progress * 100).toInt()}%)'
+                  : label),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: color,
+              ),
+            ),
+          // عرض رسالة التقدم إذا كانت موجودة
+          if (isLoading && message != null && message.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                message,
+                style: TextStyle(fontSize: 11, color: color.withOpacity(0.8)),
+                textAlign: TextAlign.center,
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -317,6 +617,97 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
     } catch (e) {
       return isoString;
     }
+  }
+
+  /// 🔒 بطاقة إعدادات الأمان
+  Widget _buildSecuritySettingsCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: const [
+                Icon(Icons.security, color: Colors.green),
+                SizedBox(width: 8),
+                Text(
+                  'إعدادات الأمان',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            const Divider(),
+            
+            // 🔒 رفض المعاملات القديمة
+            SwitchListTile(
+              title: const Text('رفض المعاملات القديمة'),
+              subtitle: Text(
+                _rejectOldTransactions 
+                    ? 'سيتم رفض المعاملات الأقدم من $_maxTransactionAgeDays يوم'
+                    : 'قبول جميع المعاملات بغض النظر عن تاريخها',
+              ),
+              value: _rejectOldTransactions,
+              onChanged: (value) async {
+                await FirebaseSyncSecuritySettings.setRejectOldTransactionsEnabled(value);
+                setState(() => _rejectOldTransactions = value);
+              },
+              activeColor: Colors.green,
+              secondary: const Icon(Icons.history, color: Colors.orange),
+            ),
+            
+            // عدد الأيام (يظهر فقط إذا كان الرفض مفعلاً)
+            if (_rejectOldTransactions)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    const Text('الحد الأقصى للعمر: '),
+                    const SizedBox(width: 8),
+                    DropdownButton<int>(
+                      value: _maxTransactionAgeDays,
+                      items: [7, 14, 30, 60, 90].map((days) {
+                        return DropdownMenuItem(
+                          value: days,
+                          child: Text('$days يوم'),
+                        );
+                      }).toList(),
+                      onChanged: (value) async {
+                        if (value != null) {
+                          await FirebaseSyncSecuritySettings.setMaxTransactionAgeDays(value);
+                          setState(() => _maxTransactionAgeDays = value);
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            
+            const Divider(),
+            
+            // 🔍 التحقق من الأرصدة بعد المزامنة
+            SwitchListTile(
+              title: const Text('التحقق من الأرصدة بعد المزامنة'),
+              subtitle: Text(
+                _postSyncVerification 
+                    ? 'سيتم التحقق من صحة الأرصدة بعد كل مزامنة'
+                    : 'لن يتم التحقق من الأرصدة تلقائياً',
+              ),
+              value: _postSyncVerification,
+              onChanged: (value) async {
+                await FirebaseSyncSecuritySettings.setPostSyncVerificationEnabled(value);
+                setState(() => _postSyncVerification = value);
+              },
+              activeColor: Colors.green,
+              secondary: const Icon(Icons.account_balance_wallet, color: Colors.blue),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildNotesCard() {
@@ -680,11 +1071,74 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
   }
 
   Future<void> _performManualSync() async {
-    setState(() => _isLoading = true);
+    if (_isSyncing) return;
+    
+    setState(() {
+      _isSyncing = true;
+      _loadingProgress = 0.0;
+      _loadingMessage = 'جاري بدء المزامنة...';
+    });
     
     try {
-      await _firebaseSync.performFullSync();
-      await _loadSettings();
+      // 🔄 محاولة التهيئة إذا لم تكن مكتملة
+      if (_firebaseSync.status == FirebaseSyncStatus.notConfigured ||
+          _firebaseSync.status == FirebaseSyncStatus.idle ||
+          _firebaseSync.status == FirebaseSyncStatus.error) {
+        setState(() {
+          _loadingProgress = 0.05;
+          _loadingMessage = 'جاري تهيئة المزامنة...';
+        });
+        final initSuccess = await _firebaseSync.initialize().timeout(
+          const Duration(minutes: 2),
+          onTimeout: () => false,
+        );
+        if (!initSuccess) {
+          throw Exception('فشلت تهيئة المزامنة - تأكد من الاتصال بالإنترنت');
+        }
+      }
+      
+      // استخدام callback للتقدم
+      await _firebaseSync.performFullSync(
+        onProgress: (progress, message) {
+          if (mounted) {
+            setState(() {
+              _loadingProgress = 0.1 + (progress * 0.75); // 10-85% للمزامنة
+              _loadingMessage = message;
+            });
+          }
+        },
+      );
+      
+      // التحقق من الأرصدة (85-95%)
+      if (_postSyncVerification) {
+        setState(() {
+          _loadingProgress = 0.88;
+          _loadingMessage = 'جاري التحقق من الأرصدة...';
+        });
+        
+        final verificationResult = await _firebaseSync.verifyBalancesAfterSync();
+        
+        setState(() {
+          _loadingProgress = 0.95;
+          _loadingMessage = 'اكتمل التحقق من الأرصدة';
+        });
+        
+        if (verificationResult['hasIssues'] == true) {
+          final issues = verificationResult['issues'] as List? ?? [];
+          if (mounted && issues.isNotEmpty) {
+            _showBalanceVerificationResult(verificationResult);
+          }
+        }
+      }
+      
+      // الانتهاء (100%)
+      setState(() {
+        _loadingProgress = 1.0;
+        _loadingMessage = 'تمت المزامنة بنجاح!';
+      });
+      
+      await Future.delayed(const Duration(milliseconds: 500));
+      await _loadSettingsQuick();
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -705,15 +1159,148 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
       }
     }
     
-    setState(() => _isLoading = false);
+    setState(() {
+      _isSyncing = false;
+      _loadingProgress = 0.0;
+      _loadingMessage = '';
+    });
+  }
+  
+  /// 🔍 عرض نتيجة التحقق من الأرصدة
+  void _showBalanceVerificationResult(Map<String, dynamic> result) {
+    final issues = result['issues'] as List? ?? [];
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: const [
+            Icon(Icons.warning, color: Colors.orange),
+            SizedBox(width: 8),
+            Text('تحذير: فروقات في الأرصدة'),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'تم اكتشاف ${issues.length} فرق في الأرصدة:',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 12),
+              ...issues.take(5).map((issue) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        issue['customerName'] ?? 'عميل غير معروف',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      Text(
+                        'الرصيد المسجل: ${issue['recordedBalance']?.toStringAsFixed(2) ?? 0}',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      Text(
+                        'الرصيد المحسوب: ${issue['calculatedBalance']?.toStringAsFixed(2) ?? 0}',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      Text(
+                        'الفرق: ${issue['difference']?.toStringAsFixed(2) ?? 0}',
+                        style: const TextStyle(fontSize: 12, color: Colors.red),
+                      ),
+                    ],
+                  ),
+                ),
+              )),
+              if (issues.length > 5)
+                Text(
+                  '... و ${issues.length - 5} فروقات أخرى',
+                  style: const TextStyle(color: Colors.grey),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('حسناً'),
+          ),
+        ],
+      ),
+    );
   }
   
   /// 🔒 التحقق من سلامة البيانات
   Future<void> _verifyDataIntegrity() async {
-    setState(() => _isLoading = true);
+    if (_isVerifying) return;
+    
+    setState(() {
+      _isVerifying = true;
+      _loadingProgress = 0.0;
+      _loadingMessage = 'جاري بدء التحقق...';
+    });
     
     try {
+      // 🔄 محاولة التهيئة إذا لم تكن مكتملة
+      if (_firebaseSync.status == FirebaseSyncStatus.notConfigured ||
+          _firebaseSync.status == FirebaseSyncStatus.idle ||
+          _firebaseSync.status == FirebaseSyncStatus.error) {
+        setState(() {
+          _loadingProgress = 0.05;
+          _loadingMessage = 'جاري تهيئة المزامنة...';
+        });
+        final initSuccess = await _firebaseSync.initialize().timeout(
+          const Duration(minutes: 2),
+          onTimeout: () => false,
+        );
+        if (!initSuccess) {
+          throw Exception('فشلت تهيئة المزامنة - تأكد من الاتصال بالإنترنت');
+        }
+      }
+      
+      // المرحلة 1: الاتصال بـ Firebase (0-20%)
+      setState(() {
+        _loadingProgress = 0.1;
+        _loadingMessage = 'جاري الاتصال بـ Firebase...';
+      });
+      await Future.delayed(const Duration(milliseconds: 200));
+      
+      // المرحلة 2: جلب عدد العملاء (20-40%)
+      setState(() {
+        _loadingProgress = 0.25;
+        _loadingMessage = 'جاري حساب عدد العملاء...';
+      });
+      
+      // المرحلة 3: جلب عدد المعاملات (40-60%)
+      setState(() {
+        _loadingProgress = 0.45;
+        _loadingMessage = 'جاري حساب عدد المعاملات...';
+      });
+      
+      // المرحلة 4: المقارنة (60-90%)
+      setState(() {
+        _loadingProgress = 0.65;
+        _loadingMessage = 'جاري مقارنة البيانات...';
+      });
+      
       final result = await _firebaseSync.verifyDataIntegrity();
+      
+      // المرحلة 5: الانتهاء (90-100%)
+      setState(() {
+        _loadingProgress = 1.0;
+        _loadingMessage = 'اكتمل التحقق!';
+      });
+      
+      await Future.delayed(const Duration(milliseconds: 300));
       
       if (mounted) {
         showDialog(
@@ -777,7 +1364,11 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
       }
     }
     
-    setState(() => _isLoading = false);
+    setState(() {
+      _isVerifying = false;
+      _loadingProgress = 0.0;
+      _loadingMessage = '';
+    });
   }
   
   /// 🧹 تنظيف البيانات القديمة
@@ -816,11 +1407,58 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
     
     if (confirmed != true) return;
     
-    setState(() => _isLoading = true);
+    setState(() {
+      _isCleaning = true;
+      _loadingProgress = 0.0;
+      _loadingMessage = 'جاري بدء التنظيف...';
+    });
     
     try {
+      // 🔄 محاولة التهيئة إذا لم تكن مكتملة
+      if (_firebaseSync.status == FirebaseSyncStatus.notConfigured ||
+          _firebaseSync.status == FirebaseSyncStatus.idle ||
+          _firebaseSync.status == FirebaseSyncStatus.error) {
+        setState(() {
+          _loadingProgress = 0.05;
+          _loadingMessage = 'جاري تهيئة المزامنة...';
+        });
+        final initSuccess = await _firebaseSync.initialize().timeout(
+          const Duration(minutes: 2),
+          onTimeout: () => false,
+        );
+        if (!initSuccess) {
+          throw Exception('فشلت تهيئة المزامنة - تأكد من الاتصال بالإنترنت');
+        }
+      }
+      
+      // المرحلة 1: البحث عن المعاملات القديمة (0-30%)
+      setState(() {
+        _loadingProgress = 0.15;
+        _loadingMessage = 'جاري البحث عن المعاملات القديمة...';
+      });
+      await Future.delayed(const Duration(milliseconds: 200));
+      
+      // المرحلة 2: حذف المعاملات (30-60%)
+      setState(() {
+        _loadingProgress = 0.4;
+        _loadingMessage = 'جاري حذف المعاملات القديمة...';
+      });
+      
+      // المرحلة 3: البحث عن العملاء القدامى (60-80%)
+      setState(() {
+        _loadingProgress = 0.65;
+        _loadingMessage = 'جاري البحث عن العملاء القدامى...';
+      });
+      
       final result = await _firebaseSync.cleanupOldFirebaseData();
       
+      // المرحلة 4: الانتهاء (80-100%)
+      setState(() {
+        _loadingProgress = 1.0;
+        _loadingMessage = 'اكتمل التنظيف!';
+      });
+      
+      await Future.delayed(const Duration(milliseconds: 300));
       if (mounted) {
         if (result['error'] != null) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -841,7 +1479,7 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
         }
       }
       
-      await _loadSettings();
+      await _loadSettingsQuick();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -853,7 +1491,11 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
       }
     }
     
-    setState(() => _isLoading = false);
+    setState(() {
+      _isCleaning = false;
+      _loadingProgress = 0.0;
+      _loadingMessage = '';
+    });
   }
   
   Widget _buildIntegrityRow(String label, String value) {
@@ -907,10 +1549,64 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
     
     if (confirmed != true) return;
     
-    setState(() => _isLoading = true);
+    setState(() {
+      _isRepairing = true;
+      _loadingProgress = 0.0;
+      _loadingMessage = 'جاري بدء الإصلاح...';
+    });
     
     try {
+      // 🔄 محاولة التهيئة إذا لم تكن مكتملة
+      if (_firebaseSync.status == FirebaseSyncStatus.notConfigured ||
+          _firebaseSync.status == FirebaseSyncStatus.idle ||
+          _firebaseSync.status == FirebaseSyncStatus.error) {
+        setState(() {
+          _loadingProgress = 0.05;
+          _loadingMessage = 'جاري تهيئة المزامنة...';
+        });
+        final initSuccess = await _firebaseSync.initialize().timeout(
+          const Duration(minutes: 2),
+          onTimeout: () => false,
+        );
+        if (!initSuccess) {
+          throw Exception('فشلت تهيئة المزامنة - تأكد من الاتصال بالإنترنت');
+        }
+      }
+      
+      // المرحلة 1: البحث عن المعاملات بدون UUID (0-20%)
+      setState(() {
+        _loadingProgress = 0.1;
+        _loadingMessage = 'جاري البحث عن المعاملات بدون معرف...';
+      });
+      await Future.delayed(const Duration(milliseconds: 200));
+      
+      // المرحلة 2: إصلاح المعاملات (20-50%)
+      setState(() {
+        _loadingProgress = 0.3;
+        _loadingMessage = 'جاري إصلاح المعاملات...';
+      });
+      
+      // المرحلة 3: رفع العملاء (50-70%)
+      setState(() {
+        _loadingProgress = 0.55;
+        _loadingMessage = 'جاري رفع العملاء...';
+      });
+      
+      // المرحلة 4: رفع المعاملات (70-95%)
+      setState(() {
+        _loadingProgress = 0.75;
+        _loadingMessage = 'جاري رفع المعاملات...';
+      });
+      
       final result = await _firebaseSync.repairAndSyncAllTransactions();
+      
+      // المرحلة 5: الانتهاء (95-100%)
+      setState(() {
+        _loadingProgress = 1.0;
+        _loadingMessage = 'اكتمل الإصلاح!';
+      });
+      
+      await Future.delayed(const Duration(milliseconds: 300));
       
       if (mounted) {
         if (result['success'] == true) {
@@ -951,7 +1647,7 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
         }
       }
       
-      await _loadSettings();
+      await _loadSettingsQuick();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -963,16 +1659,61 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
       }
     }
     
-    setState(() => _isLoading = false);
+    setState(() {
+      _isRepairing = false;
+      _loadingProgress = 0.0;
+      _loadingMessage = '';
+    });
   }
   
   /// 📱 عرض الأجهزة المتصلة
   Future<void> _showConnectedDevices() async {
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoadingDevices = true;
+      _loadingProgress = 0.0;
+      _loadingMessage = 'جاري جلب قائمة الأجهزة...';
+    });
     
     try {
+      // 🔄 محاولة التهيئة إذا لم تكن مكتملة
+      if (_firebaseSync.status == FirebaseSyncStatus.notConfigured ||
+          _firebaseSync.status == FirebaseSyncStatus.idle ||
+          _firebaseSync.status == FirebaseSyncStatus.error) {
+        setState(() {
+          _loadingProgress = 0.1;
+          _loadingMessage = 'جاري تهيئة المزامنة...';
+        });
+        final initSuccess = await _firebaseSync.initialize().timeout(
+          const Duration(minutes: 2),
+          onTimeout: () => false,
+        );
+        if (!initSuccess) {
+          throw Exception('فشلت تهيئة المزامنة - تأكد من الاتصال بالإنترنت');
+        }
+      }
+      
+      // المرحلة 1: الاتصال (0-30%)
+      setState(() {
+        _loadingProgress = 0.2;
+        _loadingMessage = 'جاري الاتصال بـ Firebase...';
+      });
+      
+      // المرحلة 2: جلب البيانات (30-80%)
+      setState(() {
+        _loadingProgress = 0.5;
+        _loadingMessage = 'جاري جلب بيانات الأجهزة...';
+      });
+      
       final devices = await _firebaseSync.getConnectedDevices();
       final currentDeviceId = _firebaseSync.deviceId;
+      
+      // المرحلة 3: الانتهاء (80-100%)
+      setState(() {
+        _loadingProgress = 1.0;
+        _loadingMessage = 'تم جلب البيانات!';
+      });
+      
+      await Future.delayed(const Duration(milliseconds: 200));
       
       if (!mounted) return;
       
@@ -1202,7 +1943,11 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
       }
     }
     
-    setState(() => _isLoading = false);
+    setState(() {
+      _isLoadingDevices = false;
+      _loadingProgress = 0.0;
+      _loadingMessage = '';
+    });
   }
   
   /// الحصول على أيقونة الجهاز حسب المنصة
@@ -1282,5 +2027,239 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
         }
       }
     }
+  }
+  
+  /// 📊 عرض إحصائيات التتبع والإقرار
+  Future<void> _showTrackingStats() async {
+    if (!mounted) return;
+    
+    setState(() {
+      _isLoadingTrackingStats = true;
+      _loadingProgress = 0.0;
+      _loadingMessage = 'جاري جلب الإحصائيات...';
+    });
+    
+    try {
+      // 🔄 محاولة التهيئة إذا لم تكن مكتملة
+      if (_firebaseSync.status == FirebaseSyncStatus.notConfigured ||
+          _firebaseSync.status == FirebaseSyncStatus.idle ||
+          _firebaseSync.status == FirebaseSyncStatus.error) {
+        setState(() {
+          _loadingProgress = 0.05;
+          _loadingMessage = 'جاري تهيئة المزامنة...';
+        });
+        final initSuccess = await _firebaseSync.initialize().timeout(
+          const Duration(minutes: 2),
+          onTimeout: () => false,
+        );
+        if (!initSuccess) {
+          throw Exception('فشلت تهيئة المزامنة - تأكد من الاتصال بالإنترنت');
+        }
+      }
+      
+      // المرحلة 1: جلب إحصائيات التتبع (0-25%)
+      setState(() {
+        _loadingProgress = 0.15;
+        _loadingMessage = 'جاري جلب إحصائيات التتبع...';
+      });
+      final trackerStats = await _firebaseSync.getOperationTrackerStats();
+      
+      // المرحلة 2: جلب ملخص التأكيدات (25-50%)
+      setState(() {
+        _loadingProgress = 0.35;
+        _loadingMessage = 'جاري جلب ملخص التأكيدات...';
+      });
+      final ackSummary = await _firebaseSync.getAckSummary();
+      
+      // المرحلة 3: جلب التأكيدات المعلقة (50-70%)
+      setState(() {
+        _loadingProgress = 0.55;
+        _loadingMessage = 'جاري جلب التأكيدات المعلقة...';
+      });
+      final pendingAcks = await _firebaseSync.getPendingAckTransactions();
+      
+      // المرحلة 4: جلب إحصائيات WAL (70-90%)
+      setState(() {
+        _loadingProgress = 0.75;
+        _loadingMessage = 'جاري جلب إحصائيات الحماية...';
+      });
+      final walStats = await _firebaseSync.getWalRecoveryStats();
+      final pendingWal = await _firebaseSync.getPendingWalOperationsCount();
+      
+      // المرحلة 5: الانتهاء (90-100%)
+      setState(() {
+        _loadingProgress = 1.0;
+        _loadingMessage = 'تم جلب الإحصائيات!';
+      });
+      
+      await Future.delayed(const Duration(milliseconds: 200));
+      
+      if (!mounted) return;
+      
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Row(
+            children: const [
+              Icon(Icons.analytics, color: Colors.indigo),
+              SizedBox(width: 8),
+              Text('إحصائيات التتبع والإقرار'),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // 🛡️ قسم WAL (الحماية من الانقطاع)
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.purple.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '🛡️ الحماية من الانقطاع (WAL)',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      _buildStatRow('العمليات المعلقة', '$pendingWal'),
+                      _buildStatRow('إجمالي العمليات', '${walStats['totalOperations'] ?? 0}'),
+                      _buildStatRow('العمليات المستردة', '${walStats['recoveredOperations'] ?? 0}'),
+                      _buildStatRow('نقاط الاسترداد', '${walStats['activeCheckpoints'] ?? 0}'),
+                    ],
+                  ),
+                ),
+                
+                const SizedBox(height: 12),
+                
+                // قسم تتبع العمليات
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.indigo.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '🔄 تتبع العمليات',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      _buildStatRow('العمليات المعلقة', '${trackerStats['pendingOperations'] ?? 0}'),
+                      _buildStatRow('الكيانات المتتبعة', '${trackerStats['trackedEntities'] ?? 0}'),
+                      _buildStatRow('سجلات العمليات', '${trackerStats['logEntries'] ?? 0}'),
+                    ],
+                  ),
+                ),
+                
+                const SizedBox(height: 12),
+                
+                // قسم تأكيدات الاستلام
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '📬 تأكيدات الاستلام (ACK)',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      _buildStatRow('المعاملات المرسلة', '${ackSummary['sentTransactions'] ?? 0}'),
+                      _buildStatRow('التأكيدات المستلمة', '${ackSummary['receivedAcks'] ?? 0}'),
+                      _buildStatRow('في انتظار التأكيد', '${pendingAcks.length}'),
+                    ],
+                  ),
+                ),
+                
+                if (pendingAcks.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.orange.shade200),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: const [
+                            Icon(Icons.warning, color: Colors.orange, size: 18),
+                            SizedBox(width: 8),
+                            Text(
+                              'معاملات لم يتم تأكيدها',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.orange,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'هناك ${pendingAcks.length} معاملة لم يتم تأكيد استلامها من الأجهزة الأخرى بعد.',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                Navigator.pop(context);
+                // تنظيف السجلات القديمة
+                final deletedAcks = await _firebaseSync.cleanupOldAcks();
+                final deletedLogs = await _firebaseSync.cleanupOldOperationLogs();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('تم حذف $deletedAcks تأكيد و $deletedLogs سجل قديم'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                }
+              },
+              child: const Text('تنظيف القديم'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('إغلاق'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('فشل جلب الإحصائيات: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+    
+    if (!mounted) return;
+    setState(() {
+      _isLoadingTrackingStats = false;
+      _loadingProgress = 0.0;
+      _loadingMessage = '';
+    });
   }
 }

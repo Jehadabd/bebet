@@ -27,6 +27,10 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
+; إغلاق التطبيق تلقائياً قبل التثبيت
+CloseApplications=force
+CloseApplicationsFilter=*.exe
+RestartApplications=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -48,6 +52,29 @@ Source: "build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignorever
 [Icons]
 Name: "{autoprograms}\Alnaser"; Filename: "{app}\debt_book.exe"
 Name: "{autodesktop}\Alnaser"; Filename: "{app}\debt_book.exe"; Tasks: desktopicon
+
+[Code]
+// إغلاق التطبيق قبل التثبيت بالقوة
+function InitializeSetup(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  // محاولة إغلاق التطبيق إذا كان يعمل
+  Exec('taskkill.exe', '/F /IM debt_book.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // انتظار قليلاً للتأكد من إغلاق التطبيق
+  Sleep(1000);
+  Result := True;
+end;
+
+// إغلاق التطبيق قبل إلغاء التثبيت
+function InitializeUninstall(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Exec('taskkill.exe', '/F /IM debt_book.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(1000);
+  Result := True;
+end;
 
 [Run]
 ; تثبيت Visual C++ Runtime أولاً (بصمت - لن يظهر للمستخدم إلا إذا احتاج)

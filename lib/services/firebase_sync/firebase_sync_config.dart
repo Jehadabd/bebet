@@ -25,6 +25,51 @@ class SyncGroupIds {
   }
 }
 
+/// ═══════════════════════════════════════════════════════════════════════════
+/// إعدادات أمان المزامنة عبر Firebase
+/// ═══════════════════════════════════════════════════════════════════════════
+class FirebaseSyncSecuritySettings {
+  static const String _rejectOldTransactionsKey = 'firebase_sync_reject_old_transactions';
+  static const String _maxTransactionAgeDaysKey = 'firebase_sync_max_transaction_age_days';
+  static const String _enablePostSyncVerificationKey = 'firebase_sync_enable_post_sync_verification';
+  
+  /// هل تفعيل رفض المعاملات القديمة؟
+  static Future<bool> isRejectOldTransactionsEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_rejectOldTransactionsKey) ?? false; // معطل افتراضياً
+  }
+  
+  /// تفعيل/تعطيل رفض المعاملات القديمة
+  static Future<void> setRejectOldTransactionsEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_rejectOldTransactionsKey, enabled);
+  }
+  
+  /// الحصول على الحد الأقصى لعمر المعاملة بالأيام
+  static Future<int> getMaxTransactionAgeDays() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(_maxTransactionAgeDaysKey) ?? 30; // 30 يوم افتراضياً
+  }
+  
+  /// تعيين الحد الأقصى لعمر المعاملة بالأيام
+  static Future<void> setMaxTransactionAgeDays(int days) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_maxTransactionAgeDaysKey, days);
+  }
+  
+  /// هل تفعيل التحقق من الأرصدة بعد المزامنة؟
+  static Future<bool> isPostSyncVerificationEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_enablePostSyncVerificationKey) ?? true; // مفعل افتراضياً
+  }
+  
+  /// تفعيل/تعطيل التحقق من الأرصدة بعد المزامنة
+  static Future<void> setPostSyncVerificationEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_enablePostSyncVerificationKey, enabled);
+  }
+}
+
 /// إعدادات المزامنة عبر Firebase
 class FirebaseSyncConfig {
   static const String _groupIdKey = 'firebase_sync_group_id';
