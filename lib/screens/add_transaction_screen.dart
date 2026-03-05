@@ -38,6 +38,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   final _amountController = TextEditingController();
   final _noteController = TextEditingController();
   bool _isDebt = true; // true for adding debt, false for paying debt
+  bool _isReturn = false; // هل هذا التسديد راجع؟
   final AudioRecorder _recorder = AudioRecorder();
   // FlutterSoundPlayer? _audioPlayer; // Removed
   AudioPlayer? _audioPlayer2;
@@ -141,6 +142,24 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       print('═══════════════════════════════════════════════════════════════════');
       
       await context.read<AppProvider>().addTransaction(transaction);
+      
+      // إذا كان التسديد معلّم كـ "راجع" → إدخال سجل في جدول المرفوعات
+      if (!_isDebt && _isReturn) {
+        final db = DatabaseService();
+        final dbInstance = await db.database;
+        final txResult = await dbInstance.rawQuery(
+          'SELECT id FROM transactions WHERE customer_id = ? ORDER BY id DESC LIMIT 1', 
+          [widget.customer.id]
+        );
+        final lastTxId = txResult.isNotEmpty ? (txResult.first['id'] as int) : null;
+        await db.insertReturn(
+          transactionId: lastTxId,
+          customerId: widget.customer.id!,
+          amount: amount,
+          note: _noteController.text.isEmpty ? null : _noteController.text,
+        );
+        print('✅ تم تسجيل المرفوع بمبلغ $amount لعميل ${widget.customer.name}');
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -528,6 +547,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                 onSelectionChanged: (Set<bool> newSelection) {
                   setState(() {
                     _isDebt = newSelection.first;
+                    if (_isDebt) _isReturn = false; // إعادة تعيين عند التبديل لإضافة دين
                   });
                 },
               ),
@@ -622,6 +642,34 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                   ),
                 );
               }),
+              // عرض checkbox "هل هذا راجع؟" فقط عند اختيار تسديد دين
+              if (!_isDebt) ...[
+                const SizedBox(height: 12.0),
+                Card(
+                  elevation: 0,
+                  color: const Color(0xFFFFF3E0),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    side: BorderSide(color: Colors.orange.withOpacity(0.3)),
+                  ),
+                  child: CheckboxListTile(
+                    title: const Text(
+                      'هل هذا راجع؟',
+                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
+                    ),
+                    subtitle: const Text(
+                      'سيتم تسجيل هذا المبلغ كمرفوع في التقارير',
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    value: _isReturn,
+                    onChanged: (val) => setState(() => _isReturn = val ?? false),
+                    activeColor: Colors.orange,
+                    secondary: const Icon(Icons.keyboard_return, color: Colors.orange),
+                    controlAffinity: ListTileControlAffinity.leading,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  ),
+                ),
+              ],
               const SizedBox(height: 20.0), // Increased spacing
               TextFormField(
                 controller: _noteController,

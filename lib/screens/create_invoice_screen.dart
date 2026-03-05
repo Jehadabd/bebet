@@ -2724,6 +2724,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     }
   }
 
+  @override
+  void cancelLiveDebtTimer() {
+    liveDebtTimer?.cancel();
+  }
+
   Future<void> _persistPaymentTypeLightweight() async {
     try {
       if (invoiceToManage == null || invoiceToManage!.id == null) return;

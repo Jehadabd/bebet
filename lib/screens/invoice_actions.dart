@@ -41,6 +41,8 @@ abstract class InvoiceActionsInterface {
   Invoice? get invoiceToManage;
   set invoiceToManage(Invoice? value);
   
+  void cancelLiveDebtTimer();
+  
   TextEditingController get customerNameController;
   TextEditingController get customerPhoneController;
   TextEditingController get customerAddressController;
@@ -488,6 +490,9 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
 // 1. دالة حفظ الفاتورة (saveInvoice)
 // ============================================
   Future<Invoice?> saveInvoice({bool printAfterSave = false}) async {
+    // 🧹 إيقاف المزامنة الحية فوراً بمجرد بدء الحفظ
+    cancelLiveDebtTimer();
+    
     if (isSaving) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('جاري الحفظ بالفعل...'),
@@ -517,6 +522,35 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
         setState(() => isSaving = false);
         return null;
       }
+
+      // 🚨 إضافة تحقق صارم مستقل للأرقام دون تعديل الكود القديم:
+      bool _strictMathFailed = false;
+      String _strictMathErrorMsg = '';
+      for (final item in invoiceItems.where(_isInvoiceItemComplete)) {
+        final double qty = item.quantityIndividual ?? item.quantityLargeUnit ?? 0;
+        final double expected = qty * item.appliedPrice;
+        if ((item.itemTotal - expected).abs() > 0.01) {
+          _strictMathFailed = true;
+          _strictMathErrorMsg = 'توقف! يوجد خلل حسابي في الصنف "${item.productName}". المسجل ${item.itemTotal} لكن الحساب الفعلي هو $expected. احذفه وأضفه من جديد.';
+          break;
+        }
+      }
+      
+      if (_strictMathFailed) {
+         if (mounted) {
+             showDialog(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: const Text('⚠️ خطأ برمجي في الحسابات', style: TextStyle(color: Colors.red)),
+                  content: Text(_strictMathErrorMsg),
+                  actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('حسناً'))],
+                )
+             );
+         }
+         setState(() => isSaving = false);
+         return null; // نُوقف الحفظ فوراً
+      }
+
       
       // ═══════════════════════════════════════════════════════════════════════════
       // 🔒 تحسين الأمان: التحقق من أن التعديل لن يسبب رصيد سالب للعميل
@@ -573,7 +607,25 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
         }
       }
 
+      // 🧹 قبل بدء معاملة الحفظ النهائية، نرسل أمر تنظيف المعاملات المؤقتة
+      // هذا يضمن أن رصيد العميل نظيف قبل أن نضيف عليه دين هذه الفاتورة
+      if (!isNewInvoice && invoiceToManage?.id != null) {
+        try {
+          await db.deleteLiveDebtTransactions(invoiceToManage!.id!);
+        } catch (e) {
+          print('تحذير: فشل تنظيف المعاملات المؤقتة قبل الحفظ: $e');
+        }
+      }
+
       await (await db.database).transaction((txn) async {
+        // 🚨 إضافة أمان: معالجة ذرية داخل نفس الترانسكشن للديون المعلقة لضمان عدم تلف البيانات لو انقطع الاتصال
+        if (!isNewInvoice && invoiceToManage?.id != null) {
+          try {
+             await txn.delete('live_debt_transactions', where: 'invoice_id = ?', whereArgs: [invoiceToManage!.id!]);
+          } catch (e) {
+             print('تحذير: فشل تنظيف المعاملات المؤقتة داخل الـ transaction: $e');
+          }
+        }
         Customer? customer;
         if (customerNameController.text.trim().isNotEmpty) {
           String? normalizedPhone;
@@ -1227,6 +1279,16 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
             final verificationPassed = await _verifyInvoiceAfterSave(savedInvoice!.id!);
             if (!verificationPassed) {
               // فشل التحقق بعد الحفظ - قد تكون هناك مشكلة في البيانات
+              // 🚨 إضافة أمان مكمل للتحذير:
+              if (mounted) {
+                 ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('⚠️ تم حفظ الفاتورة لكن النظام اكتشف وجود فارق في مطابقة الأرقام، يرجى مراجعة تفاصيلها!'),
+                      backgroundColor: Colors.red,
+                      duration: Duration(seconds: 8)
+                    )
+                 );
+              }
             }
             
             final freshItems = await db.getInvoiceItems(savedInvoice!.id!);
@@ -1256,6 +1318,12 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
         if (isNewInvoice) {
           Navigator.of(context).popUntil((route) => route.isFirst);
         }
+      }
+
+      final savedId = savedInvoice?.id;
+      if (savedId != null) {
+        // 🛡️ تشغيل أداة التدقيق الصامتة (تطبع في الـ Console ولا تعدل البيانات)
+        await db.auditInvoiceIntegrity(savedId);
       }
 
       return savedInvoice;

@@ -1714,8 +1714,21 @@ class AIChatService {
         manualDebtProfit += amount * 0.15; // 15% ربح
       }
       
-      // صافي الربح = (المبيعات - الراجع) - التكلفة
-      final netSaleAmount = totalSales - totalReturns;
+      // جمع المرفوعات من جدول returns (المعاملات المعلّمة كراجع)
+      final manualReturnsResult = await db.rawQuery('''
+        SELECT COALESCE(SUM(amount), 0) as manual_returns
+        FROM returns
+        WHERE return_date >= ? AND return_date < ?
+      ''', [startStr, endStr]);
+      final manualReturns = (manualReturnsResult.first['manual_returns'] as num?)?.toDouble() ?? 0.0;
+      
+      // إجمالي الراجع الفعلي (استرجاع الفواتير فقط) الذي يخصم من المبيعات
+      final invoiceReturns = totalReturns; 
+      // إجمالي الراجع الشامل (فواتير + مرفوعات) للعرض فقط
+      totalReturns += manualReturns; 
+      
+      // صافي الربح = (المبيعات - الراجع الخاص بالفواتير) - التكلفة
+      final netSaleAmount = totalSales - invoiceReturns;
       final netProfit = netSaleAmount - totalCost;
       return {
         'totalSales': totalSales,
@@ -1903,8 +1916,21 @@ class AIChatService {
         manualDebtProfit += amount * 0.15; // 15% ربح
       }
       
-      // صافي الربح = (المبيعات - الراجع) - التكلفة
-      final netSaleAmount = totalSales - totalReturns;
+      // جمع المرفوعات من جدول returns (المعاملات المعلّمة كراجع)
+      final manualReturnsResult = await db.rawQuery('''
+        SELECT COALESCE(SUM(amount), 0) as manual_returns
+        FROM returns
+        WHERE return_date >= ? AND return_date < ?
+      ''', [startStr, endStr]);
+      final manualReturns = (manualReturnsResult.first['manual_returns'] as num?)?.toDouble() ?? 0.0;
+      
+      // إجمالي الراجع الفعلي (استرجاع الفواتير فقط) الذي يخصم من المبيعات
+      final invoiceReturns = totalReturns; 
+      // إجمالي الراجع الشامل (فواتير + مرفوعات) للعرض فقط
+      totalReturns += manualReturns; 
+      
+      // صافي الربح = (المبيعات - الراجع الخاص بالفواتير) - التكلفة
+      final netSaleAmount = totalSales - invoiceReturns;
       final netProfit = netSaleAmount - totalCost;
       return {
         'totalSales': totalSales,

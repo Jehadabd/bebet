@@ -235,9 +235,31 @@ class _YearlyReportScreenState extends State<YearlyReportScreen> {
             Expanded(
               child: _buildStatCard(
                 title: 'إجمالي التكلفة',
-                value: '${_fmt(summary['totalCost'])} د.ع',
+                value: '${_fmt(summary['totalCost'] ?? 0)} د.ع',
                 icon: Icons.money_off,
                 color: const Color(0xFFF44336),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: _buildStatCard(
+                title: 'إجمالي الراجع',
+                value: '${_fmt(summary['totalReturns'] ?? 0)} د.ع',
+                icon: Icons.keyboard_return,
+                color: const Color(0xFF9C27B0),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildStatCard(
+                title: 'إجمالي السداد',
+                value: '${_fmt(summary['totalDebtPayments'] ?? 0)} د.ع',
+                icon: Icons.payments,
+                color: const Color(0xFF4CAF50),
               ),
             ),
           ],

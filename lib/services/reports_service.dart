@@ -460,6 +460,20 @@ class ReportsService {
     final totalSales = (inv['total_sales'] as num?)?.toDouble() ?? 0.0;
     final totalReturns = (inv['total_returns'] as num?)?.toDouble() ?? 0.0;
     
+    // جمع المرفوعات من جدول returns (المعاملات المعلّمة كراجع)
+    final manualReturnsResult = await db.rawQuery('''
+      SELECT COALESCE(SUM(amount), 0) as manual_returns
+      FROM returns
+      WHERE DATE(return_date) >= ? AND DATE(return_date) <= ?
+    ''', [startStr, endStr]);
+    final manualReturns = (manualReturnsResult.first['manual_returns'] as num?)?.toDouble() ?? 0.0;
+    
+    // إجمالي الراجع الشامل (فواتير + مرفوعات) للعرض فقط
+    final combinedTotalReturns = totalReturns + manualReturns;
+    
+    // ملاحظة: totalProfitCalculated و netSaleAmount تم حسابها مسبقاً في SQL
+    // وهي تخصم total_returns (الخاص بالفواتير فقط)
+    
     return {
       'invoiceCount': inv['invoice_count'] ?? 0,
       'totalSales': totalSales,
@@ -467,7 +481,7 @@ class ReportsService {
       'totalCost': totalCostCalculated,
       'cashSales': (inv['cash_sales'] as num?)?.toDouble() ?? 0.0,
       'creditSales': (inv['credit_sales'] as num?)?.toDouble() ?? 0.0,
-      'totalReturns': totalReturns,
+      'totalReturns': combinedTotalReturns,
       'manualDebtCount': debt['count'] ?? 0,
       'totalManualDebt': (debt['total'] as num?)?.toDouble() ?? 0.0,
       'manualPaymentCount': payment['count'] ?? 0,

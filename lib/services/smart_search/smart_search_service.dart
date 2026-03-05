@@ -169,40 +169,61 @@ class SmartSearchService {
 
     try {
       // 1. البحث الأساسي بـ FTS5 - يُرجع 300 نتيجة للترتيب الذكي
-      final baseResults = await _mainDb.searchProductsSmart(query);
-      if (baseResults.isEmpty) return [];
+      final baseResultsFuture = _mainDb.searchProductsSmart(query);
       
-      // إذا لا يوجد سياق (لم يُختر أي منتج بعد)، أرجع النتائج كما هي
-      if (_sessionContext.detectedBrands.isEmpty && 
+      // لا ننتظر baseResults هنا بل نشغلها مع بحث الماركات بشكل متوازي
+      
+      // إذا لا يوجد سياق (لم يُختر أي منتج بعد)، أرجع النتائج كما هي بدون إكمال
+      final hasNoContext = _sessionContext.detectedBrands.isEmpty && 
           _sessionContext.detectedLastWords.isEmpty &&
           _sessionContext.addedProductIds.isEmpty &&
           _sessionContext.addedProductNames.isEmpty &&
-          (currentInvoiceProductNames == null || currentInvoiceProductNames.isEmpty)) {
-        return baseResults;
+          (currentInvoiceProductNames == null || currentInvoiceProductNames.isEmpty);
+
+      if (hasNoContext) {
+         return await baseResultsFuture;
       }
 
       // 🆕 2. إضافة منتجات الماركة المكتشفة (خاصة للبحث القصير)
       // هذا يضمن ظهور منتجات الماركة حتى لو لم تظهر في نتائج FTS5
+      // تشغيل استعلامات قواعد البيانات بالتوازي لتقليل الانتظار
+      final brandQueriesFutures = <Future<List<Product>>>[];
+      for (final brand in _sessionContext.detectedBrands) {
+        brandQueriesFutures.add(_mainDb.searchProductsSmart('$brand $query'));
+      }
+
+      // 3. جلب المنتجات المرتبطة (Associations) بالتوازي أيضاً
+      Future<Map<int, int>> associationsFuture = Future.value({});
+      if (_sessionContext.addedProductIds.isNotEmpty) {
+        associationsFuture = _smartDb.getAssociatedProductsForList(
+          _sessionContext.addedProductIds,
+        );
+      }
+
+      // انتظار جميع الاستعلامات المتوازية
+      final results = await Future.wait([
+        baseResultsFuture,
+        associationsFuture,
+        ...brandQueriesFutures
+      ]);
+
+      final baseResults = results[0] as List<Product>;
+      if (baseResults.isEmpty && brandQueriesFutures.isEmpty) return [];
+
+      final associations = results[1] as Map<int, int>;
+      
       List<Product> combinedResults = List.from(baseResults);
       final existingIds = baseResults.map((p) => p.id).toSet();
-      
-      // البحث عن منتجات الماركة + كلمة البحث
-      for (final brand in _sessionContext.detectedBrands) {
-        final brandResults = await _mainDb.searchProductsSmart('$brand $query');
+
+      // دمج نتائج الماركات
+      for (int i = 2; i < results.length; i++) {
+        final brandResults = results[i] as List<Product>;
         for (final product in brandResults) {
           if (!existingIds.contains(product.id)) {
             combinedResults.add(product);
             existingIds.add(product.id);
           }
         }
-      }
-
-      // 3. جلب المنتجات المرتبطة (Associations)
-      Map<int, int> associations = {};
-      if (_sessionContext.addedProductIds.isNotEmpty) {
-        associations = await _smartDb.getAssociatedProductsForList(
-          _sessionContext.addedProductIds,
-        );
       }
 
       // 4. حساب النقاط لكل منتج وإعادة الترتيب
@@ -240,12 +261,12 @@ class SmartSearchService {
     Map<int, int> associations, {
     List<String>? currentInvoiceProductNames,
   }) {
+    // 🚀 تحضير مسبق (Pre-compute) لزيادة السرعة خارج حلقة الفحص البطيئة 🚀
+    
     // استخراج "عائلة" المنتجات المضافة (الكلمات الأولى)
     final addedProductFamilies = _extractProductFamilies(_sessionContext.addedProductNames);
     
-    // 🆕 تحضير قائمة المنتجات الموجودة في الفاتورة للتحقق الدقيق
-    // إذا تم تمرير currentInvoiceProductNames، نستخدمها (أكثر دقة)
-    // وإلا نستخدم addedProductNames من الجلسة (للتوافق مع الكود القديم)
+    // تحضير قائمة المنتجات الموجودة في الفاتورة للتحقق الدقيق
     final Set<String> invoiceProductNamesLower;
     if (currentInvoiceProductNames != null) {
       invoiceProductNamesLower = currentInvoiceProductNames
@@ -258,43 +279,52 @@ class SmartSearchService {
           .toSet();
     }
     
-    // تحضير كلمات البحث للمقارنة
+    // تحضير كلمات البحث للمقارنة (بدون Regex ثقيل)
     final queryLower = query.toLowerCase().trim();
-    final queryWords = queryLower.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
+    // تقطيع باستخدام الفراغات (أسرع بكثير من استخدام RegExp المكرر)
+    final queryWords = queryLower.split(' ').where((w) => w.isNotEmpty).toList();
+    
+    // معالجة الماركات המكتشفة مسبقاً للحسابات المتكررة
+    // بدلاً من استدعاء _normalizeForBrandMatch مراراً لكل منتج، نقوم بحسبها مرة واحدة
+    final normalizedDetectedBrands = _sessionContext.detectedBrands
+        .map((brand) => _normalizeForBrandMatch(brand))
+        .toList();
+        
+    final detectedBrandsWordsMap = <String, List<String>>{};
+    for (final detectedBrand in _sessionContext.detectedBrands) {
+        detectedBrandsWordsMap[detectedBrand] = detectedBrand.toLowerCase().split(' ').where((w) => w.isNotEmpty).toList();
+    }
     
     // حساب النقاط لكل منتج
-    final List<_ScoredProduct> scoredProducts = [];
-    
-    for (int i = 0; i < products.length; i++) {
+    final List<_ScoredProduct> scoredProducts = List.generate(products.length, (i) {
       final product = products[i];
       double score = 0;
       
-      // 🆕 التحقق إذا كان المنتج موجوداً حالياً في الفاتورة
-      // نستخدم القائمة الممررة (الأكثر دقة) أو الجلسة
       final productNameLower = product.name.toLowerCase().trim();
       final isInCurrentInvoice = invoiceProductNamesLower.contains(productNameLower);
       
-      // تقسيم اسم المنتج إلى كلمات للبحث الدقيق
-      final productWords = productNameLower.split(RegExp(r'\s+'));
+      // استخدام انقسام بسيط للنصوص أسرع من ال Regex
+      final productWords = productNameLower.split(' ').where((w) => w.isNotEmpty).toList();
       
       // ═══════════════════════════════════════════════════════════════════
-      // 1. 🆕 نقاط تطابق الأحرف (10,000,000 نقطة لكل حرف) - الأولوية القصوى!
+      // 1. نقاط تطابق الأحرف (10,000,000 نقطة لكل حرف)
       // ═══════════════════════════════════════════════════════════════════
-      // البحث عن كلمات تبدأ بكلمة البحث (وليس تحتوي عليها في أي مكان)
-      // مثال: "سويج ن" → يبحث عن كلمة تبدأ بـ "ن" (مثل "نيو")
-      // "سويج اثنين" لا يطابق لأن "ن" في منتصف كلمة "اثنين"
-      // 10,000,000 نقطة لكل حرف = الأولوية المطلقة لتطابق الأحرف!
       int matchedChars = 0;
-      for (final queryWord in queryWords) {
-        // البحث عن كلمة في اسم المنتج تبدأ بكلمة البحث
-        final hasWordStartingWith = productWords.any((productWord) => 
-          productWord.startsWith(queryWord)
-        );
+      for (int wIdx = 0; wIdx < queryWords.length; wIdx++) {
+        final queryWord = queryWords[wIdx];
+        bool hasWordStartingWith = false;
+        // حلقة مبسطة بدلا من where و any المعقدة للسرعة
+        for (int pIdx = 0; pIdx < productWords.length; pIdx++) {
+            if (productWords[pIdx].startsWith(queryWord)) {
+                hasWordStartingWith = true;
+                break;
+            }
+        }
         if (hasWordStartingWith) {
           matchedChars += queryWord.length;
         }
       }
-      score += matchedChars * 10000000; // 10,000,000 نقطة لكل حرف متطابق
+      score += matchedChars * 10000000;
       
       // ═══════════════════════════════════════════════════════════════════
       // 2. نقاط الماركة الكاملة (100 نقطة)
@@ -303,10 +333,8 @@ class SmartSearchService {
       bool fullBrandMatch = false;
       bool partialBrandMatch = false;
       
-      for (final detectedBrand in _sessionContext.detectedBrands) {
-        final brandNormalized = _normalizeForBrandMatch(detectedBrand);
-        
-        // التطابق الكامل: اسم المنتج يحتوي على نص الماركة بالكامل
+      for (int bIdx = 0; bIdx < normalizedDetectedBrands.length; bIdx++) {
+        final brandNormalized = normalizedDetectedBrands[bIdx];
         if (productNameNormalized.contains(brandNormalized)) {
           score += 100;
           fullBrandMatch = true;
@@ -317,9 +345,12 @@ class SmartSearchService {
       // ═══════════════════════════════════════════════════════════════════
       // 3. نقاط العلاقة التراكمية (3 نقاط لكل علاقة)
       // ═══════════════════════════════════════════════════════════════════
-      if (product.id != null && associations.containsKey(product.id)) {
-        final associationCount = associations[product.id]!;
-        score += associationCount * 3;
+      final productId = product.id;
+      if (productId != null) {
+        final associationCount = associations[productId];
+        if(associationCount != null){
+           score += associationCount * 3;
+        }
       }
       
       // ═══════════════════════════════════════════════════════════════════
@@ -330,8 +361,9 @@ class SmartSearchService {
         if (productBrand != null) {
           final productBrandNormalized = _normalizeForBrandMatch(productBrand);
           
-          for (final detectedBrand in _sessionContext.detectedBrands) {
-            final brandNormalized = _normalizeForBrandMatch(detectedBrand);
+          for (int bIdx = 0; bIdx < _sessionContext.detectedBrands.length; bIdx++) {
+            final detectedBrand = _sessionContext.detectedBrands.elementAt(bIdx);
+            final brandNormalized = normalizedDetectedBrands[bIdx];
             
             if (productBrandNormalized.contains(brandNormalized) ||
                 brandNormalized.contains(productBrandNormalized)) {
@@ -340,9 +372,15 @@ class SmartSearchService {
               break;
             }
             
-            final detectedWords = detectedBrand.toLowerCase().split(RegExp(r'\s+'));
-            final productBrandWords = productBrand.toLowerCase().split(RegExp(r'\s+'));
-            final commonWords = detectedWords.where((w) => productBrandWords.contains(w)).length;
+            final detectedWords = detectedBrandsWordsMap[detectedBrand]!;
+            final productBrandWords = productBrand.toLowerCase().split(' ').where((w)=>w.isNotEmpty).toList();
+            
+            int commonWords = 0;
+            for(int dw = 0; dw < detectedWords.length; dw++){
+                if(productBrandWords.contains(detectedWords[dw])){
+                    commonWords++;
+                }
+            }
             
             if (commonWords >= 1 && !partialBrandMatch) {
               score += 5 + (commonWords * 5).clamp(0, 10);
@@ -375,15 +413,14 @@ class SmartSearchService {
       score += (products.length - i) * 0.01;
       
       // ═══════════════════════════════════════════════════════════════════
-      // 8. 🆕 عقوبة المنتج الموجود في الفاتورة (-100,000,000 نقطة)
+      // 8. عقوبة المنتج الموجود في الفاتورة (-100,000,000 نقطة)
       // ═══════════════════════════════════════════════════════════════════
-      // نتحقق من القائمة الفعلية للمنتجات في الفاتورة (أكثر دقة)
       if (isInCurrentInvoice) {
-        score -= 100000000; // -100 مليون نقطة للمنتج الموجود في الفاتورة
+        score -= 100000000;
       }
       
-      scoredProducts.add(_ScoredProduct(product: product, score: score));
-    }
+      return _ScoredProduct(product: product, score: score);
+    });
     
     // ترتيب حسب النقاط (الأعلى أولاً)
     scoredProducts.sort((a, b) => b.score.compareTo(a.score));

@@ -27,6 +27,8 @@ import '../services/commercial_statement_service.dart';
 import '../services/password_service.dart';
 import 'package:pdf/widgets.dart' as pw;
 import '../services/firebase_sync/firebase_sync_service.dart';
+import '../services/firebase_sync/discrepancy_resolution_service.dart'; // 🩹 خدمة إصلاح الفروقات
+
 
 class CustomerDetailsScreen extends StatefulWidget {
   final Customer customer;
@@ -544,6 +546,12 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         appBar: AppBar(
           title: Text(widget.customer.name),
           actions: [
+            // 🛡️ زر فحص السلامة والشفاء الذاتي
+            IconButton(
+              icon: const Icon(Icons.security, color: Colors.white),
+              tooltip: 'فحص السلامة المالية (Self-Healing)',
+              onPressed: () => _performSafetyCheck(),
+            ),
             IconButton(
               icon: const Icon(Icons.edit, color: Colors.white),
               tooltip: 'تعديل معلومات العميل',
@@ -2356,21 +2364,17 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
     }
   }
 
+  void _performSafetyCheck() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('ميزة فحص السلامة والشفاء الذاتي تحت التطوير 🔧')),
+    );
+  }
+
   String _getTransactionDescription(DebtTransaction transaction) {
-    final hasInvoice = transaction.invoiceId != null;
-    final invoicePart = hasInvoice ? ' (فاتورة #${transaction.invoiceId})' : '';
-    if (transaction.transactionType == 'invoice_debt') {
-      return 'معاملة مالية - إضافة دين$invoicePart';
+    final invoicePart = transaction.invoiceId != null ? ' (فاتورة #${transaction.invoiceId})' : '';
+    if (transaction.transactionType == 'manual_debt') {
+      return 'دين يدوي: ${transaction.description ?? ""}';
     } else if (transaction.transactionType == 'manual_payment') {
-      return 'دفعة نقدية (تسديد)';
-    } else if (transaction.transactionType == 'manual_debt') {
-      return 'معاملة يدوية (إضافة دين)';
-    } else if (transaction.transactionType == 'Invoice_Debt_Adjustment') {
-      return 'تعديل فاتورة رقم: ${transaction.invoiceId}';
-    } else if (transaction.transactionType == 'Invoice_Debt_Reversal') {
-      return 'حذف فاتورة رقم: ${transaction.invoiceId}';
-    } else if (hasInvoice) {
-      // أي معاملة أخرى مرتبطة بفاتورة
       return 'معاملة مالية$invoicePart';
     } else {
       return transaction.transactionNote ?? 'معاملة مالية';

@@ -13,6 +13,7 @@ import '../services/sync/sync_audit_service.dart';
 import '../services/password_service.dart';
 import '../models/account_statement_item.dart';
 import '../services/smart_search/smart_search.dart' as smart_search; // 🧠 البحث الذكي
+import 'financial_audit_screen.dart'; // 🛡️ شاشة التدقيق المالي
 
 class GeneralSettingsScreen extends StatefulWidget {
   const GeneralSettingsScreen({super.key});
@@ -785,6 +786,32 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
               ],
             ),
           ),
+
+          // 🛡️ أدوات الحماية المالية
+          _buildSettingsCard(
+            icon: Icons.security,
+            iconColor: Colors.indigo,
+            title: 'أدوات الحماية المالية',
+            child: Column(
+              children: [
+                _buildActionTile(
+                  icon: Icons.sync_lock,
+                  iconColor: Colors.indigo,
+                  title: 'التدقيق المالي المتبادل',
+                  subtitle: 'فحص تطابق البيانات مع الأجهزة الأخرى (Cross-Device Verification)',
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const FinancialAuditScreen(),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+          
           // وصف الشركة
           _buildSettingsCard(
             icon: Icons.business,

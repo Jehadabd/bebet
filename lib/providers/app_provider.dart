@@ -404,18 +404,17 @@ class AppProvider with ChangeNotifier {
     try {
       // 1) تحضير المحتوى المطلوب: قاعدة البيانات + جميع ملفات الصوت
       onProgress?.call(0.05);
-      final dbFile = await _db.getDatabaseFile();
       final audioPaths = await _db.getAllAudioNotePaths();
 
-      // 2) إنشاء مجلد مؤقت ونسخ قاعدة البيانات وجمع الصوتيات
+      // 2) إنشاء مجلد مؤقت ونسخ قاعدة البيانات بأمان
       onProgress?.call(0.15);
       final tempDir = await getTemporaryDirectory();
       final backupRoot = Directory('${tempDir.path}/backup_${DateTime.now().millisecondsSinceEpoch}');
       if (!await backupRoot.exists()) {
         await backupRoot.create(recursive: true);
       }
-      final dbCopy = File('${backupRoot.path}/debt_book.db');
-      await dbCopy.writeAsBytes(await dbFile.readAsBytes(), flush: true);
+      // 🔒 نسخ احتياطي آمن مع WAL checkpoint + فحص سلامة
+      final dbCopy = await _db.createSafeBackup('${backupRoot.path}/debt_book.db');
 
       final audioDir = Directory('${backupRoot.path}/audio');
       await audioDir.create(recursive: true);

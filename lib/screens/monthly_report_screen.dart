@@ -281,6 +281,17 @@ class _MonthlyReportScreenState extends State<MonthlyReportScreen> {
             ),
           ],
         ),
+        // بطاقة إجمالي الراجع
+        if ((summary['totalReturns'] as num?)?.toDouble() != null && 
+            (summary['totalReturns'] as num).toDouble() > 0) ...[
+          const SizedBox(height: 12),
+          _buildStatCard(
+            title: 'إجمالي الراجع',
+            value: '${_fmt(summary['totalReturns'])} د.ع',
+            icon: Icons.keyboard_return,
+            color: const Color(0xFF9C27B0),
+          ),
+        ],
       ],
     );
   }

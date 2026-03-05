@@ -155,9 +155,11 @@ class InvoiceLogicService {
     required String paymentType,
     required double discount,
     required TextEditingController paidAmountController,
+    double loadingFee = 0.0, // 🔒 إضافة loadingFee للتوحيد مع الشاشة
     required void Function(void Function()) setState,
   }) {
     double total = invoiceItems.fold(0, (sum, item) => sum + item.itemTotal);
+    total += loadingFee; // 🔒 إضافة أجور التحميل
     totalAmountController.text = _formatNumber(total);
     if (paymentType == 'نقد') {
       paidAmountController.text = _formatNumber(total - discount);

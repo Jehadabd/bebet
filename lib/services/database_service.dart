@@ -27,7 +27,7 @@ import 'firebase_sync/firebase_sync_helper.dart'; // 🔥 مزامنة Firebase
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
   static Database? _database;
-  static const int _databaseVersion = 40; // 🔄 إضافة updated_at للمعاملات
+  static const int _databaseVersion = 41; // 🔄 إضافة جدول المرفوعات returns
   // تحكم بالطباعات التشخيصية من مصدر واحد
   // معطل في الإصدار النهائي لتجنب الطباعات المزعجة
   static const bool _verboseLogs = false;
@@ -633,6 +633,21 @@ class DatabaseService {
         FOREIGN KEY (transaction_id) REFERENCES transactions (id) ON DELETE SET NULL
       )
     ''');
+
+    // --- إنشاء جدول المرفوعات (returns) إذا لم يكن موجوداً ---
+    await _database!.execute('''
+      CREATE TABLE IF NOT EXISTS returns (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        transaction_id INTEGER,
+        customer_id INTEGER NOT NULL,
+        amount REAL NOT NULL,
+        note TEXT,
+        return_date TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE SET NULL,
+        FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
+      )
+    ''');
     
     // --- نهاية التحقق ---
 
@@ -766,6 +781,91 @@ class DatabaseService {
   Future<File> getDatabaseFile() async {
     final path = await getDatabaseFilePath();
     return File(path);
+  }
+
+  /// 🔒 إنشاء نسخة احتياطية آمنة من قاعدة البيانات مع فحص السلامة
+  /// 
+  /// يضمن:
+  /// 1. دمج WAL في الملف الأساسي (حتى لا تضيع البيانات)
+  /// 2. نسخ الملف بأمان
+  /// 3. فحص سلامة النسخة قبل إرجاعها
+  /// 4. التأكد من وجود الجداول الأساسية
+  Future<File> createSafeBackup(String targetPath) async {
+    final db = await database;
+    
+    // 1. دمج WAL في الملف الأساسي
+    try {
+      await db.rawQuery('PRAGMA wal_checkpoint(TRUNCATE)');
+      print('🔒 تم دمج WAL checkpoint بنجاح');
+    } catch (e) {
+      print('⚠️ تحذير: فشل WAL checkpoint: $e');
+      // نستمر حتى لو فشل — الملف قد يكون بوضع journal عادي
+    }
+    
+    // 2. نسخ الملف
+    final dbPath = await getDatabaseFilePath();
+    final sourceFile = File(dbPath);
+    
+    if (!await sourceFile.exists()) {
+      throw Exception('ملف قاعدة البيانات غير موجود: $dbPath');
+    }
+    
+    final backupFile = await sourceFile.copy(targetPath);
+    print('🔒 تم نسخ قاعدة البيانات: ${await backupFile.length()} bytes');
+    
+    // 3. نسخ ملفات WAL و SHM إذا وجدت (للاحتياط)
+    for (final suffix in ['-wal', '-shm']) {
+      final walFile = File('$dbPath$suffix');
+      if (await walFile.exists()) {
+        try {
+          await walFile.copy('$targetPath$suffix');
+        } catch (_) {}
+      }
+    }
+    
+    // 4. فحص سلامة النسخة
+    try {
+      final testDb = await openDatabase(targetPath, readOnly: true);
+      try {
+        final result = await testDb.rawQuery('PRAGMA integrity_check');
+        final status = result.first.values.first as String;
+        if (status != 'ok') {
+          throw Exception('فشل فحص سلامة النسخة الاحتياطية: $status');
+        }
+        print('✅ فحص سلامة النسخة الاحتياطية: OK');
+        
+        // 5. التأكد من وجود الجداول الأساسية
+        final tables = await testDb.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type='table' "
+          "AND name IN ('customers', 'invoices', 'transactions', 'invoice_items', 'products')");
+        if (tables.length < 3) {
+          throw Exception('النسخة الاحتياطية تفتقد جداول أساسية (وُجد ${tables.length} من 5)');
+        }
+        print('✅ تم التحقق من وجود ${tables.length} جدول أساسي');
+        
+        // 6. التأكد من وجود بيانات
+        final countResult = await testDb.rawQuery('SELECT COUNT(*) as c FROM customers');
+        final customerCount = Sqflite.firstIntValue(countResult) ?? 0;
+        print('✅ النسخة تحتوي على $customerCount عميل');
+        
+      } finally {
+        await testDb.close();
+      }
+    } catch (e) {
+      // حذف النسخة التالفة
+      try { await backupFile.delete(); } catch (_) {}
+      for (final suffix in ['-wal', '-shm']) {
+        try { await File('$targetPath$suffix').delete(); } catch (_) {}
+      }
+      throw Exception('❌ النسخة الاحتياطية تالفة ولم يتم رفعها: $e');
+    }
+    
+    // حذف ملفات WAL/SHM المنسوخة (لسنا بحاجة لها بعد integrity check)
+    for (final suffix in ['-wal', '-shm']) {
+      try { await File('$targetPath$suffix').delete(); } catch (_) {}
+    }
+    
+    return backupFile;
   }
 
   // إنشاء مجلد الملفات الصوتية في نفس مجلد قاعدة البيانات
@@ -1252,6 +1352,21 @@ class DatabaseService {
       
       await db.execute('CREATE INDEX IF NOT EXISTS idx_transactions_sync_uuid ON transactions(sync_uuid)');
     } catch (_) {}
+
+    // جدول المرفوعات (returns)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS returns (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        transaction_id INTEGER,
+        customer_id INTEGER NOT NULL,
+        amount REAL NOT NULL,
+        note TEXT,
+        return_date TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE SET NULL,
+        FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
+      )
+    ''');
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -1850,6 +1965,31 @@ class DatabaseService {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // 🔒 ترقية 41: إنشاء جدول المرفوعات (returns)
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (oldVersion < 41) {
+      print('DEBUG DB: الترقية للإصدار 41 - إنشاء جدول المرفوعات');
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS returns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_id INTEGER,
+            customer_id INTEGER NOT NULL,
+            amount REAL NOT NULL,
+            note TEXT,
+            return_date TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE SET NULL,
+            FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
+          )
+        ''');
+        print('✅ تم إنشاء جدول المرفوعات returns');
+      } catch (e) {
+        print('DEBUG DB: جدول المرفوعات موجود بالفعل أو خطأ: $e');
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // 🔒 تحقق شامل نهائي - ضمان وجود جميع الأعمدة المطلوبة
     // ═══════════════════════════════════════════════════════════════════════════
     await _ensureAllRequiredColumns(db);
@@ -1911,6 +2051,48 @@ class DatabaseService {
     
     // أعمدة جدول installers
     await ensureColumn('installers', 'total_points', 'REAL DEFAULT 0.0');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // دوال جدول المرفوعات (returns)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// إدخال سجل مرفوع جديد (عند تعليم تسديد دين كـ "راجع")
+  Future<int> insertReturn({
+    int? transactionId,
+    required int customerId,
+    required double amount,
+    String? note,
+    DateTime? returnDate,
+  }) async {
+    final db = await database;
+    final now = DateTime.now();
+    return await db.insert('returns', {
+      'transaction_id': transactionId,
+      'customer_id': customerId,
+      'amount': amount,
+      'note': note,
+      'return_date': (returnDate ?? now).toIso8601String(),
+      'created_at': now.toIso8601String(),
+    });
+  }
+
+  /// مجموع المرفوعات في فترة معينة (لحساب إجمالي الراجع في التقارير)
+  Future<double> getReturnsSumInPeriod({
+    required DateTime startDate,
+    required DateTime endDate,
+  }) async {
+    final db = await database;
+    final startStr = startDate.toIso8601String().substring(0, 10);
+    final endStr = endDate.toIso8601String().substring(0, 10);
+    
+    final result = await db.rawQuery('''
+      SELECT COALESCE(SUM(amount), 0) as total_returns
+      FROM returns
+      WHERE DATE(return_date) >= ? AND DATE(return_date) <= ?
+    ''', [startStr, endStr]);
+    
+    return (result.first['total_returns'] as num?)?.toDouble() ?? 0.0;
   }
 
   // --- دوال العملاء ---
@@ -3985,6 +4167,34 @@ class DatabaseService {
         // يتم تطبيق الديون فقط إذا كانت الفاتورة "محفوظة" وليست "معلقة" أو "مسودة"
         bool shouldApplyDebt = invoiceToSave.status == 'محفوظة';
         
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 🔒 طبقة الحماية 2: تنظيف معاملات التعديل الحي قبل حساب الدين
+        // ═══════════════════════════════════════════════════════════════════════════
+        if (shouldApplyDebt && customer != null) {
+          final liveUpdates = await txn.query('transactions',
+            where: 'invoice_id = ? AND transaction_type = ?',
+            whereArgs: [invoiceId, 'invoice_live_update']);
+          
+          if (liveUpdates.isNotEmpty) {
+            double liveUpdateSum = 0.0;
+            for (final tx in liveUpdates) {
+              liveUpdateSum += (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
+            }
+            // عكس التأثير على رصيد العميل
+            if (liveUpdateSum.abs() > 0.001) {
+              await txn.rawUpdate(
+                'UPDATE customers SET current_total_debt = current_total_debt - ?, '
+                'last_modified_at = ? WHERE id = ?',
+                [liveUpdateSum, DateTime.now().toIso8601String(), customer.id]);
+            }
+            // حذف المعاملات المؤقتة
+            await txn.delete('transactions',
+              where: 'invoice_id = ? AND transaction_type = ?',
+              whereArgs: [invoiceId, 'invoice_live_update']);
+            print('🔒 [saveCompleteInvoice] تم تنظيف ${liveUpdates.length} معاملة invoice_live_update (مجموع: $liveUpdateSum)');
+          }
+        }
+
         if (customer != null && shouldApplyDebt) {
           double oldDebtContribution = 0.0;
           double newDebtContribution = 0.0;
@@ -4111,7 +4321,7 @@ class DatabaseService {
         // إرجاع الفاتورة المحفوظة
         final savedInvoiceMaps = await txn.query('invoices', where: 'id = ?', whereArgs: [invoiceId]);
         return Invoice.fromMap(savedInvoiceMaps.first);
-        
+
       } catch (e) {
         print('Transaction Error: $e');
         throw e; // سيقوم الترانزاكشن بإلغاء كل التغييرات تلقائياً
@@ -4130,7 +4340,72 @@ class DatabaseService {
       }
     }
   }
-
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔒 دوال الحماية الإضافية (استنساخ لمنطق invoice_actions للتوافق)
+  // ═══════════════════════════════════════════════════════════════════════════
+  Future<void> _verifyInvoiceAndDebtInTransaction(Transaction txn, int invoiceId, Invoice savedInvoice) async {
+    try {
+      final double expectedDebt = savedInvoice.totalAmount - savedInvoice.amountPaidOnInvoice;
+      
+      final txSum = await txn.rawQuery(
+        'SELECT COALESCE(SUM(amount_changed), 0) as total '
+        'FROM transactions WHERE invoice_id = ? '
+        'AND transaction_type NOT IN (?, ?, ?)',
+        [invoiceId, 'manual_payment', 'invoice_payment_type_change', 'SETTLEMENT']);
+      final double actualDebt = (txSum.first['total'] as num?)?.toDouble() ?? 0.0;
+      
+      if ((actualDebt - expectedDebt).abs() > 0.01) {
+        print('🚨 خلل مالي مكتشف في saveCompleteInvoice! الفاتورة #$invoiceId: المتوقع=$expectedDebt، الفعلي=$actualDebt');
+        final double difference = actualDebt - expectedDebt;
+        
+        // 1. تصحيح رصيد العميل
+        if (savedInvoice.customerId != null && difference.abs() > 0.001) {
+          await txn.rawUpdate(
+            'UPDATE customers SET current_total_debt = current_total_debt - ?, '
+            'last_modified_at = ? WHERE id = ?',
+            [difference, DateTime.now().toIso8601String(), savedInvoice.customerId]);
+        }
+        
+        // 2. مسح المعاملات القديمة الخاطئة
+        await txn.delete('transactions',
+          where: 'invoice_id = ? AND transaction_type NOT IN (?, ?, ?)',
+          whereArgs: [invoiceId, 'manual_payment', 'invoice_payment_type_change', 'SETTLEMENT']);
+        
+        // 3. إعادة إنشاء معاملة صحيحة واحدة
+        if (expectedDebt > 0.001) {
+          final customerRows = await txn.query('customers', where: 'id = ?', whereArgs: [savedInvoice.customerId]);
+          final double currentBalance = customerRows.isNotEmpty 
+              ? (customerRows.first['current_total_debt'] as num?)?.toDouble() ?? 0.0 : 0.0;
+          
+          await txn.insert('transactions', {
+            'customer_id': savedInvoice.customerId,
+            'transaction_date': savedInvoice.invoiceDate.toIso8601String(),
+            'amount_changed': expectedDebt,
+            'balance_before_transaction': currentBalance - expectedDebt,
+            'new_balance_after_transaction': currentBalance,
+            'transaction_type': 'invoice_debt',
+            'description': 'دين فاتورة رقم $invoiceId (مصحح تلقائياً)',
+            'invoice_id': invoiceId,
+            'created_at': DateTime.now().toIso8601String(),
+          });
+        }
+        
+        // 4. السجل
+        try {
+          await txn.insert('invoice_logs', {
+            'invoice_id': invoiceId,
+            'action': 'debt_reconciliation_complete_invoice',
+            'details': '{"expected_debt": $expectedDebt, "actual_debt": $actualDebt}',
+            'created_at': DateTime.now().toIso8601String(),
+            'created_by': 'System_AutoReconcile',
+          });
+        } catch (_) {}
+      }
+    } catch (e) {
+      print('❌ خطأ أثناء التحقق التلقائي في saveCompleteInvoice: $e');
+    }
+  }
 
   // --- Adjustments (Settlements) ---
   Future<int> insertInvoiceAdjustment(InvoiceAdjustment adjustment) async {
@@ -4653,6 +4928,77 @@ class DatabaseService {
     });
   }
 
+  /// دالة تنظيف: تحذف جميع سجلات التحديث الحي (invoice_live_update) 
+  /// وترجع تأثيرها على رصيد العميل لتلافي الـ Race Conditions قبل الحفظ النهائي
+  Future<void> deleteLiveDebtTransactions(int invoiceId) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      // 1. البحث عن كل المعاملات من نوع 'invoice_live_update' لهذه الفاتورة
+      final rows = await txn.query(
+        'transactions',
+        columns: ['id', 'amount_changed', 'customer_id'],
+        where: 'invoice_id = ? AND transaction_type = ?',
+        whereArgs: [invoiceId, 'invoice_live_update'],
+      );
+
+      if (rows.isEmpty) return; // لا يوجد شيء لتنظيفه
+
+      // 2. تجميع المبالغ حسب العميل
+      final Map<int, double> amountsToRevert = {};
+      final List<int> transactionIds = [];
+
+      for (final row in rows) {
+        final txId = row['id'] as int;
+        final amountChanged = (row['amount_changed'] as num).toDouble();
+        final customerId = row['customer_id'] as int;
+
+        transactionIds.add(txId);
+        amountsToRevert[customerId] = (amountsToRevert[customerId] ?? 0.0) + amountChanged;
+      }
+
+      // 3. إرجاع رصيد العميل لما كان عليه
+      for (final entry in amountsToRevert.entries) {
+        final customerId = entry.key;
+        final sumRevert = entry.value;
+
+        if (sumRevert != 0) {
+          final customerRows = await txn.query(
+            'customers',
+            columns: ['current_total_debt'],
+            where: 'id = ?',
+            whereArgs: [customerId],
+          );
+
+          if (customerRows.isNotEmpty) {
+            final currentDebt = (customerRows.first['current_total_debt'] as num).toDouble();
+            final correctedDebt = currentDebt - sumRevert;
+
+            await txn.update(
+              'customers',
+              {
+                'current_total_debt': correctedDebt,
+                'last_modified_at': DateTime.now().toIso8601String(),
+              },
+              where: 'id = ?',
+              whereArgs: [customerId],
+            );
+          }
+        }
+      }
+
+      // 4. حذف هذه المعاملات المؤقتة
+      for (final txId in transactionIds) {
+        await txn.delete(
+          'transactions',
+          where: 'id = ?',
+          whereArgs: [txId],
+        );
+      }
+      
+      print('🧹 تم تنظيف ${transactionIds.length} معاملة مؤقتة (live update) للفاتورة $invoiceId');
+    });
+  }
+
   // Method to get the initial debt transaction for an invoice
   Future<DebtTransaction?> getInvoiceDebtTransaction(int invoiceId) async {
     final db = await database;
@@ -5117,6 +5463,17 @@ class DatabaseService {
           netProfit += addProfitFromAdj;
         } catch (_) {}
 
+        // جمع المرفوعات من جدول returns (المعاملات المعلّمة كراجع)
+        double manualReturns = 0.0;
+        try {
+          final manualReturnsResult = await db.rawQuery('''
+            SELECT COALESCE(SUM(amount), 0) as manual_returns
+            FROM returns
+            WHERE return_date >= ? AND return_date < ?
+          ''', [start, end]);
+          manualReturns = (manualReturnsResult.first['manual_returns'] as num?)?.toDouble() ?? 0.0;
+        } catch (_) {}
+
         monthlySummaries[monthYear] = MonthlyOverview(
           monthYear: monthYear,
           totalSales: totalSales,
@@ -5124,7 +5481,7 @@ class DatabaseService {
           totalCost: totalCostSum, // إجمالي التكلفة
           cashSales: cashSales,
           creditSales: creditSalesValue,
-          totalReturns: totalReturns, // إضافة إجمالي الراجع
+          totalReturns: totalReturns + manualReturns, // إضافة إجمالي الراجع (فواتير + مرفوعات)
           totalDebtPayments: totalDebtPayments, // إضافة إجمالي تسديد الديون
           totalManualDebt: totalManualDebt, // إضافة دين يدوية
           manualDebtProfit: manualDebtProfitValue, // ربح المعاملات اليدوية (15%)
@@ -8265,6 +8622,61 @@ class DatabaseService {
   // ═══════════════════════════════════════════════════════════════════════════
   // 🛡️ دوال الحماية والتدقيق المالي الإضافية
   // ═══════════════════════════════════════════════════════════════════════════
+
+  // دالة للتدقيق الشامل على الفاتورة دون أي تصحيح أو تفاعل مباشر
+  Future<void> auditInvoiceIntegrity(int invoiceId) async {
+    try {
+      final db = await database;
+      
+      // 1. جلب بيانات الفاتورة
+      final invoiceMaps = await db.query('invoices', where: 'id = ?', whereArgs: [invoiceId]);
+      if (invoiceMaps.isEmpty) return;
+      final invoice = Invoice.fromMap(invoiceMaps.first);
+      
+      // 2. تجميع القيم الصحيحة من البنود الفردية بشكل مستقل تماماً
+      final itemsMaps = await db.query('invoice_items', where: 'invoice_id = ?', whereArgs: [invoiceId]);
+      final expectedTotalFromItems = itemsMaps.fold(0.0, (sum, item) {
+        final qty = (item['quantity_large_unit'] as num?)?.toDouble() ?? 
+                    (item['quantity_individual'] as num?)?.toDouble() ?? 0.0;
+        final price = (item['applied_price'] as num?)?.toDouble() ?? 0.0;
+        return sum + (qty * price);
+      });
+      
+      // 3. مطابقة إجمالي الفاتورة مع بنودها
+      final bool isTotalValid = (invoice.totalAmount - expectedTotalFromItems).abs() <= 0.01;
+      
+      // 4. فحص سجل الديون إذا كانت الفاتورة (دين)
+      bool isDebtValid = true;
+      double actualDebtSum = 0.0;
+      double expectedDebt = invoice.totalAmount - invoice.amountPaidOnInvoice;
+      
+      if (invoice.paymentType == 'دين' && invoice.customerId != null) {
+        // هنا نحسب كل المبالغ المتعلقة بهذه الفاتورة عدا الدفع الخارجي والتسويات اللاحقة
+        final txSum = await db.rawQuery(
+          'SELECT COALESCE(SUM(amount_changed), 0) as total FROM transactions '
+          'WHERE invoice_id = ? AND transaction_type NOT IN (?, ?)',
+          [invoiceId, 'manual_payment', 'SETTLEMENT']
+        );
+        actualDebtSum = (txSum.first['total'] as num?)?.toDouble() ?? 0.0;
+        isDebtValid = (actualDebtSum - expectedDebt).abs() <= 0.01;
+      }
+      
+      // 5. اتخاذ القرار بصمت (زرع إنذار مسجل في قاعدة البيانات)
+      // إذا كان هناك خطأ، عندما يدخل المستخدم لاسم الشخص سيظهر التحذير عبر verifyCustomerFinancialIntegrity تلقائياً
+      if (!isTotalValid || !isDebtValid) {
+        print('⚠️ [AUDIT FAILED] خطأ مالي في الفاتورة #$invoiceId');
+        print('إجمالي البنود: $expectedTotalFromItems | مسجل بالفاتورة: ${invoice.totalAmount}');
+        if (invoice.paymentType == 'دين') {
+          print('الدين المتوقع: $expectedDebt | الدين المسجل بالمعاملات: $actualDebtSum');
+        }
+      } else {
+        print('✅ [AUDIT PASSED] الفاتورة #$invoiceId سليمة ومطابقة 100%.');
+      }
+      
+    } catch (e) {
+      print('خطأ في أداة التدقيق الصامتة: $e');
+    }
+  }
 
   /// التحقق الشامل من سلامة البيانات المالية لعميل معين
   /// يُرجع تقريراً مفصلاً عن حالة البيانات

@@ -257,10 +257,16 @@ class SyncAuditService {
           .replaceAll('.', '-');
       final backupPath = '${backupDir.path}/backup_$timestamp.db';
       
-      // نسخ الملف
-      await File(dbFullPath).copy(backupPath);
-      
-      print('✅ تم إنشاء نسخة احتياطية: $backupPath');
+      // 🔒 نسخ احتياطي آمن مع WAL checkpoint + فحص سلامة
+      try {
+        await _db.createSafeBackup(backupPath);
+        print('✅ تم إنشاء نسخة احتياطية آمنة: $backupPath');
+      } catch (e) {
+        // في حالة فشل النسخ الآمن، نحاول النسخ العادي كاحتياط
+        print('⚠️ فشل النسخ الآمن، محاولة نسخ عادي: $e');
+        await File(dbFullPath).copy(backupPath);
+        print('✅ تم إنشاء نسخة احتياطية (عادية): $backupPath');
+      }
       
       // تنظيف النسخ القديمة
       await _cleanupOldBackups(backupDir);

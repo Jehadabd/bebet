@@ -17,6 +17,10 @@ import 'firebase_auth_service.dart';
 import 'sync_operation_tracker.dart';
 import 'transaction_ack_service.dart';
 import 'sync_crash_recovery_service.dart'; // 🛡️ WAL للحماية من الانقطاع
+import 'sync_watchdog.dart'; // 🛡️ نظام المراقبة الاحتياطي
+import 'firebase_sync_helper.dart'; // Helper for Watchdog initialization
+import 'device_snapshot_service.dart'; // 📸 خدمة لقطة الجهاز
+import 'cross_device_verifier.dart'; // 🛡️ خدمة التحقق المتبادل
 import '../sync/sync_encryption.dart';
 import '../sync/sync_validation.dart';
 import '../sync/sync_security.dart';
@@ -94,6 +98,7 @@ class FirebaseSyncService {
   SyncOperationTracker? _operationTracker;
   TransactionAckService? _ackService;
   SyncCrashRecoveryService? _crashRecovery; // 🛡️ WAL للحماية من الانقطاع
+  SyncWatchdog? _watchdog; // 🛡️ نظام المراقبة الاحتياطي
   
   // حالة الخدمة
   FirebaseSyncStatus _status = FirebaseSyncStatus.idle;
@@ -145,6 +150,11 @@ class FirebaseSyncService {
   // 🔄 مؤقت المزامنة الخلفية (كل 5 دقائق)
   Timer? _backgroundSyncTimer;
   static const Duration _backgroundSyncInterval = Duration(minutes: 5);
+
+  // 🛡️ مؤقت استقرار الاتصال (للتحقق المتبادل - 15 دقيقة)
+  Timer? _stabilityTimer;
+  static const Duration _stabilityDuration = Duration(minutes: 15);
+  bool _isVerificationScheduled = false;
   
   // Callbacks
   final _statusController = StreamController<FirebaseSyncStatus>.broadcast();
@@ -251,6 +261,18 @@ class FirebaseSyncService {
         _crashRecovery = SyncCrashRecoveryService.instance;
         await _crashRecovery!.initialize();
         print('✅ تم تهيئة نظام الحماية من الانقطاع (WAL)');
+        print('✅ تم تهيئة نظام الحماية من الانقطاع (WAL)');
+      }
+      
+      // 🛡️ تهيئة وتشغيل نظام المراقبة الاحتياطي (Safety Net)
+      if (_watchdog == null) {
+        _watchdog = SyncWatchdog.instance;
+        await _watchdog!.initialize(
+          syncHelper: FirebaseSyncHelper(),
+          coordinator: _coordinator!,
+        );
+        _watchdog!.start(); // بدء المراقبة
+        print('🛡️ تم تشغيل نظام المراقبة الاحتياطي');
       }
       
       // 🔐 تهيئة مفتاح المجموعة للتشفير والتوقيع
@@ -304,6 +326,7 @@ class FirebaseSyncService {
     await markDeviceOffline(); // تعليم الجهاز كغير متصل
     _stopHeartbeat();
     _stopBackgroundSync(); // 🔄 إيقاف المزامنة الخلفية
+    _watchdog?.stop(); // 🛡️ إيقاف المراقبة
     await _stopListening();
     _connectivityListener?.cancel();
     _operationTracker?.dispose(); // 🔄 إيقاف تتبع العمليات
@@ -1717,6 +1740,79 @@ class FirebaseSyncService {
   void _updateStatus(FirebaseSyncStatus newStatus) {
     _status = newStatus;
     _statusController.add(newStatus);
+    
+    // 🛡️ إدارة مؤقت الاستقرار للتحقق المتبادل
+    if (newStatus == FirebaseSyncStatus.online) {
+      _startStabilityTimer();
+    } else {
+      _stopStabilityTimer();
+    }
+  }
+
+  /// 🛡️ بدء مؤقت استقرار الاتصال
+  void _startStabilityTimer() {
+    if (_stabilityTimer != null || _isVerificationScheduled) return;
+    
+    print('⏳ بدء عداد استقرار الاتصال (${_stabilityDuration.inMinutes} دقيقة) للتدقيق المالي...');
+    _stabilityTimer = Timer(_stabilityDuration, _onStabilityTimerTick);
+  }
+
+  /// 🛡️ إيقاف وتصفير مؤقت الاستقرار
+  void _stopStabilityTimer() {
+    if (_stabilityTimer != null) {
+      print('❌ انقطع الاتصال - تصفير عداد التدقيق المالي.');
+      _stabilityTimer?.cancel();
+      _stabilityTimer = null;
+    }
+    _isVerificationScheduled = false;
+  }
+
+  /// 🛡️ عند اكتمال 15 دقيقة من الاتصال المتواصل
+  Future<void> _onStabilityTimerTick() async {
+    _stabilityTimer = null;
+    _isVerificationScheduled = true;
+    
+    print('🛡️ ✅ استقر الاتصال لمدة 15 دقيقة! بدء إجراءات التدقيق المالي المتبادل...');
+    
+    try {
+      // 1. إنشاء ورفع لقطة الجهاز (Snapshot)
+      final snapshotService = DeviceSnapshotService();
+      await snapshotService.uploadSnapshot();
+      
+      // 2. جدولة التحقق (نعطي وقتاً للأجهزة الأخرى لرفع لقطاتها أيضاً)
+      // سننتظر دقيقة عشوائية (1-3) لتجنب التصادم
+      final randomDelay = Duration(seconds: 60 + (DateTime.now().millisecond % 120));
+      print('⏳ جدولة التحقق بعد ${randomDelay.inSeconds} ثانية...');
+      
+      Timer(randomDelay, () async {
+        if (_status != FirebaseSyncStatus.online) return;
+        
+        // 3. تنفيذ التحقق
+        final verifier = CrossDeviceVerifier();
+        final report = await verifier.runVerification();
+        
+        if (report.totalDiscrepancies > 0) {
+          _errorController.add('⚠️ تم اكتشاف ${report.totalDiscrepancies} فروقات في التدقيق المالي المتبادل! راجع تقرير الأمان.');
+          // TODO: حفظ التقرير في مكان يمكن للمستخدم الوصول إليه
+        } else {
+          print('🛡️ ✅ التدقيق المالي المتبادل سليم 100%');
+          _syncEventController.add('اكتمال التدقيق المالي المتبادل بنجاح ✅');
+        }
+        
+        // إعادة جدولة الدورة القادمة (بعد ساعة مثلاً إذا استمر الاتصال)
+        if (_status == FirebaseSyncStatus.online) {
+             _stabilityTimer = Timer(const Duration(hours: 1), _onStabilityTimerTick);
+        }
+      });
+      
+    } catch (e) {
+      print('❌ فشل إجراءات التدقيق المالي: $e');
+      _isVerificationScheduled = false;
+      // إعادة المحاولة بعد دقيقة
+      if (_status == FirebaseSyncStatus.online) {
+        _stabilityTimer = Timer(const Duration(minutes: 1), _startStabilityTimer);
+      }
+    }
   }
   
   /// ═══════════════════════════════════════════════════════════════════════

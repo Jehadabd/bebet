@@ -284,11 +284,9 @@ class _InventoryScreenState extends State<InventoryScreen>
               Expanded(child: _buildCompactInfoItem(Icons.credit_card, 'دين (فواتير)', '${formatCurrency(invoiceCreditSalesPositive)} د.ع', '${creditPercentOfInvoices.toStringAsFixed(1)}%', const Color(0xFFFF9800))),
             ]),
             
-            // الراجع (إن وجد)
-            if (summary.totalReturns > 0) ...[
-              const SizedBox(height: 8),
-              _buildCompactInfoItem(Icons.keyboard_return, 'الراجع', '${formatCurrency(summary.totalReturns)} د.ع', null, const Color(0xFF9C27B0)),
-            ],
+            // الراجع
+            const SizedBox(height: 8),
+            _buildCompactInfoItem(Icons.keyboard_return, 'الراجع', '${formatCurrency(summary.totalReturns)} د.ع', null, const Color(0xFF9C27B0)),
             
             // ═══════════════════════════════════════════════════════════════════
             // القسم الثاني: المعاملات اليدوية (تفصيلي)
@@ -660,7 +658,7 @@ class _InventoryScreenState extends State<InventoryScreen>
           const SizedBox(width: 12),
           Expanded(
             child: DropdownButton<String>(
-              value: _selectedMonthKey,
+              value: months.contains(_selectedMonthKey) ? _selectedMonthKey : (months.isNotEmpty ? months.first : null),
               isExpanded: true,
               underline: const SizedBox(),
               items: months.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),

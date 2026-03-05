@@ -40,13 +40,13 @@ class DefaultFirebaseOptions {
 
   // إعدادات Windows (نفس إعدادات Web)
   static const FirebaseOptions windows = FirebaseOptions(
-    apiKey: 'AIzaSyAkjRWpnT4MBop5DeJ8Rw8HPRl85oJop30',
-    appId: '1:269593160810:web:843b889e7a4e8b62d42e13',
-    messagingSenderId: '269593160810',
-    projectId: 'debt-book-app-d7e74',
-    storageBucket: 'debt-book-app-d7e74.firebasestorage.app',
-    authDomain: 'debt-book-app-d7e74.firebaseapp.com',
-    measurementId: 'G-FZPY0BR9SV',
+    apiKey: "AIzaSyAkjRWpnT4MBop5DeJ8Rw8HPRl85oJop30",
+    authDomain: "debt-book-app-d7e74.firebaseapp.com",
+    projectId: "debt-book-app-d7e74",
+    storageBucket: "debt-book-app-d7e74.firebasestorage.app",
+    messagingSenderId: "269593160810",
+    appId: "1:269593160810:web:843b889e7a4e8b62d42e13",
+    measurementId: "G-FZPY0BR9SV",
   );
 
   // إعدادات Web
