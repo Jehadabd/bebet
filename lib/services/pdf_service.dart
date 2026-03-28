@@ -1019,4 +1019,90 @@ class PdfService {
 
     return pdf.save();
   }
+
+  Future<File> generateDelayedDebtsPdf(List<Map<String, dynamic>> customers, int months) async {
+    final fontData = await rootBundle.load('assets/fonts/Amiri-Regular.ttf');
+    final ttf = pw.Font.ttf(fontData);
+    final alnaserFont = pw.Font.ttf(await rootBundle.load('assets/fonts/PTBLDHAD.TTF'));
+    final logoBytes = await rootBundle.load('assets/icon/alnasser.jpg');
+    final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
+    final appSettings = await SettingsManager.getAppSettings();
+
+    final pdf = pw.Document();
+    String fmt(num v) => NumberFormat('#,##0', 'en_US').format(v);
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageTheme: pw.PageTheme(
+          pageFormat: PdfPageFormat.a4.copyWith(
+            marginLeft: 15,
+            marginRight: 15,
+            marginTop: 15,
+            marginBottom: 15,
+          ),
+          theme: pw.ThemeData.withFont(base: ttf, bold: ttf),
+          textDirection: pw.TextDirection.rtl,
+        ),
+        build: (context) => [
+          buildPdfHeader(ttf, alnaserFont, logoImage, appSettings: appSettings, logoSize: 80),
+          pw.SizedBox(height: 10),
+          pw.Center(
+            child: pw.Text(
+              'تقرير المتأخرين عن الديون ($months شهر أو أكثر)',
+              style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold),
+            ),
+          ),
+          pw.SizedBox(height: 10),
+          pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+            children: [
+              pw.Text('عدد العملاء: ${customers.length}', style: pw.TextStyle(fontSize: 12)),
+              pw.Text('التاريخ: ${DateFormat('yyyy-MM-dd').format(DateTime.now())}', style: pw.TextStyle(fontSize: 12)),
+            ],
+          ),
+          pw.SizedBox(height: 10),
+          pw.Table.fromTextArray(
+            context: context,
+            data: <List<String>>[
+              ['المبلغ', 'رقم الهاتف', 'العنوان', 'اسم العميل', 'ت'],
+              ...customers.asMap().entries.map((entry) {
+                final i = entry.key;
+                final c = entry.value;
+                return [
+                  fmt(c['current_total_debt'] ?? 0),
+                  c['phone'] ?? '-',
+                  c['address'] ?? '-',
+                  c['name'] ?? 'غير معروف',
+                  '${i + 1}',
+                ];
+              }),
+            ],
+            headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 13),
+            cellStyle: const pw.TextStyle(fontSize: 12),
+            cellAlignments: {
+              4: pw.Alignment.center,
+              3: pw.Alignment.centerRight,
+              2: pw.Alignment.centerRight,
+              1: pw.Alignment.center,
+              0: pw.Alignment.center,
+            },
+            headerDecoration: const pw.BoxDecoration(color: PdfColors.grey300),
+            columnWidths: {
+              4: const pw.FixedColumnWidth(30),  // ت
+              3: const pw.FlexColumnWidth(3.9), // الاسم
+              2: const pw.FlexColumnWidth(1.5), // العنوان
+              1: const pw.FlexColumnWidth(1.6), // رقم الهاتف
+              0: const pw.FlexColumnWidth(2.0), // المبلغ
+            },
+          ),
+        ],
+      ),
+    );
+
+    final output = await getTemporaryDirectory();
+    final fileName = 'delayed_debts_${months}_months_${DateFormat('yyyyMMdd').format(DateTime.now())}.pdf';
+    final file = File('${output.path}/$fileName');
+    await file.writeAsBytes(await pdf.save());
+    return file;
+  }
 }

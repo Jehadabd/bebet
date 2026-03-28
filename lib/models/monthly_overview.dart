@@ -7,6 +7,7 @@ class MonthlyOverview {
   final double creditSales;
   final double totalReturns;
   final double totalDebtPayments;
+  final double totalManualPaymentReturn; // تسديد دين راجع
   final double totalManualDebt; // إضافة دين يدوية
   final double manualDebtProfit; // ربح المعاملات اليدوية (15%)
   final double settlementAdditions;
@@ -14,6 +15,7 @@ class MonthlyOverview {
   final int invoiceCount; // عدد الفواتير
   final int manualDebtCount; // عدد معاملات إضافة الدين
   final int manualPaymentCount; // عدد معاملات تسديد الدين
+  final int manualPaymentReturnCount; // عدد معاملات تسديد دين راجع
 
   const MonthlyOverview({
     required this.monthYear,
@@ -24,6 +26,7 @@ class MonthlyOverview {
     required this.creditSales,
     required this.totalReturns,
     required this.totalDebtPayments,
+    this.totalManualPaymentReturn = 0.0,
     this.totalManualDebt = 0.0,
     this.manualDebtProfit = 0.0,
     required this.settlementAdditions,
@@ -31,6 +34,7 @@ class MonthlyOverview {
     this.invoiceCount = 0,
     this.manualDebtCount = 0,
     this.manualPaymentCount = 0,
+    this.manualPaymentReturnCount = 0,
   });
 }
 

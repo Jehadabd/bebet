@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/ai_chat_service.dart';
 import '../services/database_service.dart';
 import '../services/reports_service.dart';
+import '../widgets/date_range_input_dialog.dart';
 import 'package:intl/intl.dart';
 import 'transactions_list_dialog.dart';
 
@@ -19,31 +20,50 @@ class _WeeklyReportScreenState extends State<WeeklyReportScreen> {
   Map<String, dynamic>? _reportData;
   List<Map<String, dynamic>> _topProducts = [];
   List<Map<String, dynamic>> _topCustomers = [];
-  Map<String, dynamic>? _comparison; // مقارنة مع الأسبوع الماضي
-  Map<String, dynamic>? _trend; // تحليل الاتجاه
+  Map<String, dynamic>? _comparison;
+  Map<String, dynamic>? _trend;
   bool _isLoading = true;
   late final NumberFormat _nf = NumberFormat('#,##0', 'en_US');
   String _fmt(num v) => _nf.format(v);
+
+  // الفترة المختارة (الافتراضي: الأسبوع الحالي)
+  late DateTime _weekStart;
+  late DateTime _weekEnd;
 
   @override
   void initState() {
     super.initState();
     _aiChatService = AIChatService(DatabaseService());
     _reportsService = ReportsService();
+    // تحديد بداية الأسبوع الحالي
+    final today = DateTime.now();
+    final start = today.subtract(Duration(days: today.weekday - 1));
+    _weekStart = DateTime(start.year, start.month, start.day);
+    _weekEnd   = _weekStart.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
     _loadReport();
   }
 
-  Future<void> _loadReport() async {
-    setState(() {
-      _isLoading = true;
-    });
+  Future<void> _pickWeekRange() async {
+    final picked = await showDateRangeInputDialog(
+      context: context,
+      initialStart: _weekStart,
+      initialEnd: _weekEnd,
+      accentColor: const Color(0xFF9C27B0),
+    );
+    if (picked != null) {
+      setState(() {
+        _weekStart = DateTime(picked.start.year, picked.start.month, picked.start.day);
+        _weekEnd   = DateTime(picked.end.year, picked.end.month, picked.end.day, 23, 59, 59);
+      });
+      _loadReport();
+    }
+  }
 
+  Future<void> _loadReport() async {
+    setState(() { _isLoading = true; });
     try {
-      final today = DateTime.now();
-      final startOfWeek = today.subtract(Duration(days: today.weekday - 1));
-      final startOfWeekDay = DateTime(startOfWeek.year, startOfWeek.month, startOfWeek.day);
-      final endOfWeek = startOfWeekDay.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
-      
+      final startOfWeekDay = _weekStart;
+      final endOfWeek      = _weekEnd;
       // الأسبوع الماضي للمقارنة
       final prevWeekStart = startOfWeekDay.subtract(const Duration(days: 7));
       final prevWeekEnd = startOfWeekDay.subtract(const Duration(seconds: 1));
@@ -95,10 +115,8 @@ class _WeeklyReportScreenState extends State<WeeklyReportScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final today = DateTime.now();
-    final startOfWeek = today.subtract(Duration(days: today.weekday - 1));
-    final endOfWeek = startOfWeek.add(const Duration(days: 6));
-    final dateRangeStr = '${DateFormat('yyyy-MM-dd', 'ar').format(startOfWeek)} - ${DateFormat('yyyy-MM-dd', 'ar').format(endOfWeek)}';
+    final df = DateFormat('d/M/yyyy');
+    final dateRangeStr = '${df.format(_weekStart)} - ${df.format(_weekEnd)}';
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FB),
@@ -112,6 +130,12 @@ class _WeeklyReportScreenState extends State<WeeklyReportScreen> {
           onPressed: () => Navigator.of(context).pop(),
         ),
         actions: [
+          // زر اختيار الفترة
+          IconButton(
+            icon: const Icon(Icons.tune_rounded),
+            tooltip: 'تغيير الفترة',
+            onPressed: _pickWeekRange,
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _loadReport,
@@ -277,6 +301,15 @@ class _WeeklyReportScreenState extends State<WeeklyReportScreen> {
                               ),
                             ),
                           ],
+                        ),
+                        const SizedBox(height: 12),
+                        _buildClickableStatCard(
+                          title: 'معاملات تسديد دين راجع',
+                          value: '${_fmt(_reportData!['totalManualPaymentReturn'])} د.ع',
+                          subtitle: '${_reportData!['manualPaymentReturnCount']} معاملة',
+                          icon: Icons.assignment_return,
+                          color: const Color(0xFFE91E63), // Pink color for returned
+                          onTap: () => _showDebtPaymentReturns(),
                         ),
                         const SizedBox(height: 20),
 
@@ -794,6 +827,23 @@ class _WeeklyReportScreenState extends State<WeeklyReportScreen> {
       startDate: startOfWeekDay,
       endDate: endOfWeek,
       periodTitle: 'الأسبوع',
+      excludeReturns: true, // Only regular payments
+    );
+  }
+
+  // عرض معاملات تسديد الدين الراجع
+  void _showDebtPaymentReturns() {
+    final today = DateTime.now();
+    final startOfWeek = today.subtract(Duration(days: today.weekday - 1));
+    final startOfWeekDay = DateTime(startOfWeek.year, startOfWeek.month, startOfWeek.day);
+    final endOfWeek = startOfWeekDay.add(const Duration(days: 7));
+    
+    TransactionsListDialog.showDebtPayments(
+      context: context,
+      startDate: startOfWeekDay,
+      endDate: endOfWeek,
+      periodTitle: 'الأسبوع',
+      onlyReturns: true, // Only returned payments
     );
   }
 }

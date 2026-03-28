@@ -444,18 +444,33 @@ class ReportsService {
     
     final manualPayment = await db.rawQuery('''
       SELECT 
-        COUNT(*) as count,
-        COALESCE(SUM(ABS(amount_changed)), 0) as total
-      FROM transactions
-      WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
-        AND transaction_type = 'manual_payment'
-        AND invoice_id IS NULL
-        AND is_created_by_me = 1
+        COUNT(t.id) as count,
+        COALESCE(SUM(ABS(t.amount_changed)), 0) as total
+      FROM transactions t
+      LEFT JOIN returns r ON t.id = r.transaction_id
+      WHERE DATE(t.transaction_date) >= ? AND DATE(t.transaction_date) <= ?
+        AND t.transaction_type = 'manual_payment'
+        AND t.invoice_id IS NULL
+        AND t.is_created_by_me = 1
+        AND r.id IS NULL
+    ''', [startStr, endStr]);
+
+    final manualPaymentReturn = await db.rawQuery('''
+      SELECT 
+        COUNT(t.id) as count,
+        COALESCE(SUM(ABS(t.amount_changed)), 0) as total
+      FROM transactions t
+      INNER JOIN returns r ON t.id = r.transaction_id
+      WHERE DATE(t.transaction_date) >= ? AND DATE(t.transaction_date) <= ?
+        AND t.transaction_type = 'manual_payment'
+        AND t.invoice_id IS NULL
+        AND t.is_created_by_me = 1
     ''', [startStr, endStr]);
     
     final inv = invoiceData.first;
     final debt = manualDebt.first;
     final payment = manualPayment.first;
+    final paymentReturn = manualPaymentReturn.first;
     
     final totalSales = (inv['total_sales'] as num?)?.toDouble() ?? 0.0;
     final totalReturns = (inv['total_returns'] as num?)?.toDouble() ?? 0.0;
@@ -486,6 +501,8 @@ class ReportsService {
       'totalManualDebt': (debt['total'] as num?)?.toDouble() ?? 0.0,
       'manualPaymentCount': payment['count'] ?? 0,
       'totalManualPayment': (payment['total'] as num?)?.toDouble() ?? 0.0,
+      'manualPaymentReturnCount': paymentReturn['count'] ?? 0,
+      'totalManualPaymentReturn': (paymentReturn['total'] as num?)?.toDouble() ?? 0.0,
     };
   }
 

@@ -16,7 +16,7 @@ import 'screens/create_invoice_screen.dart';
 import 'screens/edit_invoices_screen.dart';
 import 'screens/edit_products_screen.dart';
 import 'screens/installers_list_screen.dart';
-import 'screens/inventory_screen.dart';
+
 import 'screens/reports_screen.dart';
 // removed font settings screen import
 import 'screens/suppliers_list_screen.dart';
@@ -194,7 +194,7 @@ class MyApp extends StatelessWidget {
           '/edit_invoices': (context) => const EditInvoicesScreen(),
           '/edit_products': (context) => const EditProductsScreen(),
           '/installers': (context) => const InstallersListScreen(),
-          '/inventory': (context) => const InventoryScreen(),
+
           '/reports': (context) => const ReportsScreen(),
           '/suppliers': (context) => const SuppliersListScreen(),
           '/ai_chat': (context) => const AIChatScreen(),

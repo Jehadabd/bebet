@@ -2,7 +2,9 @@
 // شاشة التقرير السنوي
 import 'package:flutter/material.dart';
 import '../services/reports_service.dart';
+import 'monthly_report_screen.dart';
 import 'package:intl/intl.dart';
+import 'transactions_list_dialog.dart';
 
 class YearlyReportScreen extends StatefulWidget {
   const YearlyReportScreen({super.key});
@@ -246,25 +248,128 @@ class _YearlyReportScreenState extends State<YearlyReportScreen> {
         Row(
           children: [
             Expanded(
-              child: _buildStatCard(
-                title: 'إجمالي الراجع',
-                value: '${_fmt(summary['totalReturns'] ?? 0)} د.ع',
-                icon: Icons.keyboard_return,
-                color: const Color(0xFF9C27B0),
+              child: _buildClickableStatCard(
+                title: 'إضافة دين (يدوي)',
+                value: '${_fmt(summary['totalManualDebt'] ?? 0)} د.ع',
+                subtitle: '${summary['manualDebtCount'] ?? 0} معاملة',
+                icon: Icons.add_circle,
+                color: const Color(0xFFFF5722),
+                onTap: () => _showDebtAdditions(),
               ),
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: _buildStatCard(
-                title: 'إجمالي السداد',
-                value: '${_fmt(summary['totalDebtPayments'] ?? 0)} د.ع',
-                icon: Icons.payments,
+              child: _buildClickableStatCard(
+                title: 'تسديد دين (يدوي)',
+                value: '${_fmt(summary['totalManualPayment'] ?? 0)} د.ع',
+                subtitle: '${summary['manualPaymentCount'] ?? 0} معاملة',
+                icon: Icons.remove_circle,
                 color: const Color(0xFF4CAF50),
+                onTap: () => _showDebtPayments(),
               ),
             ),
           ],
         ),
+        const SizedBox(height: 12),
+        _buildClickableStatCard(
+          title: 'تسديد دين (راجع)',
+          value: '${_fmt(summary['totalManualPaymentReturn'] ?? 0)} د.ع',
+          subtitle: '${summary['manualPaymentReturnCount'] ?? 0} معاملة',
+          icon: Icons.assignment_return,
+          color: const Color(0xFFE91E63),
+          onTap: () => _showDebtPaymentReturns(),
+        ),
       ],
+    );
+  }
+
+  Widget _buildClickableStatCard({
+    required String title,
+    required String value,
+    String? subtitle,
+    required IconData icon,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withOpacity(0.3)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(icon, color: color, size: 24),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[600],
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+                Icon(Icons.touch_app, color: color.withOpacity(0.5), size: 16),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              value,
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
+            ),
+            if (subtitle != null) ...[
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey[500],
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    '(اضغط للتفاصيل)',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: color.withOpacity(0.7),
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 
@@ -430,26 +535,40 @@ class _YearlyReportScreenState extends State<YearlyReportScreen> {
           const SizedBox(height: 16),
           // جدول المبيعات الشهرية
           ...monthlySales.map((month) {
-            final monthName = month['monthName'] as String;
-            final sales = (month['totalSales'] as num?)?.toDouble() ?? 0;
+            final monthName  = month['monthName'] as String;
+            final monthNum   = month['month'] as int;
+            final sales  = (month['totalSales'] as num?)?.toDouble() ?? 0;
             final profit = (month['netProfit'] as num?)?.toDouble() ?? 0;
             
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 4),
-              child: Row(
-                children: [
-                  SizedBox(width: 80, child: Text(monthName)),
-                  Expanded(
-                    child: Text(
-                      '${_fmt(sales)} د.ع',
-                      style: const TextStyle(fontWeight: FontWeight.w500),
+            return InkWell(
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => MonthlyReportScreen(
+                    initialYear: _selectedYear,
+                    initialMonth: monthNum,
+                  ),
+                ),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: [
+                    SizedBox(width: 80, child: Text(monthName, style: const TextStyle(fontWeight: FontWeight.w500))),
+                    Expanded(
+                      child: Text(
+                        '${_fmt(sales)} د.ع',
+                        style: const TextStyle(fontWeight: FontWeight.w500),
+                      ),
                     ),
-                  ),
-                  Text(
-                    '${_fmt(profit)} د.ع',
-                    style: const TextStyle(color: Colors.green, fontWeight: FontWeight.w500),
-                  ),
-                ],
+                    Text(
+                      '${_fmt(profit)} د.ع',
+                      style: const TextStyle(color: Colors.green, fontWeight: FontWeight.w500),
+                    ),
+                    const SizedBox(width: 8),
+                    Icon(Icons.chevron_right, size: 16, color: Colors.grey[400]),
+                  ],
+                ),
               ),
             );
           }).toList(),
@@ -537,6 +656,47 @@ class _YearlyReportScreenState extends State<YearlyReportScreen> {
           );
         },
       ),
+    );
+  }
+
+  // عرض معاملات إضافة الدين للسنة
+  void _showDebtAdditions() {
+    final startOfYear = DateTime(_selectedYear, 1, 1);
+    final endOfYear = DateTime(_selectedYear, 12, 31, 23, 59, 59);
+    
+    TransactionsListDialog.showDebtAdditions(
+      context: context,
+      startDate: startOfYear,
+      endDate: endOfYear,
+      periodTitle: 'سنة $_selectedYear',
+    );
+  }
+
+  // عرض معاملات تسديد الدين للسنة
+  void _showDebtPayments() {
+    final startOfYear = DateTime(_selectedYear, 1, 1);
+    final endOfYear = DateTime(_selectedYear, 12, 31, 23, 59, 59);
+    
+    TransactionsListDialog.showDebtPayments(
+      context: context,
+      startDate: startOfYear,
+      endDate: endOfYear,
+      periodTitle: 'سنة $_selectedYear',
+      excludeReturns: true,
+    );
+  }
+
+  // عرض معاملات تسديد الدين الراجع للسنة
+  void _showDebtPaymentReturns() {
+    final startOfYear = DateTime(_selectedYear, 1, 1);
+    final endOfYear = DateTime(_selectedYear, 12, 31, 23, 59, 59);
+    
+    TransactionsListDialog.showDebtPayments(
+      context: context,
+      startDate: startOfYear,
+      endDate: endOfYear,
+      periodTitle: 'سنة $_selectedYear',
+      onlyReturns: true,
     );
   }
 }

@@ -104,8 +104,10 @@ class InvoiceSuspendService {
     required TextEditingController returnAmountController,
     required GetStorage storage,
     required TextEditingController loadingFeeController,
+    required TextEditingController noteController,
   }) async {
-    if (!formKey.currentState!.validate()) return null;
+    // نتجاهل التحقق من صحة النموذج (formKey.currentState!.validate())
+    // لأن الفاتورة المعلقة غالباً تكون غير مكتملة البيانات (مثل عدم تحديد اسم العميل)
     for (int i = invoiceItems.length - 1; i >= 0; i--) {
       if (invoiceItems[i].productName.isEmpty) {
         invoiceItems.removeAt(i);
@@ -119,6 +121,22 @@ class InvoiceSuspendService {
       customer = customers.isNotEmpty ? customers.first : null;
       customerId = customer?.id;
     }
+    
+    // التحقق من وجود المُركّب في قاعدة البيانات قبل حفظه
+    String? installerName;
+    if (installerNameController.text.trim().isNotEmpty) {
+      try {
+        final installer = await db.getInstallerByName(installerNameController.text.trim());
+        // فقط إذا كان المُركّب موجوداً في قاعدة البيانات، نحفظ اسمه
+        if (installer != null) {
+          installerName = installerNameController.text.trim();
+        }
+      } catch (e) {
+        // إذا لم يتم العثور على المُركّب، نتركه null
+        installerName = null;
+      }
+    }
+    
     double currentTotalAmount =
         invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
     final double loadingFee =
@@ -131,7 +149,7 @@ class InvoiceSuspendService {
       customerName: customerNameController.text.trim(),
       customerPhone: customerPhoneController.text.trim(),
       customerAddress: customerAddressController.text.trim(),
-      installerName: installerNameController.text.trim(),
+      installerName: installerName, // استخدام القيمة المتحقق منها
       invoiceDate: selectedDate,
       paymentType: paymentType,
       totalAmount: totalAmount,
@@ -146,6 +164,9 @@ class InvoiceSuspendService {
       returnAmount: returnAmountController.text.isNotEmpty
           ? double.tryParse(returnAmountController.text) ?? 0.0
           : 0.0,
+      notes: noteController.text.trim().isNotEmpty
+          ? noteController.text.trim()
+          : null,
     );
     int invoiceId;
     if (invoiceToManage != null) {

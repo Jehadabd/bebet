@@ -11,6 +11,8 @@ import '../models/customer.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/password_service.dart';
 import '../screens/general_settings_screen.dart';
+import '../services/pdf_service.dart';
+import 'customer_details_screen.dart'; // إضافة استيراد شاشة تفاصيل العميل
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -196,194 +198,289 @@ class _MainScreenState extends State<MainScreen> {
               icon: Icons.warning,
               title: 'المتأخرين عن الديون',
               onTap: () async {
-                final TextEditingController _monthsController =
-                    TextEditingController();
-                int? selectedMonths;
-                await showDialog<int>(
+                final TextEditingController _monthsController = TextEditingController();
+                int? selectedMonths = await showDialog<int>(
                   context: context,
-                  builder: (context) {
-                    return AlertDialog(
-                      title: const Text('أدخل عدد الأشهر',
-                          style: TextStyle(fontSize: 20)),
-                      content: TextField(
+                  builder: (context) => AlertDialog(
+                    title: const Text('أدخل عدد الأشهر', style: TextStyle(fontSize: 20)),
+                    content: TextField(
+                      controller: _monthsController,
+                      keyboardType: TextInputType.number,
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                        labelText: 'عدد الأشهر',
+                        hintText: 'مثلاً 12',
                       ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.of(context).pop(),
-                          child: const Text('إلغاء',
-                              style: TextStyle(fontSize: 18)),
-                        ),
-                        ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: _primaryColor,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                          onPressed: () {
-                            final input = int.tryParse(_monthsController.text);
-                            if (input != null && input > 0) {
-                              Navigator.of(context).pop(input);
-                            } else {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text(
-                                      'الرجاء إدخال عدد صحيح موجب للأشهر.',
-                                      style: TextStyle(fontSize: 16)),
-                                ),
-                              );
-                            }
-                          },
-                          child:
-                              const Text('بحث', style: TextStyle(fontSize: 18)),
-                        ),
-                      ],
-                    );
-                  },
-                ).then((value) {
-                  selectedMonths = value;
-                });
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('إلغاء'),
+                      ),
+                      ElevatedButton(
+                        onPressed: () {
+                          final val = int.tryParse(_monthsController.text);
+                          if (val != null && val > 0) {
+                            Navigator.pop(context, val);
+                          } else {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('الرجاء إدخال عدد صحيح')),
+                            );
+                          }
+                        },
+                        child: const Text('بحث'),
+                      ),
+                    ],
+                  ),
+                );
 
                 if (selectedMonths != null) {
                   final db = DatabaseService();
-                  final lateCustomers =
-                      await db.getLateCustomers(selectedMonths!);
+                  final pdfService = PdfService();
+                  var results = await db.getLateCustomers(selectedMonths!);
+                  
+                  // متغير للترتيب (false = من الأقدم للأحدث، true = من الأحدث للأقدم)
+                  bool isReversed = false;
+
+                  if (!mounted) return;
+
                   showDialog(
                     context: context,
-                    builder: (context) => AlertDialog(
-                      title: Text('المتأخرون عن السداد ($selectedMonths شهر)',
-                          style: const TextStyle(fontSize: 20)),
-                      content: lateCustomers.isEmpty
-                          ? const Text(
-                              'لا يوجد عملاء متأخرون عن السداد لهذا المدى.',
-                              style: TextStyle(fontSize: 18))
-                          : SizedBox(
-                              width: double.maxFinite,
-                              child: ListView.builder(
-                                shrinkWrap: true,
-                                itemCount: lateCustomers.length,
-                                itemBuilder: (context, i) {
-                                  final c = lateCustomers[i];
-                                  return ListTile(
-                                    title: Text(c.name,
-                                        style: const TextStyle(fontSize: 18)),
-                                    subtitle: Text(
-                                        'العنوان: ${c.address ?? "-"}',
-                                        style: const TextStyle(fontSize: 16)),
-                                    trailing: Text(
-                                        'الدين: ${c.currentTotalDebt.toStringAsFixed(2)}',
-                                        style: const TextStyle(
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.bold)),
-                                  );
+                    builder: (context) => StatefulBuilder(
+                      builder: (context, setState) {
+                        // دالة لعكس الترتيب
+                        void toggleSort() {
+                          setState(() {
+                            isReversed = !isReversed;
+                            results = results.reversed.toList();
+                          });
+                        }
+                        
+                        // دالة للحصول على نص نوع المعاملة
+                        String getTransactionTypeText(String? type, int? invoiceId) {
+                          if (type == null) return '';
+                          switch (type) {
+                            case 'manual_payment':
+                              return 'تسديد دين';
+                            case 'return_payment':
+                              return 'تسديد دين راجع';
+                            case 'manual_debt':
+                              return 'إضافة دين يدوي';
+                            case 'invoice':
+                              return invoiceId != null ? 'إضافة دين فاتورة #$invoiceId' : 'إضافة دين فاتورة';
+                            case 'initial_debt':
+                              return 'دين أولي';
+                            default:
+                              return type;
+                          }
+                        }
+                        
+                        // دالة للانتقال لصفحة العميل
+                        Future<void> navigateToCustomer(int customerId) async {
+                          try {
+                            final customer = await db.getCustomerById(customerId);
+                            if (customer != null && mounted) {
+                              await Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => CustomerDetailsScreen(customer: customer),
+                                ),
+                              );
+                              // بعد الرجوع، نبقى في نفس الـ Dialog
+                            }
+                          } catch (e) {
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('خطأ في فتح تفاصيل العميل: $e')),
+                              );
+                            }
+                          }
+                        }
+
+                        return AlertDialog(
+                          title: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'المتأخرون ($selectedMonths شهر أقدم)',
+                                  style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                              // زر عكس الترتيب
+                              if (results.isNotEmpty)
+                                IconButton(
+                                  icon: Icon(
+                                    isReversed ? Icons.arrow_downward : Icons.arrow_upward,
+                                    color: _primaryColor,
+                                  ),
+                                  tooltip: isReversed ? 'من الأقدم للأحدث' : 'من الأحدث للأقدم',
+                                  onPressed: toggleSort,
+                                ),
+                            ],
+                          ),
+                          content: results.isEmpty
+                              ? const Text('لا يوجد عملاء متأخرون', style: TextStyle(fontSize: 18))
+                              : Container(
+                                  width: MediaQuery.of(context).size.width * 0.98,
+                                  constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.7),
+                                  child: SingleChildScrollView(
+                                    scrollDirection: Axis.vertical,
+                                    child: Table(
+                                      border: TableBorder.all(color: Colors.grey.shade400, width: 1.5),
+                                      columnWidths: const {
+                                        0: FixedColumnWidth(40),  // ت
+                                        1: FlexColumnWidth(2.0), // الاسم
+                                        2: FlexColumnWidth(0.9), // العنوان (تم تقليله بنسبة 40%)
+                                        3: FixedColumnWidth(130), // الهاتف
+                                        4: FixedColumnWidth(200), // آخر معاملة (تم زيادته)
+                                        5: FixedColumnWidth(110), // المبلغ
+                                      },
+                                      children: [
+                                        TableRow(
+                                          decoration: BoxDecoration(color: Colors.grey.shade300),
+                                          children: const [
+                                            Padding(padding: EdgeInsets.all(6), child: Text('ت', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+                                            Padding(padding: EdgeInsets.all(6), child: Text('الاسم', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+                                            Padding(padding: EdgeInsets.all(6), child: Text('العنوان', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+                                            Padding(padding: EdgeInsets.all(6), child: Text('الهاتف', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+                                            Padding(padding: EdgeInsets.all(6), child: Text('آخر معاملة', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+                                            Padding(padding: EdgeInsets.all(6), child: Text('المبلغ', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+                                          ],
+                                        ),
+                                        ...results.asMap().entries.map((entry) {
+                                          final i = entry.key;
+                                          final r = entry.value;
+                                          final customerId = r['id'] as int?;
+                                          final lastDate = r['last_transaction_date'] != null 
+                                              ? DateFormat('yyyy-MM-dd').format(DateTime.parse(r['last_transaction_date']))
+                                              : 'لا يوجد';
+                                          final transactionType = r['last_transaction_type'] as String?;
+                                          final invoiceId = r['last_transaction_invoice_id'] as int?;
+                                          final transactionTypeText = getTransactionTypeText(transactionType, invoiceId);
+                                          final amount = (r['current_total_debt'] as num?)?.toDouble() ?? 0.0;
+                                          
+                                          return TableRow(
+                                            children: [
+                                              Padding(
+                                                padding: const EdgeInsets.all(6),
+                                                child: Text(
+                                                  '${i + 1}',
+                                                  textAlign: TextAlign.center,
+                                                  style: const TextStyle(fontSize: 14),
+                                                ),
+                                              ),
+                                              // الاسم - قابل للنقر مع تأثير hover
+                                              Padding(
+                                                padding: const EdgeInsets.all(6),
+                                                child: MouseRegion(
+                                                  cursor: SystemMouseCursors.click,
+                                                  child: GestureDetector(
+                                                    onTap: customerId != null ? () => navigateToCustomer(customerId) : null,
+                                                    child: HoverText(
+                                                      text: r['name'] ?? '-',
+                                                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                                                      hoverColor: Colors.red,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                              Padding(
+                                                padding: const EdgeInsets.all(6),
+                                                child: Text(
+                                                  r['address'] ?? '-',
+                                                  textAlign: TextAlign.right,
+                                                  style: const TextStyle(fontSize: 14),
+                                                ),
+                                              ),
+                                              Padding(
+                                                padding: const EdgeInsets.all(6),
+                                                child: Text(
+                                                  r['phone'] ?? '-',
+                                                  textAlign: TextAlign.center,
+                                                  style: const TextStyle(fontSize: 15),
+                                                ),
+                                              ),
+                                              // آخر معاملة - مع التاريخ ونوع المعاملة
+                                              Padding(
+                                                padding: const EdgeInsets.all(6),
+                                                child: Column(
+                                                  crossAxisAlignment: CrossAxisAlignment.center,
+                                                  children: [
+                                                    Text(
+                                                      lastDate,
+                                                      textAlign: TextAlign.center,
+                                                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                                                    ),
+                                                    if (transactionTypeText.isNotEmpty)
+                                                      Text(
+                                                        transactionTypeText,
+                                                        textAlign: TextAlign.center,
+                                                        style: TextStyle(
+                                                          fontSize: 11,
+                                                          color: Colors.grey[700],
+                                                          fontStyle: FontStyle.italic,
+                                                        ),
+                                                      ),
+                                                  ],
+                                                ),
+                                              ),
+                                              Padding(
+                                                padding: const EdgeInsets.all(6),
+                                                child: Text(
+                                                  NumberFormat('#,##0').format(amount),
+                                                  textAlign: TextAlign.center,
+                                                  style: const TextStyle(
+                                                    color: Colors.red,
+                                                    fontWeight: FontWeight.bold,
+                                                    fontSize: 16,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          );
+                                        }).toList(),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                          actions: [
+                            if (results.isNotEmpty)
+                              ElevatedButton.icon(
+                                icon: const Icon(Icons.open_in_new, size: 24),
+                                label: const Text('فتح PDF', style: TextStyle(fontSize: 18)),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.blue,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                                ),
+                                onPressed: () async {
+                                  try {
+                                    final file = await pdfService.generateDelayedDebtsPdf(results, selectedMonths!);
+                                    if (await file.exists()) {
+                                      final uri = Uri.file(file.path);
+                                      if (await canLaunchUrl(uri)) {
+                                        await launchUrl(uri);
+                                      } else {
+                                        await Share.shareXFiles([XFile(file.path)]);
+                                      }
+                                    }
+                                  } catch (e) {
+                                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ في فتح الملف: $e')));
+                                  }
                                 },
                               ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(context),
+                              child: const Text('إغلاق', style: TextStyle(fontSize: 18)),
                             ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.of(context).pop(),
-                          child: const Text('إغلاق',
-                              style: TextStyle(fontSize: 18)),
-                        ),
-                      ],
+                          ],
+                        );
+                      },
                     ),
                   );
                 }
               },
               color: const Color(0xFFF44336),
-              fontSize: buttonFontSize,
-              iconSize: iconSize,
-              padding: buttonPadding,
-              spacing: buttonSpacing,
-            ),
-            _buildFeatureButton(
-              icon: Icons.share,
-              title: 'مشاركة الديون PDF',
-              onTap: () async {
-                final db = DatabaseService();
-                final allCustomers = await db.getAllCustomers();
-                final months = <String>{};
-                for (final c in allCustomers) {
-                  final dt = c.lastModifiedAt;
-                  final key =
-                      '${dt.year}-${dt.month.toString().padLeft(2, '0')}';
-                  months.add(key);
-                }
-                final sortedMonths = months.toList()
-                  ..sort((a, b) => b.compareTo(a));
-                String? selectedMonth;
-                await showDialog(
-                  context: context,
-                  builder: (context) {
-                    return AlertDialog(
-                      title: const Text('اختر الشهر',
-                          style: TextStyle(fontSize: 20)),
-                      content: SizedBox(
-                        width: double.maxFinite,
-                        child: ListView.builder(
-                          shrinkWrap: true,
-                          itemCount: sortedMonths.length,
-                          itemBuilder: (context, index) {
-                            final m = sortedMonths[index];
-                            return Card(
-                              elevation: 2,
-                              margin: const EdgeInsets.only(bottom: 8),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: ListTile(
-                                title: Text('ديون شهر $m',
-                                    style: const TextStyle(fontSize: 18)),
-                                onTap: () {
-                                  selectedMonth = m;
-                                  Navigator.of(context).pop();
-                                },
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    );
-                  },
-                );
-                if (selectedMonth != null) {
-                  final parts = selectedMonth!.split('-');
-                  final year = int.parse(parts[0]);
-                  final month = int.parse(parts[1]);
-                  final customers = await db.getCustomersForMonth(year, month);
-                  final file =
-                      await db.generateMonthlyDebtsPdf(customers, year, month);
-                  await Share.shareXFiles([XFile(file.path)],
-                      text: 'سجل ديون شهر $selectedMonth');
-                  showDialog(
-                    context: context,
-                    builder: (context) => AlertDialog(
-                      title: const Text('مشاركة الملف',
-                          style: TextStyle(fontSize: 20)),
-                      content: const Text(
-                          'إذا لم يظهر التطبيق المطلوب، يمكنك فتح المجلد وإرسال الملف يدويًا عبر أي تطبيق',
-                          style: TextStyle(fontSize: 18)),
-                      actions: [
-                        TextButton(
-                          onPressed: () async {
-                            final dirPath = file.parent.path;
-                            final uri = Uri.file(dirPath);
-                            await launchUrl(uri);
-                          },
-                          child: const Text('فتح المجلد',
-                              style: TextStyle(fontSize: 18)),
-                        ),
-                        TextButton(
-                          onPressed: () => Navigator.of(context).pop(),
-                          child: const Text('إغلاق',
-                              style: TextStyle(fontSize: 18)),
-                        ),
-                      ],
-                    ),
-                  );
-                }
-              },
-              color: const Color(0xFF9C27B0),
               fontSize: buttonFontSize,
               iconSize: iconSize,
               padding: buttonPadding,
@@ -612,26 +709,7 @@ class _MainScreenState extends State<MainScreen> {
               padding: buttonPadding,
               spacing: buttonSpacing,
             ),
-            _buildFeatureButton(
-              icon: Icons.folder,
-              title: 'الجرد الشهري',
-              onTap: () async {
-                final bool canAccess = await _showPasswordDialog();
-                if (canAccess) {
-                  Navigator.pushNamed(context, '/inventory');
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                    content: Text('كلمة السر غير صحيحة.',
-                        style: TextStyle(fontSize: 16)),
-                  ));
-                }
-              },
-              color: _accentColor,
-              fontSize: buttonFontSize,
-              iconSize: iconSize,
-              padding: buttonPadding,
-              spacing: buttonSpacing,
-            ),
+            
             _buildFeatureButton(
               icon: Icons.analytics,
               title: 'التقارير',
@@ -663,6 +741,44 @@ class _MainScreenState extends State<MainScreen> {
               spacing: buttonSpacing,
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+
+// Widget مساعد لتأثير Hover على النص
+class HoverText extends StatefulWidget {
+  final String text;
+  final TextStyle style;
+  final Color hoverColor;
+
+  const HoverText({
+    super.key,
+    required this.text,
+    required this.style,
+    required this.hoverColor,
+  });
+
+  @override
+  State<HoverText> createState() => _HoverTextState();
+}
+
+class _HoverTextState extends State<HoverText> {
+  bool _isHovering = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      onEnter: (_) => setState(() => _isHovering = true),
+      onExit: (_) => setState(() => _isHovering = false),
+      child: Text(
+        widget.text,
+        textAlign: TextAlign.right,
+        style: widget.style.copyWith(
+          color: _isHovering ? widget.hoverColor : widget.style.color,
+          decoration: _isHovering ? TextDecoration.underline : null,
         ),
       ),
     );

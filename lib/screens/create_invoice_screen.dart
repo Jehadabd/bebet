@@ -42,6 +42,9 @@ import 'invoice_history_screen.dart';
 import '../services/password_service.dart'; // Added for password protection
 import '../utils/money_calculator.dart'; // Added for profit calculation fix
 import '../services/smart_search/smart_search.dart'; // 🧠 البحث الذكي
+import '../services/invoice_suspend_service.dart';
+import 'package:get_storage/get_storage.dart';
+import '../models/line_item_focus_nodes.dart'; // إدارة FocusNode لكل صف
 
 // Helper: format product ID - show raw value without zero-padding
 String formatProductId5(int? id) {
@@ -126,6 +129,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
   
   // متغير لمنع الحفظ المزدوج
   bool isSaving = false;
+
+  // عدد الفواتير المعلقة (للشارة Badge)
+  int _suspendedCount = 0;
 
   // Profit Display State
   bool _isProfitVisible = false;
@@ -441,6 +447,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
   List<Product>? _allProductsForUnits;
 
   late TextEditingController loadingFeeController;
+  late TextEditingController noteController;
 
   List<LineItemFocusNodes> focusNodesList = [];
 
@@ -545,8 +552,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         ));
       }
       loadingFeeController = TextEditingController();
+      noteController = TextEditingController();
       _loadAutoSavedData();
       _loadSettlementInfo(); // جلب معلومات التسويات
+      _loadSuspendedCount(); // جلب عدد الفواتير المعلقة
       
       // تحميل إعدادات النقاط الافتراضية (فقط للفواتير الجديدة)
       if (widget.existingInvoice == null) {
@@ -604,6 +613,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         // تحميل معدل النقاط من الفاتورة الموجودة
         _installerPointsRate = invoiceToManage!.pointsRate;
         _installerPointsRateController.text = _installerPointsRate.toString();
+        noteController.text = invoiceToManage!.notes ?? '';
 
         _loadInvoiceItems();
       } else {
@@ -912,6 +922,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
       _quantityFocusNode.dispose(); // تنظيف FocusNode
       _searchFocusNode.dispose();
       loadingFeeController.dispose();
+      noteController.dispose();
       _productIdController.dispose();
       _scrollController.dispose(); // تنظيف ScrollController
       // --- تخلص من جميع FocusNodes الخاصة بالصفوف ---
@@ -2306,6 +2317,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     try {
       setState(() {
         customerNameController.clear();
+        noteController.clear();
         customerPhoneController.clear();
         customerAddressController.clear();
         installerNameController.clear();
@@ -2745,6 +2757,350 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📌 الفواتير المعلقة (Hold Invoices)
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /// جلب عدد الفواتير المعلقة لتحديث الشارة
+  Future<void> _loadSuspendedCount() async {
+    try {
+      final count = await db.getSuspendedInvoicesCount();
+      if (mounted) setState(() => _suspendedCount = count);
+    } catch (_) {}
+  }
+
+  /// تعليق الفاتورة الحالية وتفريغ الشاشة
+  Future<void> _holdCurrentInvoice() async {
+    try {
+      // التحقق من وجود بنود
+      final hasItems = invoiceItems.any((item) => item.productName.isNotEmpty);
+      if (!hasItems) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('لا يوجد بنود لتعليقها')),
+        );
+        return;
+      }
+
+      // استخدام الخدمة الموجودة لتعليق الفاتورة
+      final suspendedInvoice = await InvoiceSuspendService.suspendInvoiceWithBusinessLogic(
+        formKey: formKey,
+        invoiceItems: invoiceItems,
+        customerNameController: customerNameController,
+        customerPhoneController: customerPhoneController,
+        customerAddressController: customerAddressController,
+        installerNameController: installerNameController,
+        selectedDate: selectedDate,
+        paymentType: paymentType,
+        discount: discount,
+        paidAmountController: paidAmountController,
+        invoiceToManage: invoiceToManage,
+        db: db,
+        returnAmountController: TextEditingController(text: '0'),
+        storage: GetStorage(),
+        loadingFeeController: loadingFeeController,
+        noteController: noteController,
+      );
+
+      if (suspendedInvoice == null) return;
+
+      // تفريغ الشاشة
+      await _performReset();
+      // مسح invoiceToManage لأننا نبدأ فاتورة جديدة
+      setState(() {
+        invoiceToManage = null;
+        savedOrSuspended = false;
+      });
+
+      // تحديث الشارة
+      await _loadSuspendedCount();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.pause_circle_filled, color: Colors.white),
+                const SizedBox(width: 8),
+                Text('تم تعليق الفاتورة ($_suspendedCount منتظرة)'),
+              ],
+            ),
+            backgroundColor: Colors.orange[700],
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      print('Error holding invoice: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('فشل تعليق الفاتورة: $e')),
+        );
+      }
+    }
+  }
+
+  /// عرض قائمة الفواتير المعلقة في BottomSheet
+  Future<void> _showSuspendedInvoicesSheet() async {
+    final suspendedInvoices = await db.getSuspendedInvoices();
+
+    if (!mounted) return;
+
+    if (suspendedInvoices.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('لا توجد فواتير منتظرة')),
+      );
+      return;
+    }
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return DraggableScrollableSheet(
+              initialChildSize: 0.5,
+              minChildSize: 0.3,
+              maxChildSize: 0.85,
+              expand: false,
+              builder: (context, scrollController) {
+                return Column(
+                  children: [
+                    // المقبض
+                    Container(
+                      width: 40,
+                      height: 4,
+                      margin: const EdgeInsets.symmetric(vertical: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[400],
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    // العنوان
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                      child: Row(
+                        children: [
+                          Icon(Icons.hourglass_bottom, color: Colors.orange[700]),
+                          const SizedBox(width: 8),
+                          Text(
+                            'الفواتير المنتظرة (${suspendedInvoices.length})',
+                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(),
+                    // القائمة
+                    Expanded(
+                      child: ListView.builder(
+                        controller: scrollController,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        itemCount: suspendedInvoices.length,
+                        itemBuilder: (context, index) {
+                          final inv = suspendedInvoices[index];
+                          final customerDisplay = inv.customerName.isNotEmpty
+                              ? inv.customerName
+                              : 'بدون عميل';
+                          final dateStr = '${inv.lastModifiedAt.day}/${inv.lastModifiedAt.month}/${inv.lastModifiedAt.year}';
+                          final timeStr = '${inv.lastModifiedAt.hour.toString().padLeft(2, '0')}:${inv.lastModifiedAt.minute.toString().padLeft(2, '0')}';
+
+                          return Card(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            elevation: 2,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            child: ListTile(
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              leading: CircleAvatar(
+                                backgroundColor: Colors.orange[100],
+                                child: Icon(Icons.receipt_long, color: Colors.orange[700]),
+                              ),
+                              title: Text(
+                                customerDisplay,
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('$dateStr  $timeStr',
+                                    style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                                  Text(
+                                    '${formatNumber(inv.totalAmount)} دينار — ${inv.paymentType}',
+                                    style: TextStyle(color: Colors.blue[700], fontSize: 13, fontWeight: FontWeight.w500),
+                                  ),
+                                  if (inv.notes != null && inv.notes!.isNotEmpty)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 4.0),
+                                      child: Text(
+                                        'ملاحظة: ${inv.notes}',
+                                        style: TextStyle(color: Colors.brown[600], fontSize: 12, fontStyle: FontStyle.italic),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  // زر الاستدعاء
+                                  IconButton(
+                                    icon: Icon(Icons.open_in_new, color: Colors.green[700]),
+                                    tooltip: 'استدعاء',
+                                    onPressed: () {
+                                      Navigator.pop(ctx);
+                                      _loadSuspendedInvoice(inv);
+                                    },
+                                  ),
+                                  // زر الحذف
+                                  IconButton(
+                                    icon: Icon(Icons.delete_outline, color: Colors.red[700]),
+                                    tooltip: 'حذف',
+                                    onPressed: () async {
+                                      final confirm = await showDialog<bool>(
+                                        context: context,
+                                        builder: (c) => AlertDialog(
+                                          title: const Text('حذف فاتورة معلقة'),
+                                          content: Text('هل تريد حذف فاتورة "$customerDisplay" نهائياً؟'),
+                                          actions: [
+                                            TextButton(
+                                              onPressed: () => Navigator.pop(c, false),
+                                              child: const Text('إلغاء'),
+                                            ),
+                                            TextButton(
+                                              onPressed: () => Navigator.pop(c, true),
+                                              child: const Text('حذف', style: TextStyle(color: Colors.red)),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                      if (confirm == true && inv.id != null) {
+                                        await db.deleteInvoice(inv.id!);
+                                        suspendedInvoices.removeAt(index);
+                                        setSheetState(() {});
+                                        _loadSuspendedCount();
+                                        if (suspendedInvoices.isEmpty && mounted) {
+                                          Navigator.pop(ctx);
+                                        }
+                                      }
+                                    },
+                                  ),
+                                ],
+                              ),
+                              onTap: () {
+                                Navigator.pop(ctx);
+                                _loadSuspendedInvoice(inv);
+                              },
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+
+    // بعد إغلاق الـ BottomSheet، تحديث العدد
+    _loadSuspendedCount();
+  }
+
+  /// استدعاء فاتورة معلقة وتحميلها في الشاشة
+  Future<void> _loadSuspendedInvoice(Invoice invoice) async {
+    try {
+      // جلب بنود الفاتورة
+      final items = await db.getInvoiceItems(invoice.id!);
+
+      setState(() {
+        // تعيين الفاتورة المستدعاة
+        invoiceToManage = invoice;
+        isViewOnly = false;
+        savedOrSuspended = false;
+
+        // تعبئة بيانات العميل
+        customerNameController.text = invoice.customerName;
+        customerPhoneController.text = invoice.customerPhone ?? '';
+        customerAddressController.text = invoice.customerAddress ?? '';
+        installerNameController.text = invoice.installerName ?? '';
+
+        // تعبئة بيانات الفاتورة
+        noteController.text = invoice.notes ?? '';
+        selectedDate = invoice.invoiceDate;
+        paymentType = invoice.paymentType;
+        discount = invoice.discount;
+        discountController.text = invoice.discount > 0 ? formatNumber(invoice.discount) : '';
+        paidAmountController.text = invoice.amountPaidOnInvoice > 0 ? formatNumber(invoice.amountPaidOnInvoice) : '';
+        loadingFeeController.text = invoice.loadingFee > 0 ? formatNumber(invoice.loadingFee) : '';
+
+        // تنظيف البنود القديمة
+        for (final item in invoiceItems) {
+          try { item.disposeControllers(); } catch (_) {}
+        }
+        invoiceItems.clear();
+        for (final node in focusNodesList) {
+          try { node.dispose(); } catch (_) {}
+        }
+        focusNodesList.clear();
+
+        // إضافة البنود المحملة
+        for (final item in items) {
+          item.initializeControllers();
+          invoiceItems.add(item);
+          focusNodesList.add(LineItemFocusNodes());
+        }
+
+        // إضافة صف فارغ في النهاية
+        invoiceItems.add(InvoiceItem(
+          invoiceId: invoice.id!,
+          productName: '',
+          unit: '',
+          unitPrice: 0.0,
+          appliedPrice: 0.0,
+          itemTotal: 0.0,
+          uniqueId: 'placeholder_${DateTime.now().microsecondsSinceEpoch}',
+        ));
+        focusNodesList.add(LineItemFocusNodes());
+
+        // تحديث الإجمالي
+        double itemsTotal = items.fold(0.0, (sum, item) => sum + item.itemTotal);
+        double loadingFee = invoice.loadingFee;
+        _totalAmountController.text = formatNumber(itemsTotal + loadingFee);
+        _calculateProfit();
+        _updatePaidAmountIfCash();
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.check_circle, color: Colors.white),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('تم استدعاء فاتورة "${invoice.customerName.isNotEmpty ? invoice.customerName : 'بدون عميل'}"'),
+                ),
+              ],
+            ),
+            backgroundColor: Colors.green[700],
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      print('Error loading suspended invoice: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('فشل استدعاء الفاتورة: $e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     // تعريف الألوان والثيم العصري
@@ -2872,7 +3228,44 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
               : 'إنشاء فاتورة'),
           centerTitle: true,
           actions: [
-            // زر جديد لإعادة التعيين - يظهر فقط عند إنشاء فاتورة جديدة (ليس عند التعديل)
+            // 📌 زر تعليق الفاتورة
+            if (!isViewOnly)
+              IconButton(
+                icon: const Icon(Icons.pause_circle_outline),
+                tooltip: 'تعليق الفاتورة',
+                onPressed: (invoiceItems.any((i) => i.productName.isNotEmpty) && !isSaving)
+                    ? _holdCurrentInvoice
+                    : null,
+              ),
+            // 📌 زر الفواتير المنتظرة مع شارة العدد
+            Stack(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.hourglass_bottom),
+                  tooltip: 'الفواتير المنتظرة',
+                  onPressed: _showSuspendedInvoicesSheet,
+                ),
+                if (_suspendedCount > 0)
+                  Positioned(
+                    right: 4,
+                    top: 4,
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: Colors.red,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+                      child: Text(
+                        '$_suspendedCount',
+                        style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            // زر لإعادة التعيين - يظهر فقط عند إنشاء فاتورة جديدة (ليس عند التعديل)
             if (invoiceToManage == null)
               IconButton(
                 icon: const Icon(Icons.receipt),
@@ -4214,28 +4607,46 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                 // إضافة حقل أجور التحميل فقط إذا لم يكن العرض فقط أو الفاتورة مقفلة
                 if (!isViewOnly && !(invoiceToManage?.isLocked ?? false)) ...[
                   const SizedBox(height: 16.0),
-                  TextFormField(
-                    controller: loadingFeeController,
-                    decoration: const InputDecoration(
-                      labelText: 'أجور التحميل (اختياري)',
-                      hintText: 'أدخل مبلغ أجور التحميل إذا وجد',
-                    ),
-                    keyboardType:
-                        const TextInputType.numberWithOptions(decimal: true),
-                    inputFormatters: [
-                      ThousandSeparatorDecimalInputFormatter(),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: TextFormField(
+                          controller: loadingFeeController,
+                          decoration: const InputDecoration(
+                            labelText: 'أجور التحميل (اختياري)',
+                            hintText: 'أدخل مبلغ أجور التحميل إذا وجد',
+                          ),
+                          keyboardType:
+                              const TextInputType.numberWithOptions(decimal: true),
+                          inputFormatters: [
+                            ThousandSeparatorDecimalInputFormatter(),
+                          ],
+                          onChanged: (val) {
+                             // Recalculate totals when loading fee changes
+                             setState(() {
+                               final itemsTotal = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
+                               final double loadingFee = double.tryParse(val.replaceAll(',', '')) ?? 0.0;
+                               _totalAmountController.text = formatNumber(itemsTotal + loadingFee);
+                               _guardDiscount();
+                               _updatePaidAmountIfCash();
+                               _calculateProfit(); // Update profit on loading fee change
+                             });
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 16.0),
+                      Expanded(
+                        child: TextFormField(
+                          controller: noteController,
+                          decoration: const InputDecoration(
+                            labelText: 'ملاحظة الفاتورة',
+                            hintText: 'ملاحظة خاصة بالفاتورة...',
+                          ),
+                          maxLines: 1,
+                        ),
+                      ),
                     ],
-                    onChanged: (val) {
-                       // Recalculate totals when loading fee changes
-                       setState(() {
-                         final itemsTotal = invoiceItems.fold(0.0, (sum, item) => sum + item.itemTotal);
-                         final double loadingFee = double.tryParse(val.replaceAll(',', '')) ?? 0.0;
-                         _totalAmountController.text = formatNumber(itemsTotal + loadingFee);
-                         _guardDiscount();
-                         _updatePaidAmountIfCash();
-                         _calculateProfit(); // Update profit on loading fee change
-                       });
-                    },
                   ),
                 ],
                 const SizedBox(height: 24.0),
@@ -5633,18 +6044,6 @@ bool _isInvoiceItemComplete(InvoiceItem item) {
       item.appliedPrice > 0 &&
       item.itemTotal > 0 &&
       (item.saleType != null && item.saleType!.isNotEmpty));
-}
-
-// إدارة FocusNode لكل صف
-class LineItemFocusNodes {
-  FocusNode details = FocusNode();
-  FocusNode quantity = FocusNode();
-  FocusNode price = FocusNode();
-  void dispose() {
-    details.dispose();
-    quantity.dispose();
-    price.dispose();
-  }
 }
 
 // Widget مساعد للتمرير التلقائي في قائمة الاقتراحات

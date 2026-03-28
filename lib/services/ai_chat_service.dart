@@ -1672,14 +1672,30 @@ class AIChatService {
         whereArgs: [startStr, endStr, 'manual_debt'],
       );
       
-      final manualPaymentTransactions = await db.query(
-        'transactions',
-        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1',
-        whereArgs: [startStr, endStr, 'manual_payment'],
-      );
+      final manualPaymentTransactions = await db.rawQuery('''
+        SELECT t.*
+        FROM transactions t
+        LEFT JOIN returns r ON t.id = r.transaction_id
+        WHERE t.transaction_date >= ? AND t.transaction_date < ? 
+          AND t.transaction_type = 'manual_payment' 
+          AND t.invoice_id IS NULL 
+          AND t.is_created_by_me = 1
+          AND r.id IS NULL
+      ''', [startStr, endStr]);
+
+      final manualPaymentReturnTransactions = await db.rawQuery('''
+        SELECT t.*
+        FROM transactions t
+        INNER JOIN returns r ON t.id = r.transaction_id
+        WHERE t.transaction_date >= ? AND t.transaction_date < ? 
+          AND t.transaction_type = 'manual_payment' 
+          AND t.invoice_id IS NULL 
+          AND t.is_created_by_me = 1
+      ''', [startStr, endStr]);
       
       double totalManualDebt = 0.0;
       double totalManualPayment = 0.0;
+      double totalManualPaymentReturn = 0.0;
       
       for (var trans in manualDebtTransactions) {
         totalManualDebt += (trans['amount_changed'] as num?)?.toDouble() ?? 0.0;
@@ -1687,6 +1703,10 @@ class AIChatService {
       
       for (var trans in manualPaymentTransactions) {
         totalManualPayment += ((trans['amount_changed'] as num?)?.toDouble() ?? 0.0).abs();
+      }
+
+      for (var trans in manualPaymentReturnTransactions) {
+        totalManualPaymentReturn += ((trans['amount_changed'] as num?)?.toDouble() ?? 0.0).abs();
       }
       
       // إضافة الدين المبدئي لليوم
@@ -1739,10 +1759,12 @@ class AIChatService {
         'totalReturns': totalReturns,
         'totalManualDebt': totalManualDebt,
         'totalManualPayment': totalManualPayment,
+        'totalManualPaymentReturn': totalManualPaymentReturn,
         'manualDebtProfit': manualDebtProfit,
         'invoiceCount': invoices.length,
         'manualDebtCount': manualDebtTransactions.length + openingBalanceTransactions.length,
         'manualPaymentCount': manualPaymentTransactions.length,
+        'manualPaymentReturnCount': manualPaymentReturnTransactions.length,
       };
     } catch (e, stackTrace) {
       rethrow;
@@ -1874,14 +1896,30 @@ class AIChatService {
         whereArgs: [startStr, endStr, 'manual_debt'],
       );
       
-      final manualPaymentTransactions = await db.query(
-        'transactions',
-        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1',
-        whereArgs: [startStr, endStr, 'manual_payment'],
-      );
+      final manualPaymentTransactions = await db.rawQuery('''
+        SELECT t.*
+        FROM transactions t
+        LEFT JOIN returns r ON t.id = r.transaction_id
+        WHERE t.transaction_date >= ? AND t.transaction_date < ? 
+          AND t.transaction_type = 'manual_payment' 
+          AND t.invoice_id IS NULL 
+          AND t.is_created_by_me = 1
+          AND r.id IS NULL
+      ''', [startStr, endStr]);
+
+      final manualPaymentReturnTransactions = await db.rawQuery('''
+        SELECT t.*
+        FROM transactions t
+        INNER JOIN returns r ON t.id = r.transaction_id
+        WHERE t.transaction_date >= ? AND t.transaction_date < ? 
+          AND t.transaction_type = 'manual_payment' 
+          AND t.invoice_id IS NULL 
+          AND t.is_created_by_me = 1
+      ''', [startStr, endStr]);
       
       double totalManualDebt = 0.0;
       double totalManualPayment = 0.0;
+      double totalManualPaymentReturn = 0.0;
       
       for (var trans in manualDebtTransactions) {
         totalManualDebt += (trans['amount_changed'] as num?)?.toDouble() ?? 0.0;
@@ -1889,6 +1927,10 @@ class AIChatService {
       
       for (var trans in manualPaymentTransactions) {
         totalManualPayment += ((trans['amount_changed'] as num?)?.toDouble() ?? 0.0).abs();
+      }
+
+      for (var trans in manualPaymentReturnTransactions) {
+        totalManualPaymentReturn += ((trans['amount_changed'] as num?)?.toDouble() ?? 0.0).abs();
       }
       
       // إضافة الدين المبدئي للأسبوع
@@ -1941,10 +1983,12 @@ class AIChatService {
         'totalReturns': totalReturns,
         'totalManualDebt': totalManualDebt,
         'totalManualPayment': totalManualPayment,
+        'totalManualPaymentReturn': totalManualPaymentReturn,
         'manualDebtProfit': manualDebtProfit,
         'invoiceCount': invoices.length,
         'manualDebtCount': manualDebtTransactions.length + openingBalanceTransactions.length,
         'manualPaymentCount': manualPaymentTransactions.length,
+        'manualPaymentReturnCount': manualPaymentReturnTransactions.length,
       };
     } catch (e, stackTrace) {
       rethrow;

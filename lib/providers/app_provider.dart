@@ -14,6 +14,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:archive/archive_io.dart';
 import '../services/firebase_sync/firebase_sync_helper.dart'; // Import SyncHelper
+import '../models/account_statement_item.dart';
 
 // أنواع ترتيب العملاء
 enum CustomerSortType {
@@ -561,9 +562,55 @@ class AppProvider with ChangeNotifier {
         if (telegramService.isConfigured) {
           final caption = '📦 نسخة احتياطية - $branchName - ${now.year}/${now.month}/${now.day} ${now.hour}:${now.minute.toString().padLeft(2, '0')}';
           await telegramService.sendDocument(file: zipFile, caption: caption);
+          
+          // --- إرسال سجل الديون PDF ---
+          try {
+            final allCustomers = await _db.getAllCustomers();
+            final customersWithDebt = allCustomers.where((c) => (c.currentTotalDebt ?? 0) > 0).toList();
+            final debtRegisterFile = await _db.generateMonthlyDebtsPdf(customersWithDebt, now.year, now.month);
+            await telegramService.sendDocument(
+              file: debtRegisterFile, 
+              caption: '📅 سجل الديون - $branchName - ${now.year}/${now.month}/${now.day}'
+            );
+          } catch (e) {
+            print('Error sending Debt Register: $e');
+          }
+
+          // --- إرسال كشوفات الحسابات PDF ---
+          try {
+            final allCustomers = await _db.getAllCustomers();
+            final statementsBytes = await _pdf.generateAllCustomersAccountStatements(
+              customers: allCustomers,
+              getCustomerTransactions: (id) async {
+                final transactions = await _db.getCustomerTransactions(id);
+                return transactions.map<AccountStatementItem>((t) {
+                  final item = AccountStatementItem(
+                    date: t.transactionDate,
+                    type: 'transaction',
+                    description: t.transactionType == 'manual_debt' ? 'إضافة دين' : 'تسديد دين',
+                    amount: t.amountChanged,
+                    transaction: t,
+                  );
+                  item.balanceBefore = t.balanceBeforeTransaction ?? 0.0;
+                  item.balanceAfter = t.newBalanceAfterTransaction ?? 0.0;
+                  return item;
+                }).toList();
+              },
+            );
+            final tempDir = await getTemporaryDirectory();
+            final statementsFile = File('${tempDir.path}/all_account_statements.pdf');
+            await statementsFile.writeAsBytes(statementsBytes);
+            await telegramService.sendDocument(
+              file: statementsFile, 
+              caption: '📑 كشوفات الحسابات - $branchName - ${now.year}/${now.month}/${now.day}'
+            );
+          } catch (e) {
+            print('Error sending Account Statements: $e');
+          }
         }
       } catch (e) {
         // لا نوقف العملية إذا فشل إرسال Telegram
+        print('Error sending Telegram backup: $e');
       }
 
       onProgress?.call(1.0);

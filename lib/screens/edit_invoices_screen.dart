@@ -49,7 +49,8 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
     setState(() => _loading = true);
     // Ensure `listen: false` when calling provider methods in initState or async methods
     final provider = Provider.of<AppProvider>(context, listen: false);
-    final invoices = await provider.getAllInvoices();
+    final allInvoicesList = await provider.getAllInvoices();
+    final invoices = allInvoicesList.where((inv) => inv.status != 'معلقة').toList();
     
     // جلب معلومات التسويات لكل فاتورة
     final db = DatabaseService();
@@ -378,6 +379,14 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                                                   color: Colors.grey[
                                                       700]), // Themed text style
                                         ),
+                                        if (invoice.notes != null && invoice.notes!.isNotEmpty)
+                                          Padding(
+                                            padding: const EdgeInsets.only(top: 4.0, bottom: 4.0),
+                                            child: Text(
+                                              'ملاحظة: ${invoice.notes}',
+                                              style: TextStyle(color: Colors.brown[600], fontSize: 13, fontStyle: FontStyle.italic),
+                                            ),
+                                          ),
                                         // عرض معلومات التسويات
                                         if (_invoiceAdjustments[invoice.id]?.isNotEmpty == true) ...[
                                           const SizedBox(height: 4),

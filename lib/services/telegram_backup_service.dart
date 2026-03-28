@@ -338,212 +338,8 @@ class TelegramBackupService {
   /// إرسال ملخص شهري إلى Telegram
   /// يحسب البيانات من أول الشهر الحالي إلى تاريخ اليوم
   Future<bool> sendMonthlySummary() async {
-    if (!isConfigured) return false;
-
-    try {
-      final now = DateTime.now();
-      final startOfMonth = DateTime(now.year, now.month, 1);
-      final startStr = startOfMonth.toIso8601String().split('T')[0];
-      final endStr = now.toIso8601String().split('T')[0];
-      
-      final db = DatabaseService();
-      final database = await db.database;
-      final nf = NumberFormat('#,##0', 'en_US');
-      
-      // جلب جميع الفواتير المحفوظة في الفترة
-      final invoices = await database.rawQuery('''
-        SELECT 
-          id, total_amount, discount, amount_paid_on_invoice, payment_type
-        FROM invoices
-        WHERE DATE(invoice_date) >= ? AND DATE(invoice_date) <= ?
-          AND status = 'محفوظة'
-      ''', [startStr, endStr]);
-      
-      // تصنيف الفواتير
-      int cashCount = 0;
-      double cashTotal = 0.0;
-      List<int> cashInvoiceIds = [];
-      
-      int debtCount = 0;
-      double debtTotal = 0.0;
-      List<int> debtInvoiceIds = [];
-      
-      int mixedCount = 0;
-      double mixedTotal = 0.0;
-      double mixedPaidAmount = 0.0;
-      double mixedDebtAmount = 0.0;
-      List<int> mixedInvoiceIds = [];
-      
-      for (final inv in invoices) {
-        final id = inv['id'] as int;
-        final total = (inv['total_amount'] as num?)?.toDouble() ?? 0.0;
-        final discount = (inv['discount'] as num?)?.toDouble() ?? 0.0;
-        final paid = (inv['amount_paid_on_invoice'] as num?)?.toDouble() ?? 0.0;
-        final netTotal = total - discount;
-        
-        // تصنيف الفاتورة
-        if (paid >= netTotal && netTotal > 0) {
-          // نقدية بالكامل
-          cashCount++;
-          cashTotal += netTotal;
-          cashInvoiceIds.add(id);
-        } else if (paid <= 0) {
-          // دين بالكامل
-          debtCount++;
-          debtTotal += netTotal;
-          debtInvoiceIds.add(id);
-        } else {
-          // مدمجة (نقد + دين)
-          mixedCount++;
-          mixedTotal += netTotal;
-          mixedPaidAmount += paid;
-          mixedDebtAmount += (netTotal - paid);
-          mixedInvoiceIds.add(id);
-        }
-      }
-      
-      // حساب الأرباح لكل نوع
-      double cashProfit = 0.0;
-      double debtProfit = 0.0;
-      double mixedProfit = 0.0;
-      
-      // جلب جميع المنتجات لحساب الأرباح
-      final products = await db.getAllProducts();
-      final productMap = <String, dynamic>{};
-      for (final p in products) {
-        productMap[p.name] = p;
-      }
-      
-      // حساب أرباح الفواتير النقدية
-      for (final invId in cashInvoiceIds) {
-        final profit = await _calculateInvoiceProfitById(db, invId, productMap);
-        cashProfit += profit;
-      }
-      
-      // حساب أرباح فواتير الدين
-      for (final invId in debtInvoiceIds) {
-        final profit = await _calculateInvoiceProfitById(db, invId, productMap);
-        debtProfit += profit;
-      }
-      
-      // حساب أرباح الفواتير المدمجة
-      for (final invId in mixedInvoiceIds) {
-        final profit = await _calculateInvoiceProfitById(db, invId, productMap);
-        mixedProfit += profit;
-      }
-      
-      final invoiceTotalProfit = cashProfit + debtProfit + mixedProfit;
-      final totalCount = cashCount + debtCount + mixedCount;
-      final totalAmount = cashTotal + debtTotal + mixedTotal;
-      
-      // معاملات إضافة الدين اليدوية (من هذا الجهاز فقط، غير مرتبطة بفاتورة)
-      // تشمل manual_debt + opening_balance للعدد والمبلغ
-      final manualDebtData = await database.rawQuery('''
-        SELECT 
-          COUNT(*) as count,
-          COALESCE(SUM(amount_changed), 0) as total
-        FROM transactions
-        WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
-          AND transaction_type IN ('manual_debt', 'opening_balance')
-          AND is_created_by_me = 1
-          AND invoice_id IS NULL
-      ''', [startStr, endStr]);
-      
-      final manualDebtCount = manualDebtData.first['count'] as int? ?? 0;
-      final manualDebtTotal = (manualDebtData.first['total'] as num?)?.toDouble() ?? 0.0;
-      
-      // حساب ربح المعاملات اليدوية (15% من manual_debt فقط - بدون opening_balance)
-      // هذا يطابق الحساب في database_service.dart وشاشة الجرد
-      final manualDebtProfitData = await database.rawQuery('''
-        SELECT 
-          COALESCE(SUM(amount_changed), 0) as total
-        FROM transactions
-        WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
-          AND transaction_type = 'manual_debt'
-          AND is_created_by_me = 1
-          AND invoice_id IS NULL
-      ''', [startStr, endStr]);
-      
-      final manualDebtOnlyTotal = (manualDebtProfitData.first['total'] as num?)?.toDouble() ?? 0.0;
-      final manualDebtProfit = manualDebtOnlyTotal * 0.15; // 15% أرباح من manual_debt فقط
-      
-      // معاملات تسديد الدين اليدوية (من هذا الجهاز فقط، غير مرتبطة بفاتورة)
-      final manualPaymentData = await database.rawQuery('''
-        SELECT 
-          COUNT(*) as count,
-          COALESCE(SUM(ABS(amount_changed)), 0) as total
-        FROM transactions
-        WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
-          AND transaction_type = 'manual_payment'
-          AND is_created_by_me = 1
-          AND invoice_id IS NULL
-      ''', [startStr, endStr]);
-      
-      final manualPaymentCount = manualPaymentData.first['count'] as int? ?? 0;
-      final manualPaymentTotal = (manualPaymentData.first['total'] as num?)?.toDouble() ?? 0.0;
-      
-      // إجمالي الأرباح الكلي
-      final grandTotalProfit = invoiceTotalProfit + manualDebtProfit;
-      
-      // جلب اسم الفرع من الإعدادات
-      final settings = await SettingsManager.getAppSettings();
-      final branchName = settings.branchName;
-      
-      // بناء الرسالة
-      final monthNames = [
-        'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
-        'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'
-      ];
-      final monthName = monthNames[now.month - 1];
-      
-      final message = '''
-📊 <b>ملخص شهر $monthName ${now.year}</b>
-🏪 <b>$branchName</b>
-📅 من ${startOfMonth.day}/${startOfMonth.month}/${startOfMonth.year} إلى ${now.day}/${now.month}/${now.year}
-
-═════════════════
-🧾 <b>الفواتير:</b>
-═════════════════
-💵 نقدية: $cashCount فاتورة | ${nf.format(cashTotal)} د.ع
-📝 دين: $debtCount فاتورة | ${nf.format(debtTotal)} د.ع
-🔄 مدمجة: $mixedCount فاتورة | ${nf.format(mixedTotal)} د.ع
-   • المدفوع منها: ${nf.format(mixedPaidAmount)} د.ع
-   • الدين منها: ${nf.format(mixedDebtAmount)} د.ع
-─────────────────
-📦 <b>الإجمالي:</b> $totalCount فاتورة | ${nf.format(totalAmount)} د.ع
-
-══════════════════
-📈 <b>أرباح الفواتير:</b>
-══════════════════
-💵 أرباح النقدية: ${nf.format(cashProfit)} د.ع
-📝 أرباح الدين: ${nf.format(debtProfit)} د.ع
-🔄 أرباح المدمجة: ${nf.format(mixedProfit)} د.ع
-─────────────────
-💰 <b>إجمالي أرباح الفواتير:</b> ${nf.format(invoiceTotalProfit)} د.ع
-
-═══════════════════
-💳 <b>معاملات إضافة الدين (يدوية):</b>
-═══════════════════
-   • العدد: $manualDebtCount معاملة
-   • المبلغ: ${nf.format(manualDebtTotal)} د.ع
-   • الأرباح (15%): ${nf.format(manualDebtProfit)} د.ع
-
-══════════════════
-💵 <b>معاملات تسديد الدين (يدوية):</b>
-═════════════════
-   • العدد: $manualPaymentCount معاملة
-   • المبلغ: ${nf.format(manualPaymentTotal)} د.ع
-
-════════════════
-🏆 <b>إجمالي الأرباح الكلي:</b> ${nf.format(grandTotalProfit)} د.ع
-═══════════════
-''';
-      
-      return await sendMessage(message);
-    } catch (e) {
-      print('Error sending monthly summary: $e');
-      return false;
-    }
+    final result = await sendMonthlySummaryWithDetails();
+    return result.success;
   }
   
   /// إرسال ملخص شهري إلى Telegram مع تفاصيل الخطأ
@@ -638,6 +434,51 @@ class TelegramBackupService {
       final totalCount = cashCount + debtCount + mixedCount;
       final totalAmount = cashTotal + debtTotal + mixedTotal;
       
+      // 1. حساب قيمة البضاعة الراجعة (return_amount من الفواتير المحفوظة)
+      double returnsTotal = 0.0;
+      final invoiceReturnsData = await database.rawQuery('''
+        SELECT 
+          COALESCE(SUM(return_amount), 0) as total
+        FROM invoices
+        WHERE DATE(invoice_date) >= ? AND DATE(invoice_date) <= ?
+          AND status = 'محفوظة'
+      ''', [startStr, endStr]);
+      
+      if (invoiceReturnsData.isNotEmpty) {
+        returnsTotal = (invoiceReturnsData.first['total'] as num?)?.toDouble() ?? 0.0;
+      }
+      
+      // 2. حساب معاملات الراجع اليدوية (من جدول returns)
+      double manualReturnsTotal = 0.0;
+      final manualReturnsData = await database.rawQuery('''
+        SELECT 
+          COALESCE(SUM(amount), 0) as total
+        FROM returns
+        WHERE DATE(return_date) >= ? AND DATE(return_date) <= ?
+      ''', [startStr, endStr]);
+      
+      if (manualReturnsData.isNotEmpty) {
+        manualReturnsTotal = (manualReturnsData.first['total'] as num?)?.toDouble() ?? 0.0;
+      }
+      
+      // 3. حساب معاملات تسديد دين الراجع (manual_payment_return)
+      final manualPaymentReturnData = await database.rawQuery('''
+        SELECT 
+          COALESCE(SUM(ABS(amount_changed)), 0) as total
+        FROM transactions
+        WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
+          AND transaction_type = 'manual_payment_return'
+          AND is_created_by_me = 1
+          AND invoice_id IS NULL
+          AND id NOT IN (SELECT COALESCE(transaction_id, 0) FROM returns)
+      ''', [startStr, endStr]);
+      
+      final extraManualPaymentReturn = (manualPaymentReturnData.isNotEmpty) 
+          ? (manualPaymentReturnData.first['total'] as num?)?.toDouble() ?? 0.0 
+          : 0.0;
+          
+      final grandTotalReturns = returnsTotal + manualReturnsTotal + extraManualPaymentReturn;
+
       // معاملات إضافة الدين اليدوية
       final manualDebtData = await database.rawQuery('''
         SELECT COUNT(*) as count, COALESCE(SUM(amount_changed), 0) as total
@@ -723,6 +564,12 @@ class TelegramBackupService {
 
 ════════════════
 🏆 <b>إجمالي الأرباح الكلي:</b> ${nf.format(grandTotalProfit)} د.ع
+══════════════════
+🔄 <b>إجمالي المرتجعات:</b>
+═════════════════
+   • بضاعة راجعة: ${nf.format(returnsTotal)} د.ع
+   • تسديد دين راجع: ${nf.format(manualReturnsTotal + extraManualPaymentReturn)} د.ع
+   • الإجمالي: ${nf.format(grandTotalReturns)} د.ع
 ═══════════════
 ''';
       
@@ -733,7 +580,7 @@ class TelegramBackupService {
       return TelegramSendResult.error('خطأ في إعداد الملخص', details: e.toString());
     }
   }
-  
+
   /// حساب ربح فاتورة معينة بناءً على ID
   Future<double> _calculateInvoiceProfitById(
     DatabaseService db,

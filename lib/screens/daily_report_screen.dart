@@ -268,6 +268,15 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
                             ),
                           ],
                         ),
+                        const SizedBox(height: 12),
+                        _buildClickableStatCard(
+                          title: 'معاملات تسديد دين راجع',
+                          value: '${_fmt(_reportData!['totalManualPaymentReturn'])} د.ع',
+                          subtitle: '${_reportData!['manualPaymentReturnCount']} معاملة',
+                          icon: Icons.assignment_return,
+                          color: const Color(0xFFE91E63), // Pink color for returned
+                          onTap: () => _showDebtPaymentReturns(),
+                        ),
                         const SizedBox(height: 20),
 
                         // ربح المعاملات اليدوية
@@ -677,6 +686,22 @@ class _DailyReportScreenState extends State<DailyReportScreen> {
       startDate: startOfDay,
       endDate: endOfDay,
       periodTitle: 'اليوم',
+      excludeReturns: true, // Only regular payments
+    );
+  }
+
+  // عرض معاملات تسديد الدين الراجع
+  void _showDebtPaymentReturns() {
+    final today = DateTime.now();
+    final startOfDay = DateTime(today.year, today.month, today.day);
+    final endOfDay = startOfDay.add(const Duration(days: 1));
+    
+    TransactionsListDialog.showDebtPayments(
+      context: context,
+      startDate: startOfDay,
+      endDate: endOfDay,
+      periodTitle: 'اليوم',
+      onlyReturns: true, // Only returned payments
     );
   }
 }

@@ -49,6 +49,7 @@ abstract class InvoiceActionsInterface {
   TextEditingController get installerNameController;
   TextEditingController get paidAmountController;
   TextEditingController get loadingFeeController;
+  TextEditingController get noteController;
   
   // معدل النقاط لكل 100,000
   double get installerPointsRate;
@@ -208,7 +209,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
     
     // 6. التحقق من نوع الدفع
     if (paymentType == 'نقد' && (paid - finalTotal).abs() > 0.01) {
-      return _ValidationResult(isValid: false, errorMessage: 'في حالة الدفع النقدي، يجب أن يساوي المبلغ المدفوع الإجمالي');
+      return _ValidationResult(isValid: false, errorMessage: 'في حالة الدفع النقدي، يجب أن يساوي المبلغ المدفوع الإجمالي. المسدد: $paid، الإجمالي: $finalTotal');
     }
     
     return _ValidationResult(isValid: true);
@@ -738,6 +739,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           customerId: customer?.id,
           status: newStatus,
           isLocked: false,
+          notes: noteController.text.trim().isNotEmpty ? noteController.text.trim() : null,
           pointsRate: installerPointsRate, // حفظ معدل النقاط مع الفاتورة
         );
 
@@ -826,7 +828,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
         // ═══════════════════════════════════════════════════════════════════════════
         
         if (!isNewInvoice) {
-          final oldInvoice = widget.existingInvoice!;
+          final oldInvoice = widget.existingInvoice ?? invoiceToManage!;
           final oldPaymentType = oldInvoice.paymentType;
           final oldCustomerId = oldInvoice.customerId;
           final newCustomerId = customer?.id;

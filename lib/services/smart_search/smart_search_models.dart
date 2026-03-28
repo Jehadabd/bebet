@@ -38,6 +38,48 @@ class ProductAssociation {
   );
 }
 
+/// تتابع منتجين (أ يليه ب)
+class ProductSequence {
+  final int fromProductId;
+  final int toProductId;
+  final int count;
+  final DateTime lastOccurred;
+
+  ProductSequence({
+    required this.fromProductId,
+    required this.toProductId,
+    required this.count,
+    required this.lastOccurred,
+  });
+
+  Map<String, dynamic> toMap() => {
+    'from_product_id': fromProductId,
+    'to_product_id': toProductId,
+    'count': count,
+    'last_occurred': lastOccurred.toIso8601String(),
+  };
+
+  factory ProductSequence.fromMap(Map<String, dynamic> map) => ProductSequence(
+    fromProductId: map['from_product_id'] as int,
+    toProductId: map['to_product_id'] as int,
+    count: map['count'] as int,
+    lastOccurred: DateTime.parse(map['last_occurred'] as String),
+  );
+}
+
+/// سجل حداثة استخدام المنتج
+class ProductRecency {
+  final int productId;
+  final int last30DaysCount; // عدد مرات الاستخدام في آخر 30 يوم
+  final DateTime lastUsed;
+
+  ProductRecency({
+    required this.productId,
+    required this.last30DaysCount,
+    required this.lastUsed,
+  });
+}
+
 /// تفضيلات العميل للعلامات التجارية
 class CustomerBrandPreference {
   final int? customerId; // قد يكون null
@@ -125,6 +167,9 @@ class SessionContext {
   static const int minBrandOccurrence = 5;
 
   SessionContext();
+
+  /// الحصول على آخر منتج تم إضافته
+  int? get lastAddedProductId => addedProductIds.isNotEmpty ? addedProductIds.last : null;
 
   /// تحديث الماركات المكتشفة تلقائياً
   static void setAutoDiscoveredBrands(Set<String> brands) {

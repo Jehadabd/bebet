@@ -21,6 +21,7 @@ class _OverdueDebtsScreenState extends State<OverdueDebtsScreen> {
   bool _isLoading = true;
   int _selectedDays = 30; // الفترة الافتراضية
   double _minimumDebt = 0; // الحد الأدنى للدين
+  bool _sortAscending = false; // الترتيب: false = الأكثر تأخراً أولاً، true = الأقل تأخراً أولاً
   
   final NumberFormat _nf = NumberFormat('#,##0', 'en_US');
   String _fmt(num v) => _nf.format(v);
@@ -40,6 +41,29 @@ class _OverdueDebtsScreenState extends State<OverdueDebtsScreen> {
         minimumDebt: _minimumDebt,
       );
       
+      // حساب عدد الأيام منذ آخر تسديد لكل عميل
+      for (var debt in debts) {
+        final lastPaymentStr = debt['last_payment_date'] as String?;
+        int daysSincePayment = 999999;
+        
+        if (lastPaymentStr != null) {
+          try {
+            final lastPayment = DateTime.parse(lastPaymentStr);
+            daysSincePayment = DateTime.now().difference(lastPayment).inDays;
+          } catch (e) {}
+        }
+        
+        debt['days_since_payment'] = daysSincePayment;
+        
+        // جلب آخر معاملة مع نوعها
+        final lastTransaction = await _getLastTransaction(debt['id'] as int);
+        debt['last_transaction_type'] = lastTransaction['type'];
+        debt['last_transaction_invoice_id'] = lastTransaction['invoice_id'];
+      }
+      
+      // ترتيب حسب عدد الأيام
+      _sortDebts(debts);
+      
       setState(() {
         _overdueDebts = debts;
         _isLoading = false;
@@ -52,6 +76,50 @@ class _OverdueDebtsScreenState extends State<OverdueDebtsScreen> {
         );
       }
     }
+  }
+  
+  void _sortDebts(List<Map<String, dynamic>> debts) {
+    debts.sort((a, b) {
+      final aDays = a['days_since_payment'] as int;
+      final bDays = b['days_since_payment'] as int;
+      
+      if (_sortAscending) {
+        return aDays.compareTo(bDays); // الأقل تأخراً أولاً
+      } else {
+        return bDays.compareTo(aDays); // الأكثر تأخراً أولاً
+      }
+    });
+  }
+  
+  void _toggleSortOrder() {
+    setState(() {
+      _sortAscending = !_sortAscending;
+      _sortDebts(_overdueDebts);
+    });
+  }
+  
+  Future<Map<String, dynamic>> _getLastTransaction(int customerId) async {
+    try {
+      final db = await _db.database;
+      final result = await db.rawQuery('''
+        SELECT transaction_type, invoice_id, transaction_date
+        FROM transactions
+        WHERE customer_id = ?
+        ORDER BY transaction_date DESC
+        LIMIT 1
+      ''', [customerId]);
+      
+      if (result.isNotEmpty) {
+        return {
+          'type': result.first['transaction_type'] as String?,
+          'invoice_id': result.first['invoice_id'] as int?,
+        };
+      }
+    } catch (e) {
+      print('Error getting last transaction: $e');
+    }
+    
+    return {'type': null, 'invoice_id': null};
   }
 
   @override
@@ -69,6 +137,11 @@ class _OverdueDebtsScreenState extends State<OverdueDebtsScreen> {
         backgroundColor: const Color(0xFFE91E63),
         elevation: 0,
         actions: [
+          IconButton(
+            icon: Icon(_sortAscending ? Icons.arrow_upward : Icons.arrow_downward),
+            onPressed: _toggleSortOrder,
+            tooltip: _sortAscending ? 'الأقل تأخراً أولاً' : 'الأكثر تأخراً أولاً',
+          ),
           IconButton(
             icon: const Icon(Icons.filter_list),
             onPressed: _showFilterDialog,

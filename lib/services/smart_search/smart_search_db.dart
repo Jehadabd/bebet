@@ -144,6 +144,23 @@ class SmartSearchDatabase {
       )
     ''');
 
+    // 🆕 جدول تتابع المنتجات (أ يليه ب)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS product_sequences (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_product_id INTEGER NOT NULL,
+        to_product_id INTEGER NOT NULL,
+        count INTEGER DEFAULT 1,
+        last_occurred TEXT NOT NULL,
+        UNIQUE(from_product_id, to_product_id)
+      )
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_sequences_from 
+      ON product_sequences(from_product_id)
+    ''');
+
     print('✅ Smart Search database tables created successfully');
   }
 
@@ -202,29 +219,64 @@ class SmartSearchDatabase {
     final db = await database;
     final placeholders = productIds.map((_) => '?').join(',');
     
-    final results = await db.rawQuery('''
+    }
+    return associations;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🆕 دوال تتابع المنتجات
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// إضافة أو تحديث تتابع منتجين
+  Future<void> upsertProductSequence({
+    required int fromProductId,
+    required int toProductId,
+  }) async {
+    final db = await database;
+    final now = DateTime.now().toIso8601String();
+
+    await db.rawInsert('''
+      INSERT INTO product_sequences 
+        (from_product_id, to_product_id, count, last_occurred)
+      VALUES (?, ?, 1, ?)
+      ON CONFLICT(from_product_id, to_product_id) DO UPDATE SET
+        count = count + 1,
+        last_occurred = ?
+    ''', [fromProductId, toProductId, now, now]);
+  }
+
+  /// جلب المنتجات التي تلي منتجاً معيناً
+  Future<List<ProductSequence>> getSequencesFollowing(int fromProductId) async {
+    final db = await database;
+    final results = await db.query(
+      'product_sequences',
+      where: 'from_product_id = ?',
+      whereArgs: [fromProductId],
+      orderBy: 'count DESC',
+      limit: 20,
+    );
+
+    return results.map((m) => ProductSequence.fromMap(m)).toList();
+  }
+
+  /// جلب العلاقات المرتبطة بقائمة مع بيانات الوقت للتحلل الزمني
+  Future<List<Map<String, dynamic>>> getAssociationsWithTime(List<int> productIds) async {
+    if (productIds.isEmpty) return [];
+    
+    final db = await database;
+    final placeholders = productIds.map((_) => '?').join(',');
+    
+    return await db.rawQuery('''
       SELECT 
         CASE 
           WHEN product_id_a IN ($placeholders) THEN product_id_b 
           ELSE product_id_a 
         END as associated_product_id,
-        SUM(co_occurrence_count) as total_count
+        co_occurrence_count,
+        updated_at
       FROM product_associations 
       WHERE product_id_a IN ($placeholders) OR product_id_b IN ($placeholders)
-      GROUP BY associated_product_id
-      ORDER BY total_count DESC
-      LIMIT 100
     ''', [...productIds, ...productIds, ...productIds]);
-
-    final Map<int, int> associations = {};
-    for (final row in results) {
-      final productId = row['associated_product_id'] as int;
-      final count = row['total_count'] as int;
-      if (!productIds.contains(productId)) {
-        associations[productId] = count;
-      }
-    }
-    return associations;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

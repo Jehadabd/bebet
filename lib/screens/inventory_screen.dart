@@ -283,15 +283,10 @@ class _InventoryScreenState extends State<InventoryScreen>
               const SizedBox(width: 8),
               Expanded(child: _buildCompactInfoItem(Icons.credit_card, 'دين (فواتير)', '${formatCurrency(invoiceCreditSalesPositive)} د.ع', '${creditPercentOfInvoices.toStringAsFixed(1)}%', const Color(0xFFFF9800))),
             ]),
-            
-            // الراجع
-            const SizedBox(height: 8),
-            _buildCompactInfoItem(Icons.keyboard_return, 'الراجع', '${formatCurrency(summary.totalReturns)} د.ع', null, const Color(0xFF9C27B0)),
-            
             // ═══════════════════════════════════════════════════════════════════
             // القسم الثاني: المعاملات اليدوية (تفصيلي)
             // ═══════════════════════════════════════════════════════════════════
-            if (manualDebtAmount > 0 || manualProfit > 0 || summary.totalDebtPayments > 0) ...[
+            if (manualDebtAmount > 0 || manualProfit > 0 || summary.totalDebtPayments > 0 || summary.totalManualPaymentReturn > 0) ...[
               const SizedBox(height: 16),
               _buildSectionHeader('✋ المعاملات اليدوية', const Color(0xFFE91E63)),
               const SizedBox(height: 10),
@@ -313,15 +308,30 @@ class _InventoryScreenState extends State<InventoryScreen>
               ]),
               const SizedBox(height: 8),
               
-              // تسديد الديون
-              _buildCompactClickableItem(
-                Icons.remove_circle, 
-                'تسديد الديون', 
-                '${formatCurrency(summary.totalDebtPayments)} د.ع', 
-                '${summary.manualPaymentCount} معاملة',
-                const Color(0xFF009688), 
-                () => _showDebtPayments(monthYear),
-              ),
+              // تسديد الديون (يدوي + راجع)
+              Row(children: [
+                Expanded(
+                  child: _buildCompactClickableItem(
+                    Icons.remove_circle, 
+                    'تسديد دين (يدوي)', 
+                    '${formatCurrency(summary.totalDebtPayments)} د.ع', 
+                    '${summary.manualPaymentCount} معاملة',
+                    const Color(0xFF009688), 
+                    () => _showDebtPayments(monthYear),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _buildCompactClickableItem(
+                    Icons.assignment_return, 
+                    'تسديد دين (راجع)', 
+                    '${formatCurrency(summary.totalManualPaymentReturn)} د.ع', 
+                    '${summary.manualPaymentReturnCount} معاملة',
+                    const Color(0xFFE91E63), 
+                    () => _showDebtPaymentReturns(monthYear),
+                  ),
+                ),
+              ]),
             ],
             
             // ═══════════════════════════════════════════════════════════════════
@@ -965,6 +975,14 @@ class _InventoryScreenState extends State<InventoryScreen>
     final month = int.parse(monthYear.split('-')[1]);
     final startDate = DateTime(year, month, 1);
     final endDate = month == 12 ? DateTime(year + 1, 1, 1) : DateTime(year, month + 1, 1);
-    TransactionsListDialog.showDebtPayments(context: context, startDate: startDate, endDate: endDate, periodTitle: monthYear);
+    TransactionsListDialog.showDebtPayments(context: context, startDate: startDate, endDate: endDate, periodTitle: monthYear, excludeReturns: true);
+  }
+
+  void _showDebtPaymentReturns(String monthYear) {
+    final year = int.parse(monthYear.split('-')[0]);
+    final month = int.parse(monthYear.split('-')[1]);
+    final startDate = DateTime(year, month, 1);
+    final endDate = month == 12 ? DateTime(year + 1, 1, 1) : DateTime(year, month + 1, 1);
+    TransactionsListDialog.showDebtPayments(context: context, startDate: startDate, endDate: endDate, periodTitle: monthYear, onlyReturns: true);
   }
 }

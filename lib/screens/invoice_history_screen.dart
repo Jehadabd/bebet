@@ -561,7 +561,7 @@ class _InvoiceHistoryScreenState extends State<InvoiceHistoryScreen> {
     );
   }
 
-  // بناء ويدجت لعرض تغيير واحد
+  // بناء ويدجت لعرض تغيير واحد بشكل جميل وعصري
   Widget _buildChangeWidget(Map<String, dynamic> change) {
     if (change['isItems'] == true) {
       return _buildItemsChangeWidget(change);
@@ -577,158 +577,314 @@ class _InvoiceHistoryScreenState extends State<InvoiceHistoryScreen> {
       beforeStr = change['before'].toString();
       afterStr = change['after'].toString();
     } else {
-      beforeStr = '${_formatCurrency(change['before'])} دينار';
-      afterStr = '${_formatCurrency(change['after'])} دينار';
+      beforeStr = '${_formatCurrency(change['before'])} د.ع';
+      afterStr = '${_formatCurrency(change['after'])} د.ع';
     }
     
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      color: color.withOpacity(0.1),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: color.withOpacity(0.1),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+        border: Border.all(color: color.withOpacity(0.2), width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+            child: Row(
               children: [
-                Icon(icon, size: 18, color: color),
-                const SizedBox(width: 8),
-                Text(field, style: TextStyle(fontWeight: FontWeight.bold, color: color)),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.red.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('قبل:', style: TextStyle(fontSize: 10, color: Colors.red)),
-                        Text(beforeStr, style: const TextStyle(fontSize: 12)),
-                      ],
-                    ),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.1),
+                    shape: BoxShape.circle,
                   ),
+                  child: Icon(icon, size: 20, color: color),
                 ),
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 8),
-                  child: Icon(Icons.arrow_forward, size: 16, color: Colors.grey),
-                ),
-                Expanded(
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.green.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('بعد:', style: TextStyle(fontSize: 10, color: Colors.green)),
-                        Text(afterStr, style: const TextStyle(fontSize: 12)),
-                      ],
-                    ),
+                const SizedBox(width: 12),
+                Text(
+                  field,
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                    color: color.darken(0.2),
                   ),
                 ),
               ],
             ),
-          ],
-        ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: _buildComparisonBox(
+                    title: 'القيمة السابقة',
+                    value: beforeStr,
+                    color: Colors.red[400]!,
+                    isBefore: true,
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Icon(Icons.keyboard_double_arrow_left, color: Colors.grey[400], size: 24),
+                ),
+                Expanded(
+                  child: _buildComparisonBox(
+                    title: 'القيمة الجديدة',
+                    value: afterStr,
+                    color: Colors.green[600]!,
+                    isBefore: false,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  // بناء ويدجت لعرض تغييرات الأصناف
+  Widget _buildComparisonBox({
+    required String title,
+    required String value,
+    required Color color,
+    required bool isBefore,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withOpacity(0.2), width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // إضافة extension لتغميق اللون
+  // سأضيفه في نهاية الملف أو أستخدم دالة بديلة
+
+  // بناء ويدجت لعرض تغييرات الأصناف بشكل عصري
   Widget _buildItemsChangeWidget(Map<String, dynamic> change) {
     final itemsChanges = change['itemsChanges'] as List<Map<String, dynamic>>;
     
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      color: Colors.cyan.withOpacity(0.1),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
+    // تقسيم التغييرات حسب النوع
+    final addedItems = itemsChanges.where((i) => i['type'] == 'added').toList();
+    final removedItems = itemsChanges.where((i) => i['type'] == 'removed').toList();
+    final modifiedItems = itemsChanges.where((i) => i['type'] == 'modified').toList();
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.cyan.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+        border: Border.all(color: Colors.cyan.withOpacity(0.2), width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.cyan.withOpacity(0.1),
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(11)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.inventory_2, size: 20, color: Colors.cyan[800]),
+                const SizedBox(width: 12),
+                Text(
+                  'تغييرات الأصناف',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                    color: Colors.cyan[900],
+                  ),
+                ),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.cyan[800],
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    '${itemsChanges.length}',
+                    style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          
+          if (addedItems.isNotEmpty) _buildItemCategorySection('عناصر تمت إضافتها', addedItems, Colors.green),
+          if (removedItems.isNotEmpty) _buildItemCategorySection('عناصر تم حذفها', removedItems, Colors.red),
+          if (modifiedItems.isNotEmpty) _buildItemCategorySection('عناصر تم تعديلها', modifiedItems, Colors.orange),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildItemCategorySection(String title, List<Map<String, dynamic>> items, Color color) {
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(width: 4, height: 16, decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(2))),
+              const SizedBox(width: 8),
+              Text(
+                title,
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ...items.map((item) => _buildItemChangeRow(item, color)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildItemChangeRow(Map<String, dynamic> item, Color color) {
+    final type = item['type'];
+    
+    if (type == 'modified') {
+      final qtyChanged = item['qtyBefore'] != item['qtyAfter'];
+      final priceChanged = item['priceBefore'] != item['priceAfter'];
+      
+      return Container(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.05),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withOpacity(0.1)),
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
-                Icon(Icons.inventory_2, size: 18, color: Colors.cyan[700]),
+                Icon(Icons.edit_note, size: 16, color: color),
                 const SizedBox(width: 8),
-                Text('تغييرات الأصناف', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.cyan[700])),
+                Expanded(
+                  child: Text(
+                    item['name'],
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 8),
-            ...itemsChanges.map((itemChange) {
-              final type = itemChange['type'];
-              IconData icon;
-              Color color;
-              String label;
-              
-              switch (type) {
-                case 'added':
-                  icon = Icons.add_circle;
-                  color = Colors.green;
-                  label = 'إضافة: ${itemChange['name']} (${itemChange['quantity']} × ${_formatCurrency(itemChange['total'])})';
-                  break;
-                case 'removed':
-                  icon = Icons.remove_circle;
-                  color = Colors.red;
-                  label = 'حذف: ${itemChange['name']} (${itemChange['quantity']} × ${_formatCurrency(itemChange['total'])})';
-                  break;
-                case 'modified':
-                  icon = Icons.edit;
-                  color = Colors.orange;
-                  final qtyChanged = itemChange['qtyBefore'] != itemChange['qtyAfter'];
-                  final priceChanged = itemChange['priceBefore'] != itemChange['priceAfter'];
-                  String details = itemChange['name'];
-                  if (qtyChanged) {
-                    details += '\n  الكمية: ${itemChange['qtyBefore']} ← ${itemChange['qtyAfter']}';
-                  }
-                  if (priceChanged) {
-                    details += '\n  السعر: ${_formatCurrency(itemChange['priceBefore'])} ← ${_formatCurrency(itemChange['priceAfter'])}';
-                  }
-                  details += '\n  الإجمالي: ${_formatCurrency(itemChange['totalBefore'])} ← ${_formatCurrency(itemChange['totalAfter'])}';
-                  label = 'تعديل: $details';
-                  break;
-                default:
-                  icon = Icons.help;
-                  color = Colors.grey;
-                  label = 'غير معروف';
-              }
-              
-              return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(icon, size: 16, color: color),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(label, style: TextStyle(fontSize: 12, color: color))),
-                  ],
-                ),
-              );
-            }),
+            Row(
+              children: [
+                if (qtyChanged) Expanded(child: _buildMiniComp('العدد', item['qtyBefore'], item['qtyAfter'])),
+                if (priceChanged) Expanded(child: _buildMiniComp('السعر', _formatCurrency(item['priceBefore']), _formatCurrency(item['priceAfter']))),
+                Expanded(child: _buildMiniComp('إجمالي', _formatCurrency(item['totalBefore']), _formatCurrency(item['totalAfter']))),
+              ],
+            ),
           ],
         ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+      child: Row(
+        children: [
+          Icon(type == 'added' ? Icons.add_circle_outline : Icons.remove_circle_outline, size: 16, color: color),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '${item['name']} (الكمية: ${item['quantity']})',
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          Text(
+            '${_formatCurrency(item['total'])} د.ع',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: color),
+          ),
+        ],
       ),
+    );
+  }
+
+  Widget _buildMiniComp(String label, dynamic before, dynamic after) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: TextStyle(fontSize: 10, color: Colors.grey[600])),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('$before', style: TextStyle(fontSize: 11, color: Colors.red[800], decoration: TextDecoration.lineThrough)),
+            const Icon(Icons.arrow_left, size: 12, color: Colors.grey),
+            Text('$after', style: TextStyle(fontSize: 11, color: Colors.green[800], fontWeight: FontWeight.bold)),
+          ],
+        ),
+      ],
     );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.grey[50],
       appBar: AppBar(
-        title: Text('سجل تعديلات الفاتورة #${widget.invoiceId}'),
-        backgroundColor: const Color(0xFF3F51B5),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('سجل تعديلات الفاتورة', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            Text('فاتورة رقم #${widget.invoiceId}', style: const TextStyle(fontSize: 12, color: Colors.white70)),
+          ],
+        ),
+        elevation: 0,
+        flexibleSpace: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topRight,
+              end: Alignment.bottomLeft,
+              colors: [Color(0xFF3F51B5), Color(0xFF5C6BC0)],
+            ),
+          ),
+        ),
         foregroundColor: Colors.white,
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh_rounded),
             tooltip: 'تحديث',
             onPressed: _loadSnapshots,
           ),
@@ -821,18 +977,53 @@ class _InvoiceHistoryScreenState extends State<InvoiceHistoryScreen> {
 
     return Column(
       children: [
-        // ملخص
+        // ملخص جذاب
         Container(
-          padding: const EdgeInsets.all(16),
-          color: Colors.blue[50],
+          margin: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [Colors.blue[700]!, Colors.blue[500]!],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.blue.withOpacity(0.3),
+                blurRadius: 12,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
           child: Row(
             children: [
-              const Icon(Icons.info_outline, color: Colors.blue),
-              const SizedBox(width: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.history_edu_rounded, color: Colors.white, size: 28),
+              ),
+              const SizedBox(width: 16),
               Expanded(
-                child: Text(
-                  'تم تعديل هذه الفاتورة $editCount مرة',
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'حالة التعديلات',
+                      style: TextStyle(color: Colors.white70, fontSize: 13),
+                    ),
+                    Text(
+                      'تم تعديل هذه الفاتورة $editCount مرة',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -863,106 +1054,219 @@ class _InvoiceHistoryScreenState extends State<InvoiceHistoryScreen> {
     );
   }
 
-  // بطاقة النسخة الأصلية
+  // بطاقة النسخة الأصلية بشكل جذاب
   Widget _buildOriginalCard(Map<String, dynamic> snapshot) {
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-      elevation: 2,
-      color: Colors.blue[50],
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.blue.withOpacity(0.3), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
       child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: Colors.blue.withOpacity(0.2),
-          child: const Icon(Icons.description, color: Colors.blue, size: 20),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        leading: Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: Colors.blue[50],
+            shape: BoxShape.circle,
+          ),
+          child: Icon(Icons.article_rounded, color: Colors.blue[700], size: 24),
         ),
-        title: const Text('📄 النسخة الأصلية', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text(
+          'النسخة الأصلية',
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF1A237E)),
+        ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(_formatDate(snapshot['created_at'])),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Icon(Icons.calendar_month_rounded, size: 14, color: Colors.grey[600]),
+                const SizedBox(width: 4),
+                Text(_formatDate(snapshot['created_at']), style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+              ],
+            ),
+            const SizedBox(height: 4),
             Text(
-              'الإجمالي: ${_formatCurrency(snapshot['total_amount'])} دينار',
-              style: TextStyle(color: Colors.grey[600], fontSize: 12),
+              'الإجمالي: ${_formatCurrency(snapshot['total_amount'])} د.ع',
+              style: TextStyle(color: Colors.blue[800], fontSize: 13, fontWeight: FontWeight.bold),
             ),
           ],
         ),
-        trailing: const Icon(Icons.chevron_left),
+        trailing: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.grey[100],
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: const Icon(Icons.chevron_left_rounded, color: Colors.blue),
+        ),
         onTap: () => _showSnapshotDetails(snapshot),
       ),
     );
   }
 
-  // بطاقة التعديل مع التغييرات
+  // بطاقة التعديل بشكل عصري ومنظم
   Widget _buildEditCard(Map<String, dynamic> before, Map<String, dynamic>? after, int editNumber) {
     final changes = after != null ? _compareSnapshots(before, after) : <Map<String, dynamic>>[];
     
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-      elevation: 2,
-      child: ExpansionTile(
-        leading: CircleAvatar(
-          backgroundColor: Colors.orange.withOpacity(0.2),
-          child: Text(
-            '$editNumber',
-            style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.bold),
-          ),
-        ),
-        title: Text('التعديل رقم $editNumber', style: const TextStyle(fontWeight: FontWeight.bold)),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(_formatDate(after?['created_at'] ?? before['created_at'])),
-            if (changes.isNotEmpty)
-              Text(
-                '${changes.length} تغيير',
-                style: const TextStyle(color: Colors.orange, fontSize: 12),
-              ),
-          ],
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            IconButton(
-              icon: const Icon(Icons.compare_arrows, size: 20),
-              tooltip: 'عرض التغييرات',
-              onPressed: after != null ? () => _showChangesDialog(before, after, editNumber) : null,
-            ),
-            const Icon(Icons.expand_more),
-          ],
-        ),
-        children: [
-          if (changes.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: Text('لا توجد تغييرات مسجلة', style: TextStyle(color: Colors.grey)),
-            )
-          else
-            Padding(
-              padding: const EdgeInsets.all(8),
-              child: Column(
-                children: changes.map((change) => _buildChangePreview(change)).toList(),
-              ),
-            ),
-          // أزرار لعرض التفاصيل
-          Padding(
-            padding: const EdgeInsets.all(8),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                TextButton.icon(
-                  icon: const Icon(Icons.visibility, size: 16),
-                  label: const Text('قبل التعديل'),
-                  onPressed: () => _showSnapshotDetails(before),
-                ),
-                if (after != null)
-                  TextButton.icon(
-                    icon: const Icon(Icons.visibility, size: 16),
-                    label: const Text('بعد التعديل'),
-                    onPressed: () => _showSnapshotDetails(after),
-                  ),
-              ],
-            ),
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
           ),
         ],
+      ),
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          leading: Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Colors.orange[400]!, Colors.orange[700]!],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.orange.withOpacity(0.3),
+                  blurRadius: 6,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            child: Center(
+              child: Text(
+                '$editNumber',
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
+              ),
+            ),
+          ),
+          title: Text(
+            'التعديل رقم $editNumber',
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF2E7D32)),
+          ),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  Icon(Icons.access_time_rounded, size: 14, color: Colors.grey[600]),
+                  const SizedBox(width: 4),
+                  Text(_formatDate(after?['created_at'] ?? before['created_at']), style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                ],
+              ),
+              const SizedBox(height: 4),
+              if (changes.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.orange[50],
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.orange.withOpacity(0.3)),
+                  ),
+                  child: Text(
+                    '${changes.length} تغييرات مكتشفة',
+                    style: TextStyle(color: Colors.orange[900], fontSize: 11, fontWeight: FontWeight.bold),
+                  ),
+                ),
+            ],
+          ),
+          trailing: Container(
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              color: Colors.grey[100],
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.expand_more_rounded, color: Colors.grey),
+          ),
+          children: [
+            const Divider(height: 1),
+            if (changes.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(24),
+                child: Text('لم يتم رصد تغييرات جوهرية في القيم', style: const TextStyle(color: Colors.grey, fontStyle: FontStyle.italic)),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  children: [
+                    ...changes.map((change) => _buildChangePreview(change)).toList(),
+                    const SizedBox(height: 12),
+                    // زر المقارنة التفصيلية
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: after != null ? () => _showChangesDialog(before, after, editNumber) : null,
+                        icon: const Icon(Icons.compare_arrows_rounded),
+                        label: const Text('رؤية التغييرات بالتفصيل'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue[700],
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          elevation: 0,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            // أزرار المعاينة
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.visibility_outlined, size: 18),
+                      label: const Text('قبل التعديل'),
+                      onPressed: () => _showSnapshotDetails(before),
+                      style: OutlinedButton.styleFrom(
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        side: BorderSide(color: Colors.grey[300]!),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  if (after != null)
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.visibility_outlined, size: 18),
+                        label: const Text('بعد التعديل'),
+                        onPressed: () => _showSnapshotDetails(after),
+                        style: OutlinedButton.styleFrom(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          side: BorderSide(color: Colors.grey[300]!),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -996,5 +1300,15 @@ class _InvoiceHistoryScreenState extends State<InvoiceHistoryScreen> {
       title: Text(field, style: const TextStyle(fontSize: 13)),
       subtitle: Text(changeText, style: TextStyle(fontSize: 11, color: Colors.grey[600])),
     );
+  }
+}
+
+// دالة مساعدة لتغميق الألوان
+extension ColorDarken on Color {
+  Color darken([double amount = .1]) {
+    assert(amount >= 0 && amount <= 1);
+    final hsl = HSLColor.fromColor(this);
+    final hslDark = hsl.withLightness((hsl.lightness - amount).clamp(0.0, 1.0));
+    return hslDark.toColor();
   }
 }

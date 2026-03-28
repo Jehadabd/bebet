@@ -10,6 +10,8 @@ class TransactionsListDialog extends StatefulWidget {
   final DateTime startDate;
   final DateTime endDate;
   final Color themeColor;
+  final bool excludeReturns;
+  final bool onlyReturns;
 
   const TransactionsListDialog({
     super.key,
@@ -18,6 +20,8 @@ class TransactionsListDialog extends StatefulWidget {
     required this.startDate,
     required this.endDate,
     required this.themeColor,
+    this.excludeReturns = false,
+    this.onlyReturns = false,
   });
 
   @override
@@ -42,21 +46,29 @@ class TransactionsListDialog extends StatefulWidget {
     );
   }
 
-  /// عرض Dialog لمعاملات تسديد الدين
   static Future<void> showDebtPayments({
     required BuildContext context,
     required DateTime startDate,
     required DateTime endDate,
     required String periodTitle,
+    bool excludeReturns = false,
+    bool onlyReturns = false,
   }) async {
+    String finalTitle = 'معاملات تسديد الدين - $periodTitle';
+    if (onlyReturns) {
+      finalTitle = 'معاملات تسديد دين راجع - $periodTitle';
+    }
+
     await showDialog(
       context: context,
       builder: (context) => TransactionsListDialog(
-        title: 'معاملات تسديد الدين - $periodTitle',
+        title: finalTitle,
         transactionTypes: ['manual_payment'],
         startDate: startDate,
         endDate: endDate,
-        themeColor: const Color(0xFF4CAF50),
+        themeColor: onlyReturns ? const Color(0xFFE91E63) : const Color(0xFF4CAF50),
+        excludeReturns: excludeReturns,
+        onlyReturns: onlyReturns,
       ),
     );
   }
@@ -83,6 +95,8 @@ class _TransactionsListDialogState extends State<TransactionsListDialog> {
         transactionTypes: widget.transactionTypes,
         startDate: widget.startDate,
         endDate: widget.endDate,
+        excludeReturns: widget.excludeReturns,
+        onlyReturns: widget.onlyReturns,
       );
       setState(() {
         _transactions = transactions;

@@ -27,7 +27,7 @@ import 'firebase_sync/firebase_sync_helper.dart'; // 🔥 مزامنة Firebase
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
   static Database? _database;
-  static const int _databaseVersion = 41; // 🔄 إضافة جدول المرفوعات returns
+  static const int _databaseVersion = 42; // 🔄 إضافة عمود notes لفواتير قديمة
   // تحكم بالطباعات التشخيصية من مصدر واحد
   // معطل في الإصدار النهائي لتجنب الطباعات المزعجة
   static const bool _verboseLogs = false;
@@ -463,6 +463,26 @@ class DatabaseService {
       if (!hasAmountPaid) {
         try {
           await _database!.execute('ALTER TABLE invoices ADD COLUMN amount_paid_on_invoice REAL DEFAULT 0;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      
+      final hasNotes = invInfo.any((col) => col['name'] == 'notes');
+      if (!hasNotes) {
+        try {
+          await _database!.execute('ALTER TABLE invoices ADD COLUMN notes TEXT;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      
+      final hasFinalTotal = invInfo.any((col) => col['name'] == 'final_total');
+      if (!hasFinalTotal) {
+        try {
+          await _database!.execute('ALTER TABLE invoices ADD COLUMN final_total REAL;');
+          // تحديث الفواتير الموجودة: تعيين total_amount كقيمة مبدئية لـ final_total
+          await _database!.execute('UPDATE invoices SET final_total = total_amount;');
         } catch (e) {
           // تجاهل الخطأ
         }
@@ -1084,7 +1104,8 @@ class DatabaseService {
         status TEXT NOT NULL DEFAULT 'مسودة',
         return_amount REAL NOT NULL DEFAULT 0,
         is_locked INTEGER NOT NULL DEFAULT 0,
-        loading_fee REAL DEFAULT 0
+        loading_fee REAL DEFAULT 0,
+        notes TEXT
       )
     ''');
 
@@ -2036,6 +2057,7 @@ class DatabaseService {
     await ensureColumn('invoices', 'amount_paid_on_invoice', 'REAL DEFAULT 0');
     await ensureColumn('invoices', 'final_total', 'REAL');
     await ensureColumn('invoices', 'points_rate', 'REAL DEFAULT 1.0');
+    await ensureColumn('invoices', 'notes', 'TEXT');
     
     // أعمدة جدول invoice_items
     await ensureColumn('invoice_items', 'product_id', 'INTEGER');
@@ -5116,6 +5138,34 @@ class DatabaseService {
         db, id); //  يمكن إعادة استخدام دالة المعاملة
   }
 
+  /// جلب جميع الفواتير المعلقة (Hold Invoices) مرتبة من الأحدث
+  Future<List<Invoice>> getSuspendedInvoices() async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.query(
+        'invoices',
+        where: "status = 'معلقة'",
+        orderBy: 'last_modified_at DESC',
+      );
+      return List.generate(maps.length, (i) => Invoice.fromMap(maps[i]));
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  /// جلب عدد الفواتير المعلقة (للشارة Badge)
+  Future<int> getSuspendedInvoicesCount() async {
+    final db = await database;
+    try {
+      final result = await db.rawQuery(
+        "SELECT COUNT(*) as count FROM invoices WHERE status = 'معلقة'",
+      );
+      return (result.first['count'] as int?) ?? 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+
   /// جلب آخر N أسعار لنفس العميل ولنفس المنتج من الفواتير "المحفوظة"
   /// تُستخدم لميزة تنبيه سجل الأسعار.
   /// تُعيد قائمة من الخرائط تحتوي: applied_price, invoice_date, sale_type
@@ -5368,19 +5418,36 @@ class DatabaseService {
           manualDebtProfitValue += amount * 0.15; // 15% ربح
         }
 
-        // جمع معاملات تسديد الديون لهذا الشهر (manual_payment)
+        // جمع معاملات تسديد الديون لهذا الشهر (manual_payment و تسديد دين راجع)
         // 🔧 إصلاح: فقط المعاملات اليدوية من هذا الجهاز وغير المرتبطة بفاتورة
-        final List<Map<String, dynamic>> debtTxMaps = await db.query(
-          'transactions',
-          columns: ['amount_changed'],
-          where:
-              "transaction_type = 'manual_payment' AND invoice_id IS NULL AND is_created_by_me = 1 AND transaction_date >= ? AND transaction_date < ?",
-          whereArgs: [start, end],
+        final List<Map<String, dynamic>> debtTxMaps = await db.rawQuery(
+          '''
+          SELECT t.amount_changed,
+                 CASE WHEN r.transaction_id IS NOT NULL THEN 1 ELSE 0 END as is_return
+          FROM transactions t
+          LEFT JOIN returns r ON t.id = r.transaction_id
+          WHERE t.transaction_type = 'manual_payment'
+            AND t.invoice_id IS NULL
+            AND t.is_created_by_me = 1
+            AND t.transaction_date >= ?
+            AND t.transaction_date < ?
+          ''',
+          [start, end],
         );
+
+        double totalManualPaymentReturn = 0.0;
+        int manualPaymentReturnCount = 0;
+
         for (final tx in debtTxMaps) {
-          totalDebtPayments += (tx['amount_changed'] as num).toDouble().abs();
+          final amt = (tx['amount_changed'] as num).toDouble().abs();
+          if (tx['is_return'] == 1) {
+            totalManualPaymentReturn += amt;
+            manualPaymentReturnCount++;
+          } else {
+            totalDebtPayments += amt;
+            manualPaymentCount++;
+          }
         }
-        manualPaymentCount = debtTxMaps.length; // عدد معاملات تسديد الدين
 
         // جمع تسويات الشهر من جدول التسويات المرتبطة بالفواتير (مبلغ + ملاحظة فقط)
         try {
@@ -5483,6 +5550,7 @@ class DatabaseService {
           creditSales: creditSalesValue,
           totalReturns: totalReturns + manualReturns, // إضافة إجمالي الراجع (فواتير + مرفوعات)
           totalDebtPayments: totalDebtPayments, // إضافة إجمالي تسديد الديون
+          totalManualPaymentReturn: totalManualPaymentReturn,
           totalManualDebt: totalManualDebt, // إضافة دين يدوية
           manualDebtProfit: manualDebtProfitValue, // ربح المعاملات اليدوية (15%)
           settlementAdditions: settlementAdditions,
@@ -5490,6 +5558,7 @@ class DatabaseService {
           invoiceCount: invoiceCount, // عدد الفواتير
           manualDebtCount: manualDebtCount, // عدد معاملات إضافة الدين
           manualPaymentCount: manualPaymentCount, // عدد معاملات تسديد الدين
+          manualPaymentReturnCount: manualPaymentReturnCount,
         );
       }
       //  فرز الملخصات حسب الشهر تنازليًا
@@ -6054,36 +6123,38 @@ class DatabaseService {
             .asByteData());
     final pdf = pw.Document();
     pdf.addPage(
-      pw.Page(
+      pw.MultiPage(
         textDirection: pw.TextDirection.rtl,
-        build: (context) => pw.Column(
+        header: (context) => pw.Column(
           crossAxisAlignment: pw.CrossAxisAlignment.stretch,
           children: [
             pw.Text('سجل ديون شهر $year-$month',
                 style: pw.TextStyle(font: font, fontSize: 24)),
             pw.SizedBox(height: 16),
-            pw.Table.fromTextArray(
-              headers: ['المبلغ', 'العنوان', 'الاسم'],
-              data: customers
-                  .map((c) => [
-                        c.currentTotalDebt.toStringAsFixed(2),
-                        c.address ?? '',
-                        c.name
-                      ])
-                  .toList(),
-              headerStyle: pw.TextStyle(
-                  font: font, fontWeight: pw.FontWeight.bold, fontSize: 14),
-              cellStyle: pw.TextStyle(font: font, fontSize: 12),
-              cellAlignment: pw.Alignment.centerRight,
-              columnWidths: {
-                2: pw.FlexColumnWidth(
-                    2.5), // الاسم يأخذ المساحة الأكبر (آخر عمود)
-                1: pw.FlexColumnWidth(1.5), // العنوان وسط
-                0: pw.FlexColumnWidth(1), // المبلغ يسار (أول عمود)
-              },
-            ),
           ],
         ),
+        build: (context) => [
+          pw.Table.fromTextArray(
+            headers: ['المبلغ', 'العنوان', 'الاسم'],
+            data: customers
+                .map((c) => [
+                      c.currentTotalDebt.toStringAsFixed(2),
+                      c.address ?? '',
+                      c.name
+                    ])
+                .toList(),
+            headerStyle: pw.TextStyle(
+                font: font, fontWeight: pw.FontWeight.bold, fontSize: 14),
+            cellStyle: pw.TextStyle(font: font, fontSize: 12),
+            cellAlignment: pw.Alignment.centerRight,
+            columnWidths: {
+              2: pw.FlexColumnWidth(
+                  2.5), // الاسم يأخذ المساحة الأكبر (آخر عمود)
+              1: pw.FlexColumnWidth(1.5), // العنوان وسط
+              0: pw.FlexColumnWidth(1), // المبلغ يسار (أول عمود)
+            },
+          ),
+        ],
       ),
     );
     final dir = await getApplicationDocumentsDirectory();
@@ -6092,16 +6163,45 @@ class DatabaseService {
     return file;
   }
 
-  Future<List<Customer>> getLateCustomers(int months) async {
+  Future<List<Map<String, dynamic>>> getLateCustomers(int months) async {
     final db = await database;
     final now = DateTime.now();
-    final threshold = DateTime(now.year, now.month - months, now.day);
-    final List<Map<String, dynamic>> maps = await db.query(
-      'customers',
-      where: 'current_total_debt > 0 AND last_modified_at < ?',
-      whereArgs: [threshold.toIso8601String()],
-    );
-    return List.generate(maps.length, (i) => Customer.fromMap(maps[i]));
+    // حساب تاريخ العتبة: اليوم المماثل قبل N من الأشهر
+    final thresholdDate = DateTime(now.year, now.month - months, now.day);
+    final thresholdStr = thresholdDate.toIso8601String();
+
+    // استعلام لجلب العملاء الذين لديهم دين، وآخر معاملة لهم (أي نوع) كانت قبل تاريخ العتبة
+    // مع جلب نوع المعاملة ورقم الفاتورة إن وجد
+    final List<Map<String, dynamic>> results = await db.rawQuery('''
+      SELECT 
+        c.*, 
+        (
+          SELECT MAX(transaction_date) 
+          FROM transactions t 
+          WHERE t.customer_id = c.id
+        ) as last_transaction_date,
+        (
+          SELECT transaction_type
+          FROM transactions t
+          WHERE t.customer_id = c.id
+          ORDER BY transaction_date DESC
+          LIMIT 1
+        ) as last_transaction_type,
+        (
+          SELECT invoice_id
+          FROM transactions t
+          WHERE t.customer_id = c.id
+          ORDER BY transaction_date DESC
+          LIMIT 1
+        ) as last_transaction_invoice_id
+      FROM customers c
+      WHERE c.current_total_debt > 0
+      GROUP BY c.id
+      HAVING last_transaction_date < ? OR last_transaction_date IS NULL
+      ORDER BY last_transaction_date ASC
+    ''', [thresholdStr]);
+
+    return results;
   }
 
   // --- دوال معاملات الدين ---
@@ -6304,6 +6404,8 @@ class DatabaseService {
     required List<String> transactionTypes,
     required DateTime startDate,
     required DateTime endDate,
+    bool excludeReturns = false,
+    bool onlyReturns = false,
   }) async {
     final db = await database;
     try {
@@ -6313,24 +6415,25 @@ class DatabaseService {
       // بناء شرط الأنواع
       final typePlaceholders = transactionTypes.map((_) => '?').join(', ');
       
+      String returnFilter = '';
+      if (excludeReturns) {
+        returnFilter = ' AND r.id IS NULL';
+      } else if (onlyReturns) {
+        returnFilter = ' AND r.id IS NOT NULL';
+      }
+      
       final List<Map<String, dynamic>> maps = await db.rawQuery('''
         SELECT 
-          t.id,
-          t.customer_id,
-          t.transaction_date,
-          t.amount_changed,
-          t.balance_before_transaction,
-          t.new_balance_after_transaction,
-          t.transaction_note,
-          t.transaction_type,
-          t.description,
+          t.*,
           c.name as customer_name,
           c.phone as customer_phone
         FROM transactions t
         LEFT JOIN customers c ON t.customer_id = c.id
+        LEFT JOIN returns r ON t.id = r.transaction_id
         WHERE t.transaction_type IN ($typePlaceholders)
           AND t.transaction_date >= ?
           AND t.transaction_date < ?
+          $returnFilter
         ORDER BY t.transaction_date DESC
       ''', [...transactionTypes, startStr, endStr]);
       
@@ -6584,9 +6687,20 @@ class DatabaseService {
   // --- دوال نظام التقارير ---
 
     // دوال تقارير البضاعة
-  Future<Map<String, dynamic>> getProductSalesData(int productId) async {
+  Future<Map<String, dynamic>> getProductSalesData(int productId, {DateTime? fromDate, DateTime? toDate}) async {
     final db = await database;
     try {
+      // بناء شرط التاريخ
+      final List<dynamic> baseArgs = [productId];
+      String dateCondition = '';
+      if (fromDate != null) {
+        dateCondition += " AND i.invoice_date >= '${fromDate.toIso8601String().substring(0, 10)}'";
+      }
+      if (toDate != null) {
+        final endOfDay = DateTime(toDate.year, toDate.month, toDate.day, 23, 59, 59);
+        dateCondition += " AND i.invoice_date <= '${endOfDay.toIso8601String()}'";
+      }
+
       // جلب جميع الفواتير المحفوظة التي تحتوي على هذا المنتج مع بيانات المنتج الكاملة
       final List<Map<String, dynamic>> itemMaps = await db.rawQuery('''
         SELECT 
@@ -6606,8 +6720,8 @@ class DatabaseService {
         FROM invoice_items ii
         JOIN invoices i ON ii.invoice_id = i.id
         JOIN products p ON ii.product_name = p.name
-        WHERE p.id = ? AND i.status = 'محفوظة'
-      ''', [productId]);
+        WHERE p.id = ? AND i.status = 'محفوظة'$dateCondition
+      ''', baseArgs);
  
       double totalQuantity = 0.0; // بوحدة الأساس (قطعة/متر)
       double totalSoldUnits = 0.0; // بوحدة البيع (للحساب الصحيح لمتوسط سعر البيع)
@@ -7079,9 +7193,27 @@ class DatabaseService {
 
   // دوال تقارير الأشخاص
   /// 🔧 إصلاح: نفس منطق getDailyReport في ai_chat_service.dart
-  Future<Map<String, dynamic>> getCustomerProfitData(int customerId) async {
+  Future<Map<String, dynamic>> getCustomerProfitData(int customerId, {DateTime? fromDate, DateTime? toDate}) async {
     final db = await database;
     try {
+      // بناء شرط التاريخ
+      String dateCondition = '';
+      if (fromDate != null) {
+        dateCondition += " AND invoice_date >= '${fromDate.toIso8601String().substring(0, 10)}'";
+      }
+      if (toDate != null) {
+        final endOfDay = DateTime(toDate.year, toDate.month, toDate.day, 23, 59, 59);
+        dateCondition += " AND invoice_date <= '${endOfDay.toIso8601String()}'";
+      }
+      String dateConditionAlias = '';
+      if (fromDate != null) {
+        dateConditionAlias += " AND i.invoice_date >= '${fromDate.toIso8601String().substring(0, 10)}'";
+      }
+      if (toDate != null) {
+        final endOfDay = DateTime(toDate.year, toDate.month, toDate.day, 23, 59, 59);
+        dateConditionAlias += " AND i.invoice_date <= '${endOfDay.toIso8601String()}'";
+      }
+
       // جلب بيانات الفواتير (المحفوظة فقط) - تشمل الفواتير القديمة والجديدة
       final List<Map<String, dynamic>> invoiceMaps = await db.rawQuery('''
         SELECT 
@@ -7090,7 +7222,7 @@ class DatabaseService {
         FROM invoices
         WHERE (customer_id = ? OR (customer_id IS NULL AND customer_name = (
           SELECT name FROM customers WHERE id = ?
-        ))) AND status = 'محفوظة'
+        ))) AND status = 'محفوظة'$dateCondition
       ''', [customerId, customerId]);
  
       // جلب بيانات المعاملات المالية
@@ -7122,7 +7254,7 @@ class DatabaseService {
         JOIN products p ON ii.product_name = p.name
         WHERE (i.customer_id = ? OR (i.customer_id IS NULL AND i.customer_name = (
           SELECT name FROM customers WHERE id = ?
-        ))) AND i.status = 'محفوظة'
+        ))) AND i.status = 'محفوظة'$dateConditionAlias
       ''', [customerId, customerId]);
       
       double totalProfit = 0.0;
@@ -7217,7 +7349,7 @@ class DatabaseService {
           SELECT id FROM invoices 
           WHERE (customer_id = ? OR (customer_id IS NULL AND customer_name = (
             SELECT name FROM customers WHERE id = ?
-          ))) AND status = 'محفوظة'
+          ))) AND status = 'محفوظة'$dateCondition
         ''', [customerId, customerId]);
         if (invIds.isNotEmpty) {
           final ids = invIds.map((e) => (e['id'] as int)).toList();
