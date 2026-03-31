@@ -25,11 +25,6 @@ class SmartSearchDatabase {
   }
 
   Future<Database> _initDatabase() async {
-    // تهيئة sqflite_ffi للويندوز
-    if (Platform.isWindows || Platform.isLinux) {
-      sqfliteFfiInit();
-      databaseFactory = databaseFactoryFfi;
-    }
 
     final Directory documentsDirectory = await getApplicationDocumentsDirectory();
     final String path = join(documentsDirectory.path, 'smart_search.db');
@@ -219,6 +214,27 @@ class SmartSearchDatabase {
     final db = await database;
     final placeholders = productIds.map((_) => '?').join(',');
     
+    final results = await db.rawQuery('''
+      SELECT 
+        CASE 
+          WHEN product_id_a IN ($placeholders) THEN product_id_b 
+          ELSE product_id_a 
+        END as associated_product_id,
+        SUM(co_occurrence_count) as total_count
+      FROM product_associations 
+      WHERE product_id_a IN ($placeholders) OR product_id_b IN ($placeholders)
+      GROUP BY associated_product_id
+      ORDER BY total_count DESC
+    ''', [...productIds, ...productIds, ...productIds]);
+
+    final Map<int, int> associations = {};
+    for (final row in results) {
+      final productId = row['associated_product_id'] as int;
+      final count = row['total_count'] as int;
+      // تجاهل المنتجات الموجودة في القائمة الأصلية
+      if (!productIds.contains(productId)) {
+        associations[productId] = count;
+      }
     }
     return associations;
   }
@@ -460,7 +476,7 @@ class SmartSearchDatabase {
       'discovered_brands',
       orderBy: 'occurrence_count DESC',
     );
-    return results.map((m) => {
+    return results.map((m) => <String, dynamic>{
       'brand': m['brand'] as String,
       'count': m['occurrence_count'] as int,
       'created_at': m['created_at'] as String,
@@ -508,6 +524,49 @@ class SmartSearchDatabase {
   // ═══════════════════════════════════════════════════════════════════════════
   // دوال الإحصائيات
   // ═══════════════════════════════════════════════════════════════════════════
+
+  /// جلب إحصائيات بيانات التدريب
+  Future<Map<String, dynamic>> getTrainingDataStats() async {
+    final db = await database;
+
+    final assocResult = await db.rawQuery('SELECT COUNT(*) as cnt FROM product_associations');
+    final assocCount = (assocResult.first['cnt'] as int?) ?? 0;
+
+    final seqResult = await db.rawQuery('SELECT COUNT(*) as cnt FROM product_sequences');
+    final seqCount = (seqResult.first['cnt'] as int?) ?? 0;
+
+    final custPrefResult = await db.rawQuery('SELECT COUNT(*) as cnt FROM customer_brand_preferences');
+    final custPrefCount = (custPrefResult.first['cnt'] as int?) ?? 0;
+
+    final instPrefResult = await db.rawQuery('SELECT COUNT(*) as cnt FROM installer_brand_preferences');
+    final instPrefCount = (instPrefResult.first['cnt'] as int?) ?? 0;
+
+    final brandsResult = await db.rawQuery('SELECT COUNT(*) as cnt FROM discovered_brands');
+    final brandsCount = (brandsResult.first['cnt'] as int?) ?? 0;
+
+    final hasData = (assocCount + seqCount + custPrefCount + instPrefCount + brandsCount) > 0;
+
+    // آخر تدريب
+    String? lastTraining;
+    final lastStats = await db.query(
+      'training_stats',
+      orderBy: 'id DESC',
+      limit: 1,
+    );
+    if (lastStats.isNotEmpty) {
+      lastTraining = lastStats.first['trained_at'] as String?;
+    }
+
+    return {
+      'has_data': hasData,
+      'associations_count': assocCount,
+      'sequences_count': seqCount,
+      'customer_preferences_count': custPrefCount,
+      'installer_preferences_count': instPrefCount,
+      'brands_count': brandsCount,
+      'last_training': lastTraining,
+    };
+  }
 
   /// حفظ إحصائيات التدريب
   Future<void> saveTrainingStats(TrainingStats stats) async {

@@ -20,6 +20,7 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:convert';
+import 'dart:async'; // 🔄 Added import for Completer
 import 'sync/sync_tracker.dart'; // 🔄 تتبع المزامنة
 import 'sync/sync_security.dart'; // 🔄 أمان المزامنة (لتوليد UUID)
 import 'firebase_sync/firebase_sync_helper.dart'; // 🔥 مزامنة Firebase
@@ -27,6 +28,8 @@ import 'firebase_sync/firebase_sync_helper.dart'; // 🔥 مزامنة Firebase
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
   static Database? _database;
+  static Completer<Database>? _initDbCompleter; // 🛡️ لمنع Race Condition
+  bool _isShuttingDown = false; // 🛡️ لإيقاف الفتح أثناء الإغلاق
   static const int _databaseVersion = 42; // 🔄 إضافة عمود notes لفواتير قديمة
   // تحكم بالطباعات التشخيصية من مصدر واحد
   // معطل في الإصدار النهائي لتجنب الطباعات المزعجة
@@ -227,10 +230,34 @@ class DatabaseService {
   }
 
   Future<Database> get database async {
-    if (_database != null) return _database!;
+    if (_isShuttingDown) throw Exception('تطبيق قيد الإغلاق، لا يمكن فتح قاعدة البيانات');
+
+    if (_database != null) {
+      if (await _isConnectionHealthy()) {
+        return _database!;
+      }
+      print('🔄 إعادة فتح اتصال قاعدة البيانات (Connection Stale)...');
+      _database = null;
+      _initDbCompleter = null;
+    }
+
+    if (_initDbCompleter != null) return _initDbCompleter!.future;
+    
+    _initDbCompleter = Completer<Database>();
     
     try {
-      _database = await _initDatabase();
+      int retries = 3;
+      while (retries > 0) {
+        try {
+          _database = await _initDatabase();
+          break;
+        } catch (e) {
+          retries--;
+          print('⚠️ خطأ في فتح قاعدة البيانات. محاولات متبقية: $retries - $e');
+          if (retries == 0) rethrow;
+          await Future.delayed(const Duration(milliseconds: 500));
+        }
+      }
       
       // التحقق من سلامة قاعدة البيانات عند كل تهيئة
       await checkAndRepairDatabaseIntegrity();
@@ -241,6 +268,13 @@ class DatabaseService {
       if (restored) {
         _database = await _initDatabase();
       }
+    }
+
+    if (_database == null) {
+      final error = Exception('فشل في فتح قاعدة البيانات');
+      _initDbCompleter?.completeError(error);
+      _initDbCompleter = null;
+      throw error;
     }
     
     // Ensure critical tables exist for older DBs
@@ -701,7 +735,44 @@ class DatabaseService {
       // تجاهل الخطأ
     }
 
+    if (!(_initDbCompleter?.isCompleted ?? true)) {
+      _initDbCompleter?.complete(_database!);
+    }
+
     return _database!;
+  }
+
+  /// فحص صحة الاتصال بقاعدة البيانات
+  Future<bool> _isConnectionHealthy() async {
+    if (_database == null || !_database!.isOpen) return false;
+    try {
+      final res = await _database!.rawQuery('SELECT 1');
+      return res.isNotEmpty;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// إغلاق قاعدة البيانات بأمان
+  Future<void> closeDatabase() async {
+    if (_database != null && _database!.isOpen) {
+      try {
+        await _database!.execute('PRAGMA wal_checkpoint(TRUNCATE)');
+        await _database!.close();
+        print('✅ تم إغلاق قاعدة البيانات الرئيسية بنجاح');
+      } catch (e) {
+        print('⚠️ خطأ في إغلاق قاعدة البيانات: $e');
+      }
+      _database = null;
+      _initDbCompleter = null;
+    }
+  }
+
+  /// إغلاق نهائي للتطبيق
+  Future<void> closeDatabaseForShutdown() async {
+    print('🛡️ بدء الإغلاق النهائي لقاعدة البيانات...');
+    _isShuttingDown = true;
+    await closeDatabase();
   }
 
   Future<Database> _initDatabase() async {

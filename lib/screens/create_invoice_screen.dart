@@ -43,6 +43,8 @@ import '../services/password_service.dart'; // Added for password protection
 import '../utils/money_calculator.dart'; // Added for profit calculation fix
 import '../services/smart_search/smart_search.dart'; // 🧠 البحث الذكي
 import '../services/invoice_suspend_service.dart';
+import '../services/invoice_prediction_service.dart'; // 🔮 التوقعات الذكية
+import '../models/invoice_prediction.dart'; // 🔮 نماذج التوقعات
 import 'package:get_storage/get_storage.dart';
 import '../models/line_item_focus_nodes.dart'; // إدارة FocusNode لكل صف
 
@@ -582,13 +584,20 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
       // إضافة استماع للتغيرات في الحقول
       customerNameController.addListener(_onFieldChanged);
       customerNameController.addListener(_onCustomerChanged); // 🧠 تحديث سياق البحث الذكي
+      customerNameController.addListener(_checkHistoryForPredictions); // 🔮 فحص السجل التاريخي
       customerPhoneController.addListener(_onFieldChanged);
       customerAddressController.addListener(_onFieldChanged);
       installerNameController.addListener(_onFieldChanged);
       installerNameController.addListener(_onInstallerChanged); // 🧠 تحديث سياق البحث الذكي
+      installerNameController.addListener(_checkHistoryForPredictions); // 🔮 فحص السجل التاريخي (أولوية)
       paidAmountController.addListener(_onFieldChanged);
       discountController.addListener(_onFieldChanged);
       discountController.addListener(_onDiscountChanged);
+      
+      // 🔮 التنبؤات التلقائية معطلة حالياً (يمكن تفعيلها لاحقاً)
+      // customerNameController.addListener(_triggerAutoPredictions);
+      // installerNameController.addListener(_triggerAutoPredictions);
+
 
       if (invoiceToManage != null) {
         customerNameController.text = invoiceToManage!.customerName;
@@ -823,6 +832,85 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     );
   }
 
+  // 🔮 التحقق من وجود سجل تاريخي للفني/العميل (مع debounce لمنع الاستعلامات المتكررة)
+  // الأولوية: الفني أولاً (أقوى نمطاً)، ثم العميل إذا لم يوجد فني
+  void _checkHistoryForPredictions() {
+    _historyCheckDebounce?.cancel();
+    _historyCheckDebounce = Timer(const Duration(milliseconds: 600), () async {
+      final installer = installerNameController.text.trim();
+      final customer = customerNameController.text.trim();
+
+      if (installer.isEmpty && customer.isEmpty) {
+        if (mounted) setState(() => _hasHistoryForPrediction = false);
+        return;
+      }
+
+      try {
+        // hasHistory يتبع نفس الأولوية: يبحث عن الفني أولاً ثم العميل
+        final hasHistory = await InvoicePredictionService.instance.hasHistory(
+          installerName: installer.isNotEmpty ? installer : null,
+          customerName: customer.isNotEmpty ? customer : null,
+        );
+        if (mounted) setState(() => _hasHistoryForPrediction = hasHistory);
+      } catch (e) {
+        print('Error checking prediction history: $e');
+        if (mounted) setState(() => _hasHistoryForPrediction = false);
+      }
+    });
+  }
+
+  Timer? _predictionDebounceTimer;
+  
+  // 🔮 متغيرات التحقق من السجل التاريخي لأولوية الفني/العميل
+  bool? _hasHistoryForPrediction; // null=لم يُفحص، false=لا سجل، true=يوجد سجل
+  Timer? _historyCheckDebounce;
+
+  // 🔮 تم تحويلها لدالة يدوية بدلاً من تلقائية بناءً على طلب المستخدم
+  Future<void> _manualTriggerPredictions() async {
+    final customer = customerNameController.text.trim();
+    final installer = installerNameController.text.trim();
+    
+    if (customer.isEmpty && installer.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('يرجى إدخال اسم العميل أو المُركّب أولاً')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isSearchingPredictions = true;
+    });
+
+    try {
+      final results = await InvoicePredictionService.instance.getPredictions(
+        customerName: customer,
+        installerName: installer,
+      );
+
+      if (results.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('لا توجد توقعات سابقة لهذا الشخص')),
+          );
+        }
+      } else {
+        if (mounted) {
+          _showPredictionsDialog();
+        }
+      }
+    } catch (e) {
+      print('Error fetching manual predictions: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSearchingPredictions = false;
+        });
+      }
+    }
+  }
+
+  bool _isSearchingPredictions = false;
+
   // معالج تغيير الخصم
   void _onDiscountChanged() {
     try {
@@ -896,8 +984,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
       discountController.removeListener(_onFieldChanged);
       discountController.removeListener(_onDiscountChanged);
 
-      // إلغاء المؤقت
+      // إلغاء المؤقتات
       debounceTimer?.cancel();
+      _predictionDebounceTimer?.cancel();
+      _historyCheckDebounce?.cancel(); // 🔮 إلغاء مؤقت فحص السجل التاريخي
 
       // الحفظ الفوري عند إغلاق الشاشة (بدون انتظار)
       if (!savedOrSuspended &&
@@ -3237,6 +3327,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                     ? _holdCurrentInvoice
                     : null,
               ),
+            // 🔮 زر التوقعات الذكية
+            if (!isViewOnly && _canShowPredictions())
+              IconButton(
+                icon: const Icon(Icons.lightbulb_outline),
+                tooltip: 'توقعات ذكية',
+                onPressed: !isSaving ? _showPredictionsDialog : null,
+              ),
             // 📌 زر الفواتير المنتظرة مع شارة العدد
             Stack(
               children: [
@@ -3612,7 +3709,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                           focusNode: _searchFocusNode, // ربط FocusNode
                           decoration: InputDecoration(
                             labelText: 'البحث عن صنف (بحث ذكي يدعم الكلمات المتعددة)',
-                            hintText: 'مثال: اكتب "كوب فنار" لإيجاد "كوب واحد سيه فنار"',
+                            hintText: '',
                             suffixIcon: IconButton(
                               icon: const Icon(Icons.clear),
                               onPressed: isViewOnly
@@ -4946,6 +5043,449 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     return result ?? false;
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔮 التوقعات الذكية
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// التحقق من إمكانية عرض التوقعات الذكية (Zero-Shot)
+  /// الشرط 1: يجب وجود اسم عميل أو فني
+  /// الشرط 2: يجب أن يكون للاسم المدخل سجل فواتير سابق (محسوب مسبقاً بـ async)
+  /// الأولوية: الفني أولاً ← العميل ← إخفاء الزر للأسماء الجديدة بلا سجل
+  bool _canShowPredictions() {
+    final hasCustomer = customerNameController.text.trim().isNotEmpty;
+    final hasInstaller = installerNameController.text.trim().isNotEmpty;
+    if (!hasCustomer && !hasInstaller) return false;
+    // نعتمد على المتغير المحسوب مسبقاً بشكل async (null = لم يُفحص بعد = مخفي)
+    return _hasHistoryForPrediction == true;
+  }
+
+  /// عرض dialog التوقعات
+  Future<void> _showPredictionsDialog() async {
+    if (!_canShowPredictions()) return;
+
+    // عرض مؤشر تحميل
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(
+        child: CircularProgressIndicator(),
+      ),
+    );
+
+    try {
+      // جلب التوقعات
+      final predictions = await InvoicePredictionService.instance.getPredictions(
+        customerName: customerNameController.text.trim(),
+        customerId: invoiceToManage?.customerId,
+        installerName: installerNameController.text.trim(),
+      );
+
+      // إغلاق مؤشر التحميل
+      if (mounted) Navigator.pop(context);
+
+      if (predictions.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('لا توجد بيانات كافية للتوقعات'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+
+      // عرض dialog التوقعات
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => _PredictionsDialog(
+            predictions: predictions,
+            onApply: _applyPrediction,
+            personName: installerNameController.text.trim().isNotEmpty
+                ? installerNameController.text.trim()
+                : customerNameController.text.trim(),
+          ),
+        );
+      }
+    } catch (e) {
+      // إغلاق مؤشر التحميل
+      if (mounted) Navigator.pop(context);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('خطأ في جلب التوقعات: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  /// تطبيق توقع على الفاتورة (استبدال أو إضافة)
+  Future<void> _applyPrediction(InvoicePrediction prediction, {bool append = false}) async {
+    // إغلاق dialog التوقعات
+    Navigator.pop(context);
+
+    // تأكيد إذا كان المستخدم يريد "الاستبدال" وهناك أصناف حالية
+    if (!append && invoiceItems.any((i) => i.productName.isNotEmpty)) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('تأكيد الاستبدال'),
+          content: const Text('سيتم مسح المنتجات الحالية واستبدالها بالتوقع. هل تريد المتابعة؟'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('إلغاء'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              child: const Text('استبدال الكل'),
+            ),
+          ],
+        ),
+      );
+
+      if (confirm != true) return;
+    }
+
+    // مسح الفاتورة الحالية فقط في وضع الاستبدال
+    if (!append) {
+      setState(() {
+        invoiceItems.clear();
+        focusNodesList.clear();
+      });
+    } else {
+      // في وضع الإضافة، احجز صفوفاً فارغة إن لزم الأمر
+      // (اختياري: يمكنك تنقية الصفوف الفارغة الحالية أولاً)
+      setState(() {
+        invoiceItems.removeWhere((item) => item.productName.isEmpty);
+      });
+    }
+
+    // إضافة المنتجات المتوقعة
+    int addedCount = 0;
+    for (final predictedItem in prediction.items) {
+      try {
+        // البحث عن المنتج (للتأكد من وجود البيانات الكاملة والـ ID)
+        Product? product;
+        if (predictedItem.productId != null) {
+          product = await db.getProductById(predictedItem.productId!);
+        }
+        
+        if (product == null) {
+          final results = await db.searchProductsSmart(predictedItem.productName);
+          if (results.isNotEmpty) {
+            product = results.first;
+          }
+        }
+
+        if (product == null) continue;
+
+        // إنشاء InvoiceItem - يعامل كبند عادي تماماً
+        final item = InvoiceItem(
+          invoiceId: 0,
+          productId: product.id,
+          productName: product.name,
+          quantityIndividual: predictedItem.quantity,
+          quantityLargeUnit: 0,
+          appliedPrice: predictedItem.price,
+          saleType: predictedItem.saleType,
+          costPrice: product.costPrice,
+          unitsInLargeUnit: product.piecesPerUnit?.toDouble() ?? 1,
+          unit: product.unit,
+          unitPrice: product.unitPrice,
+          itemTotal: predictedItem.quantity * predictedItem.price,
+          uniqueId: 'predicted_${DateTime.now().microsecondsSinceEpoch}_${addedCount}',
+        );
+
+        setState(() {
+          invoiceItems.add(item);
+          focusNodesList.add(LineItemFocusNodes());
+        });
+
+        // إضافة للسياق الذكي لتعزيز التوقعات التالية
+        SmartSearchService.instance.addProductToSession(product.id, product.name);
+        addedCount++;
+      } catch (e) {
+        print('⚠️ Error adding predicted item: $e');
+      }
+    }
+
+    // إضافة صف فارغ في النهاية ليسهل على المستخدم الإكمال يدوياً
+    setState(() {
+      invoiceItems.add(InvoiceItem(
+        invoiceId: 0,
+        productName: '',
+        unit: '',
+        unitPrice: 0.0,
+        appliedPrice: 0.0,
+        itemTotal: 0.0,
+        uniqueId: 'placeholder_${DateTime.now().microsecondsSinceEpoch}',
+      ));
+      focusNodesList.add(LineItemFocusNodes());
+    });
+
+    // إعادة حساب الإجماليات والربح
+    _recalculateTotals();
+    _calculateProfit();
+
+    // عرض رسالة نجاح
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(append ? 'تمت إضافة $addedCount صنف للفاتورة' : 'تم استدعاء $addedCount صنف للفاتورة'),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔮 Dialog التوقعات الذكية
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _PredictionsDialog extends StatelessWidget {
+  final List<InvoicePrediction> predictions;
+  final Function(InvoicePrediction, {bool append}) onApply;
+  final String personName;
+
+  const _PredictionsDialog({
+    required this.predictions,
+    required this.onApply,
+    required this.personName,
+  });
+
+  String formatNumber(num value) {
+    return NumberFormat('#,##0.##', 'en_US').format(value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      child: Container(
+        width: MediaQuery.of(context).size.width * 0.85,
+        height: MediaQuery.of(context).size.height * 0.85,
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            // العنوان
+            Row(
+              children: [
+                const Icon(Icons.lightbulb, color: Colors.amber, size: 32),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'التوقعات الذكية - $personName',
+                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const Divider(thickness: 2),
+            const SizedBox(height: 8),
+
+            // التوقعات
+            Expanded(
+              child: ListView.builder(
+                itemCount: predictions.length,
+                itemBuilder: (context, index) {
+                  return _buildPredictionCard(context, predictions[index]);
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPredictionCard(BuildContext context, InvoicePrediction prediction) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      elevation: 4,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // العنوان والنقاط
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      prediction.type == 'last_similar'
+                          ? Icons.history
+                          : prediction.type == 'frequent'
+                              ? Icons.repeat
+                              : Icons.auto_awesome,
+                      color: Colors.blue,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      prediction.title,
+                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+                if (prediction.type == 'smart' && prediction.score > 0)
+                  Chip(
+                    label: Text('${prediction.score.toStringAsFixed(0)} نقطة'),
+                    backgroundColor: Colors.blue.shade100,
+                  ),
+              ],
+            ),
+
+            if (prediction.description != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                prediction.description!,
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+              ),
+            ],
+
+            const SizedBox(height: 12),
+
+            // جدول المنتجات
+            Container(
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.grey.shade300),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                children: [
+                  // الرأس
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade200,
+                      borderRadius: const BorderRadius.only(
+                        topLeft: Radius.circular(8),
+                        topRight: Radius.circular(8),
+                      ),
+                    ),
+                    padding: const EdgeInsets.all(8),
+                    child: Row(
+                      children: const [
+                        Expanded(flex: 3, child: Text('المنتج', style: TextStyle(fontWeight: FontWeight.bold))),
+                        Expanded(flex: 1, child: Text('الكمية', style: TextStyle(fontWeight: FontWeight.bold), textAlign: TextAlign.center)),
+                        Expanded(flex: 2, child: Text('السعر', style: TextStyle(fontWeight: FontWeight.bold), textAlign: TextAlign.left)),
+                        Expanded(flex: 2, child: Text('المجموع', style: TextStyle(fontWeight: FontWeight.bold), textAlign: TextAlign.left)),
+                      ],
+                    ),
+                  ),
+
+                  // الصفوف - إظهار الكل بدون حد بناءً على طلب المستخدم
+                  ...prediction.items.map((item) => Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          flex: 3,
+                          child: Text(
+                            item.productName,
+                            style: const TextStyle(fontSize: 13),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        Expanded(
+                          flex: 1,
+                          child: Text(
+                            item.quantity.toStringAsFixed(0),
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: Text(
+                            formatNumber(item.price),
+                            textAlign: TextAlign.left,
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: Text(
+                            formatNumber(item.quantity * item.price),
+                            textAlign: TextAlign.left,
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        ),
+                      ],
+                    ),
+                  )),
+
+                  // الإجمالي
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.blue.shade50,
+                      borderRadius: const BorderRadius.only(
+                        bottomLeft: Radius.circular(8),
+                        bottomRight: Radius.circular(8),
+                      ),
+                    ),
+                    padding: const EdgeInsets.all(8),
+                    child: Row(
+                      children: [
+                        const Expanded(
+                          flex: 3,
+                          child: Text('الإجمالي', style: TextStyle(fontWeight: FontWeight.bold)),
+                        ),
+                        const Expanded(flex: 1, child: SizedBox()),
+                        const Expanded(flex: 2, child: SizedBox()),
+                        Expanded(
+                          flex: 2,
+                          child: Text(
+                            formatNumber(prediction.totalAmount),
+                            textAlign: TextAlign.left,
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+
+
+            const SizedBox(height: 12),
+
+            // زر الاستدعاء
+            Center(
+              child: ElevatedButton.icon(
+                onPressed: () => onApply(prediction),
+                icon: const Icon(Icons.check_circle),
+                label: const Text('استدعاء هذا التوقع'),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  backgroundColor: Colors.blue,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class EditableInvoiceItemRow extends StatefulWidget {

@@ -7,6 +7,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:get_storage/get_storage.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:window_manager/window_manager.dart'; // 🛡️ لإدارة النافذة والإغلاق النظيف
 import 'firebase_options.dart';
 import 'providers/app_provider.dart';
 import 'screens/home_screen.dart';
@@ -123,16 +124,106 @@ void main() async {
   final passwordService = PasswordService();
   final bool passwordsSet = await passwordService.arePasswordsSet();
 
+  // 🛡️ تهيئة Window Manager
+  await windowManager.ensureInitialized();
+  WindowOptions windowOptions = const WindowOptions(
+    title: 'دفتر ديوني',
+    center: true,
+  );
+  windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await windowManager.show();
+    await windowManager.focus();
+    // 🛡️ نمنع الإغلاق المباشر لمعالجته بشكل نظيف
+    await windowManager.setPreventClose(true);
+  });
+
   runApp(MyApp(initialRoute: passwordsSet ? '/' : '/password_setup'));
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   final String initialRoute;
 
   const MyApp({super.key, required this.initialRoute});
 
   @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> with WindowListener {
+  bool _isClosing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    windowManager.addListener(this);
+  }
+
+  @override
+  void dispose() {
+    windowManager.removeListener(this);
+    super.dispose();
+  }
+
+  @override
+  void onWindowClose() async {
+    if (_isClosing) return; // تم بدء الإغلاق بالفعل
+    
+    setState(() => _isClosing = true);
+    
+    // 🛡️ إغلاق قواعد البيانات وإلغاء الاشتراكات
+    try {
+      final dbService = DatabaseService();
+      await dbService.closeDatabaseForShutdown();
+      
+      // إيقاف أي خدمات Firebase تعمل في الخلفية
+      FirebaseSyncService().dispose();
+      
+    } catch (e) {
+      print('⚠️ خطأ أثناء إغلاق الموارد: $e');
+    }
+    
+    // الانتظار ثانية واحدة للتأكد من حفظ كل شيء وإظهار رسالة الإغلاق
+    await Future.delayed(const Duration(milliseconds: 1500));
+    
+    // إغلاق النافذة فعلياً وإنهاء العملية
+    await windowManager.destroy();
+    exit(0);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    if (_isClosing) {
+      // شاشة بسيطة تظهر أثناء الإغلاق
+      return MaterialApp(
+        title: 'دفتر ديوني',
+        theme: ThemeData(
+          fontFamily: 'Cairo', // Same font family as main app for consistency
+        ),
+        localizationsDelegates: const [
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: const [
+          Locale('ar', 'SA'),
+        ],
+        locale: const Locale('ar', 'SA'),
+        home: const Scaffold(
+          body: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('جاري حفظ البيانات وإغلاق التطبيق بأمان...', 
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => AppProvider()),
@@ -200,7 +291,7 @@ class MyApp extends StatelessWidget {
           '/ai_chat': (context) => const AIChatScreen(),
           '/firebase_sync_settings': (context) => const FirebaseSyncSettingsScreen(),
         },
-        initialRoute: initialRoute,
+        initialRoute: widget.initialRoute,
       ),
     );
   }

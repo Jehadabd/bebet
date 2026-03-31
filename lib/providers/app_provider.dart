@@ -12,6 +12,7 @@ import '../services/telegram_backup_service.dart';
 import '../services/settings_manager.dart';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
+import 'dart:async'; // 🛡️ لـ StreamSubscription
 import 'package:archive/archive_io.dart';
 import '../services/firebase_sync/firebase_sync_helper.dart'; // Import SyncHelper
 import '../models/account_statement_item.dart';
@@ -40,6 +41,7 @@ class AppProvider with ChangeNotifier {
   bool _isDriveSignedInSync = false;
   bool _autoCreateCustomerOnSync = true; // إنشاء العميل تلقائياً عند المزامنة إذا لم يكن موجوداً
   CustomerSortType _currentSortType = CustomerSortType.alphabetical; // نوع الترتيب الحالي
+  StreamSubscription? _syncSubscription; // 🛡️ لإدارة اشتراك المزامنة
 
   // Temporary invoice state for preserving unsaved invoice data
   String _tempCustomerName = '';
@@ -86,11 +88,11 @@ class AppProvider with ChangeNotifier {
         _isDriveSignedInSync = await _drive.isSignedIn();
       }
       await _loadCustomers();
-      await _loadCustomers();
       await ensureAudioNotesDirectory();
       
       // Listen to sync events from Firebase
-      FirebaseSyncHelper().syncEvents.listen((event) {
+      _syncSubscription?.cancel(); // 🛡️ إلغاء الاشتراك القديم لتجنب التكرار
+      _syncSubscription = FirebaseSyncHelper().syncEvents.listen((event) {
         print('🔔 AppProvider: New sync event: $event');
         _loadCustomers(); // Reload to reflect changes
         if (_selectedCustomer != null) {
@@ -105,6 +107,12 @@ class AppProvider with ChangeNotifier {
   void _setLoading(bool value) {
     _isLoading = value;
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _syncSubscription?.cancel();
+    super.dispose();
   }
 
   // Customer operations

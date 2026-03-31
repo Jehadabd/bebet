@@ -13,6 +13,8 @@ import '../services/sync/sync_audit_service.dart';
 import '../services/password_service.dart';
 import '../models/account_statement_item.dart';
 import '../services/smart_search/smart_search.dart' as smart_search; // 🧠 البحث الذكي
+import '../services/invoice_prediction_service.dart' as invoice_prediction; // 🔮 التوقعات الذكية
+import '../services/expert_training_service.dart'; // العقل المدبر للتدريب
 import 'financial_audit_screen.dart'; // 🛡️ شاشة التدقيق المالي
 
 class GeneralSettingsScreen extends StatefulWidget {
@@ -1091,6 +1093,48 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
             ),
           ),
           
+          // 🔮 التوقعات الذكية
+          _buildSettingsCard(
+            icon: Icons.lightbulb,
+            iconColor: Colors.amber,
+            title: 'التوقعات الذكية',
+            child: Column(
+              children: [
+                _buildActionTile(
+                  icon: Icons.rocket_launch,
+                  iconColor: Colors.deepOrange,
+                  title: 'التدريب الشامل للذكاء الخبير 🚀',
+                  subtitle: 'تأسيس الروابط وقواعد التتابع (منفصل عن البحث الذكي)',
+                  onTap: () => _trainPredictionSystem(),
+                ),
+                const Divider(height: 1),
+                _buildActionTile(
+                  icon: Icons.science,
+                  iconColor: Colors.orange,
+                  title: 'اختبار نظام التوقعات',
+                  subtitle: 'اختبار النظام على عينة من الفواتير',
+                  onTap: () => _testPredictionSystem(),
+                ),
+                const Divider(height: 1),
+                _buildActionTile(
+                  icon: Icons.analytics,
+                  iconColor: Colors.purple,
+                  title: 'إحصائيات التدريب',
+                  subtitle: 'عرض معلومات البيانات المدربة',
+                  onTap: () => _showPredictionTrainingStats(),
+                ),
+                const Divider(height: 1),
+                _buildActionTile(
+                  icon: Icons.info_outline,
+                  iconColor: Colors.blue,
+                  title: 'معلومات النظام',
+                  subtitle: 'شرح كيفية عمل نظام التوقعات',
+                  onTap: () => _showPredictionSystemInfo(),
+                ),
+              ],
+            ),
+          ),
+          
           // 🛡️ أدوات الحماية والتدقيق المالي
           _buildSettingsCard(
             icon: Icons.verified_user,
@@ -1153,8 +1197,8 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
         content: const Text(
           'سيقوم النظام بقراءة جميع الفواتير السابقة وتعلم:\n\n'
           '• تفضيلات العملاء للعلامات التجارية\n'
-          '• تفضيلات المُركّبين\n'
-          '• المنتجات التي تُشترى معاً\n\n'
+          '• تفضيلات المُركّبين وتوقعات الأصناف\n'
+          '• الأنماط المتكررة والتنبؤ بالمنتج التالي\n\n'
           'قد يستغرق هذا بضع ثوانٍ.',
         ),
         actions: [
@@ -1338,6 +1382,189 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
 
   String _formatDate(DateTime date) {
     return '${date.year}/${date.month}/${date.day} ${date.hour}:${date.minute.toString().padLeft(2, '0')}';
+  }
+
+  // 🔮 دالة اختبار نظام التوقعات
+  Future<void> _testPredictionSystem() async {
+    // تأكيد من المستخدم
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.science, color: Colors.orange),
+            SizedBox(width: 8),
+            Text('اختبار نظام التوقعات'),
+          ],
+        ),
+        content: const Text(
+          'سيتم اختبار النظام على عينة من الفواتير للتحقق من جودة التوقعات.\n\n'
+          'هذا الاختبار لا يغير أي بيانات، فقط يتحقق من عمل النظام.\n\n'
+          'هل تريد المتابعة؟',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+            child: const Text('اختبار'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    // عرض مؤشر التقدم
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const AlertDialog(
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('جاري اختبار النظام...'),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      final stats = await invoice_prediction.InvoicePredictionService.instance.testPredictionSystem(
+        onProgress: (current, total, message) {
+          print('🧪 $message ($current/$total)');
+        },
+      );
+
+      if (mounted) Navigator.pop(context);
+
+      if (!mounted) return;
+
+      // عرض النتائج
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.green),
+              SizedBox(width: 8),
+              Text('اكتمل الاختبار'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildStatRow('📄 الفواتير المختبرة', '${stats.totalInvoices}'),
+              _buildStatRow('✅ توقعات ناجحة', '${stats.successfulPredictions}'),
+              _buildStatRow('❌ توقعات فاشلة', '${stats.failedPredictions}'),
+              _buildStatRow('📊 إجمالي التوقعات', '${stats.totalPredictions}'),
+              _buildStatRow('📦 إجمالي المنتجات', '${stats.totalProducts}'),
+              _buildStatRow('📈 متوسط المنتجات', '${stats.avgProductsPerPrediction.toStringAsFixed(1)}'),
+              _buildStatRow('⏱️ وقت الاختبار', '${stats.duration.inSeconds} ثانية'),
+            ],
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('حسناً'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ في الاختبار: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  // 🔮 دالة عرض معلومات نظام التوقعات
+  Future<void> _showPredictionSystemInfo() async {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.lightbulb, color: Colors.amber),
+            SizedBox(width: 8),
+            Text('نظام التوقعات الذكية'),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'كيف يعمل النظام؟',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                '• يحلل الفواتير السابقة للفني والعميل\n'
+                '• يحسب نقاط لكل منتج بناءً على التكرار\n'
+                '• يطبق التلاشي الزمني (10% كل شهر)\n'
+                '• يرتب المنتجات حسب النمط المعتاد\n'
+                '• يوفر 5 توقعات بمستويات ثقة مختلفة',
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'نظام النقاط:',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                '• 10 نقاط لكل ظهور\n'
+                '• × معامل التلاشي الزمني\n'
+                '• × وزن الشخص (فني = 1.5، عميل = 1.0)\n'
+                '• + 50 نقطة للمنتجات المستقرة في موقعها',
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'التوقعات المتعددة:',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                '1. التوقع الأقوى (90-100%)\n'
+                '2. توقع قوي (70-89%)\n'
+                '3. توقع متوسط (50-69%)\n'
+                '4. توقع ضعيف (30-49%)\n'
+                '5. توقع احتمالي (10-29%)',
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Text(
+                  'ℹ️ النظام لا يحتاج تدريب مسبق!\n'
+                  'يجمع البيانات مباشرة من الفواتير عند الطلب.',
+                  style: TextStyle(fontSize: 13),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('حسناً'),
+          ),
+        ],
+      ),
+    );
   }
 
   // 🏷️ دالة إدارة الماركات
@@ -2270,6 +2497,204 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('خطأ في إنشاء كشوفات الحساب: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  // 🚀 دالة تدريب نظام التنبؤ التخصصي للعلاقات والتتابع (Expert Training)
+  Future<void> _trainPredictionSystem() async {
+    // تأكيد من المستخدم
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.rocket_launch, color: Colors.deepOrange),
+            SizedBox(width: 8),
+            Text('التدريب الشامل الخبير 🚀'),
+          ],
+        ),
+        content: const SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'سيقوم النظام بتجاهل البحث الذكي والحساب عالمياً ومستقلاً لـ:\n',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              SizedBox(height: 8),
+              Text('✅ مقاييس الرفع والثقة (Confidence & Lift)'),
+              Text('✅ قوانين الرفض (Negative Relationships)'),
+              Text('✅ تتابع المنتجات وتسلسل الفاتورة (Sequence Automation)'),
+              SizedBox(height: 12),
+              Text(
+                '🔥 هذا سيجعل النظام "ذكياً جداً" كفني خبير!',
+                style: TextStyle(color: Colors.deepOrange, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.psychology),
+            label: const Text('بدء التدريب المستقل'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepOrange),
+            onPressed: () => Navigator.pop(context, true),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    // حالة شريط التقدم
+    ValueNotifier<String> statusStr = ValueNotifier<String>('جاري التهيئة...');
+    ValueNotifier<double> progressVal = ValueNotifier<double>(0.0);
+
+    // عرض مؤشر التقدم
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ValueListenableBuilder<double>(
+              valueListenable: progressVal,
+              builder: (context, val, _) => LinearProgressIndicator(value: val),
+            ),
+            const SizedBox(height: 16),
+            ValueListenableBuilder<String>(
+              valueListenable: statusStr,
+              builder: (context, val, _) => Text(val, textAlign: TextAlign.center),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      await ExpertTrainingService.instance.trainGlobalRelations(
+        onProgress: (progress, status) {
+          progressVal.value = progress;
+          statusStr.value = status;
+        },
+      );
+
+      if (mounted) Navigator.pop(context); // إغلاق نافذة التقدم
+
+      if (!mounted) return;
+
+      // عرض النتيجة
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.green),
+              SizedBox(width: 8),
+              Text('تم بنجاح! 🚀'),
+            ],
+          ),
+          content: const Text(
+            'نظام التوقع الخبير جاهز الآن، وسيعتمد على حساباته المستقلة عند إنشاء فاتورة جديدة.'
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('أحسنت'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('حدث خطأ أثناء الاستنتاج: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  // 📊 دالة عرض إحصائيات التدريب
+  Future<void> _showPredictionTrainingStats() async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const AlertDialog(
+        content: Row(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(width: 16),
+            Text('جاري تحميل الإحصائيات...'),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      final smartDb = smart_search.SmartSearchDatabase.instance;
+      final stats = await smartDb.getTrainingDataStats();
+
+      if (mounted) Navigator.pop(context);
+
+      if (!mounted) return;
+
+      final hasData = stats['has_data'] as bool? ?? false;
+      if (!hasData) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('لا توجد بيانات مدربة. قم بتدريب البحث الذكي أولاً.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        return;
+      }
+
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.analytics, color: Colors.purple),
+              SizedBox(width: 8),
+              Text('إحصائيات التدريب'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildStatRow('🔗 علاقات المنتجات', '${stats['associations_count']}'),
+              _buildStatRow('➡️ تتابع المنتجات', '${stats['sequences_count']}'),
+              _buildStatRow('👥 تفضيلات العملاء', '${stats['customer_preferences_count']}'),
+              _buildStatRow('🔧 تفضيلات المُركّبين', '${stats['installer_preferences_count']}'),
+              _buildStatRow('🏷️ العلامات التجارية', '${stats['brands_count']}'),
+              const Divider(),
+              if (stats['last_training'] != null)
+                _buildStatRow('📅 آخر تدريب', _formatDate(DateTime.parse(stats['last_training'] as String))),
+            ],
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('حسناً'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ: $e'), backgroundColor: Colors.red),
         );
       }
     }

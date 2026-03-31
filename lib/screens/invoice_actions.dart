@@ -1,4 +1,5 @@
 // lib/screens/invoice_actions.dart
+import 'dart:async'; // ← لـ unawaited
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -22,11 +23,13 @@ import '../models/printer_device.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
 import '../services/drive_service.dart';
+import '../services/expert_training_service.dart'; // 🧠 التدريب الخبير التدريجي
 import '../services/pdf_header.dart';
 import '../services/pdf_service.dart';
 import '../services/printing_service.dart';
 import '../services/settings_manager.dart';
 import '../services/smart_search/smart_search.dart'; // 🧠 البحث الذكي
+import '../services/invoice_prediction_service.dart'; // 🔮 التوقعات الذكية
 import '../services/firebase_sync/firebase_sync_helper.dart'; // 🔥 Firebase Sync
 import '../services/sync/sync_security.dart'; // 🔐 Sync UUID Generation
 import 'create_invoice_screen.dart';
@@ -1249,13 +1252,31 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
       savedOrSuspended = true;
       hasUnsavedChanges = false;
 
-      // 🧠 التدريب التلقائي على الفاتورة الجديدة (البحث الذكي)
+      // 🧠 التدريب التلقائي في الخلفية — لا يُبطئ المستخدم أبداً
       if (savedInvoice != null && savedInvoice!.id != null) {
-        try {
-          await SmartSearchService.instance.trainOnNewInvoice(savedInvoice!.id!);
-        } catch (e) {
-          print('⚠️ Smart Search training error (non-blocking): $e');
-        }
+        final invoiceIdForTraining = savedInvoice!.id!;
+        // unawaited: الحفظ يكتمل فوراً والمستخدم يتنقل بحرية
+        // بينما التدريب يعمل في الخلفية بشكل صامت
+        unawaited(() async {
+          try {
+            // 1️⃣ التعلم الفوري: تحديث علاقات المنتجات وتفضيلات العميل/الفني
+            await SmartSearchService.instance.trainOnNewInvoice(invoiceIdForTraining);
+          } catch (e) {
+            print('⚠️ [BG] SmartSearch training error: $e');
+          }
+          try {
+            // 2️⃣ التدريب التدريجي للنظام الخبير: يُضيف على البيانات الموجودة
+            await ExpertTrainingService.instance.learnFromSingleInvoice(invoiceIdForTraining);
+          } catch (e) {
+            print('⚠️ [BG] ExpertTraining incremental error: $e');
+          }
+          try {
+            // 3️⃣ نظام التوقعات الذكية (stub — يتعلم تلقائياً من قاعدة البيانات)
+            await InvoicePredictionService.instance.trainOnInvoice(invoiceIdForTraining);
+          } catch (e) {
+            print('⚠️ [BG] PredictionService training error: $e');
+          }
+        }());
       }
       
       // 🧠 مسح جلسة البحث الذكي بعد حفظ الفاتورة بنجاح
