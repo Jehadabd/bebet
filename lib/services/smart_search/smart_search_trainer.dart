@@ -137,6 +137,31 @@ class SmartSearchTrainer {
           }
         }
       }
+
+      // 🆕 بناء علاقات الترتيب والتتابع (المنتج والمنتجات التي تليه) مع حساب المسافة
+      // هذا يحقق فكرة أن المنتج العاشر يتأثر بالتاسع والثامن والسابع...
+      for (int i = 0; i < items.length - 1; i++) {
+        final itemA = items[i];
+        if (itemA.productName.isEmpty) continue;
+        final productIdA = itemA.productId ?? _getProductIdByName(itemA.productName);
+        if (productIdA == null) continue;
+
+        // نربط المنتج الحالي بالمنتجات التي تأتي بعده (بحد أقصى 10 منتجات للأمام لتجنب التضخم الزائد)
+        final maxLookAhead = (items.length - i < 11) ? items.length - i : 11;
+        for (int offset = 1; offset < maxLookAhead; offset++) {
+          final itemB = items[i + offset];
+          if (itemB.productName.isEmpty) continue;
+          final productIdB = itemB.productId ?? _getProductIdByName(itemB.productName);
+          
+          if (productIdB != null && productIdA != productIdB) {
+            await _smartDb.upsertProductSequence(
+              fromProductId: productIdA,
+              toProductId: productIdB,
+              distance: offset, // المسافة: 1 = يليه مباشرة، 2 = بعده بمنتج، وهكذا
+            );
+          }
+        }
+      }
     }
 
     // تحديث القوة والنسب
@@ -294,6 +319,29 @@ class SmartSearchTrainer {
         }
       }
     }
+
+    // 🆕 بناء علاقات الترتيب (Sequence) التراكمية مع حساب المسافة
+    for (int i = 0; i < items.length - 1; i++) {
+      final itemA = items[i];
+      if (itemA.productName.isEmpty || itemA.productId == null) continue;
+      
+      final maxLookAhead = (items.length - i < 11) ? items.length - i : 11;
+      for (int offset = 1; offset < maxLookAhead; offset++) {
+        final itemB = items[i + offset];
+        if (itemB.productName.isEmpty || itemB.productId == null) continue;
+        
+        if (itemA.productId != itemB.productId) {
+          await _smartDb.upsertProductSequence(
+            fromProductId: itemA.productId!,
+            toProductId: itemB.productId!,
+            distance: offset,
+          );
+        }
+      }
+    }
+    
+    // 🆕 تنفيذ صيانة دورية خفيفة جداً لحذف العلاقات الميتة منذ سنة
+    _smartDb.cleanUpOldData().catchError((e) => print('⚠️ Error in cleanup: $e'));
 
     print('✅ تم التدريب على الفاتورة: $invoiceId');
   }

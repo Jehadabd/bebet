@@ -31,8 +31,8 @@ class InvoicePredictionService {
     String? installerName,
   }) async {
     try {
-      // 1. حساب حجم السلة المستهدف (العدد الأكثر تكراراً "المنوال" وليس المتوسط)
-      final targetSize = await _calculateTargetBasketSize(
+      // 1. حساب أحجام السلال المستهدفة (تدرج في الأحجام بدلاً من حجم ثابت)
+      final targetSizes = await _calculateTargetBasketSizes(
         installerName: installerName,
         customerName: customerName,
       );
@@ -57,10 +57,10 @@ class InvoicePredictionService {
       personData.globalLifts = globalLifts;
       personData.globalSequences = globalSequences;
 
-      // 4. توليد 5 سيناريوهات ذكية ومختلفة (Top-K Diverse Scenarios)
+      // 4. توليد 5 سيناريوهات ذكية ومختلفة بأحجام متدرجة
       return await _generateDiverseScenarios(
         personData,
-        targetSize: targetSize,
+        targetSizes: targetSizes,
         installerName: installerName,
         customerName: customerName,
       );
@@ -103,8 +103,8 @@ class InvoicePredictionService {
     }
   }
 
-  /// حساب حجم السلة باستخدام الـ منوال (Mode - الأكثر تكراراً) لمنع الإضافة العشوائية
-  Future<int> _calculateTargetBasketSize({
+  /// حساب أحجام السلال المستهدفة (قائمة من 5 أحجام متدرجة تعكس سلوك العميل)
+  Future<List<int>> _calculateTargetBasketSizes({
     String? installerName,
     String? customerName,
   }) async {
@@ -128,26 +128,41 @@ class InvoicePredictionService {
         LIMIT 20
       ''', [personValue]);
 
-      if (results.isEmpty) return 7; // قيمة افتراضية منطقية 
+      if (results.isEmpty) return [5, 6, 7, 8, 9]; // قيم افتراضية متدرجة
 
       final counts = results.map((r) => r['item_count'] as int).toList();
+      counts.sort(); // ترتيب تصاعدي
       
-      // إيجاد المنوال (العدد الأكثر تكراراً)
-      final frequencyMap = <int, int>{};
-      int mode = counts.first;
-      int maxFreq = 0;
+      final minCount = counts.first;
+      final maxCount = counts.last;
+      final avg = counts.reduce((a, b) => a + b) / counts.length;
+      final int baseAvg = avg.round().clamp(3, 30);
       
-      for (final count in counts) {
-        frequencyMap[count] = (frequencyMap[count] ?? 0) + 1;
-        if (frequencyMap[count]! > maxFreq) {
-          maxFreq = frequencyMap[count]!;
-          mode = count;
-        }
+      // إذا كان التفاوت كبيراً (العميل يشتري أحياناً قليل وأحياناً كثير)
+      if (maxCount - minCount >= 4) {
+        // نأخذ تدرجاً واسعاً يغطي النطاق
+        int step = ((maxCount - minCount) / 4).round().clamp(1, 3);
+        int start = (baseAvg - (step * 2)).clamp(minCount, baseAvg);
+        return [
+          start,
+          start + step,
+          start + (step * 2),
+          start + (step * 3),
+          start + (step * 4)
+        ];
+      } else {
+        // إذا كان تفاوت العميل قليلاً، نضع تدرجاً بسيطاً بزيادة 1
+        int start = (baseAvg - 2).clamp(1, 30);
+        return [
+          start,
+          start + 1,
+          start + 2,
+          start + 3,
+          start + 4
+        ];
       }
-      
-      return mode.clamp(3, 25);
     } catch (e) {
-      return 10;
+      return [7, 8, 9, 10, 11];
     }
   }
 
@@ -343,10 +358,10 @@ class InvoicePredictionService {
     cluster.addAll(result);
   }
 
-  /// توليد 5 سيناريوهات متنوعة الذكاء (Top-K Diverse Recommendations)
+  /// توليد 5 سيناريوهات ذكية ومختلفة بأحجام متدرجة
   Future<List<InvoicePrediction>> _generateDiverseScenarios(
     _PersonClusterData data, {
-    required int targetSize,
+    required List<int> targetSizes,
     String? installerName,
     String? customerName,
   }) async {
@@ -371,12 +386,12 @@ class InvoicePredictionService {
     ];
 
     for (int i = 0; i < 5; i++) {
-      // 1. البناء الجشع الموجه (Context-Aware Greedy Expansion + Negative Filtering)
+      // 1. بناء العنقود الخبير (Expert Cluster) مع حجم متدرج
       final cluster = _buildExpertCluster(
         data: data,
         diversityWeight: diversityPenalties[i],
         previousClusters: previousClusters,
-        targetSize: targetSize,
+        targetSize: targetSizes[i],
       );
 
       if (cluster.isEmpty) continue; // فشل في إيجاد مسار منطقي جديد، نتجاهل

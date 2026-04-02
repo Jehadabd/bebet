@@ -33,7 +33,7 @@ class SmartSearchDatabase {
 
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -139,15 +139,16 @@ class SmartSearchDatabase {
       )
     ''');
 
-    // 🆕 جدول تتابع المنتجات (أ يليه ب)
+    // 🆕 جدول تتابع المنتجات (أ يليه ب) مع المسافة (Distance)
     await db.execute('''
       CREATE TABLE IF NOT EXISTS product_sequences (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         from_product_id INTEGER NOT NULL,
         to_product_id INTEGER NOT NULL,
+        distance INTEGER NOT NULL DEFAULT 1,
         count INTEGER DEFAULT 1,
         last_occurred TEXT NOT NULL,
-        UNIQUE(from_product_id, to_product_id)
+        UNIQUE(from_product_id, to_product_id, distance)
       )
     ''');
 
@@ -161,6 +162,29 @@ class SmartSearchDatabase {
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     // للترقيات المستقبلية
+    if (oldVersion < 2) {
+      print('🔄 Upgrading Smart Search database to version 2...');
+      await db.execute('DROP TABLE IF EXISTS product_sequences');
+      
+      // 🆕 جدول تتابع المنتجات (أ يليه ب) مع المسافة (Distance)
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS product_sequences (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          from_product_id INTEGER NOT NULL,
+          to_product_id INTEGER NOT NULL,
+          distance INTEGER NOT NULL DEFAULT 1,
+          count INTEGER DEFAULT 1,
+          last_occurred TEXT NOT NULL,
+          UNIQUE(from_product_id, to_product_id, distance)
+        )
+      ''');
+
+      await db.execute('''
+        CREATE INDEX IF NOT EXISTS idx_sequences_from 
+        ON product_sequences(from_product_id)
+      ''');
+      print('✅ Upgrade completed.');
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -208,7 +232,7 @@ class SmartSearchDatabase {
   }
 
   /// جلب المنتجات المرتبطة بقائمة منتجات
-  Future<Map<int, int>> getAssociatedProductsForList(List<int> productIds) async {
+  Future<Map<int, Map<String, dynamic>>> getAssociatedProductsForList(List<int> productIds) async {
     if (productIds.isEmpty) return {};
     
     final db = await database;
@@ -220,20 +244,25 @@ class SmartSearchDatabase {
           WHEN product_id_a IN ($placeholders) THEN product_id_b 
           ELSE product_id_a 
         END as associated_product_id,
-        SUM(co_occurrence_count) as total_count
+        SUM(co_occurrence_count) as total_count,
+        MAX(updated_at) as last_updated
       FROM product_associations 
       WHERE product_id_a IN ($placeholders) OR product_id_b IN ($placeholders)
       GROUP BY associated_product_id
       ORDER BY total_count DESC
     ''', [...productIds, ...productIds, ...productIds]);
 
-    final Map<int, int> associations = {};
+    final Map<int, Map<String, dynamic>> associations = {};
     for (final row in results) {
       final productId = row['associated_product_id'] as int;
       final count = row['total_count'] as int;
+      final lastUpdated = row['last_updated'] as String;
       // تجاهل المنتجات الموجودة في القائمة الأصلية
       if (!productIds.contains(productId)) {
-        associations[productId] = count;
+        associations[productId] = {
+          'count': count,
+          'updated_at': lastUpdated,
+        };
       }
     }
     return associations;
@@ -247,18 +276,19 @@ class SmartSearchDatabase {
   Future<void> upsertProductSequence({
     required int fromProductId,
     required int toProductId,
+    int distance = 1,
   }) async {
     final db = await database;
     final now = DateTime.now().toIso8601String();
 
     await db.rawInsert('''
       INSERT INTO product_sequences 
-        (from_product_id, to_product_id, count, last_occurred)
-      VALUES (?, ?, 1, ?)
-      ON CONFLICT(from_product_id, to_product_id) DO UPDATE SET
+        (from_product_id, to_product_id, distance, count, last_occurred)
+      VALUES (?, ?, ?, 1, ?)
+      ON CONFLICT(from_product_id, to_product_id, distance) DO UPDATE SET
         count = count + 1,
         last_occurred = ?
-    ''', [fromProductId, toProductId, now, now]);
+    ''', [fromProductId, toProductId, distance, now, now]);
   }
 
   /// جلب المنتجات التي تلي منتجاً معيناً
@@ -269,8 +299,24 @@ class SmartSearchDatabase {
       where: 'from_product_id = ?',
       whereArgs: [fromProductId],
       orderBy: 'count DESC',
-      limit: 20,
+      limit: 50,
     );
+
+    return results.map((m) => ProductSequence.fromMap(m)).toList();
+  }
+
+  /// 🆕 جلب التتابعات لقائمة من المنتجات
+  Future<List<ProductSequence>> getSequencesForList(List<int> productIds) async {
+    if (productIds.isEmpty) return [];
+    
+    final db = await database;
+    final placeholders = productIds.map((_) => '?').join(',');
+    
+    final results = await db.rawQuery('''
+      SELECT * FROM product_sequences 
+      WHERE from_product_id IN ($placeholders)
+      ORDER BY count DESC
+    ''', productIds);
 
     return results.map((m) => ProductSequence.fromMap(m)).toList();
   }
@@ -589,6 +635,20 @@ class SmartSearchDatabase {
   // ═══════════════════════════════════════════════════════════════════════════
   // دوال الصيانة
   // ═══════════════════════════════════════════════════════════════════════════
+
+  /// تنظيف العلاقات والترتيبات القديمة (أقدم من سنة)
+  Future<void> cleanUpOldData() async {
+    final db = await database;
+    // نحصل على التاريخ قبل سنة
+    final oneYearAgo = DateTime.now().subtract(const Duration(days: 365)).toIso8601String();
+    
+    int deletedAssoc = await db.delete('product_associations', where: 'updated_at <= ?', whereArgs: [oneYearAgo]);
+    int deletedSeq = await db.delete('product_sequences', where: 'last_occurred <= ?', whereArgs: [oneYearAgo]);
+    
+    if (deletedAssoc > 0 || deletedSeq > 0) {
+      print('🧹 Cleaned up old data: $deletedAssoc associations, $deletedSeq sequences (older than 1 year)');
+    }
+  }
 
   /// مسح جميع البيانات (لإعادة التدريب)
   Future<void> clearAllData() async {

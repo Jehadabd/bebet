@@ -38,16 +38,18 @@ class ProductAssociation {
   );
 }
 
-/// تتابع منتجين (أ يليه ب)
+/// تتابع منتجين (أ يليه ب) مع المسافة بينهما
 class ProductSequence {
   final int fromProductId;
   final int toProductId;
+  final int distance; // المسافة بين المنتجين (1 = يليه مباشرة)
   final int count;
   final DateTime lastOccurred;
 
   ProductSequence({
     required this.fromProductId,
     required this.toProductId,
+    required this.distance,
     required this.count,
     required this.lastOccurred,
   });
@@ -55,6 +57,7 @@ class ProductSequence {
   Map<String, dynamic> toMap() => {
     'from_product_id': fromProductId,
     'to_product_id': toProductId,
+    'distance': distance,
     'count': count,
     'last_occurred': lastOccurred.toIso8601String(),
   };
@@ -62,6 +65,7 @@ class ProductSequence {
   factory ProductSequence.fromMap(Map<String, dynamic> map) => ProductSequence(
     fromProductId: map['from_product_id'] as int,
     toProductId: map['to_product_id'] as int,
+    distance: (map['distance'] as int?) ?? 1,
     count: map['count'] as int,
     lastOccurred: DateTime.parse(map['last_occurred'] as String),
   );
@@ -160,6 +164,11 @@ class SessionContext {
   List<int> addedProductIds = [];
   List<String> addedProductNames = [];
   
+  // تفضيلات العميل والمُركّب المحملة
+  List<CustomerBrandPreference> customerPreferences = [];
+  List<InstallerBrandPreference> installerPreferences = [];
+  bool preferencesLoaded = false;
+  
   // الماركات المكتشفة تلقائياً (من التدريب)
   static Set<String> _autoDiscoveredBrands = {};
   
@@ -209,6 +218,9 @@ class SessionContext {
     detectedLastWords.clear();
     addedProductIds.clear();
     addedProductNames.clear();
+    customerPreferences.clear();
+    installerPreferences.clear();
+    preferencesLoaded = false;
   }
 
 

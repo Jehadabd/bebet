@@ -74,9 +74,18 @@ class SmartSearchService {
     if (!forceNew && _sessionContext.addedProductIds.isNotEmpty) {
       print('📌 Session preserved: ${_sessionContext.addedProductIds.length} products in progress');
       // تحديث معلومات العميل/المُركّب فقط إذا تم تمريرها
-      if (customerName != null) _sessionContext.customerName = customerName;
-      if (customerId != null) _sessionContext.customerId = customerId;
-      if (installerName != null) _sessionContext.installerName = installerName;
+      if (customerName != null && customerName != _sessionContext.customerName) {
+        _sessionContext.customerName = customerName;
+        _sessionContext.preferencesLoaded = false;
+      }
+      if (customerId != null && customerId != _sessionContext.customerId) {
+        _sessionContext.customerId = customerId;
+        _sessionContext.preferencesLoaded = false;
+      }
+      if (installerName != null && installerName != _sessionContext.installerName) {
+        _sessionContext.installerName = installerName;
+        _sessionContext.preferencesLoaded = false;
+      }
       return;
     }
     
@@ -106,13 +115,19 @@ class SmartSearchService {
     String? customerName,
     int? customerId,
   }) {
-    _sessionContext.customerName = customerName;
-    _sessionContext.customerId = customerId;
+    if (_sessionContext.customerId != customerId || _sessionContext.customerName != customerName) {
+      _sessionContext.customerName = customerName;
+      _sessionContext.customerId = customerId;
+      _sessionContext.preferencesLoaded = false;
+    }
   }
 
   /// تحديث معلومات المُركّب في الجلسة
   void updateSessionInstaller(String? installerName) {
-    _sessionContext.installerName = installerName;
+    if (_sessionContext.installerName != installerName) {
+      _sessionContext.installerName = installerName;
+      _sessionContext.preferencesLoaded = false;
+    }
   }
 
   /// إضافة منتج للجلسة
@@ -154,6 +169,28 @@ class SmartSearchService {
   // ═══════════════════════════════════════════════════════════════════════════
   // البحث الذكي
   // ═══════════════════════════════════════════════════════════════════════════
+  
+  /// تحميل تفضيلات العميل والمُركّب للجلسة الحالية إذا لم تكن محملة
+  Future<void> _ensurePreferencesLoaded() async {
+    if (_sessionContext.preferencesLoaded) return;
+    
+    if (_sessionContext.customerId != null || _sessionContext.customerName != null) {
+      _sessionContext.customerPreferences = await _smartDb.getCustomerPreferences(
+        customerId: _sessionContext.customerId,
+        customerName: _sessionContext.customerName,
+      );
+    } else {
+      _sessionContext.customerPreferences = [];
+    }
+    
+    if (_sessionContext.installerName != null && _sessionContext.installerName!.isNotEmpty) {
+      _sessionContext.installerPreferences = await _smartDb.getInstallerPreferences(_sessionContext.installerName!);
+    } else {
+      _sessionContext.installerPreferences = [];
+    }
+    
+    _sessionContext.preferencesLoaded = true;
+  }
 
   /// البحث الذكي عن المنتجات - نظام النقاط المتقدم
   /// [currentInvoiceProductNames] - قائمة أسماء المنتجات الموجودة حالياً في الفاتورة
@@ -178,11 +215,16 @@ class SmartSearchService {
           _sessionContext.detectedLastWords.isEmpty &&
           _sessionContext.addedProductIds.isEmpty &&
           _sessionContext.addedProductNames.isEmpty &&
-          (currentInvoiceProductNames == null || currentInvoiceProductNames.isEmpty);
+          (currentInvoiceProductNames == null || currentInvoiceProductNames.isEmpty) &&
+          _sessionContext.customerName == null && 
+          _sessionContext.installerName == null;
 
       if (hasNoContext) {
          return await baseResultsFuture;
       }
+      
+      // تحميل التفضيلات
+      await _ensurePreferencesLoaded();
 
       // 🆕 2. إضافة منتجات الماركة المكتشفة (خاصة للبحث القصير)
       // هذا يضمن ظهور منتجات الماركة حتى لو لم تظهر في نتائج FTS5
@@ -193,30 +235,38 @@ class SmartSearchService {
       }
 
       // 3. جلب المنتجات المرتبطة (Associations) بالتوازي أيضاً
-      Future<Map<int, int>> associationsFuture = Future.value({});
+      Future<Map<int, Map<String, dynamic>>> associationsFuture = Future.value({});
       if (_sessionContext.addedProductIds.isNotEmpty) {
         associationsFuture = _smartDb.getAssociatedProductsForList(
           _sessionContext.addedProductIds,
         );
+      }
+      
+      // 🆕 3.5 جلب علاقات الترتيب لجميع المنتجات المضافة وليس الأخير فقط (التراكمية)
+      Future<List<ProductSequence>> sequencesFuture = Future.value([]);
+      if (_sessionContext.addedProductIds.isNotEmpty) {
+        sequencesFuture = _smartDb.getSequencesForList(_sessionContext.addedProductIds);
       }
 
       // انتظار جميع الاستعلامات المتوازية
       final results = await Future.wait([
         baseResultsFuture,
         associationsFuture,
+        sequencesFuture,
         ...brandQueriesFutures
       ]);
 
       final baseResults = results[0] as List<Product>;
       if (baseResults.isEmpty && brandQueriesFutures.isEmpty) return [];
 
-      final associations = results[1] as Map<int, int>;
+      final associations = results[1] as Map<int, Map<String, dynamic>>;
+      final sequences = results[2] as List<ProductSequence>;
       
       List<Product> combinedResults = List.from(baseResults);
       final existingIds = baseResults.map((p) => p.id).toSet();
 
       // دمج نتائج الماركات
-      for (int i = 2; i < results.length; i++) {
+      for (int i = 3; i < results.length; i++) {
         final brandResults = results[i] as List<Product>;
         for (final product in brandResults) {
           if (!existingIds.contains(product.id)) {
@@ -231,6 +281,7 @@ class SmartSearchService {
         combinedResults, 
         query, 
         associations,
+        sequences,
         currentInvoiceProductNames: currentInvoiceProductNames,
       );
 
@@ -258,7 +309,8 @@ class SmartSearchService {
   List<Product> _calculateScoresAndSort(
     List<Product> products, 
     String query,
-    Map<int, int> associations, {
+    Map<int, Map<String, dynamic>> associations,
+    List<ProductSequence> sequences, {
     List<String>? currentInvoiceProductNames,
   }) {
     // 🚀 تحضير مسبق (Pre-compute) لزيادة السرعة خارج حلقة الفحص البطيئة 🚀
@@ -333,6 +385,9 @@ class SmartSearchService {
       bool fullBrandMatch = false;
       bool partialBrandMatch = false;
       
+      final productBrand = SessionContext.extractBrand(product.name);
+      final productBrandNormalized = productBrand != null ? _normalizeForBrandMatch(productBrand) : null;
+      
       for (int bIdx = 0; bIdx < normalizedDetectedBrands.length; bIdx++) {
         final brandNormalized = normalizedDetectedBrands[bIdx];
         if (productNameNormalized.contains(brandNormalized)) {
@@ -343,50 +398,116 @@ class SmartSearchService {
       }
       
       // ═══════════════════════════════════════════════════════════════════
-      // 3. نقاط العلاقة التراكمية (3 نقاط لكل علاقة)
+      // 2.5 نقاط تفضيلات العميل والمُركّب (مع التقادم الزمني)
+      // ═══════════════════════════════════════════════════════════════════
+      if (productBrandNormalized != null) {
+        // تفضيلات العميل
+        for (final pref in _sessionContext.customerPreferences) {
+          if (_normalizeForBrandMatch(pref.brand) == productBrandNormalized) {
+             final monthsPassed = DateTime.now().difference(pref.lastPurchase).inDays / 30.0;
+             // التقادم أبطأ هنا (سنتين) لأن تفضيل الماركة يدوم طويلاً
+             double decayFactor = 1.0 - (monthsPassed * (1.0 / 24.0)); 
+             if (decayFactor < 0) decayFactor = 0;
+             
+             // نعطي نقاط بناءً على النسبة المئوية للتفضيل (0-100) - بحد أقصى 50 نقطة
+             score += (pref.percentage * 0.5) * decayFactor;
+             break;
+          }
+        }
+        
+        // تفضيلات المُركّب
+        for (final pref in _sessionContext.installerPreferences) {
+          if (_normalizeForBrandMatch(pref.brand) == productBrandNormalized) {
+             final monthsPassed = DateTime.now().difference(pref.lastPurchase).inDays / 30.0;
+             double decayFactor = 1.0 - (monthsPassed * (1.0 / 24.0)); 
+             if (decayFactor < 0) decayFactor = 0;
+             
+             // بحد أقصى 30 نقطة
+             score += (pref.percentage * 0.3) * decayFactor;
+             break;
+          }
+        }
+      }
+      
+      // ═══════════════════════════════════════════════════════════════════
+      // 3. نقاط العلاقة التراكمية مع التقادم الزمني (Time Decay)
       // ═══════════════════════════════════════════════════════════════════
       final productId = product.id;
       if (productId != null) {
-        final associationCount = associations[productId];
-        if(associationCount != null){
-           score += associationCount * 3;
+        final assocData = associations[productId];
+        if (assocData != null) {
+           final count = assocData['count'] as int;
+           final updatedAtStr = assocData['updated_at'] as String;
+           final updatedAt = DateTime.tryParse(updatedAtStr) ?? DateTime.now();
+           
+           // حساب نسبة الخصم: تقل النقاط بنسبة 100% خلال 12 شهر
+           final monthsPassed = DateTime.now().difference(updatedAt).inDays / 30.0;
+           double decayFactor = 1.0 - (monthsPassed * (1.0 / 12.0));
+           if (decayFactor < 0) decayFactor = 0; // انقضت العلاقة
+           
+           score += (count * 3) * decayFactor;
+        }
+        
+        // 🆕 3.5 نقاط الترتيب التراكمية (Sequence) مع التقادم الزمني والمسافة
+        // المنتج الحالي يجمع نقاطاً من جميع المنتجات التي سبقته في الفاتورة الحالية
+        final productSequences = sequences.where((s) => s.toProductId == productId).toList();
+        for (final sequence in productSequences) {
+          final monthsPassed = DateTime.now().difference(sequence.lastOccurred).inDays / 30.0;
+          double decayFactor = 1.0 - (monthsPassed * (1.0 / 12.0));
+          if (decayFactor < 0) decayFactor = 0;
+          
+          // وزن المسافة: يتلاشى بسرعة ويموت بعد مسافة 3
+          // distance = 1 (يليه مباشرة) -> وزن 1.5 (15 نقطة لكل تكرار)
+          // distance = 2 (بعده بخطوة) -> وزن 0.5 (5 نقاط لكل تكرار)
+          // distance = 3 (بعده بخطوتين) -> وزن 0.2 (2 نقطة لكل تكرار)
+          // distance > 3 -> وزن 0.0 (ينتهي تأثير الترتيب، وتبقى العلاقة العامة فقط)
+          double distanceWeight = 0.0;
+          if (sequence.distance == 1) {
+            distanceWeight = 1.5;
+          } else if (sequence.distance == 2) {
+            distanceWeight = 0.5;
+          } else if (sequence.distance == 3) {
+            distanceWeight = 0.2;
+          } else {
+            distanceWeight = 0.0;
+          }
+          
+          // إعطاء وزن قوي للترتيب يتناسب مع المسافة والتكرار والزمن
+          if (distanceWeight > 0) {
+            score += (sequence.count * 10 * distanceWeight) * decayFactor;
+          }
         }
       }
       
       // ═══════════════════════════════════════════════════════════════════
       // 4. نقاط الماركة الجزئية (20 نقطة)
       // ═══════════════════════════════════════════════════════════════════
-      if (!fullBrandMatch) {
-        final productBrand = SessionContext.extractBrand(product.name);
-        if (productBrand != null) {
-          final productBrandNormalized = _normalizeForBrandMatch(productBrand);
+      if (!fullBrandMatch && productBrand != null && productBrandNormalized != null) {
+        for (int bIdx = 0; bIdx < _sessionContext.detectedBrands.length; bIdx++) {
+          final detectedBrand = _sessionContext.detectedBrands.elementAt(bIdx);
+          final brandNormalized = normalizedDetectedBrands[bIdx];
           
-          for (int bIdx = 0; bIdx < _sessionContext.detectedBrands.length; bIdx++) {
-            final detectedBrand = _sessionContext.detectedBrands.elementAt(bIdx);
-            final brandNormalized = normalizedDetectedBrands[bIdx];
-            
-            if (productBrandNormalized.contains(brandNormalized) ||
-                brandNormalized.contains(productBrandNormalized)) {
-              score += 20;
-              partialBrandMatch = true;
-              break;
-            }
-            
-            final detectedWords = detectedBrandsWordsMap[detectedBrand]!;
-            final productBrandWords = productBrand.toLowerCase().split(' ').where((w)=>w.isNotEmpty).toList();
-            
-            int commonWords = 0;
-            for(int dw = 0; dw < detectedWords.length; dw++){
-                if(productBrandWords.contains(detectedWords[dw])){
-                    commonWords++;
-                }
-            }
-            
-            if (commonWords >= 1 && !partialBrandMatch) {
-              score += 5 + (commonWords * 5).clamp(0, 10);
-              partialBrandMatch = true;
-              break;
-            }
+          if (productBrandNormalized.contains(brandNormalized) ||
+              brandNormalized.contains(productBrandNormalized)) {
+            score += 20;
+            partialBrandMatch = true;
+            break;
+          }
+          
+          final detectedWords = detectedBrandsWordsMap[detectedBrand]!;
+          final productBrandWords = productBrand.toLowerCase().split(' ').where((w)=>w.isNotEmpty).toList();
+          
+          int commonWords = 0;
+          for(int dw = 0; dw < detectedWords.length; dw++){
+              if(productBrandWords.contains(detectedWords[dw])){
+                  commonWords++;
+              }
+          }
+          
+          if (commonWords >= 1 && !partialBrandMatch) {
+            score += 5 + (commonWords * 5).clamp(0, 10);
+            partialBrandMatch = true;
+            break;
           }
         }
       }
@@ -508,7 +629,7 @@ class SmartSearchService {
   List<Product> _rerankResults(
     List<Product> products, 
     String query,
-    Map<int, int> associations,
+    Map<int, Map<String, dynamic>> associations,
   ) {
     // تقسيم المنتجات إلى 4 مجموعات
     final List<Product> matchesBothSearchAndContext = [];
@@ -560,12 +681,12 @@ class SmartSearchService {
   
   /// ترتيب المنتجات حسب قوة الارتباط (الأكثر ارتباطاً أولاً)
   /// المنتجات غير المرتبطة تبقى في نهاية القائمة بترتيب FTS5
-  void _sortByAssociation(List<Product> products, Map<int, int> associations) {
+  void _sortByAssociation(List<Product> products, Map<int, Map<String, dynamic>> associations) {
     if (products.length <= 1) return;
     
     products.sort((a, b) {
-      final aScore = associations[a.id] ?? 0;
-      final bScore = associations[b.id] ?? 0;
+      final aScore = associations[a.id]?['count'] as int? ?? 0;
+      final bScore = associations[b.id]?['count'] as int? ?? 0;
       
       // إذا كلاهما لهما ارتباط، رتب حسب القوة
       if (aScore > 0 && bScore > 0) {
@@ -599,9 +720,23 @@ class SmartSearchService {
 
       if (associations.isEmpty) return [];
 
-      // ترتيب حسب قوة الارتباط
+      // ترتيب حسب قوة الارتباط مع تطبيق التقادم الزمني (Time Decay)
+      final now = DateTime.now();
       final sortedIds = associations.entries.toList()
-        ..sort((a, b) => b.value.compareTo(a.value));
+        ..sort((a, b) {
+          final aData = a.value;
+          final bData = b.value;
+          
+          final aDate = DateTime.tryParse(aData['updated_at'] as String) ?? now;
+          final aDecay = 1.0 - ((now.difference(aDate).inDays / 30.0) * (1.0 / 12.0));
+          final aScore = (aData['count'] as int) * (aDecay < 0 ? 0 : aDecay);
+          
+          final bDate = DateTime.tryParse(bData['updated_at'] as String) ?? now;
+          final bDecay = 1.0 - ((now.difference(bDate).inDays / 30.0) * (1.0 / 12.0));
+          final bScore = (bData['count'] as int) * (bDecay < 0 ? 0 : bDecay);
+          
+          return bScore.compareTo(aScore);
+        });
 
       // جلب المنتجات
       final List<Product> suggestions = [];
