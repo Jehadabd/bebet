@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../models/supplier.dart';
+import '../models/delegate.dart';
 import 'database_service.dart';
 import 'financial_audit_service.dart';
 import '../utils/money_calculator.dart'; // Added import
@@ -27,15 +28,28 @@ class SuppliersService {
         opening_balance REAL NOT NULL DEFAULT 0.0,
         current_balance REAL NOT NULL DEFAULT 0.0,
         total_purchases REAL NOT NULL DEFAULT 0.0,
+        default_currency TEXT NOT NULL DEFAULT 'IQD',
         created_at TEXT NOT NULL,
         last_modified_at TEXT NOT NULL,
         notes TEXT
       )
     ''');
     await db.execute('''
+      CREATE TABLE IF NOT EXISTS delegates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        supplier_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        phone_number TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('''
       CREATE TABLE IF NOT EXISTS supplier_invoices (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         supplier_id INTEGER NOT NULL,
+        delegate_id INTEGER,
         invoice_number TEXT,
         invoice_date TEXT NOT NULL,
         total_amount REAL NOT NULL,
@@ -46,7 +60,8 @@ class SuppliersService {
         payment_type TEXT NOT NULL DEFAULT 'دين',
         created_at TEXT NOT NULL,
         last_modified_at TEXT NOT NULL,
-        FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE
+        FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE,
+        FOREIGN KEY (delegate_id) REFERENCES delegates(id) ON DELETE SET NULL
       )
     ''');
 
@@ -63,6 +78,16 @@ class SuppliersService {
         await db.execute(
             'ALTER TABLE supplier_invoices ADD COLUMN amount_paid REAL NOT NULL DEFAULT 0.0;');
       }
+      final hasDelegateId = cols.any((c) => (c['name'] == 'delegate_id'));
+      if (!hasDelegateId) {
+        await db.execute(
+            'ALTER TABLE supplier_invoices ADD COLUMN delegate_id INTEGER;');
+      }
+      final hasExchangeRate = cols.any((c) => (c['name'] == 'exchange_rate'));
+      if (!hasExchangeRate) {
+        await db.execute(
+            'ALTER TABLE supplier_invoices ADD COLUMN exchange_rate REAL NOT NULL DEFAULT 1.0;');
+      }
     } catch (_) {}
     // Migration for suppliers.total_purchases
     try {
@@ -70,6 +95,10 @@ class SuppliersService {
       final hasTotalPurchases = colsSup.any((c) => (c['name'] == 'total_purchases'));
       if (!hasTotalPurchases) {
         await db.execute('ALTER TABLE suppliers ADD COLUMN total_purchases REAL NOT NULL DEFAULT 0.0;');
+      }
+      final hasDefaultCurrency = colsSup.any((c) => (c['name'] == 'default_currency'));
+      if (!hasDefaultCurrency) {
+        await db.execute("ALTER TABLE suppliers ADD COLUMN default_currency TEXT NOT NULL DEFAULT 'IQD';");
       }
     } catch (_) {}
     await db.execute('''
@@ -117,6 +146,34 @@ class SuppliersService {
     ''');
   }
 
+  // --- دوال المندوبين ---
+  
+  Future<List<Delegate>> getDelegatesBySupplier(int supplierId) async {
+    await ensureTables();
+    final db = await _db;
+    final rows = await db.query(
+      'delegates', 
+      where: 'supplier_id = ?', 
+      whereArgs: [supplierId], 
+      orderBy: 'name COLLATE NOCASE'
+    );
+    return rows.map((e) => Delegate.fromMap(e)).toList();
+  }
+
+  Future<int> insertDelegate(Delegate delegate) async {
+    await ensureTables();
+    final db = await _db;
+    return await db.insert('delegates', delegate.toMap());
+  }
+
+  Future<void> deleteDelegate(int id) async {
+    await ensureTables();
+    final db = await _db;
+    await db.delete('delegates', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // --- دوال الموردين الأساسية ---
+
   Future<List<Supplier>> getAllSuppliers() async {
     await ensureTables();
     final db = await _db;
@@ -137,15 +194,19 @@ class SuppliersService {
     
     int invoiceId = await db.transaction((txn) async {
       final id = await txn.insert('supplier_invoices', invoice.toMap());
-      // احسب تأثير الفاتورة على الرصيد
-      final double remaining = MoneyCalculator.subtract(invoice.totalAmount, invoice.amountPaid);
-      final double delta = invoice.paymentType == 'نقد' ? 0.0 : (remaining > 0 ? remaining : 0.0);
       
-      // حدّث الرصيد والمشتريات الإجمالية (المشتريات تزيد دائماً بقيمة الفاتورة)
-      await txn.rawUpdate(
-        'UPDATE suppliers SET current_balance = current_balance + ?, total_purchases = total_purchases + ?, last_modified_at = ? WHERE id = ?',
-        [delta, invoice.totalAmount, DateTime.now().toIso8601String(), invoice.supplierId],
-      );
+      // إذا كانت الفاتورة مسودة، لا تؤثر على الرصيد أو المشتريات
+      if (invoice.status != 'مسودة') {
+        // احسب تأثير الفاتورة على الرصيد
+        final double remaining = MoneyCalculator.subtract(invoice.totalAmount, invoice.amountPaid);
+        final double delta = invoice.paymentType == 'نقد' ? 0.0 : (remaining > 0 ? remaining : 0.0);
+        
+        // حدّث الرصيد والمشتريات الإجمالية (المشتريات تزيد دائماً بقيمة الفاتورة)
+        await txn.rawUpdate(
+          'UPDATE suppliers SET current_balance = current_balance + ?, total_purchases = total_purchases + ?, last_modified_at = ? WHERE id = ?',
+          [delta, invoice.totalAmount, DateTime.now().toIso8601String(), invoice.supplierId],
+        );
+      }
       return id;
     });
     
@@ -320,11 +381,21 @@ class SuppliersService {
     print('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     print('🔄 بدء updateProductCostsFromInvoice للفاتورة: $invoiceId');
     
-    final items = await getInvoiceItems(invoiceId);
-    print('📦 عدد البنود المسترجعة: ${items.length}');
-    
     final db = await _db;
     final List<String> updatedProducts = [];
+
+    // جلب بيانات الفاتورة لمعرفة العملة وسعر الصرف
+    final invoiceMaps = await db.query('supplier_invoices', where: 'id = ?', whereArgs: [invoiceId], limit: 1);
+    if (invoiceMaps.isEmpty) return [];
+    final invoiceMap = invoiceMaps.first;
+    final String currency = invoiceMap['currency'] as String? ?? 'IQD';
+    final double exchangeRate = (invoiceMap['exchange_rate'] as num?)?.toDouble() ?? 1.0;
+    
+    print('💵 عملة الفاتورة: $currency, سعر الصرف: $exchangeRate');
+    
+    // جلب بنود الفاتورة
+    final itemMaps = await db.query('supplier_invoice_items', where: 'invoice_id = ?', whereArgs: [invoiceId]);
+    final items = itemMaps.map((map) => SupplierInvoiceItem.fromMap(map)).toList();
     
     // تجميع البنود حسب المنتج لتجنب التحديث المتكرر
     final Map<int, List<SupplierInvoiceItem>> itemsByProduct = {};
@@ -384,10 +455,16 @@ class SuppliersService {
         
         final productMap = productMaps.first;
         final oldCost = (productMap['cost_price'] as num?)?.toDouble() ?? 0.0;
-        final newCost = item.unitPrice;
         
-        print('  💰 التكلفة القديمة: $oldCost');
-        print('  💰 التكلفة الجديدة: $newCost');
+        // تحويل التكلفة للدينار دائماً إذا كانت الفاتورة بالدولار
+        double newCost = item.unitPrice;
+        if (currency == 'USD') {
+          newCost = item.unitPrice * exchangeRate;
+          print('  💱 تحويل التكلفة من دولار إلى دينار: ${item.unitPrice} × $exchangeRate = $newCost');
+        }
+        
+        print('  💰 التكلفة القديمة (دينار): $oldCost');
+        print('  💰 التكلفة الجديدة (دينار): $newCost');
         print('  📊 الفرق: ${(newCost - oldCost).toStringAsFixed(2)}');
         
         // تحديث التكلفة فقط إذا اختلفت
@@ -464,6 +541,20 @@ class SuppliersService {
     print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
     
     return updatedProducts;
+  }
+
+  /// الحصول على إجمالي عدد الفواتير
+  Future<int> getTotalInvoiceCount() async {
+    final db = await _db;
+    final result = await db.rawQuery('SELECT COUNT(*) as count FROM supplier_invoices');
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  /// الحصول على إجمالي عدد سندات القبض
+  Future<int> getTotalReceiptCount() async {
+    final db = await _db;
+    final result = await db.rawQuery('SELECT COUNT(*) as count FROM supplier_receipts');
+    return Sqflite.firstIntValue(result) ?? 0;
   }
 }
 

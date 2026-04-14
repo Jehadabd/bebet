@@ -9,6 +9,7 @@ class Supplier {
   double openingBalance;
   double currentBalance;
   double totalPurchases;
+  String defaultCurrency; // IQD or USD
   DateTime createdAt;
   DateTime lastModifiedAt;
   String? notes;
@@ -23,6 +24,7 @@ class Supplier {
     this.openingBalance = 0.0,
     double? currentBalance,
     this.totalPurchases = 0.0,
+    this.defaultCurrency = 'IQD',
     DateTime? createdAt,
     DateTime? lastModifiedAt,
     this.notes,
@@ -41,6 +43,7 @@ class Supplier {
       'opening_balance': openingBalance,
       'current_balance': currentBalance,
       'total_purchases': totalPurchases,
+      'default_currency': defaultCurrency,
       'created_at': createdAt.toIso8601String(),
       'last_modified_at': lastModifiedAt.toIso8601String(),
       'notes': notes,
@@ -58,6 +61,7 @@ class Supplier {
       openingBalance: (map['opening_balance'] as num?)?.toDouble() ?? 0.0,
       currentBalance: (map['current_balance'] as num?)?.toDouble() ?? 0.0,
       totalPurchases: (map['total_purchases'] as num?)?.toDouble() ?? 0.0,
+      defaultCurrency: map['default_currency'] as String? ?? 'IQD',
       createdAt: DateTime.parse(map['created_at'] as String),
       lastModifiedAt: DateTime.parse(map['last_modified_at'] as String),
       notes: map['notes'] as String?,
@@ -74,6 +78,7 @@ class Supplier {
     double? openingBalance,
     double? currentBalance,
     double? totalPurchases,
+    String? defaultCurrency,
     DateTime? createdAt,
     DateTime? lastModifiedAt,
     String? notes,
@@ -88,6 +93,7 @@ class Supplier {
       openingBalance: openingBalance ?? this.openingBalance,
       currentBalance: currentBalance ?? this.currentBalance,
       totalPurchases: totalPurchases ?? this.totalPurchases,
+      defaultCurrency: defaultCurrency ?? this.defaultCurrency,
       createdAt: createdAt ?? this.createdAt,
       lastModifiedAt: lastModifiedAt ?? this.lastModifiedAt,
       notes: notes ?? this.notes,
@@ -98,20 +104,25 @@ class Supplier {
 class SupplierInvoice {
   int? id;
   int supplierId;
+  int? delegateId;
   String? invoiceNumber;
   DateTime invoiceDate;
   double totalAmount;
   double discount;
   double amountPaid;
   String currency;
-  String status; // آجل/جزئي/مسدد
+  String status; // آجل/جزئي/مسدد/مسودة
   String paymentType; // نقد / دين
+  double exchangeRate; // سعر الصرف المستخدم
   DateTime createdAt;
   DateTime lastModifiedAt;
+
+  bool get isDraft => status == 'مسودة';
 
   SupplierInvoice({
     this.id,
     required this.supplierId,
+    this.delegateId,
     this.invoiceNumber,
     required this.invoiceDate,
     required this.totalAmount,
@@ -120,6 +131,7 @@ class SupplierInvoice {
     this.currency = 'IQD',
     this.status = 'آجل',
     this.paymentType = 'دين',
+    this.exchangeRate = 1.0,
     DateTime? createdAt,
     DateTime? lastModifiedAt,
   })  : createdAt = createdAt ?? DateTime.now(),
@@ -129,6 +141,7 @@ class SupplierInvoice {
     return {
       'id': id,
       'supplier_id': supplierId,
+      'delegate_id': delegateId,
       'invoice_number': invoiceNumber,
       'invoice_date': invoiceDate.toIso8601String(),
       'total_amount': totalAmount,
@@ -137,6 +150,7 @@ class SupplierInvoice {
       'currency': currency,
       'status': status,
       'payment_type': paymentType,
+      'exchange_rate': exchangeRate,
       'created_at': createdAt.toIso8601String(),
       'last_modified_at': lastModifiedAt.toIso8601String(),
     };
@@ -146,6 +160,7 @@ class SupplierInvoice {
     return SupplierInvoice(
       id: map['id'] as int?,
       supplierId: map['supplier_id'] as int,
+      delegateId: map['delegate_id'] as int?,
       invoiceNumber: map['invoice_number'] as String?,
       invoiceDate: DateTime.parse(map['invoice_date'] as String),
       totalAmount: (map['total_amount'] as num).toDouble(),
@@ -154,6 +169,7 @@ class SupplierInvoice {
       currency: map['currency'] as String? ?? 'IQD',
       status: map['status'] as String? ?? 'آجل',
       paymentType: map['payment_type'] as String? ?? 'دين',
+      exchangeRate: (map['exchange_rate'] as num?)?.toDouble() ?? 1.0,
       createdAt: DateTime.parse(map['created_at'] as String),
       lastModifiedAt: DateTime.parse(map['last_modified_at'] as String),
     );

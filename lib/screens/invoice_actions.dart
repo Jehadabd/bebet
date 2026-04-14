@@ -723,6 +723,29 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
               _normalizePhoneNumber(customerPhoneController.text.trim());
         }
 
+        // ═══════════════════════════════════════════════════════════════════════════
+        // 🔧 إنشاء مؤسس جديد تلقائياً إذا لم يكن موجوداً
+        // ═══════════════════════════════════════════════════════════════════════════
+        if (installerNameController.text.trim().isNotEmpty) {
+          final installerName = installerNameController.text.trim();
+          final existingInstallers = await txn.query(
+            'installers',
+            where: 'name = ?',
+            whereArgs: [installerName],
+            limit: 1,
+          );
+          
+          if (existingInstallers.isEmpty) {
+            // إنشاء مؤسس جديد
+            await txn.insert('installers', {
+              'name': installerName,
+              'total_billed_amount': 0.0,
+              'total_points': 0.0,
+            });
+            print('🆕 تم إنشاء مؤسس جديد من الفاتورة: $installerName');
+          }
+        }
+
         Invoice invoice = Invoice(
           id: invoiceToManage?.id,
           customerName: customerNameController.text,

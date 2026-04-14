@@ -2919,6 +2919,93 @@ class DatabaseService {
       whereArgs: [installerId],
     );
   }
+
+  /// Get customer's unpaid invoices (debt invoices) for return payment selection
+  Future<List<Invoice>> getCustomerUnpaidInvoices(int customerId) async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> maps = await db.rawQuery('''
+        SELECT * FROM invoices 
+        WHERE customer_id = ? 
+          AND payment_type = 'دين'
+          AND (total_amount - amount_paid_on_invoice - return_amount) > 0
+        ORDER BY invoice_date DESC
+      ''', [customerId]);
+
+      return List.generate(maps.length, (i) => Invoice.fromMap(maps[i]));
+    } catch (e) {
+      print('Error getting unpaid invoices: $e');
+      return [];
+    }
+  }
+
+  /// Deduct points from installer when payment is returned
+  /// Uses the invoice's points_rate (not the global setting)
+  Future<void> deductPointsForReturnedPayment({
+    required int invoiceId,
+    required double paymentAmount,
+    required String reason,
+  }) async {
+    final db = await database;
+    
+    try {
+      // 1. Get invoice details including points_rate and installer_name
+      final List<Map<String, dynamic>> invoiceMaps = await db.query(
+        'invoices',
+        columns: ['installer_name', 'points_rate', 'total_amount'],
+        where: 'id = ?',
+        whereArgs: [invoiceId],
+      );
+      
+      if (invoiceMaps.isEmpty) {
+        print('⚠️ Invoice #$invoiceId not found for points deduction');
+        return;
+      }
+      
+      final String? installerName = invoiceMaps.first['installer_name'] as String?;
+      final double pointsRate = (invoiceMaps.first['points_rate'] as num?)?.toDouble() ?? 1.0;
+      
+      if (installerName == null || installerName.isEmpty) {
+        print('⚠️ Invoice #$invoiceId has no installer assigned');
+        return;
+      }
+      
+      // 2. Find the installer
+      final List<Map<String, dynamic>> installers = await db.query(
+        'installers',
+        where: 'name = ?',
+        whereArgs: [installerName],
+      );
+      
+      if (installers.isEmpty) {
+        print('⚠️ Installer "$installerName" not found');
+        return;
+      }
+      
+      final int installerId = installers.first['id'] as int;
+      
+      // 3. Calculate points to deduct based on invoice's points_rate
+      // points = (paymentAmount / 100,000) * pointsRate
+      final double pointsToDeduct = (paymentAmount / 100000.0) * pointsRate;
+      
+      if (pointsToDeduct <= 0) {
+        print('⚠️ No points to deduct for amount $paymentAmount');
+        return;
+      }
+      
+      // 4. Deduct the points
+      await deductInstallerPoints(
+        installerId,
+        pointsToDeduct,
+        reason,
+      );
+      
+      print('✅ Deducted $pointsToDeduct points from "$installerName" for return payment of $paymentAmount (Invoice #$invoiceId, rate: $pointsRate)');
+    } catch (e) {
+      print('❌ Error deducting points for returned payment: $e');
+    }
+  }
+
   // ... (بقية دوال الفنيين CRUD)
 
   // --- دوال المعاملات (Transactions) ---
@@ -6701,6 +6788,17 @@ class DatabaseService {
       installer.toMap(),
       where: 'id = ?',
       whereArgs: [installer.id],
+    );
+  }
+
+  /// تحديث اسم المؤسس في جميع الفواتير المرتبطة به
+  Future<void> updateInstallerNameInInvoices(String oldName, String newName) async {
+    final db = await database;
+    await db.update(
+      'invoices',
+      {'installer_name': newName},
+      where: 'installer_name = ?',
+      whereArgs: [oldName],
     );
   }
 

@@ -37,16 +37,18 @@ class _AIChatScreenState extends State<AIChatScreen> {
     final geminiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
     final geminiKey2 = dotenv.env['GEMINI_API_KEY_2'] ?? '';
     final geminiKey3 = dotenv.env['GEMINI_API_KEY_3'] ?? '';
+    final geminiKey4 = dotenv.env['GEMINI_API_KEY_4'] ?? '';
     
-    final geminiKeysCount = [geminiKey, geminiKey2, geminiKey3].where((k) => k.isNotEmpty).length;
+    final geminiKeysCount = [geminiKey, geminiKey2, geminiKey3, geminiKey4].where((k) => k.isNotEmpty).length;
     print('🔑 Gemini API Keys: $geminiKeysCount مفتاح/مفاتيح ${geminiKeysCount > 0 ? "✅" : "❌"}');
     
     GeminiService? geminiService;
     if (geminiKeysCount > 0) {
       geminiService = GeminiService(
-        apiKey: geminiKey.isNotEmpty ? geminiKey : (geminiKey2.isNotEmpty ? geminiKey2 : geminiKey3),
+        apiKey: geminiKey.isNotEmpty ? geminiKey : (geminiKey2.isNotEmpty ? geminiKey2 : (geminiKey3.isNotEmpty ? geminiKey3 : geminiKey4)),
         apiKey2: geminiKey2.isNotEmpty ? geminiKey2 : null,
         apiKey3: geminiKey3.isNotEmpty ? geminiKey3 : null,
+        apiKey4: geminiKey4.isNotEmpty ? geminiKey4 : null,
       );
       print('✅ تم تفعيل Gemini ($geminiKeysCount مفاتيح)');
     }

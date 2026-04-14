@@ -2,7 +2,7 @@
 // خدمة استخراج بيانات الفواتير باستخدام Gemini مع مطابقة المنتجات
 
 import 'dart:io';
-import 'gemini_service.dart';
+import 'multi_provider_ai_service.dart';
 import 'database_service.dart';
 
 /// خدمة استخراج البيانات من الصور باستخدام Gemini
@@ -11,11 +11,27 @@ class AIExtractionService {
     required this.geminiApiKey,
     this.geminiApiKey2,
     this.geminiApiKey3,
+    this.geminiApiKey4,
+    this.openRouterApiKey,
+    this.groqApiKey,
+    this.cloudflareApiToken,
+    this.cloudflareAccountId,
+    this.ocrSpaceApiKey,
+    this.glmApiKey,
+    this.mistralApiKey,  // ✅ Mistral Pixtral - مجاني سخي!
   });
 
   final String geminiApiKey;
   final String? geminiApiKey2;
   final String? geminiApiKey3;
+  final String? geminiApiKey4;
+  final String? openRouterApiKey;
+  final String? groqApiKey;
+  final String? cloudflareApiToken;
+  final String? cloudflareAccountId;
+  final String? ocrSpaceApiKey;
+  final String? glmApiKey;
+  final String? mistralApiKey;  // ✅ Mistral
 
   /// جلب قائمة المنتجات من قاعدة البيانات
   Future<List<Map<String, dynamic>>> _getProductsForMatching() async {
@@ -48,7 +64,7 @@ class AIExtractionService {
     required String extractType,
   }) async {
     print('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    print('🤖 استخراج البيانات باستخدام Gemini');
+    print('🤖 استخراج البيانات باستخدام AI');
     print('📄 نوع الملف: $fileMimeType');
     print('📋 نوع الاستخراج: $extractType');
     print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
@@ -60,22 +76,31 @@ class AIExtractionService {
         products = await _getProductsForMatching();
       }
 
-      final geminiService = GeminiService(
-        apiKey: geminiApiKey,
-        apiKey2: geminiApiKey2,
-        apiKey3: geminiApiKey3,
+      final aiService = MultiProviderAIService(
+        geminiApiKey: geminiApiKey,
+        geminiApiKey2: geminiApiKey2,
+        geminiApiKey3: geminiApiKey3,
+        geminiApiKey4: geminiApiKey4,
+        openRouterApiKey: openRouterApiKey,
+        groqApiKey: groqApiKey,
+        cloudflareApiToken: cloudflareApiToken,
+        cloudflareAccountId: cloudflareAccountId,
+        ocrSpaceApiKey: ocrSpaceApiKey,
+        glmApiKey: glmApiKey,
+        mistralApiKey: mistralApiKey,  // ✅ Mistral Pixtral
       );
 
-      final result = await geminiService.extractInvoiceOrReceiptStructured(
+      final result = await aiService.extractInvoiceOrReceiptStructured(
         fileBytes: fileBytes,
         fileMimeType: fileMimeType,
         extractType: extractType,
-        products: products,
+        products: products ?? [],
       );
 
       if (result.isNotEmpty && !result.containsKey('error')) {
         final items = result['line_items'] as List? ?? [];
-        print('✅ نجح Gemini! تم استخراج ${items.length} بند');
+        final providerName = aiService.currentProvider == 'gemini' ? 'Gemini' : 'Scitely';
+        print('✅ نجح $providerName! تم استخراج ${items.length} بند');
         
         // طباعة تفاصيل المطابقة
         for (final item in items) {
@@ -110,27 +135,27 @@ class AIExtractionService {
         );
       } else {
         final error = result['error']?.toString() ?? 'فشل الاستخراج';
-        print('❌ فشل Gemini: $error');
+        print('❌ فشل AI: $error');
         return ExtractionResult(
           data: {},
-          source: 'Gemini',
+          source: 'AI',
           success: false,
           error: error,
         );
       }
     } on HttpException catch (e) {
-      print('❌ خطأ HTTP من Gemini: ${e.message}');
+      print('❌ خطأ HTTP من AI: ${e.message}');
       return ExtractionResult(
         data: {},
-        source: 'Gemini',
+        source: 'AI',
         success: false,
         error: e.message,
       );
     } catch (e) {
-      print('❌ خطأ من Gemini: $e');
+      print('❌ خطأ من AI: $e');
       return ExtractionResult(
         data: {},
-        source: 'Gemini',
+        source: 'AI',
         success: false,
         error: e.toString(),
       );

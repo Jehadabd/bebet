@@ -40,6 +40,7 @@ dependencies:
   share_plus: ^12.0.1
   shared_preferences: ^2.2.2
   image: ^4.1.4
+  pdf_render: ^1.4.12
   esc_pos_utils_plus: ^2.0.4
   flutter_esc_pos_network: ^1.0.3
   print_bluetooth_thermal: ^1.1.6
@@ -59,6 +60,7 @@ dependencies:
   googleapis_auth: ^2.0.0
   encrypt: ^5.0.3  # 🔐 للتشفير AES-256
   window_manager: ^0.4.3  # 🛡️ لإغلاق نظيف + نسخة واحدة
+  windows_single_instance: ^1.1.0
   # google_mlkit_text_recognition: ^0.13.1  # OCR محلي - لا يدعم Windows Desktop
 
 dev_dependencies:

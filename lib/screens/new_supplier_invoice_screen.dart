@@ -5,10 +5,11 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:intl/intl.dart';
-
 import '../models/supplier.dart';
+import '../models/delegate.dart';
 import '../models/product.dart';
 import '../services/gemini_service.dart';
+import '../services/multi_provider_ai_service.dart';
 import '../services/suppliers_service.dart';
 import '../services/database_service.dart';
 
@@ -28,6 +29,8 @@ class _NewSupplierInvoiceScreenState extends State<NewSupplierInvoiceScreen> {
   final _paidCtrl = TextEditingController(text: '0');
   final _discountCtrl = TextEditingController(text: '0');
   String _paymentType = 'دين'; // نقد أو دين
+  late String _currency; // عملة الفاتورة
+  final _exchangeRateCtrl = TextEditingController();
   bool _saving = false;
   Uint8List? _pickedBytes;
   String? _pickedMime;
@@ -37,22 +40,29 @@ class _NewSupplierInvoiceScreenState extends State<NewSupplierInvoiceScreen> {
 
   final SuppliersService _service = SuppliersService();
   final DatabaseService _db = DatabaseService();
-  
   // قائمة بنود الفاتورة
   List<SupplierInvoiceItem> _items = [];
   List<Product> _allProducts = [];
+  List<Delegate> _delegates = [];
+  Delegate? _selectedDelegate;
+
+  // هل العملة مختلفة عن عملة المورد؟
+  bool get _needsExchangeRate => _currency != widget.supplier.defaultCurrency;
 
   @override
   void initState() {
     super.initState();
+    _currency = widget.supplier.defaultCurrency; // العملة الافتراضية من المورد
     _loadProducts();
     _dateCtrl.text = DateTime.now().toIso8601String().split('T')[0];
   }
 
   Future<void> _loadProducts() async {
     final products = await _db.getAllProducts();
+    final dels = await _service.getDelegatesBySupplier(widget.supplier.id!);
     setState(() {
       _allProducts = products;
+      _delegates = dels;
     });
   }
 
@@ -98,149 +108,381 @@ class _NewSupplierInvoiceScreenState extends State<NewSupplierInvoiceScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFFF1F5F9), // Slate 50
       appBar: AppBar(
-        title: const Text('فاتورة مورد جديدة'),
+        title: const Text('فاتورة شراء جديدة', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        backgroundColor: const Color(0xFF455A64),
+        foregroundColor: Colors.white,
+        centerTitle: true,
+        elevation: 0,
         actions: [
           IconButton(
             icon: const Icon(Icons.auto_awesome),
             tooltip: 'ملء تلقائي من صورة',
             onPressed: _onAutofillFromImage,
-          )
+          ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Form(
-          key: _formKey,
-          child: ListView(
-            children: [
-              Text('المورد: ${widget.supplier.companyName}', style: const TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                value: _paymentType,
-                decoration: const InputDecoration(labelText: 'طريقة الدفع'),
-                items: const [
-                  DropdownMenuItem(value: 'نقد', child: Text('نقد')),
-                  DropdownMenuItem(value: 'دين', child: Text('دين')),
-                ],
-                onChanged: (v) { if (v != null) setState(() { _paymentType = v; }); },
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _dateCtrl,
-                decoration: const InputDecoration(labelText: 'تاريخ الفاتورة (ISO yyyy-MM-dd)'),
-                validator: (v) => (v == null || v.isEmpty) ? 'أدخل التاريخ' : null,
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _numberCtrl,
-                decoration: const InputDecoration(labelText: 'رقم الفاتورة (اختياري)'),
-              ),
-              const SizedBox(height: 16),
-              // قسم المنتجات
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text('المنتجات:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  ElevatedButton.icon(
-                    onPressed: _addItem,
-                    icon: const Icon(Icons.add),
-                    label: const Text('إضافة منتج'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              if (_items.isEmpty)
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    border: Border.all(color: Colors.grey),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Center(
-                    child: Text('لم يتم إضافة منتجات بعد'),
-                  ),
-                )
-              else
-                ListView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: _items.length,
-                  itemBuilder: (context, index) {
-                    final item = _items[index];
-                    return Card(
-                      child: ListTile(
-                        title: Text(item.productName),
-                        subtitle: Text(
-                          '${item.quantity} ${item.unit ?? ''} × ${item.unitPrice.toStringAsFixed(2)} = ${item.totalPrice.toStringAsFixed(2)}',
-                        ),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.red),
-                          onPressed: () => _removeItem(index),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _totalCtrl,
-                decoration: const InputDecoration(labelText: 'الإجمالي'),
-                keyboardType: TextInputType.number,
-                readOnly: _items.isNotEmpty, // للقراءة فقط إذا كانت هناك بنود
-                onChanged: (v) => _onFormatNumber(_totalCtrl),
-                validator: (v) => (double.tryParse((v ?? '').replaceAll(',', '')) == null) ? 'أدخل رقم صحيح' : null,
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _discountCtrl,
-                decoration: const InputDecoration(labelText: 'الخصم (اختياري)'),
-                keyboardType: TextInputType.number,
-                onChanged: (v) =>
-
- _onFormatNumber(_discountCtrl),
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _paidCtrl,
-                decoration: const InputDecoration(labelText: 'المدفوع عند الفاتورة (اختياري)'),
-                keyboardType: TextInputType.number,
-                onChanged: (v) => _onFormatNumber(_paidCtrl),
-              ),
-              const SizedBox(height: 16),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.attach_file),
-                title: Text(_pickedName == null ? 'إرفاق ملف (اختياري)' : _pickedName!),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
+      body: Column(
+        children: [
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24.0),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    TextButton.icon(
-                      onPressed: _onPickAttachment,
-                      icon: const Icon(Icons.folder_open),
-                      label: const Text('اختيار'),
+                    // Form Container
+                    Container(
+                      padding: const EdgeInsets.all(24),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                        boxShadow: [
+                          BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 4, offset: const Offset(0, 2)),
+                        ],
+                      ),
+                      child: Column(
+                        children: [
+                          // Row 1: Supplier & Date
+                          Row(
+                            children: [
+                              Expanded(
+                                flex: 2,
+                                child: TextFormField(
+                                  enabled: false,
+                                  initialValue: widget.supplier.companyName,
+                                  decoration: const InputDecoration(
+                                    labelText: 'المورد *',
+                                    border: OutlineInputBorder(),
+                                    prefixIcon: Icon(Icons.store),
+                                    suffixIcon: Icon(Icons.arrow_drop_down),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                flex: 1,
+                                child: TextFormField(
+                                  controller: _dateCtrl,
+                                  decoration: const InputDecoration(
+                                    labelText: 'التاريخ',
+                                    border: OutlineInputBorder(),
+                                    suffixIcon: Icon(Icons.calendar_today),
+                                  ),
+                                  validator: (v) => (v == null || v.isEmpty) ? 'أدخل التاريخ' : null,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          
+                          // Row 2: Invoice Number, Currency, Paid Amount, Payment Type
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextFormField(
+                                  controller: _numberCtrl,
+                                  decoration: const InputDecoration(
+                                    labelText: 'رقم الفاتورة',
+                                    border: OutlineInputBorder(),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: DropdownButtonFormField<String>(
+                                  value: _currency,
+                                  decoration: const InputDecoration(
+                                    labelText: 'العملة',
+                                    border: OutlineInputBorder(),
+                                    prefixIcon: Icon(Icons.attach_money),
+                                  ),
+                                  items: const [
+                                    DropdownMenuItem(value: 'IQD', child: Text('IQD')),
+                                    DropdownMenuItem(value: 'USD', child: Text('USD')),
+                                  ],
+                                  onChanged: (v) { if (v != null) setState(() { _currency = v; }); },
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: TextFormField(
+                                  controller: _paidCtrl,
+                                  decoration: const InputDecoration(
+                                    labelText: 'المبلغ المسدد',
+                                    border: OutlineInputBorder(),
+                                    suffixIcon: Icon(Icons.money),
+                                  ),
+                                  keyboardType: TextInputType.number,
+                                  onChanged: (v) => _onFormatNumber(_paidCtrl),
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: DropdownButtonFormField<String>(
+                                  value: _paymentType,
+                                  decoration: const InputDecoration(
+                                    labelText: 'نوع الدفع',
+                                    border: OutlineInputBorder(),
+                                    prefixIcon: Icon(Icons.credit_card),
+                                  ),
+                                  items: const [
+                                    DropdownMenuItem(value: 'نقد', child: Text('نقد')),
+                                    DropdownMenuItem(value: 'دين', child: Text('دين')),
+                                  ],
+                                  onChanged: (v) { if (v != null) setState(() { _paymentType = v; }); },
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          // Row 3: Discount and Delegate
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextFormField(
+                                  controller: _discountCtrl,
+                                  decoration: const InputDecoration(
+                                    labelText: 'الخصم (اختياري)',
+                                    border: OutlineInputBorder(),
+                                    prefixIcon: Icon(Icons.money_off),
+                                  ),
+                                  keyboardType: TextInputType.number,
+                                  onChanged: (v) => _onFormatNumber(_discountCtrl),
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: DropdownButtonFormField<Delegate>(
+                                  value: _selectedDelegate,
+                                  hint: const Text('اختيار المندوب'),
+                                  decoration: const InputDecoration(
+                                    labelText: 'المندوب',
+                                    border: OutlineInputBorder(),
+                                    prefixIcon: Icon(Icons.person),
+                                  ),
+                                  items: _delegates.map((d) {
+                                    return DropdownMenuItem(value: d, child: Text(d.name));
+                                  }).toList(),
+                                  onChanged: (v) { setState(() { _selectedDelegate = v; }); },
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          
+                          // Row 4: Exchange Rate (Show only if currency differs)
+                          if (_needsExchangeRate) ...[
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextFormField(
+                                    controller: _exchangeRateCtrl,
+                                    decoration: InputDecoration(
+                                      labelText: 'سعر صرف الدولار (مثلاً 1500)',
+                                      helperText: 'سيتم استخدامه لتحويل المبالغ لعملة المورد (${widget.supplier.defaultCurrency})',
+                                      border: const OutlineInputBorder(),
+                                      prefixIcon: const Icon(Icons.currency_exchange, color: Colors.green),
+                                    ),
+                                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                    validator: (v) {
+                                      if (_needsExchangeRate && (v == null || v.isEmpty || double.tryParse(v) == 0)) {
+                                        return 'الرجاء إدخال سعر الصرف';
+                                      }
+                                      return null;
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                          ],
+                          
+                          // Row 4: Attachment
+                          InkWell(
+                            onTap: _onPickAttachment,
+                            borderRadius: BorderRadius.circular(4),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.grey.shade400),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    _pickedName == null ? 'اختيار ملف' : _pickedName!,
+                                    style: TextStyle(color: _pickedName == null ? Colors.blue : Colors.black, fontWeight: FontWeight.bold),
+                                  ),
+                                  Row(
+                                    children: [
+                                      const Text('إرفاق صورة أو PDF (اختياري)', style: TextStyle(color: Colors.grey)),
+                                      const SizedBox(width: 8),
+                                      const Icon(Icons.attach_file, color: Colors.grey),
+                                      if (_pickedBytes != null)
+                                        IconButton(
+                                          icon: const Icon(Icons.clear, color: Colors.red),
+                                          onPressed: () => setState(() { _pickedBytes = null; _pickedMime = null; _pickedName = null; }),
+                                        )
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                    if (_pickedBytes != null)
-                      IconButton(
-                        tooltip: 'إزالة',
-                        icon: const Icon(Icons.clear),
-                        onPressed: () => setState(() { _pickedBytes = null; _pickedMime = null; _pickedName = null; }),
-                      )
+                    const SizedBox(height: 32),
+                    
+                    // Products Section
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                         ElevatedButton.icon(
+                          onPressed: _addItem,
+                          icon: const Icon(Icons.add),
+                          label: const Text('إضافة منتج'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF455A64),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                          ),
+                        ),
+                        const Text('المنتجات', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF1E293B))),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    
+                    // Products Table
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
+                      child: Column(
+                        children: [
+                          // Header Row
+                          Container(
+                            padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+                            decoration: const BoxDecoration(
+                              color: Color(0xFFF8FAFC),
+                              borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+                            ),
+                            child: Row(
+                              children: const [
+                                Expanded(flex: 1, child: Text('#', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey))),
+                                Expanded(flex: 3, child: Text('المنتج', style: TextStyle(fontWeight: FontWeight.bold))),
+                                Expanded(flex: 2, child: Text('سعر الوحدة', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold))),
+                                Expanded(flex: 2, child: Text('الكمية', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold))),
+                                Expanded(flex: 2, child: Text('الوحدة', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold))),
+                                Expanded(flex: 2, child: Text('الإجمالي', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold))),
+                                SizedBox(width: 48), // space for delete icon
+                              ],
+                            ),
+                          ),
+                          const Divider(height: 1, color: Color(0xFFE2E8F0)),
+                          
+                          // Body
+                          if (_items.isEmpty)
+                            Padding(
+                              padding: const EdgeInsets.all(48.0),
+                              child: Center(
+                                child: Icon(Icons.shopping_cart_outlined, size: 64, color: Colors.grey.shade300),
+                              ),
+                            )
+                          else
+                            ListView.separated(
+                              shrinkWrap: true,
+                              physics: const NeverScrollableScrollPhysics(),
+                              itemCount: _items.length,
+                              separatorBuilder: (context, index) => const Divider(height: 1, color: Color(0xFFE2E8F0)),
+                              itemBuilder: (context, index) {
+                                final item = _items[index];
+                                return Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                                  child: Row(
+                                    children: [
+                                      Expanded(flex: 1, child: Text('${index + 1}', style: const TextStyle(color: Colors.grey))),
+                                      Expanded(flex: 3, child: Text(item.productName)),
+                                      Expanded(flex: 2, child: Text(item.unitPrice.toStringAsFixed(2), textAlign: TextAlign.center)),
+                                      Expanded(flex: 2, child: Text(item.quantity.toString(), textAlign: TextAlign.center)),
+                                      Expanded(flex: 2, child: Text(item.unit ?? 'قطعة', textAlign: TextAlign.center)),
+                                      Expanded(flex: 2, child: Text(item.totalPrice.toStringAsFixed(2), textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))),
+                                      SizedBox(
+                                        width: 48,
+                                        child: IconButton(
+                                          icon: const Icon(Icons.delete, color: Colors.red, size: 20),
+                                          onPressed: () => _removeItem(index),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            ),
+                        ],
+                      ),
+                    ),
                   ],
                 ),
               ),
-              const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  icon: _saving ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.save),
-                  label: const Text('حفظ'),
-                  onPressed: _saving ? null : _onSave,
-                ),
-              )
-            ],
+            ),
           ),
-        ),
+          
+          // Bottom Bar
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              boxShadow: [
+                BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, -4)),
+              ],
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: _saving ? null : () => _onSave(false),
+                      icon: _saving ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.check_circle_outline),
+                      label: const Text('تأكيد واستلام'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF4CAF50),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    OutlinedButton.icon(
+                      onPressed: _saving ? null : () => _onSave(true),
+                      icon: const Icon(Icons.save_outlined),
+                      label: const Text('حفظ كمسودة'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF4F46E5),
+                        side: const BorderSide(color: Color(0xFFE2E8F0)),
+                        padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                  ],
+                ),
+                Text(
+                  'الإجمالي: IQD ${_totalCtrl.text.isEmpty ? '0' : _totalCtrl.text}',
+                  style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF455A64)),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -268,30 +510,108 @@ class _NewSupplierInvoiceScreenState extends State<NewSupplierInvoiceScreen> {
     final apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
     final apiKey2 = dotenv.env['GEMINI_API_KEY_2'] ?? '';
     final apiKey3 = dotenv.env['GEMINI_API_KEY_3'] ?? '';
-    if (apiKey.isEmpty && apiKey2.isEmpty && apiKey3.isEmpty) {
+    final apiKey4 = dotenv.env['GEMINI_API_KEY_4'] ?? '';
+    final openRouterKey = dotenv.env['OPENROUTER_API_KEY'] ?? '';
+    final groqKey = dotenv.env['GROQ_API_KEY'] ?? '';
+    final cloudflareToken = dotenv.env['CLOUDFLARE_API_TOKEN'] ?? '';
+    final cloudflareAccount = dotenv.env['CLOUDFLARE_ACCOUNT_ID'] ?? '';
+    final googleVisionKey = dotenv.env['GOOGLE_VISION_API_KEY'] ?? '';
+    final ocrSpaceKey = dotenv.env['OCR_SPACE_API_KEY'] ?? '';  // ✅ جديد
+    
+    if (apiKey.isEmpty && apiKey2.isEmpty && apiKey3.isEmpty && apiKey4.isEmpty && groqKey.isEmpty && cloudflareToken.isEmpty && openRouterKey.isEmpty) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('GEMINI_API_KEY غير مضبوط في .env')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا يوجد مفتاح API مضبوط في .env')));
       return;
     }
 
     try {
-      final gemini = GeminiService(
-        apiKey: apiKey.isNotEmpty ? apiKey : (apiKey2.isNotEmpty ? apiKey2 : apiKey3),
-        apiKey2: apiKey2.isNotEmpty ? apiKey2 : null,
-        apiKey3: apiKey3.isNotEmpty ? apiKey3 : null,
+      final aiService = MultiProviderAIService(
+        geminiApiKey: apiKey,
+        geminiApiKey2: apiKey2.isNotEmpty ? apiKey2 : null,
+        geminiApiKey3: apiKey3.isNotEmpty ? apiKey3 : null,
+        geminiApiKey4: apiKey4.isNotEmpty ? apiKey4 : null,
+        openRouterApiKey: openRouterKey.isNotEmpty ? openRouterKey : null,
+        groqApiKey: groqKey.isNotEmpty ? groqKey : null,
+        cloudflareApiToken: cloudflareToken.isNotEmpty ? cloudflareToken : null,
+        cloudflareAccountId: cloudflareAccount.isNotEmpty ? cloudflareAccount : null,
+        ocrSpaceApiKey: ocrSpaceKey.isNotEmpty ? ocrSpaceKey : null,  // ✅ جديد
       );
-      final data = await gemini.extractInvoiceOrReceiptStructured(
+      
+      final data = await aiService.extractInvoiceOrReceiptStructured(
         fileBytes: _pickedBytes!,
         fileMimeType: _pickedMime!,
         extractType: 'invoice',
+        products: _allProducts.map((p) => {
+          'id': p.id,
+          'name': p.name,
+          'cost_price': p.costPrice,
+          'unit_hierarchy': p.unitHierarchy,
+        }).toList(),
+      );
+      
+      // عرض المزود المستخدم
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('تم الاستخراج باستخدام: ${aiService.currentProvider.toUpperCase()}')),
       );
       final date = (data['invoice_date'] ?? '').toString();
       final num = (data['invoice_number'] ?? '').toString();
       final total = (data['totals']?['grand_total'] ?? data['grand_total'] ?? data['total'] ?? '');
+      final lineItems = data['line_items'] as List<dynamic>? ?? [];
+      
       setState(() {
         if (date.isNotEmpty) _dateCtrl.text = date;
         if (num.isNotEmpty) _numberCtrl.text = num;
-        if (total != null) { _totalCtrl.text = _nf.format(double.tryParse(total.toString()) ?? 0); }
+        if (total != null && total.toString().isNotEmpty) { 
+          _totalCtrl.text = _nf.format(double.tryParse(total.toString()) ?? 0); 
+        }
+        
+        // Add extracted items
+        _items.clear();
+        for (var item in lineItems) {
+          final matchedId = item['matched_product_id'];
+          final name = item['name']?.toString() ?? 'منتج غير معروف';
+          final originalName = item['original_name']?.toString() ?? name;
+          final qty = double.tryParse(item['qty']?.toString() ?? '0') ?? 0.0;
+          final price = double.tryParse(item['price']?.toString() ?? '0') ?? 0.0;
+          final amount = double.tryParse(item['amount']?.toString() ?? '0') ?? (qty * price);
+          final reason = item['reason']?.toString() ?? '';
+          final unitType = item['unit_type']?.toString() ?? 'piece';
+          final unitsCount = double.tryParse(item['units_count']?.toString() ?? '1') ?? 1.0;
+          final saleUnit = item['sale_unit']?.toString();
+          final unitsMultiplier = double.tryParse(item['units_multiplier']?.toString() ?? '1') ?? 1.0;
+          
+          double unitPrice = price;
+          String? unit;
+
+          if (saleUnit != null && saleUnit.isNotEmpty) {
+             unit = saleUnit;
+             if (unitsMultiplier > 1) {
+                // calculate price per basic unit (e.g. piece)
+                unitPrice = price / unitsMultiplier; 
+             }
+          } else {
+             // fallback
+             if (unitType == 'meter' && unitsCount > 1) {
+               unitPrice = price / unitsCount; // cost per meter
+               unit = 'متر';
+             } else {
+               unit = 'قطعة';
+             }
+          }
+          
+          _items.add(SupplierInvoiceItem(
+            invoiceId: 0, // سيتم تحديثه لاحقاً
+            productId: matchedId != null ? int.tryParse(matchedId.toString()) : null,
+            productName: name,
+            quantity: qty,
+            unitPrice: unitPrice, // cost per meter for meter products
+            totalPrice: amount,
+            unit: unit,
+            notes: reason.isNotEmpty ? "AI: $reason | الأصلي: $originalName" : "الأصلي: $originalName",
+          ));
+        }
+        _recalculateTotal();
       });
     } catch (e) {
       if (!mounted) return;
@@ -310,14 +630,123 @@ class _NewSupplierInvoiceScreenState extends State<NewSupplierInvoiceScreen> {
     if (file.bytes == null) return;
     final ext = (file.extension ?? '').toLowerCase();
     final mime = ext == 'pdf' ? 'application/pdf' : (ext == 'png' ? 'image/png' : 'image/jpeg');
+    
     setState(() {
       _pickedBytes = file.bytes!;
       _pickedMime = mime;
       _pickedName = file.name;
     });
+
+    // إضافة: المعالجة التلقائية بالذكاء الاصطناعي عند إرفاق ملف
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('جاري تحليل الفاتورة بالذكاء الاصطناعي...')),
+    );
+
+    final apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
+    final apiKey2 = dotenv.env['GEMINI_API_KEY_2'] ?? '';
+    final apiKey3 = dotenv.env['GEMINI_API_KEY_3'] ?? '';
+    final apiKey4 = dotenv.env['GEMINI_API_KEY_4'] ?? '';
+    final groqKey = dotenv.env['GROQ_API_KEY'] ?? '';
+    final cloudflareToken = dotenv.env['CLOUDFLARE_API_TOKEN'] ?? '';
+    final cloudflareAccount = dotenv.env['CLOUDFLARE_ACCOUNT_ID'] ?? '';
+    final googleVisionKey = dotenv.env['GOOGLE_VISION_API_KEY'] ?? '';
+    final ocrSpaceKey = dotenv.env['OCR_SPACE_API_KEY'] ?? '';  // ✅ جديد
+    
+    if (apiKey.isEmpty && apiKey2.isEmpty && apiKey3.isEmpty && apiKey4.isEmpty && groqKey.isEmpty && cloudflareToken.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا يوجد مفتاح API مضبوط في .env')));
+      return;
+    }
+
+    try {
+      final aiService = MultiProviderAIService(
+        geminiApiKey: apiKey,
+        geminiApiKey2: apiKey2.isNotEmpty ? apiKey2 : null,
+        geminiApiKey3: apiKey3.isNotEmpty ? apiKey3 : null,
+        geminiApiKey4: apiKey4.isNotEmpty ? apiKey4 : null,
+        groqApiKey: groqKey.isNotEmpty ? groqKey : null,
+        cloudflareApiToken: cloudflareToken.isNotEmpty ? cloudflareToken : null,
+        cloudflareAccountId: cloudflareAccount.isNotEmpty ? cloudflareAccount : null,
+        ocrSpaceApiKey: ocrSpaceKey.isNotEmpty ? ocrSpaceKey : null,  // ✅ جديد
+      );
+      
+      final data = await aiService.extractInvoiceOrReceiptStructured(
+        fileBytes: _pickedBytes!,
+        fileMimeType: _pickedMime!,
+        extractType: 'invoice',
+        products: _allProducts.map((p) => {
+          'id': p.id,
+          'name': p.name,
+          'cost_price': p.costPrice,
+        }).toList(),
+      );
+      
+      final date = (data['invoice_date'] ?? '').toString();
+      final num = (data['invoice_number'] ?? '').toString();
+      final total = (data['totals']?['grand_total'] ?? data['grand_total'] ?? data['total'] ?? '');
+      final lineItems = data['line_items'] as List<dynamic>? ?? [];
+      
+      setState(() {
+        if (date.isNotEmpty) _dateCtrl.text = date;
+        if (num.isNotEmpty) _numberCtrl.text = num;
+        if (total != null && total.toString().isNotEmpty) { 
+          _totalCtrl.text = _nf.format(double.tryParse(total.toString()) ?? 0); 
+        }
+        
+        // Add extracted items
+        _items.clear();
+        for (var item in lineItems) {
+          final matchedId = item['matched_product_id'];
+          final name = item['name']?.toString() ?? 'منتج غير معروف';
+          final originalName = item['original_name']?.toString() ?? name;
+          final qty = double.tryParse(item['qty']?.toString() ?? '0') ?? 0.0;
+          final price = double.tryParse(item['price']?.toString() ?? '0') ?? 0.0;
+          final amount = double.tryParse(item['amount']?.toString() ?? '0') ?? (qty * price);
+          final reason = item['reason']?.toString() ?? '';
+          final unitType = item['unit_type']?.toString() ?? 'piece';
+          final unitsCount = double.tryParse(item['units_count']?.toString() ?? '1') ?? 1.0;
+          
+          // For meter products, calculate cost per meter (not per roll)
+          // price is the roll price, unitsCount is meters per roll
+          double unitPrice = price;
+          String? unit;
+          if (unitType == 'meter' && unitsCount > 1) {
+            unitPrice = price / unitsCount; // cost per meter
+            unit = 'متر';
+          } else {
+            unit = 'قطعة';
+          }
+          
+          _items.add(SupplierInvoiceItem(
+            invoiceId: 0, // سيتم تحديثه لاحقاً
+            productId: matchedId != null ? int.tryParse(matchedId.toString()) : null,
+            productName: name,
+            quantity: qty,
+            unitPrice: unitPrice, // cost per meter for meter products
+            totalPrice: amount,
+            unit: unit,
+            notes: reason.isNotEmpty ? "AI: $reason | الأصلي: $originalName" : "الأصلي: $originalName",
+          ));
+        }
+        _recalculateTotal();
+      });
+      
+      if (mounted) {
+        final providerName = aiService.currentProvider == 'gemini' ? 'Gemini' : 'Scitely (احتياطي)';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✅ تم الاستخراج بواسطة $providerName: ${_items.length} منتج'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل التحليل: $e'), backgroundColor: Colors.red));
+    }
   }
 
-  Future<void> _onSave() async {
+  Future<void> _onSave([bool isDraft = false]) async {
     if (!_formKey.currentState!.validate()) return;
     
     // منع الضغط المتكرر
@@ -333,18 +762,50 @@ class _NewSupplierInvoiceScreenState extends State<NewSupplierInvoiceScreen> {
       final discount = double.tryParse(_discountCtrl.text.replaceAll(',', '').trim()) ?? 0;
       final paid = double.tryParse(_paidCtrl.text.replaceAll(',', '').trim()) ?? 0;
       
+      // منطق تحويل العملات
+      double exchangeRate = 1.0;
+      if (_needsExchangeRate) {
+        exchangeRate = double.tryParse(_exchangeRateCtrl.text.trim()) ?? 1.0;
+        if (exchangeRate <= 0) exchangeRate = 1.0;
+      }
+
+      double convertedTotal = total;
+      double convertedPaid = paid;
+      double convertedDiscount = discount;
+      
+      // تحويل المبالغ لعملة المورد (للدين)
+      if (_currency == 'USD' && widget.supplier.defaultCurrency == 'IQD') {
+        convertedTotal = total * exchangeRate;
+        convertedPaid = paid * exchangeRate;
+        convertedDiscount = discount * exchangeRate;
+      } else if (_currency == 'IQD' && widget.supplier.defaultCurrency == 'USD') {
+        convertedTotal = total / exchangeRate;
+        convertedPaid = paid / exchangeRate;
+        convertedDiscount = discount / exchangeRate;
+      }
+
+      // تحويل التكلفة للدينار دائماً لتحديث أسعار المنتجات
+      double costExchangeRate = 1.0;
+      if (_currency == 'USD') {
+        costExchangeRate = exchangeRate; // نحتاج السعر لتحويل التكلفة للدينار
+      }
+      
       final inv = SupplierInvoice(
         supplierId: widget.supplier.id!,
+        delegateId: _selectedDelegate?.id,
+        status: isDraft ? 'مسودة' : 'آجل',
         invoiceNumber: _numberCtrl.text.trim().isEmpty ? null : _numberCtrl.text.trim(),
         invoiceDate: DateTime.tryParse(_dateCtrl.text.trim()) ?? DateTime.now(),
-        totalAmount: total,
-        discount: discount,
-        amountPaid: paid,
+        totalAmount: convertedTotal, // القيمة بعملة المورد
+        discount: convertedDiscount, // القيمة بعملة المورد
+        amountPaid: convertedPaid,   // القيمة بعملة المورد
         paymentType: _paymentType,
+        currency: widget.supplier.defaultCurrency, // العملة التي يتسجل بها الدين
+        exchangeRate: exchangeRate,
       );
       
       // الخطوة 1: حفظ الفاتورة
-      print('📝 [1/5] حفظ الفاتورة...');
+      print('📝 [1/5] حفظ الفاتورة (${isDraft ? 'كمسودة' : 'نهائية'})...');
       final invoiceId = await _service.insertSupplierInvoice(inv);
       print('✅ تم حفظ الفاتورة برقم: $invoiceId');
       
@@ -355,10 +816,36 @@ class _NewSupplierInvoiceScreenState extends State<NewSupplierInvoiceScreen> {
       
       for (var item in _items) {
         try {
+          // تحويل سعر البند لعملة المورد للتخزين في الفاتورة (للمحاسبة)
+          // وتجهيز سعر التكلفة بالدينار لتحديث قاعدة البيانات
+          double itemConvertedUnitPrice = item.unitPrice;
+          double itemConvertedTotalPrice = item.totalPrice;
+          
+          if (_currency == 'USD' && widget.supplier.defaultCurrency == 'IQD') {
+            itemConvertedUnitPrice = item.unitPrice * exchangeRate;
+            itemConvertedTotalPrice = item.totalPrice * exchangeRate;
+          } else if (_currency == 'IQD' && widget.supplier.defaultCurrency == 'USD') {
+            itemConvertedUnitPrice = item.unitPrice / exchangeRate;
+            itemConvertedTotalPrice = item.totalPrice / exchangeRate;
+          }
+
           item.invoiceId = invoiceId;
+          final originalUnitPrice = item.unitPrice;
+          final originalTotalPrice = item.totalPrice;
+          
+          item.unitPrice = itemConvertedUnitPrice;
+          item.totalPrice = itemConvertedTotalPrice;
+          
           await _service.insertInvoiceItem(item);
           savedItems++;
           print('  ✓ حفظ بند $savedItems/${_items.length}: ${item.productName}');
+          
+          // إعادة القيم الأصلية للبند (لأغراض العرض إذا لزم الأمر أو الاستمرار في الحلقة)
+          // ملاحظة: التحديث الفعلي للتكاليف في الخطوة 3 سيستخدم القيم المخزنة في InvoiceItem
+          // والتي أصبحت الآن بعملة المورد. 
+          // إذا كانت عملة المورد دولار، updateProductCostsFromInvoice سيعمل بالدولار؟
+          // يجب التأكد أن updateProductCostsFromInvoice يحول للدينار.
+
         } catch (e) {
           print('  ❌ فشل حفظ بند: ${item.productName} - خطأ: $e');
           failedItems.add(item.productName);
@@ -521,9 +1008,12 @@ class _AddItemDialogState extends State<_AddItemDialog> {
   final _productNameCtrl = TextEditingController();
   final _quantityCtrl = TextEditingController();
   final _totalPriceCtrl = TextEditingController(); // السعر الإجمالي للوحدة المختارة
+  final _costPriceCtrl = TextEditingController(); // سعر التكلفة
+  final _metersPerRollCtrl = TextEditingController(); // عدد الأمتار في اللفة
   Product? _selectedProduct;
   List<Product> _filteredProducts = [];
   String? _selectedUnit; // الوحدة المختارة (قطعة، كرتون، إلخ)
+  String _unitType = 'piece'; // نوع الوحدة: piece أو meter
   List<String> _availableUnits = ['قطعة']; // الوحدات المتاحة
   Map<String, int> _unitQuantities = {}; // عدد القطع في كل وحدة
   final _calculatedCostCtrl = TextEditingController(); // التكلفة المحسوبة للقطعة
@@ -533,6 +1023,8 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     _productNameCtrl.dispose();
     _quantityCtrl.dispose();
     _totalPriceCtrl.dispose();
+    _costPriceCtrl.dispose();
+    _metersPerRollCtrl.dispose();
     _calculatedCostCtrl.dispose();
     super.dispose();
   }
@@ -559,6 +1051,9 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       _productNameCtrl.text = product.name;
       _filteredProducts = [];
       
+      // تحديد نوع الوحدة من المنتج
+      _unitType = product.unit; // 'piece' أو 'meter'
+      
       // بناء قائمة الوحدات المتاحة
       _availableUnits = ['قطعة'];
       _unitQuantities = {};
@@ -581,7 +1076,20 @@ class _AddItemDialogState extends State<_AddItemDialog> {
         }
       }
       
+      // إذا كان المنتج بالمتر، أضف خيار اللفة
+      if (_unitType == 'meter') {
+        if (!_availableUnits.contains('لفة')) {
+          _availableUnits.add('لفة');
+          // عدد الأمتار في اللفة
+          if (product.lengthPerUnit != null && product.lengthPerUnit! > 0) {
+            _unitQuantities['لفة'] = product.lengthPerUnit!.toInt();
+            _metersPerRollCtrl.text = product.lengthPerUnit!.toString();
+          }
+        }
+      }
+      
       _selectedUnit = 'قطعة';
+      _costPriceCtrl.text = (product.costPrice ?? 0).toString();
       _totalPriceCtrl.text = (product.costPrice ?? 0).toString();
       _recalculateCost();
     });
@@ -638,6 +1146,53 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                   ),
                 ),
               const SizedBox(height: 12),
+              // نوع المنتج: قطعة أو متر
+              DropdownButtonFormField<String>(
+                value: _unitType,
+                decoration: const InputDecoration(
+                  labelText: 'نوع البيع',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.category),
+                ),
+                items: const [
+                  DropdownMenuItem(value: 'piece', child: Text('قطعة')),
+                  DropdownMenuItem(value: 'meter', child: Text('متر')),
+                ],
+                onChanged: (v) {
+                  if (v != null) {
+                    setState(() {
+                      _unitType = v;
+                      // إذا تحول إلى متر، أضف خيار اللفة
+                      if (v == 'meter' && !_availableUnits.contains('لفة')) {
+                        _availableUnits.add('لفة');
+                      }
+                    });
+                  }
+                },
+              ),
+              const SizedBox(height: 12),
+              // إذا كان المنتج بالمتر، أظهر حقل عدد الأمتار في اللفة
+              if (_unitType == 'meter')
+                TextFormField(
+                  controller: _metersPerRollCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'عدد الأمتار في اللفة',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.straighten),
+                  ),
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  onChanged: (v) {
+                    if (v.isNotEmpty) {
+                      final meters = double.tryParse(v);
+                      if (meters != null && meters > 0) {
+                        setState(() {
+                          _unitQuantities['لفة'] = meters.toInt();
+                        });
+                      }
+                    }
+                  },
+                ),
+              if (_unitType == 'meter') const SizedBox(height: 12),
               // اختيار الوحدة
               if (_selectedProduct != null)
                 DropdownButtonFormField<String>(
@@ -662,15 +1217,47 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                 controller: _quantityCtrl,
                 decoration: InputDecoration(
                   labelText: 'الكمية ($_selectedUnit)',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.production_quantity_limits),
                 ),
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 validator: (v) => (double.tryParse(v ?? '') == null) ? 'أدخل كمية صحيحة' : null,
               ),
               const SizedBox(height: 12),
+              // سعر التكلفة
+              TextFormField(
+                controller: _costPriceCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'سعر التكلفة',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.attach_money),
+                  helperText: 'سعر التكلفة للقطعة الواحدة',
+                ),
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                onChanged: (v) {
+                  // تحديث السعر الإجمالي بناءً على الوحدة المختارة
+                  if (v.isNotEmpty) {
+                    final cost = double.tryParse(v);
+                    if (cost != null) {
+                      if (_selectedUnit == 'قطعة') {
+                        _totalPriceCtrl.text = cost.toString();
+                      } else {
+                        final unitQty = _unitQuantities[_selectedUnit] ?? 1;
+                        _totalPriceCtrl.text = (cost * unitQty).toString();
+                      }
+                      _recalculateCost();
+                    }
+                  }
+                },
+                validator: (v) => (double.tryParse(v ?? '') == null) ? 'أدخل سعر صحيح' : null,
+              ),
+              const SizedBox(height: 12),
               TextFormField(
                 controller: _totalPriceCtrl,
                 decoration: InputDecoration(
-                  labelText: 'سعر التكلفة (لـ $_selectedUnit)',
+                  labelText: 'سعر التكلفة الإجمالي (لـ $_selectedUnit)',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.calculate),
                 ),
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 onChanged: (_) => _recalculateCost(),
@@ -714,6 +1301,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
             
             final quantity = double.parse(_quantityCtrl.text.trim());
             final totalPriceForUnit = double.parse(_totalPriceCtrl.text.trim());
+            final costPrice = double.tryParse(_costPriceCtrl.text.trim()) ?? totalPriceForUnit;
             
             // حساب سعر القطعة
             double unitPricePerPiece;
@@ -724,6 +1312,16 @@ class _AddItemDialogState extends State<_AddItemDialog> {
               unitPricePerPiece = totalPriceForUnit / unitQty;
             }
             
+            // بناء ملاحظات تحتوي على معلومات إضافية
+            String? notes;
+            if (_selectedUnit != 'قطعة') {
+              notes = 'من $_selectedUnit (${_unitQuantities[_selectedUnit]} قطعة) بسعر $totalPriceForUnit';
+            }
+            if (_unitType == 'meter' && _metersPerRollCtrl.text.isNotEmpty) {
+              final metersInfo = ' | نوع: متر | عدد الأمتار في اللفة: ${_metersPerRollCtrl.text}';
+              notes = (notes ?? '') + metersInfo;
+            }
+            
             final item = SupplierInvoiceItem(
               invoiceId: 0, // سيتم تحديثه لاحقاً
               productId: _selectedProduct?.id,
@@ -732,9 +1330,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
               unitPrice: unitPricePerPiece, // سعر القطعة الواحدة
               totalPrice: quantity * totalPriceForUnit, // الإجمالي في الفاتورة
               unit: _selectedUnit,
-              notes: _selectedUnit != 'قطعة' 
-                ? 'من $_selectedUnit (${_unitQuantities[_selectedUnit]} قطعة) بسعر $totalPriceForUnit'
-                : null,
+              notes: notes?.isEmpty == true ? null : notes,
             );
             
             widget.onAdd(item);

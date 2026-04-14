@@ -218,6 +218,83 @@ class _InstallerDetailsScreenState extends State<InstallerDetailsScreen> with Si
     return NumberFormat('#,##0.##', 'en_US').format(value);
   }
 
+  Future<void> _showEditNameDialog() async {
+    final nameController = TextEditingController(text: _currentInstaller.name);
+    final formKey = GlobalKey<FormState>();
+
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('تعديل اسم المؤسس'),
+        content: Form(
+          key: formKey,
+          child: TextFormField(
+            controller: nameController,
+            decoration: const InputDecoration(
+              labelText: 'اسم المؤسس',
+              prefixIcon: Icon(Icons.person),
+            ),
+            validator: (value) {
+              if (value == null || value.trim().isEmpty) {
+                return 'يرجى إدخال اسم المؤسس';
+              }
+              return null;
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              if (formKey.currentState!.validate()) {
+                final newName = nameController.text.trim();
+                if (newName == _currentInstaller.name) {
+                  Navigator.pop(context);
+                  return;
+                }
+                
+                try {
+                  // تحديث اسم المؤسس
+                  final updatedInstaller = _currentInstaller.copyWith(name: newName);
+                  await _db.updateInstaller(updatedInstaller);
+                  
+                  // تحديث اسم المؤسس في جميع الفواتير المرتبطة
+                  await _db.updateInstallerNameInInvoices(_currentInstaller.name, newName);
+                  
+                  if (mounted) {
+                    Navigator.pop(context);
+                    setState(() {
+                      _currentInstaller = updatedInstaller;
+                    });
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('تم تحديث اسم المؤسس بنجاح'),
+                        backgroundColor: Colors.green,
+                      ),
+                    );
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('خطأ: $e'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
+                }
+              }
+            },
+            child: const Text('حفظ'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final primaryColor = const Color(0xFF3F51B5);
@@ -227,6 +304,13 @@ class _InstallerDetailsScreenState extends State<InstallerDetailsScreen> with Si
         title: Text(_currentInstaller.name),
         backgroundColor: primaryColor,
         foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.edit),
+            tooltip: 'تعديل اسم المؤسس',
+            onPressed: _showEditNameDialog,
+          ),
+        ],
         bottom: TabBar(
           controller: _tabController,
           labelColor: Colors.white,

@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:get_storage/get_storage.dart';
+import 'package:windows_single_instance/windows_single_instance.dart'; // 🛡️ لمنع النسخ المتعددة
 import 'package:firebase_core/firebase_core.dart';
 import 'package:window_manager/window_manager.dart'; // 🛡️ لإدارة النافذة والإغلاق النظيف
 import 'firebase_options.dart';
@@ -33,8 +34,17 @@ import 'services/sync/sync_tracker.dart'; // 🔄 تتبع المزامنة
 import 'services/firebase_sync/firebase_sync.dart'; // 🔥 مزامنة Firebase
 import 'services/firebase_sync/firebase_auth_service.dart'; // 🔐 مصادقة Firebase
 
-void main() async {
+void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 🛡️ منع فتح نسخ متعددة وإبراز النافذة المفتوحة مسبقاً
+  await WindowsSingleInstance.ensureSingleInstance(
+    args,
+    "alnaser_debt_book_instance_lock_id",
+    onSecondWindow: (args) {
+      print('⚠️ تم محاولة فتح نسخة أخرى وتم إبراز النافذة الحالية.');
+    },
+  );
 
   // تهيئة GetStorage
   await GetStorage.init();
@@ -71,60 +81,11 @@ void main() async {
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
 
-  // فحص سلامة البيانات المالية (صامت - بدون طباعة)
-  try {
-    final dbService = DatabaseService();
-    await dbService.performQuickIntegrityCheck();
-  } catch (e) {
-    // تجاهل الخطأ - لا نوقف التطبيق
-  }
-
-  // 🔄 تهيئة نظام تتبع المزامنة
-  try {
-    await SyncTrackerInstance.initialize();
-    print('✅ تم تهيئة نظام تتبع المزامنة');
-  } catch (e) {
-    print('⚠️ تحذير: فشل تهيئة نظام تتبع المزامنة: $e');
-    // لا نوقف التطبيق - المزامنة اختيارية
-  }
-
-  // 🔥 تهيئة Firebase (في الخلفية - لا تؤخر بدء التطبيق)
-  try {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-    print('✅ تم تهيئة Firebase');
-    
-    // 🔐 تسجيل الدخول المجهول (للحماية)
-    final authService = FirebaseAuthService();
-    final uid = await authService.signInAnonymously();
-    if (uid != null) {
-      print('✅ تم تسجيل الدخول المجهول: $uid');
-    } else {
-      print('⚠️ فشل تسجيل الدخول المجهول - المزامنة قد لا تعمل');
-    }
-    
-    // 🔥 تهيئة مزامنة Firebase (في الخلفية بالكامل)
-    final firebaseSync = FirebaseSyncService();
-    // لا ننتظر النتيجة ولا نضع timeout لكي لا نؤخر التطبيق
-    firebaseSync.initialize().then((success) {
-      if (success) {
-        print('✅ تم تهيئة مزامنة Firebase - الجهاز مرئي للأجهزة الأخرى');
-      } else {
-        print('⚠️ تهيئة المزامنة لم تكتمل في الخلفية');
-      }
-    });
-
-  } catch (e) {
-    print('⚠️ تحذير: فشل تهيئة Firebase: $e');
-    // لا نوقف التطبيق - Firebase اختياري
-  }
-
-  // Check if passwords are set
+  // Check if passwords are set (عملية سريعة محلية)
   final passwordService = PasswordService();
   final bool passwordsSet = await passwordService.arePasswordsSet();
 
-  // 🛡️ تهيئة Window Manager
+  // 🛡️ تهيئة Window Manager أولاً وبسرعة
   await windowManager.ensureInitialized();
   WindowOptions windowOptions = const WindowOptions(
     title: 'دفتر ديوني',
@@ -137,7 +98,69 @@ void main() async {
     await windowManager.setPreventClose(true);
   });
 
+  // تشغيل الواجهة للمستخدم فوراً بدون أي تأخير
   runApp(MyApp(initialRoute: passwordsSet ? '/' : '/password_setup'));
+
+  // 🚀 إطلاق الخدمات الخلفية التي تأخذ وقتاً طويلاً كمعالجة متوازية ولا ننتظرها
+  _initializeBackgroundServices();
+}
+
+// 🚀 دالة تقوم بتهيئة الخدمات المعتمدة على الشبكة أو الثقيلة بشكل متوازي في الخلفية
+Future<void> _initializeBackgroundServices() async {
+  print('🔄 بدء تهيئة الخدمات الخلفية بشكل متوازي...');
+  
+  await Future.wait([
+    // المهمة 1: فحص سلامة البيانات المالية (محلي)
+    Future(() async {
+      try {
+        final dbService = DatabaseService();
+        await dbService.performQuickIntegrityCheck();
+        print('✅ اكتمل الفحص السريع للبيانات');
+      } catch (e) {
+        // تجاهل الخطأ
+      }
+    }),
+
+    // المهمة 2: نظام تتبع المزامنة (محلي)
+    Future(() async {
+      try {
+        await SyncTrackerInstance.initialize();
+        print('✅ تم تهيئة نظام تتبع المزامنة');
+      } catch (e) {
+        print('⚠️ تحذير: فشل تهيئة نظام تتبع المزامنة: $e');
+      }
+    }),
+
+    // المهمة 3: اتصال Firebase وتسجيل الدخول (يعتمد على الشبكة ويأخذ وقتاً طويلاً)
+    Future(() async {
+      try {
+        await Firebase.initializeApp(
+          options: DefaultFirebaseOptions.currentPlatform,
+        );
+        print('✅ تم تهيئة Firebase بنجاح');
+        
+        final authService = FirebaseAuthService();
+        final uid = await authService.signInAnonymously();
+        if (uid != null) {
+          print('✅ تم تسجيل الدخول المجهول: $uid');
+        } else {
+          print('⚠️ فشل تسجيل الدخول المجهول - المزامنة قد لا تعمل');
+        }
+        
+        final firebaseSync = FirebaseSyncService();
+        final success = await firebaseSync.initialize();
+        if (success) {
+          print('✅ تم تهيئة مزامنة Firebase - الجهاز مرئي للأجهزة الأخرى');
+        } else {
+          print('⚠️ تهيئة المزامنة لم تكتمل بنجاح');
+        }
+      } catch (e) {
+        print('⚠️ تحذير: فشل تهيئة Firebase بالكامل: $e');
+      }
+    }),
+  ]);
+  
+  print('✨ اكتملت جميع مهام التهيئة الخلفية!');
 }
 
 class MyApp extends StatefulWidget {

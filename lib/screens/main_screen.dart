@@ -7,6 +7,7 @@ import '../providers/app_provider.dart';
 import '../services/database_service.dart';
 import '../services/telegram_backup_service.dart';
 import '../services/telegram_invoice_export_service.dart';
+import '../services/api_health_service.dart';  // ✅ خدمة اختبار الاتصال
 import '../models/customer.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/password_service.dart';
@@ -35,7 +36,16 @@ class _MainScreenState extends State<MainScreen> {
     // تأكد من تهيئة مزود التطبيق لتفعيل دعم Google Drive
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppProvider>().initialize();
+      // ✅ بدء مراقبة API Keys في الخلفية
+      ApiHealthService().startMonitoring();
     });
+  }
+
+  @override
+  void dispose() {
+    // ✅ إيقاف المراقبة عند إغلاق التطبيق
+    ApiHealthService().stopMonitoring();
+    super.dispose();
   }
 
   void _updateCurrentMonthYear() {
@@ -150,7 +160,7 @@ class _MainScreenState extends State<MainScreen> {
     return Scaffold(
       backgroundColor: _backgroundColor,
       appBar: AppBar(
-        title: const Text('دفتر ديوني', style: TextStyle(fontSize: 24)),
+        title: const Text('الناصر ', style: TextStyle(fontSize: 24)),
         centerTitle: true,
         backgroundColor: _primaryColor,
         elevation: 0,

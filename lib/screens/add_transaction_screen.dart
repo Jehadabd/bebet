@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../providers/app_provider.dart';
 import '../models/customer.dart';
 import '../models/transaction.dart';
+import '../models/invoice.dart';
 import 'package:intl/intl.dart'; // For currency formatting
 import '../widgets/formatters.dart';
 // import 'package:flutter_sound/flutter_sound.dart'; // Removed to fix Windows build
@@ -44,6 +45,12 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   AudioPlayer? _audioPlayer2;
   bool _isRecording = false;
   String? _audioNotePath; // stores fileName only
+  
+  // For return payment invoice selection
+  List<Invoice> _unpaidInvoices = [];
+  Map<int, bool> _selectedInvoices = {};
+  Map<int, double> _invoicePaymentAmounts = {};
+  bool _isLoadingInvoices = false;
 
   @override
   void initState() {
@@ -51,6 +58,15 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     // _audioPlayer = FlutterSoundPlayer();
     _audioPlayer2 = AudioPlayer();
     _initAudio();
+    
+    // Listen to amount changes to redistribute payment
+    _amountController.addListener(_onAmountChanged);
+  }
+  
+  void _onAmountChanged() {
+    if (_isReturn && _selectedInvoices.values.any((v) => v)) {
+      _distributePaymentAmount();
+    }
   }
 
   Future<void> _initAudio() async {
@@ -59,11 +75,79 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     // }
   }
 
+  /// Load customer's unpaid invoices for return payment selection
+  Future<void> _loadUnpaidInvoices() async {
+    if (widget.customer.id == null) return;
+    
+    setState(() => _isLoadingInvoices = true);
+    try {
+      final db = DatabaseService();
+      final invoices = await db.getCustomerUnpaidInvoices(widget.customer.id!);
+      setState(() {
+        _unpaidInvoices = invoices;
+        _selectedInvoices = {};
+        _invoicePaymentAmounts = {};
+        for (var inv in invoices) {
+          _selectedInvoices[inv.id!] = false;
+          _invoicePaymentAmounts[inv.id!] = 0.0;
+        }
+      });
+    } catch (e) {
+      print('Error loading unpaid invoices: $e');
+    } finally {
+      setState(() => _isLoadingInvoices = false);
+    }
+  }
+
+  /// Calculate remaining amount for an invoice
+  double _getInvoiceRemaining(Invoice inv) {
+    return inv.totalAmount - inv.amountPaidOnInvoice - inv.returnAmount;
+  }
+
+  /// Distribute payment amount across selected invoices
+  void _distributePaymentAmount() {
+    final totalAmount = double.tryParse(_amountController.text.replaceAll(',', '')) ?? 0.0;
+    if (totalAmount <= 0) return;
+
+    double remainingToDistribute = totalAmount;
+    final selectedInvoiceIds = _selectedInvoices.entries
+        .where((e) => e.value)
+        .map((e) => e.key)
+        .toList();
+
+    if (selectedInvoiceIds.isEmpty) return;
+
+    setState(() {
+      for (var id in selectedInvoiceIds) {
+        final invoice = _unpaidInvoices.firstWhere((inv) => inv.id == id);
+        final invoiceRemaining = _getInvoiceRemaining(invoice);
+        
+        if (remainingToDistribute <= 0) {
+          _invoicePaymentAmounts[id] = 0.0;
+        } else if (remainingToDistribute >= invoiceRemaining) {
+          _invoicePaymentAmounts[id] = invoiceRemaining;
+          remainingToDistribute -= invoiceRemaining;
+        } else {
+          _invoicePaymentAmounts[id] = remainingToDistribute;
+          remainingToDistribute = 0;
+        }
+      }
+      
+      // Reset unselected invoices
+      for (var inv in _unpaidInvoices) {
+        if (!_selectedInvoices[inv.id]!) {
+          _invoicePaymentAmounts[inv.id!] = 0.0;
+        }
+      }
+    });
+  }
+
   @override
   void dispose() {
     // if (!Platform.isWindows) {
     //   _audioPlayer?.closePlayer();
     // }
+    _amountController.removeListener(_onAmountChanged);
     _audioPlayer2?.dispose();
     _recorder.dispose();
     super.dispose();
@@ -143,7 +227,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       
       await context.read<AppProvider>().addTransaction(transaction);
       
-      // إذا كان التسديد معلّم كـ "راجع" → إدخال سجل في جدول المرفوعات
+      // إذا كان التسديد معلّم كـ "راجع" → إدخال سجل في جدول المرفوعات + خصم النقاط
       if (!_isDebt && _isReturn) {
         final db = DatabaseService();
         final dbInstance = await db.database;
@@ -159,6 +243,23 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
           note: _noteController.text.isEmpty ? null : _noteController.text,
         );
         print('✅ تم تسجيل المرفوع بمبلغ $amount لعميل ${widget.customer.name}');
+        
+        // خصم النقاط من المؤسسين للفواتير المختارة
+        final selectedInvoiceIds = _selectedInvoices.entries
+            .where((e) => e.value)
+            .map((e) => e.key)
+            .toList();
+        
+        for (var invoiceId in selectedInvoiceIds) {
+          final paymentAmount = _invoicePaymentAmounts[invoiceId] ?? 0.0;
+          if (paymentAmount > 0) {
+            await db.deductPointsForReturnedPayment(
+              invoiceId: invoiceId,
+              paymentAmount: paymentAmount,
+              reason: 'تسديد راجع من ${widget.customer.name} - معاملة #$lastTxId',
+            );
+          }
+        }
       }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -658,17 +759,29 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                       style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
                     ),
                     subtitle: const Text(
-                      'سيتم تسجيل هذا المبلغ كمرفوع في التقارير',
+                      'سيتم تسجيل هذا المبلغ كمرفوع وخصم النقاط من المؤسس',
                       style: TextStyle(fontSize: 12, color: Colors.grey),
                     ),
                     value: _isReturn,
-                    onChanged: (val) => setState(() => _isReturn = val ?? false),
+                    onChanged: (val) {
+                      setState(() {
+                        _isReturn = val ?? false;
+                        if (_isReturn) {
+                          _loadUnpaidInvoices();
+                        }
+                      });
+                    },
                     activeColor: Colors.orange,
                     secondary: const Icon(Icons.keyboard_return, color: Colors.orange),
                     controlAffinity: ListTileControlAffinity.leading,
                     contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                   ),
                 ),
+                // عرض قائمة الفواتير عند اختيار "راجع"
+                if (_isReturn) ...[
+                  const SizedBox(height: 12.0),
+                  _buildInvoiceSelectionCard(),
+                ],
               ],
               const SizedBox(height: 20.0), // Increased spacing
               TextFormField(
@@ -736,6 +849,119 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
               ),
         ),
       ],
+    );
+  }
+
+  /// Build invoice selection card for return payments
+  Widget _buildInvoiceSelectionCard() {
+    return Card(
+      elevation: 2,
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Colors.orange.shade200),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.receipt_long, color: Colors.orange.shade700),
+                const SizedBox(width: 8),
+                Text(
+                  'اختر الفواتير للتسديد',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                    color: Colors.orange.shade800,
+                  ),
+                ),
+                const Spacer(),
+                if (_isLoadingInvoices)
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.orange),
+                  ),
+              ],
+            ),
+            const Divider(),
+            if (_unpaidInvoices.isEmpty && !_isLoadingInvoices)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(16.0),
+                  child: Text(
+                    'لا توجد فواتير ديون غير مسددة',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                ),
+              )
+            else
+              ..._unpaidInvoices.map((inv) {
+                final remaining = _getInvoiceRemaining(inv);
+                final isSelected = _selectedInvoices[inv.id] ?? false;
+                final paymentAmount = _invoicePaymentAmounts[inv.id] ?? 0.0;
+                final pointsRate = inv.pointsRate ?? 1.0;
+                final pointsForThisPayment = (paymentAmount / 100000) * pointsRate;
+                
+                return CheckboxListTile(
+                  dense: true,
+                  title: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'فاتورة #${inv.id}',
+                          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.shade50,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          '${pointsRate.toStringAsFixed(1)} نقطة/100K',
+                          style: TextStyle(fontSize: 10, color: Colors.blue.shade700),
+                        ),
+                      ),
+                    ],
+                  ),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'المتبقي: ${formatCurrency(remaining)} دينار',
+                        style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                      ),
+                      if (isSelected && paymentAmount > 0)
+                        Text(
+                          'مبلغ التسديد: ${formatCurrency(paymentAmount)} | النقاط المخصومة: ${pointsForThisPayment.toStringAsFixed(1)}',
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: Colors.red.shade600,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                    ],
+                  ),
+                  value: isSelected,
+                  onChanged: (val) {
+                    setState(() {
+                      _selectedInvoices[inv.id!] = val ?? false;
+                      _distributePaymentAmount();
+                    });
+                  },
+                  activeColor: Colors.orange,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: EdgeInsets.zero,
+                );
+              }).toList(),
+          ],
+        ),
+      ),
     );
   }
 }
