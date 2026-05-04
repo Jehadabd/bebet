@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
 import '../services/password_service.dart';
+import '../services/cache_service.dart'; // 🚀 استيراد خدمة Cache
 import '../widgets/formatters.dart';
 import 'dart:convert';
 
@@ -24,12 +25,23 @@ class _EditProductsScreenState extends State<EditProductsScreen> {
     return NumberFormat('#,##0.##', 'en_US').format(value);
   }
   
+  // 🚀 Cache ثابت للمنتجات (مشترك بين جميع النسخ)
+  static List<Product> _productsCache = [];
+  static DateTime? _lastCacheUpdate;
+  static const Duration _cacheValidDuration = Duration(minutes: 5);
+  
   List<Product> _products = [];
   List<Product> _filteredProducts = [];
   bool _loading = true;
   bool _passwordChecked = false;
   final TextEditingController _searchController = TextEditingController();
   final PasswordService _passwordService = PasswordService();
+  
+  // 🚀 التحقق من صلاحية Cache
+  bool get _isCacheValid {
+    if (_lastCacheUpdate == null) return false;
+    return DateTime.now().difference(_lastCacheUpdate!) < _cacheValidDuration;
+  }
 
   @override
   void initState() {
@@ -48,24 +60,41 @@ class _EditProductsScreenState extends State<EditProductsScreen> {
     });
   }
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // إعادة تحميل المنتجات عند العودة للشاشة (بعد التحقق من الباسورد)
-    if (_passwordChecked && !_loading) {
-      _loadProducts();
-    }
-  }
+  // 🚀 تم إزالة didChangeDependencies الذي كان يعيد التحميل بدون داعٍ
+  // البيانات ستُحدّث فقط عند الحاجة (بعد التعديل)
 
   Future<void> _loadProducts() async {
+    // 🚀 تحقق من Cache أولاً
+    if (_isCacheValid && _productsCache.isNotEmpty) {
+      setState(() {
+        _products = List.from(_productsCache);
+        _products.sort((a, b) => a.name.compareTo(b.name));
+        _applyFilter();
+        _loading = false;
+      });
+      return;
+    }
+    
+    // جلب من قاعدة البيانات
     final db = DatabaseService();
     final products = await db.getAllProducts();
     products.sort((a, b) => a.name.compareTo(b.name));
+    
+    // 🚀 تحديث Cache
+    _productsCache = List.from(products);
+    _lastCacheUpdate = DateTime.now();
+    
     setState(() {
       _products = products;
       _applyFilter();
       _loading = false;
     });
+  }
+  
+  /// 🚀 تحديث Cache بعد تعديل منتج
+  void _invalidateProductsCache() {
+    _lastCacheUpdate = null;
+    _productsCache.clear();
   }
 
   void _onSearchChanged() {
@@ -130,6 +159,8 @@ class _EditProductsScreenState extends State<EditProductsScreen> {
       ),
     );
     if (updated == true) {
+      // 🚀 إبطال Cache وإعادة التحميل
+      _invalidateProductsCache();
       _loadProducts();
     }
   }

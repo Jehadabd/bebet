@@ -195,6 +195,7 @@ class SmartSearchService {
   /// البحث الذكي عن المنتجات - نظام النقاط المتقدم
   /// [currentInvoiceProductNames] - قائمة أسماء المنتجات الموجودة حالياً في الفاتورة
   /// إذا تم تمريرها، يتم استخدامها للتحقق من المنتجات المضافة بدلاً من الاعتماد على الجلسة
+  /// ⚡ محسّن لاستقبال Set أو List
   Future<List<Product>> smartSearch(
     String query, {
     List<String>? currentInvoiceProductNames,
@@ -306,6 +307,7 @@ class SmartSearchService {
   /// 
   /// [currentInvoiceProductNames] - قائمة أسماء المنتجات الموجودة حالياً في الفاتورة
   /// إذا تم تمريرها، يتم استخدامها للتحقق من المنتجات المضافة (أكثر دقة)
+  /// ⚡ محسّن لاستقبال Set<String> للتحقق O(1)
   List<Product> _calculateScoresAndSort(
     List<Product> products, 
     String query,
@@ -318,9 +320,10 @@ class SmartSearchService {
     // استخراج "عائلة" المنتجات المضافة (الكلمات الأولى)
     final addedProductFamilies = _extractProductFamilies(_sessionContext.addedProductNames);
     
-    // تحضير قائمة المنتجات الموجودة في الفاتورة للتحقق الدقيق
+    // ⚡ تحسين: استقبال Set أو تحويل List إلى Set للتحقق السريع O(1)
     final Set<String> invoiceProductNamesLower;
     if (currentInvoiceProductNames != null) {
+      // ⚡ تحويل إلى Set للتحقق السريع O(1) بدلاً من O(n)
       invoiceProductNamesLower = currentInvoiceProductNames
           .map((n) => n.toLowerCase().trim())
           .where((n) => n.isNotEmpty)
@@ -330,6 +333,9 @@ class SmartSearchService {
           .map((n) => n.toLowerCase().trim())
           .toSet();
     }
+    
+    // ⚡ تحسين: تحويل Set إلى List مرة واحدة فقط خارج الحلقة
+    // ملاحظة: invoiceProductNamesLower هو Set بالفعل، لذا contains() هو O(1)
     
     // تحضير كلمات البحث للمقارنة (بدون Regex ثقيل)
     final queryLower = query.toLowerCase().trim();

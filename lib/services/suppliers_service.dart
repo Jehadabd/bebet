@@ -9,13 +9,29 @@ import '../models/delegate.dart';
 import 'database_service.dart';
 import 'financial_audit_service.dart';
 import '../utils/money_calculator.dart'; // Added import
+import 'cache_service.dart'; // 🚀 استيراد خدمة Cache
 
 class SuppliersService {
   SuppliersService();
+  
+  // 🚀 متغير ثابت للتأكد من تشغيل ensureTables مرة واحدة فقط
+  static bool _tablesEnsured = false;
+  static final List<Supplier> _suppliersCache = [];
+  static DateTime? _lastCacheUpdate;
+  static const Duration _cacheValidDuration = Duration(minutes: 5);
+  
+  /// 🚀 التحقق من صلاحية Cache الموردين
+  bool get _isCacheValid {
+    if (_lastCacheUpdate == null) return false;
+    return DateTime.now().difference(_lastCacheUpdate!) < _cacheValidDuration;
+  }
 
   Future<Database> get _db async => await DatabaseService().database;
 
   Future<void> ensureTables() async {
+    // 🚀 تحسين: تشغيل مرة واحدة فقط في الجلسة
+    if (_tablesEnsured) return;
+    
     final db = await _db;
     await db.execute('''
       CREATE TABLE IF NOT EXISTS suppliers (
@@ -144,6 +160,9 @@ class SuppliersService {
         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
       )
     ''');
+    
+    // 🚀 تم التأكد من الجداول
+    _tablesEnsured = true;
   }
 
   // --- دوال المندوبين ---
@@ -174,18 +193,44 @@ class SuppliersService {
 
   // --- دوال الموردين الأساسية ---
 
+  /// 🚀 جلب الموردين مع Cache ذكي
+  /// إذا كانت الـ Cache صالحة، يعيد البيانات فوراً
+  /// وإلا يجلب من قاعدة البيانات ويحدث الـ Cache
   Future<List<Supplier>> getAllSuppliers() async {
+    // 🚀 تحقق من Cache أولاً
+    if (_isCacheValid && _suppliersCache.isNotEmpty) {
+      return List.from(_suppliersCache); // نسخة جديدة
+    }
+    
     await ensureTables();
     final db = await _db;
     final rows = await db.query('suppliers', orderBy: 'company_name COLLATE NOCASE');
-    return rows.map((e) => Supplier.fromMap(e)).toList();
+    final suppliers = rows.map((e) => Supplier.fromMap(e)).toList();
+    
+    // 🚀 تحديث Cache
+    _suppliersCache.clear();
+    _suppliersCache.addAll(suppliers);
+    _lastCacheUpdate = DateTime.now();
+    
+    return suppliers;
+  }
+  
+  /// 🚀 إجبار تحديث Cache الموردين (استدعاؤها بعد أي كتابة)
+  void _invalidateSuppliersCache() {
+    _lastCacheUpdate = null;
+    _suppliersCache.clear();
   }
 
   Future<int> insertSupplier(Supplier supplier) async {
     await ensureTables();
     final db = await _db;
     supplier.lastModifiedAt = DateTime.now();
-    return await db.insert('suppliers', supplier.toMap());
+    final id = await db.insert('suppliers', supplier.toMap());
+    
+    // 🚀 تحديث Cache بعد الكتابة
+    _invalidateSuppliersCache();
+    
+    return id;
   }
 
   Future<int> insertSupplierInvoice(SupplierInvoice invoice) async {
@@ -231,6 +276,9 @@ class SuppliersService {
       print('خطأ في تسجيل التدقيق: $e');
     }
     
+    // 🚀 تحديث Cache بعد الكتابة
+    _invalidateSuppliersCache();
+    
     return invoiceId;
   }
 
@@ -265,6 +313,9 @@ class SuppliersService {
     } catch (e) {
       print('خطأ في تسجيل التدقيق: $e');
     }
+    
+    // 🚀 تحديث Cache بعد الكتابة
+    _invalidateSuppliersCache();
     
     return receiptId;
   }

@@ -41,6 +41,13 @@ class AppSettings {
   
   // 🏪 اسم الفرع (للتمييز بين الفروع عند الرفع)
   final String branchName; // 'الفرع الرئيسي' أو 'الفرع الثاني' أو 'الفرع الثالث'
+  
+  // 💰 إعدادات التسعير التلقائي في الفاتورة
+  final int autoPriceMode; // 0 = مطفأ, 1 = آخر سعر, 3 = متوسط آخر 3, 5 = متوسط آخر 5
+
+  // ✈️ إرسال التليجرام التلقائي
+  final bool telegramSyncEnabled;
+  final DateTime? telegramTurnOffDate;
 
   AppSettings({
     this.phoneNumbers = const [],
@@ -72,6 +79,9 @@ class AppSettings {
     bool? syncAutoCreateCustomers,
     String? storeSection,
     String? branchName,
+    int? autoPriceMode,
+    bool? telegramSyncEnabled,
+    DateTime? telegramTurnOffDate,
   }) : remainingAmountColor = remainingAmountColor ?? Colors.black.value,
        discountColor = discountColor ?? Colors.black.value,
        loadingFeesColor = loadingFeesColor ?? Colors.black.value,
@@ -99,7 +109,10 @@ class AppSettings {
        syncShowConfirmation = syncShowConfirmation ?? true,
        syncAutoCreateCustomers = syncAutoCreateCustomers ?? true,
        storeSection = storeSection ?? 'كهربائيات',
-       branchName = branchName ?? 'الفرع الرئيسي';
+       branchName = branchName ?? 'الفرع الرئيسي',
+       autoPriceMode = autoPriceMode ?? 0,
+       telegramSyncEnabled = telegramSyncEnabled ?? true,
+       telegramTurnOffDate = telegramTurnOffDate;
 
   Map<String, dynamic> toJson() => {
         'phoneNumbers': phoneNumbers,
@@ -131,6 +144,9 @@ class AppSettings {
         'syncAutoCreateCustomers': syncAutoCreateCustomers,
         'storeSection': storeSection,
         'branchName': branchName,
+        'autoPriceMode': autoPriceMode,
+        'telegramSyncEnabled': telegramSyncEnabled,
+        'telegramTurnOffDate': telegramTurnOffDate?.toIso8601String(),
       };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -163,6 +179,9 @@ class AppSettings {
         syncAutoCreateCustomers: json['syncAutoCreateCustomers'] ?? true,
         storeSection: json['storeSection'] ?? 'كهربائيات',
         branchName: json['branchName'] ?? 'الفرع الرئيسي',
+        autoPriceMode: json['autoPriceMode'] ?? 0,
+        telegramSyncEnabled: json['telegramSyncEnabled'] ?? true,
+        telegramTurnOffDate: json['telegramTurnOffDate'] != null ? DateTime.tryParse(json['telegramTurnOffDate']) : null,
       );
 
   AppSettings copyWith({
@@ -195,6 +214,9 @@ class AppSettings {
     bool? syncAutoCreateCustomers,
     String? storeSection,
     String? branchName,
+    int? autoPriceMode,
+    bool? telegramSyncEnabled,
+    DateTime? telegramTurnOffDate,
   }) {
     return AppSettings(
       phoneNumbers: phoneNumbers ?? this.phoneNumbers,
@@ -226,6 +248,9 @@ class AppSettings {
       syncAutoCreateCustomers: syncAutoCreateCustomers ?? this.syncAutoCreateCustomers,
       storeSection: storeSection ?? this.storeSection,
       branchName: branchName ?? this.branchName,
+      autoPriceMode: autoPriceMode ?? this.autoPriceMode,
+      telegramSyncEnabled: telegramSyncEnabled ?? this.telegramSyncEnabled,
+      telegramTurnOffDate: telegramTurnOffDate ?? this.telegramTurnOffDate,
     );
   }
 }

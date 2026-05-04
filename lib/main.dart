@@ -198,15 +198,19 @@ class _MyAppState extends State<MyApp> with WindowListener {
       final dbService = DatabaseService();
       await dbService.closeDatabaseForShutdown();
       
-      // إيقاف أي خدمات Firebase تعمل في الخلفية
-      FirebaseSyncService().dispose();
+      // ✅ إصلاح: await على dispose لضمان إغلاق Firebase SDK بشكل نظيف
+      // قبل كان بدون await مما يسبب بقاء العملية في الخلفية
+      await FirebaseSyncService().dispose().timeout(
+        const Duration(seconds: 3),
+        onTimeout: () => print('⚠️ انتهت مهلة إغلاق Firebase'),
+      );
       
     } catch (e) {
       print('⚠️ خطأ أثناء إغلاق الموارد: $e');
     }
     
-    // الانتظار ثانية واحدة للتأكد من حفظ كل شيء وإظهار رسالة الإغلاق
-    await Future.delayed(const Duration(milliseconds: 1500));
+    // ✅ إصلاح: تقليل الانتظار من 1500ms إلى 500ms لأن كل شيء أُغلق بشكل صحيح
+    await Future.delayed(const Duration(milliseconds: 500));
     
     // إغلاق النافذة فعلياً وإنهاء العملية
     await windowManager.destroy();

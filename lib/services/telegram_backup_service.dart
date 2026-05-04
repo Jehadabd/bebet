@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 import 'settings_manager.dart';
 import 'database_service.dart';
+import 'discord_backup_service.dart'; // ✅ Discord Webhook - إرسال بالتوازي
 
 /// نتيجة عملية الإرسال مع تفاصيل الخطأ
 class TelegramSendResult {
@@ -138,6 +139,20 @@ class TelegramBackupService {
     String? caption,
   }) async {
     _lastError = null;
+    
+    // ✅ إرسال بالتوازي إلى Discord (إذا كان مفعلاً)
+    final discordService = DiscordBackupService()..loadSettings();
+    if (discordService.isEnabled) {
+      print('📤 إرسال بالتوازي إلى Discord...');
+      // إرسال في الخلفية بدون انتظار
+      discordService.sendBackupFile(file, caption: caption).then((success) {
+        if (success) {
+          print('✅ Discord: تم الإرسال بنجاح');
+        } else {
+          print('⚠️ Discord: فشل الإرسال (لكن Telegram سيتابع)');
+        }
+      });
+    }
     
     if (!isConfigured) {
       _lastError = 'إعدادات Telegram غير مكتملة';
@@ -316,9 +331,9 @@ class TelegramBackupService {
   }
 
   /// حفظ وقت آخر رفع
-  Future<void> saveLastUploadTime() async {
+  Future<void> saveLastUploadTime({DateTime? time}) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_lastUploadTimeKey, DateTime.now().toIso8601String());
+    await prefs.setString(_lastUploadTimeKey, (time ?? DateTime.now()).toIso8601String());
   }
 
   /// الحصول على وقت آخر رفع
@@ -335,196 +350,174 @@ class TelegramBackupService {
     await prefs.remove(_lastUploadTimeKey);
   }
 
-  /// إرسال ملخص شهري إلى Telegram
-  /// يحسب البيانات من أول الشهر الحالي إلى تاريخ اليوم
-  Future<bool> sendMonthlySummary() async {
-    final result = await sendMonthlySummaryWithDetails();
-    return result.success;
-  }
-  
-  /// إرسال ملخص شهري إلى Telegram مع تفاصيل الخطأ
-  Future<TelegramSendResult> sendMonthlySummaryWithDetails() async {
-    _lastError = null;
-    
-    if (!isConfigured) {
-      _lastError = 'إعدادات Telegram غير مكتملة';
-      return TelegramSendResult.error('إعدادات Telegram غير مكتملة');
+  /// بناء نص الملخص الشهري بصيغة Telegram HTML
+  Future<String> buildMonthlySummaryMessage() async {
+    final now = DateTime.now();
+    final startOfMonth = DateTime(now.year, now.month, 1);
+    final startStr = startOfMonth.toIso8601String().split('T')[0];
+    final endStr = now.toIso8601String().split('T')[0];
+
+    final db = DatabaseService();
+    final database = await db.database;
+    final nf = NumberFormat('#,##0', 'en_US');
+
+    final invoices = await database.rawQuery('''
+      SELECT 
+        id, total_amount, discount, amount_paid_on_invoice, payment_type
+      FROM invoices
+      WHERE DATE(invoice_date) >= ? AND DATE(invoice_date) <= ?
+        AND status = 'محفوظة'
+    ''', [startStr, endStr]);
+
+    int cashCount = 0;
+    double cashTotal = 0.0;
+    List<int> cashInvoiceIds = [];
+
+    int debtCount = 0;
+    double debtTotal = 0.0;
+    List<int> debtInvoiceIds = [];
+
+    int mixedCount = 0;
+    double mixedTotal = 0.0;
+    double mixedPaidAmount = 0.0;
+    double mixedDebtAmount = 0.0;
+    List<int> mixedInvoiceIds = [];
+
+    for (final inv in invoices) {
+      final id = inv['id'] as int;
+      final total = (inv['total_amount'] as num?)?.toDouble() ?? 0.0;
+      final discount = (inv['discount'] as num?)?.toDouble() ?? 0.0;
+      final paid = (inv['amount_paid_on_invoice'] as num?)?.toDouble() ?? 0.0;
+      final netTotal = total - discount;
+
+      if (paid >= netTotal && netTotal > 0) {
+        cashCount++;
+        cashTotal += netTotal;
+        cashInvoiceIds.add(id);
+      } else if (paid <= 0) {
+        debtCount++;
+        debtTotal += netTotal;
+        debtInvoiceIds.add(id);
+      } else {
+        mixedCount++;
+        mixedTotal += netTotal;
+        mixedPaidAmount += paid;
+        mixedDebtAmount += (netTotal - paid);
+        mixedInvoiceIds.add(id);
+      }
     }
 
-    try {
-      final now = DateTime.now();
-      final startOfMonth = DateTime(now.year, now.month, 1);
-      final startStr = startOfMonth.toIso8601String().split('T')[0];
-      final endStr = now.toIso8601String().split('T')[0];
-      
-      final db = DatabaseService();
-      final database = await db.database;
-      final nf = NumberFormat('#,##0', 'en_US');
-      
-      // جلب جميع الفواتير المحفوظة في الفترة
-      final invoices = await database.rawQuery('''
-        SELECT 
-          id, total_amount, discount, amount_paid_on_invoice, payment_type
-        FROM invoices
-        WHERE DATE(invoice_date) >= ? AND DATE(invoice_date) <= ?
-          AND status = 'محفوظة'
-      ''', [startStr, endStr]);
-      
-      // تصنيف الفواتير
-      int cashCount = 0;
-      double cashTotal = 0.0;
-      List<int> cashInvoiceIds = [];
-      
-      int debtCount = 0;
-      double debtTotal = 0.0;
-      List<int> debtInvoiceIds = [];
-      
-      int mixedCount = 0;
-      double mixedTotal = 0.0;
-      double mixedPaidAmount = 0.0;
-      double mixedDebtAmount = 0.0;
-      List<int> mixedInvoiceIds = [];
-      
-      for (final inv in invoices) {
-        final id = inv['id'] as int;
-        final total = (inv['total_amount'] as num?)?.toDouble() ?? 0.0;
-        final discount = (inv['discount'] as num?)?.toDouble() ?? 0.0;
-        final paid = (inv['amount_paid_on_invoice'] as num?)?.toDouble() ?? 0.0;
-        final netTotal = total - discount;
-        
-        if (paid >= netTotal && netTotal > 0) {
-          cashCount++;
-          cashTotal += netTotal;
-          cashInvoiceIds.add(id);
-        } else if (paid <= 0) {
-          debtCount++;
-          debtTotal += netTotal;
-          debtInvoiceIds.add(id);
-        } else {
-          mixedCount++;
-          mixedTotal += netTotal;
-          mixedPaidAmount += paid;
-          mixedDebtAmount += (netTotal - paid);
-          mixedInvoiceIds.add(id);
-        }
-      }
-      
-      // حساب الأرباح
-      double cashProfit = 0.0;
-      double debtProfit = 0.0;
-      double mixedProfit = 0.0;
-      
-      final products = await db.getAllProducts();
-      final productMap = <String, dynamic>{};
-      for (final p in products) {
-        productMap[p.name] = p;
-      }
-      
-      for (final invId in cashInvoiceIds) {
-        cashProfit += await _calculateInvoiceProfitById(db, invId, productMap);
-      }
-      for (final invId in debtInvoiceIds) {
-        debtProfit += await _calculateInvoiceProfitById(db, invId, productMap);
-      }
-      for (final invId in mixedInvoiceIds) {
-        mixedProfit += await _calculateInvoiceProfitById(db, invId, productMap);
-      }
-      
-      final invoiceTotalProfit = cashProfit + debtProfit + mixedProfit;
-      final totalCount = cashCount + debtCount + mixedCount;
-      final totalAmount = cashTotal + debtTotal + mixedTotal;
-      
-      // 1. حساب قيمة البضاعة الراجعة (return_amount من الفواتير المحفوظة)
-      double returnsTotal = 0.0;
-      final invoiceReturnsData = await database.rawQuery('''
-        SELECT 
-          COALESCE(SUM(return_amount), 0) as total
-        FROM invoices
-        WHERE DATE(invoice_date) >= ? AND DATE(invoice_date) <= ?
-          AND status = 'محفوظة'
-      ''', [startStr, endStr]);
-      
-      if (invoiceReturnsData.isNotEmpty) {
-        returnsTotal = (invoiceReturnsData.first['total'] as num?)?.toDouble() ?? 0.0;
-      }
-      
-      // 2. حساب معاملات الراجع اليدوية (من جدول returns)
-      double manualReturnsTotal = 0.0;
-      final manualReturnsData = await database.rawQuery('''
-        SELECT 
-          COALESCE(SUM(amount), 0) as total
-        FROM returns
-        WHERE DATE(return_date) >= ? AND DATE(return_date) <= ?
-      ''', [startStr, endStr]);
-      
-      if (manualReturnsData.isNotEmpty) {
-        manualReturnsTotal = (manualReturnsData.first['total'] as num?)?.toDouble() ?? 0.0;
-      }
-      
-      // 3. حساب معاملات تسديد دين الراجع (manual_payment_return)
-      final manualPaymentReturnData = await database.rawQuery('''
-        SELECT 
-          COALESCE(SUM(ABS(amount_changed)), 0) as total
-        FROM transactions
-        WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
-          AND transaction_type = 'manual_payment_return'
-          AND is_created_by_me = 1
-          AND invoice_id IS NULL
-          AND id NOT IN (SELECT COALESCE(transaction_id, 0) FROM returns)
-      ''', [startStr, endStr]);
-      
-      final extraManualPaymentReturn = (manualPaymentReturnData.isNotEmpty) 
-          ? (manualPaymentReturnData.first['total'] as num?)?.toDouble() ?? 0.0 
-          : 0.0;
-          
-      final grandTotalReturns = returnsTotal + manualReturnsTotal + extraManualPaymentReturn;
+    double cashProfit = 0.0;
+    double debtProfit = 0.0;
+    double mixedProfit = 0.0;
 
-      // معاملات إضافة الدين اليدوية
-      final manualDebtData = await database.rawQuery('''
-        SELECT COUNT(*) as count, COALESCE(SUM(amount_changed), 0) as total
-        FROM transactions
-        WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
-          AND transaction_type IN ('manual_debt', 'opening_balance')
-          AND is_created_by_me = 1 AND invoice_id IS NULL
-      ''', [startStr, endStr]);
-      
-      final manualDebtCount = manualDebtData.first['count'] as int? ?? 0;
-      final manualDebtTotal = (manualDebtData.first['total'] as num?)?.toDouble() ?? 0.0;
-      
-      final manualDebtProfitData = await database.rawQuery('''
-        SELECT COALESCE(SUM(amount_changed), 0) as total
-        FROM transactions
-        WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
-          AND transaction_type = 'manual_debt'
-          AND is_created_by_me = 1 AND invoice_id IS NULL
-      ''', [startStr, endStr]);
-      
-      final manualDebtOnlyTotal = (manualDebtProfitData.first['total'] as num?)?.toDouble() ?? 0.0;
-      final manualDebtProfit = manualDebtOnlyTotal * 0.15;
-      
-      final manualPaymentData = await database.rawQuery('''
-        SELECT COUNT(*) as count, COALESCE(SUM(ABS(amount_changed)), 0) as total
-        FROM transactions
-        WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
-          AND transaction_type = 'manual_payment'
-          AND is_created_by_me = 1 AND invoice_id IS NULL
-      ''', [startStr, endStr]);
-      
-      final manualPaymentCount = manualPaymentData.first['count'] as int? ?? 0;
-      final manualPaymentTotal = (manualPaymentData.first['total'] as num?)?.toDouble() ?? 0.0;
-      
-      final grandTotalProfit = invoiceTotalProfit + manualDebtProfit;
-      
-      final settings = await SettingsManager.getAppSettings();
-      final branchName = settings.branchName;
-      
-      final monthNames = [
-        'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
-        'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'
-      ];
-      final monthName = monthNames[now.month - 1];
-      
-      final message = '''
+    final products = await db.getAllProducts();
+    final productMap = <String, dynamic>{};
+    for (final p in products) {
+      productMap[p.name] = p;
+    }
+
+    for (final invId in cashInvoiceIds) {
+      cashProfit += await _calculateInvoiceProfitById(db, invId, productMap);
+    }
+    for (final invId in debtInvoiceIds) {
+      debtProfit += await _calculateInvoiceProfitById(db, invId, productMap);
+    }
+    for (final invId in mixedInvoiceIds) {
+      mixedProfit += await _calculateInvoiceProfitById(db, invId, productMap);
+    }
+
+    final invoiceTotalProfit = cashProfit + debtProfit + mixedProfit;
+    final totalCount = cashCount + debtCount + mixedCount;
+    final totalAmount = cashTotal + debtTotal + mixedTotal;
+
+    double returnsTotal = 0.0;
+    final invoiceReturnsData = await database.rawQuery('''
+      SELECT 
+        COALESCE(SUM(return_amount), 0) as total
+      FROM invoices
+      WHERE DATE(invoice_date) >= ? AND DATE(invoice_date) <= ?
+        AND status = 'محفوظة'
+    ''', [startStr, endStr]);
+
+    if (invoiceReturnsData.isNotEmpty) {
+      returnsTotal = (invoiceReturnsData.first['total'] as num?)?.toDouble() ?? 0.0;
+    }
+
+    double manualReturnsTotal = 0.0;
+    final manualReturnsData = await database.rawQuery('''
+      SELECT 
+        COALESCE(SUM(amount), 0) as total
+      FROM returns
+      WHERE DATE(return_date) >= ? AND DATE(return_date) <= ?
+    ''', [startStr, endStr]);
+
+    if (manualReturnsData.isNotEmpty) {
+      manualReturnsTotal = (manualReturnsData.first['total'] as num?)?.toDouble() ?? 0.0;
+    }
+
+    final manualPaymentReturnData = await database.rawQuery('''
+      SELECT 
+        COALESCE(SUM(ABS(amount_changed)), 0) as total
+      FROM transactions
+      WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
+        AND transaction_type = 'manual_payment_return'
+        AND is_created_by_me = 1
+        AND invoice_id IS NULL
+        AND id NOT IN (SELECT COALESCE(transaction_id, 0) FROM returns)
+    ''', [startStr, endStr]);
+
+    final extraManualPaymentReturn = (manualPaymentReturnData.isNotEmpty)
+        ? (manualPaymentReturnData.first['total'] as num?)?.toDouble() ?? 0.0
+        : 0.0;
+
+    final grandTotalReturns = returnsTotal + manualReturnsTotal + extraManualPaymentReturn;
+
+    final manualDebtData = await database.rawQuery('''
+      SELECT COUNT(*) as count, COALESCE(SUM(amount_changed), 0) as total
+      FROM transactions
+      WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
+        AND transaction_type IN ('manual_debt', 'opening_balance')
+        AND is_created_by_me = 1 AND invoice_id IS NULL
+    ''', [startStr, endStr]);
+
+    final manualDebtCount = manualDebtData.first['count'] as int? ?? 0;
+    final manualDebtTotal = (manualDebtData.first['total'] as num?)?.toDouble() ?? 0.0;
+
+    final manualDebtProfitData = await database.rawQuery('''
+      SELECT COALESCE(SUM(amount_changed), 0) as total
+      FROM transactions
+      WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
+        AND transaction_type = 'manual_debt'
+        AND is_created_by_me = 1 AND invoice_id IS NULL
+    ''', [startStr, endStr]);
+
+    final manualDebtOnlyTotal = (manualDebtProfitData.first['total'] as num?)?.toDouble() ?? 0.0;
+    final manualDebtProfit = manualDebtOnlyTotal * 0.15;
+
+    final manualPaymentData = await database.rawQuery('''
+      SELECT COUNT(*) as count, COALESCE(SUM(ABS(amount_changed)), 0) as total
+      FROM transactions
+      WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
+        AND transaction_type = 'manual_payment'
+        AND is_created_by_me = 1 AND invoice_id IS NULL
+    ''', [startStr, endStr]);
+
+    final manualPaymentCount = manualPaymentData.first['count'] as int? ?? 0;
+    final manualPaymentTotal = (manualPaymentData.first['total'] as num?)?.toDouble() ?? 0.0;
+
+    final grandTotalProfit = invoiceTotalProfit + manualDebtProfit;
+
+    final settings = await SettingsManager.getAppSettings();
+    final branchName = settings.branchName;
+
+    final monthNames = [
+      'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
+      'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'
+    ];
+    final monthName = monthNames[now.month - 1];
+
+    return '''
 📊 <b>ملخص شهر $monthName ${now.year}</b>
 🏪 <b>$branchName</b>
 📅 من ${startOfMonth.day}/${startOfMonth.month}/${startOfMonth.year} إلى ${now.day}/${now.month}/${now.year}
@@ -572,7 +565,26 @@ class TelegramBackupService {
    • الإجمالي: ${nf.format(grandTotalReturns)} د.ع
 ═══════════════
 ''';
-      
+  }
+
+  /// إرسال ملخص شهري إلى Telegram
+  /// يحسب البيانات من أول الشهر الحالي إلى تاريخ اليوم
+  Future<bool> sendMonthlySummary() async {
+    final result = await sendMonthlySummaryWithDetails();
+    return result.success;
+  }
+  
+  /// إرسال ملخص شهري إلى Telegram مع تفاصيل الخطأ
+  Future<TelegramSendResult> sendMonthlySummaryWithDetails() async {
+    _lastError = null;
+    
+    if (!isConfigured) {
+      _lastError = 'إعدادات Telegram غير مكتملة';
+      return TelegramSendResult.error('إعدادات Telegram غير مكتملة');
+    }
+
+    try {
+      final message = await buildMonthlySummaryMessage();
       return await sendMessageWithDetails(message);
     } catch (e) {
       _lastError = 'خطأ في إعداد الملخص الشهري: $e';

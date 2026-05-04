@@ -11,11 +11,13 @@ import '../services/database_service.dart';
 import '../services/pdf_service.dart';
 import '../services/sync/sync_audit_service.dart';
 import '../services/password_service.dart';
+import '../services/telegram_backup_service.dart';
 import '../models/account_statement_item.dart';
 import '../services/smart_search/smart_search.dart' as smart_search; // 🧠 البحث الذكي
 import '../services/invoice_prediction_service.dart' as invoice_prediction; // 🔮 التوقعات الذكية
 import '../services/expert_training_service.dart'; // العقل المدبر للتدريب
 import 'financial_audit_screen.dart'; // 🛡️ شاشة التدقيق المالي
+import 'discord_settings_screen.dart'; // 📱 إعدادات Discord
 
 class GeneralSettingsScreen extends StatefulWidget {
   const GeneralSettingsScreen({super.key});
@@ -55,6 +57,11 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
   
   // إعدادات الفاتورة
   bool _autoScrollInvoice = true;
+  int _autoPriceMode = 0;
+  
+  // ✈️ إعدادات التليجرام
+  bool _telegramSyncEnabled = true;
+  DateTime? _telegramTurnOffDate;
   
   // 🔄 إعدادات المزامنة
   bool _syncFullTransferMode = false;
@@ -105,6 +112,11 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
     
     // تحميل إعدادات الفاتورة
     _autoScrollInvoice = _appSettings.autoScrollInvoice;
+    _autoPriceMode = _appSettings.autoPriceMode;
+    
+    // تحميل إعدادات التليجرام
+    _telegramSyncEnabled = _appSettings.telegramSyncEnabled;
+    _telegramTurnOffDate = _appSettings.telegramTurnOffDate;
     
     // تحميل إعدادات المزامنة
     _syncFullTransferMode = _appSettings.syncFullTransferMode;
@@ -160,6 +172,9 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
       paidAmountColor: _paidAmountColor.value,
       pointsPerHundredThousand: _pointsPerHundredThousand,
       autoScrollInvoice: _autoScrollInvoice,
+      autoPriceMode: _autoPriceMode,
+      telegramSyncEnabled: _telegramSyncEnabled,
+      telegramTurnOffDate: _telegramTurnOffDate,
       syncFullTransferMode: _syncFullTransferMode,
       syncShowConfirmation: _syncShowConfirmation,
       syncAutoCreateCustomers: _syncAutoCreateCustomers,
@@ -923,6 +938,31 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                     });
                   },
                 ),
+                const Divider(),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('التسعير التلقائي في الفاتورة'),
+                  subtitle: Text(
+                    'يتم اقتراح السعر تلقائياً بناءً على فواتير هذا الصنف السابقة لجميع العملاء',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                  ),
+                  trailing: DropdownButton<int>(
+                    value: _autoPriceMode,
+                    items: const [
+                      DropdownMenuItem(value: 0, child: Text('مطفأ')),
+                      DropdownMenuItem(value: 1, child: Text('آخر سعر')),
+                      DropdownMenuItem(value: 3, child: Text('متوسط آخر 3')),
+                      DropdownMenuItem(value: 5, child: Text('متوسط آخر 5')),
+                    ],
+                    onChanged: (val) {
+                      if (val != null) {
+                        setState(() {
+                          _autoPriceMode = val;
+                        });
+                      }
+                    },
+                  ),
+                ),
               ],
             ),
           ),
@@ -1005,6 +1045,114 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                   title: 'فرض فتح القفل',
                   subtitle: 'استخدم هذا إذا علقت المزامنة بسبب قفل من جهاز آخر',
                   onTap: () => _forceReleaseLock(),
+                ),
+              ],
+            ),
+          ),
+          
+          // 📱 Discord
+          _buildSettingsCard(
+            icon: Icons.discord,
+            iconColor: const Color(0xFF5865F2),
+            title: 'Discord Webhook',
+            child: Column(
+              children: [
+                _buildActionTile(
+                  icon: Icons.discord,
+                  iconColor: const Color(0xFF5865F2),
+                  title: 'إعدادات Discord',
+                  subtitle: 'بديل Telegram - يعمل في كل مكان',
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const DiscordSettingsScreen(),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+          
+          // ✈️ إعدادات التليجرام المستقلة
+          _buildSettingsCard(
+            icon: Icons.telegram,
+            iconColor: Colors.blue,
+            title: 'إرسال الفواتير للتليجرام',
+            child: Column(
+              children: [
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('إرسال الفواتير التلقائي للتليجرام'),
+                  subtitle: Text(
+                    'تفعيل أو إيقاف إرسال الفواتير إلى تليجرام تلقائياً',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                  ),
+                  value: _telegramSyncEnabled,
+                  activeColor: primaryColor,
+                  onChanged: (value) async {
+                    if (value == _telegramSyncEnabled) return;
+                    
+                    if (!value) {
+                      // إيقاف
+                      setState(() {
+                         _telegramSyncEnabled = false;
+                         _telegramTurnOffDate = DateTime.now();
+                      });
+                    } else {
+                      // تشغيل
+                      if (_telegramTurnOffDate != null) {
+                        final String turnOffStr = '${_telegramTurnOffDate!.year}/${_telegramTurnOffDate!.month}/${_telegramTurnOffDate!.day}';
+                        final now = DateTime.now();
+                        final String nowStr = '${now.year}/${now.month}/${now.day}';
+                        final result = await showDialog<String>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            title: const Text('إعادة تفعيل التليجرام'),
+                            content: Text(
+                                'الآن تم إعادة التفعيل، هل تريد اعتبار الفواتير المُنشأة في فترة الإيقاف (من $turnOffStr إلى $nowStr) مرسلة (كي لا يتم إرسالها)، أم تريد إرسالها عند الرفع القادم؟'),
+                            actions: [
+                              TextButton(
+                                onPressed: () {
+                                  Navigator.pop(ctx, 'cancel');
+                                },
+                                child: const Text('إلغاء التشغيل'),
+                              ),
+                              ElevatedButton(
+                                style: ElevatedButton.styleFrom(backgroundColor: Colors.grey[700], foregroundColor: Colors.white),
+                                onPressed: () {
+                                  Navigator.pop(ctx, 'consider_sent');
+                                },
+                                child: const Text('اعتبارها مرسلة (مُتجاهلة)'),
+                              ),
+                              ElevatedButton(
+                                style: ElevatedButton.styleFrom(backgroundColor: primaryColor, foregroundColor: Colors.white),
+                                onPressed: () {
+                                  Navigator.pop(ctx, 'queue_send');
+                                },
+                                child: const Text('إرسالها لاحقاً'),
+                              ),
+                            ],
+                          ),
+                        );
+                        
+                        if (result == 'cancel' || result == null) return;
+                        
+                        if (result == 'consider_sent') {
+                          // تحديث وقت آخر إرسال ليكون الآن حتى يتم تجاهل القديم
+                          await TelegramBackupService().saveLastUploadTime(time: DateTime.now());
+                        } else if (result == 'queue_send') {
+                          // لا تفعل شيء، سيعتمد على وقت آخر رفع أقدم فسيقوم باستحصالها كلها
+                        }
+                      }
+                      
+                      setState(() {
+                        _telegramSyncEnabled = true;
+                        _telegramTurnOffDate = null;
+                      });
+                    }
+                  },
                 ),
               ],
             ),

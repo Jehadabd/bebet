@@ -433,6 +433,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
   final FocusNode _searchFocusNode = FocusNode(); // FocusNode جديد لحقل البحث
   bool suppressSearch = false; // لمنع البحث التلقائي عند اختيار منتج
   bool quantityAutofocus = false; // للتحكم في autofocus لحقل الكمية
+  
+  // ⚡ تحسين الأداء: Debounce للبحث الذكي
+  Timer? _searchDebounceTimer;
+  
+  // 🔐 حالة إظهار عمود التكلفة
+  bool _showCostPrice = false;
 
   // أضف متغير نوع القائمة (يظل موجوداً ولكن بدون واجهة مستخدم لتغييره)
   String _selectedListType = 'مفرد';
@@ -1015,6 +1021,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
       noteController.dispose();
       _productIdController.dispose();
       _scrollController.dispose(); // تنظيف ScrollController
+      // ⚡ تنظيف Timer البحث
+      _searchDebounceTimer?.cancel();
       // --- تخلص من جميع FocusNodes الخاصة بالصفوف ---
       for (final node in focusNodesList) {
         node.dispose();
@@ -1057,35 +1065,49 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     }
   }
 
-  /// دالة البحث عن المنتجات - تستخدم خوارزمية البحث الذكية المتعددة الطبقات
+  /// دالة البحث عن المنتجات - تستخدم خوارزمية البحث الذكي المتعددة الطبقات
   /// تدعم البحث عن "كوب فنار" لإيجاد "كوب واحد سيه فنار"، "كوب اثنين سيات فنار"، إلخ
-  Future<void> _searchProducts(String query) async {
-    try {
-      if (query.isEmpty) {
-        setState(() {
-          _searchResults = [];
-        });
-        return;
-      }
-      // 🧠 استخدام البحث الذكي مع تمرير قائمة المنتجات الحالية في الفاتورة
-      // هذا يضمن دقة التحقق من المنتجات المضافة (حتى لو تم حذفها)
-      final currentProductNames = invoiceItems
-          .where((item) => item.productName.isNotEmpty)
-          .map((item) => item.productName)
-          .toList();
-      final results = await SmartSearchService.instance.smartSearch(
-        query,
-        currentInvoiceProductNames: currentProductNames,
-      );
-      setState(() {
-        _searchResults = results;
-      });
-    } catch (e) {
-      print('Error searching products: $e');
+  /// ⚡ محسّن مع Debounce لمنع البطء
+  void _searchProducts(String query) {
+    // إلغاء المؤقت السابق
+    _searchDebounceTimer?.cancel();
+    
+    // إذا كان البحث فارغاً، امسح النتائج فوراً
+    if (query.isEmpty) {
       setState(() {
         _searchResults = [];
       });
+      return;
     }
+    
+    // ⚡ Debounce: انتظر 300ms قبل تنفيذ البحث لتجنب الحسابات المتكررة
+    _searchDebounceTimer = Timer(const Duration(milliseconds: 300), () async {
+      try {
+        // ⚡ تحسين: استخدام Set بدلاً من List للتحقق السريع O(1)
+        final currentProductNamesSet = invoiceItems
+            .map((item) => item.productName.toLowerCase().trim())
+            .where((name) => name.isNotEmpty)
+            .toSet();
+        
+        final results = await SmartSearchService.instance.smartSearch(
+          query,
+          currentInvoiceProductNames: currentProductNamesSet.toList(),
+        );
+        
+        if (mounted) {
+          setState(() {
+            _searchResults = results;
+          });
+        }
+      } catch (e) {
+        print('Error searching products: $e');
+        if (mounted) {
+          setState(() {
+            _searchResults = [];
+          });
+        }
+      }
+    });
   }
 
   // دالة لتحديث المبلغ المسدد تلقائيًا إذا كان الدفع نقد
@@ -1179,7 +1201,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     return baseCost;
   }
 
-  void _addInvoiceItem() {
+  void _addInvoiceItem() async {
     try {
       // تحديد أن هناك تغييرات غير محفوظة
       if (invoiceToManage != null && !isViewOnly) {
@@ -1192,11 +1214,28 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         final double inputQuantity =
             double.tryParse(_quantityController.text.trim().replaceAll(',', '')) ?? 0.0;
         if (inputQuantity <= 0) return;
+        
+        // 💡 تطبيق التسعير التلقائي
         double finalAppliedPrice = _selectedPriceLevel!;
+        final mode = (await SettingsManager.getAppSettings()).autoPriceMode;
+        
+        if (mode > 0) {
+          final historicalPrice = await db.getHistoricalPriceForProduct(
+            _selectedProduct!.name,
+            selectedUnitForItem,
+            mode,
+          );
+          
+          if (historicalPrice != null && historicalPrice > 0) {
+            finalAppliedPrice = historicalPrice;
+            print('💰 Auto Price Applied: $historicalPrice for ${_selectedProduct!.name} - $selectedUnitForItem');
+          }
+        }
+        
         double baseUnitsPerSelectedUnit = 1.0;
-        // --- تعديل منطق التسعير التراكمي ---
-        if (_selectedProduct!.unit == 'piece' &&
-            selectedUnitForItem != 'قطعة') {
+      // --- تعديل منطق التسعير التراكمي ---
+      if (_selectedProduct!.unit == 'piece' &&
+          selectedUnitForItem != 'قطعة') {
           // إذا كان هناك تسلسل هرمي للوحدات
           if (_selectedProduct!.unitHierarchy != null &&
               _selectedProduct!.unitHierarchy!.isNotEmpty) {
@@ -3311,7 +3350,37 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
           // المحتوى الرئيسي
           AbsorbPointer(
             absorbing: isSaving,
-            child: Scaffold(
+            child: KeyboardListener(
+              focusNode: FocusNode(),
+              autofocus: true, // ✅ التركيز التلقائي لاستقبال الأحداث
+              onKeyEvent: (KeyEvent event) {
+                // 🔐 الكشف عن Ctrl+D لإظهار/إخفاء عمود التكلفة
+                final isCtrlPressed = HardwareKeyboard.instance.isControlPressed;
+                final isDPressed = event.logicalKey.keyLabel == 'D' || 
+                                   event.logicalKey.keyLabel == 'd';
+                
+                if (event is KeyDownEvent && isCtrlPressed && isDPressed) {
+                  print('🔐 Ctrl+D pressed - showing cost column');
+                  // عند الضغط على Ctrl+D: إظهار العمود
+                  setState(() {
+                    _showCostPrice = true;
+                  });
+                } else if (event is KeyUpEvent) {
+                  // عند رفع الإصبع عن Ctrl أو D: إخفاء العمود
+                  final isCtrlReleased = event.logicalKey.keyLabel == 'Control Left' ||
+                                         event.logicalKey.keyLabel == 'Control Right';
+                  final isDReleased = event.logicalKey.keyLabel == 'D' || 
+                                      event.logicalKey.keyLabel == 'd';
+                  
+                  if ((isCtrlReleased || isDReleased) && _showCostPrice) {
+                    print('🔐 Ctrl or D released - hiding cost column');
+                    setState(() {
+                      _showCostPrice = false;
+                    });
+                  }
+                }
+              },
+              child: Scaffold(
         appBar: AppBar(
           title: Text(invoiceToManage != null 
               ? (isViewOnly ? 'عرض فاتورة' : 'تعديل فاتورة')
@@ -4198,6 +4267,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                                     child: Text('عدد الوحدات',
                                         style: TextStyle(
                                             fontWeight: FontWeight.bold)))),
+                            // 🔐 عمود التكلفة (مخفي افتراضياً، يظهر بـ Ctrl+D)
+                            if (_showCostPrice)
+                              Expanded(
+                                flex: 2,
+                                child: Center(
+                                    child: Text('التكلفة',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.green)))),
                             // مساحة للأيقونات (80) + زر الحذف (40) = 120
                             SizedBox(width: 120),
                           ],
@@ -4206,14 +4284,17 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                     ],
                   ),
                 ),
-                ListView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: invoiceItems.length,
-                  itemBuilder: (context, index) {
+                // ⚡ تحسين الأداء: استبدال ListView.builder بـ Column لتجنب shrinkWrap
+                Column(
+                  children: List.generate(invoiceItems.length, (index) {
                     final item = invoiceItems[index];
+                    // ⚡ تحسين: إنشاء FocusNodes فقط عند الحاجة
                     while (focusNodesList.length <= index) {
                       focusNodesList.add(LineItemFocusNodes());
+                    }
+                    // ⚡ تنظيف FocusNodes الزائدة (إذا تم حذف عناصر)
+                    if (focusNodesList.length > invoiceItems.length + 5) {
+                      focusNodesList.removeRange(invoiceItems.length, focusNodesList.length);
                     }
                     return EditableInvoiceItemRow(
                       key: ValueKey(item.uniqueId),
@@ -4222,6 +4303,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                       allProducts: _allProductsForUnits ?? [],
                       isViewOnly: isViewOnly,
                       isPlaceholder: item.productName.isEmpty,
+                      showCostPrice: _showCostPrice, // 🔐 تمرير حالة إظهار التكلفة
+                      selectedListType: _selectedListType, // تمرير نوع القائمة
                       databaseService: db, // إضافة DatabaseService للبحث الذكي
                       currentCustomerName: customerNameController.text.trim(),
                       currentCustomerPhone: customerPhoneController.text.trim().isEmpty ? null : customerPhoneController.text.trim(),
@@ -4290,6 +4373,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                           hasUnsavedChanges = true;
                         }
                         
+                        // ⚡ تحسين الأداء: فصل حساب الربح عن setState
                         setState(() {
                           final i = invoiceItems.indexWhere(
                               (it) => it.uniqueId == updatedItem.uniqueId);
@@ -4299,14 +4383,23 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                           }
                           
                           _recalculateTotals();
-                          _calculateProfit();
                         });
+                        
+                        // حساب الربح بشكل غير متزامن لتحسين الاستجابة
+                        if (_isProfitVisible) {
+                          Future.delayed(Duration.zero, () {
+                            if (mounted) {
+                              _calculateProfit();
+                              setState(() {}); // تحديث الربح فقط
+                            }
+                          });
+                        }
                         
                         _scheduleLiveDebtSync();
                       },
                       onItemRemovedByUid: _removeInvoiceItemByUid,
                     );
-                  },
+                  }),
                 ),
                 const SizedBox(height: 24.0),
                 Builder(
@@ -4788,6 +4881,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
           ),
         ),
             ), // نهاية Scaffold
+          ), // نهاية KeyboardListener
           ), // نهاية AbsorbPointer
           // ═══════════════════════════════════════════════════════════════════════════
           // 🔄 مؤشر التحميل أثناء الحفظ
@@ -5503,6 +5597,8 @@ class EditableInvoiceItemRow extends StatefulWidget {
   final String currentCustomerName; // اسم العميل الحالي لقراءة سجل أسعاره
   final String? currentCustomerPhone; // هاتف العميل لتحسين المطابقة
   final VoidCallback? onPriceSubmitted; // جديد: للانتقال إلى الصف التالي عند الضغط على Enter في السعر
+  final bool showCostPrice; // 🔐 إظهار عمود التكلفة
+  final String selectedListType; // نوع القائمة (مفرد، جملة، إلخ)
 
   const EditableInvoiceItemRow({
     Key? key,
@@ -5520,6 +5616,8 @@ class EditableInvoiceItemRow extends StatefulWidget {
     required this.currentCustomerName,
     this.currentCustomerPhone,
     this.onPriceSubmitted, // جديد: للانتقال إلى الصف التالي
+    this.showCostPrice = false, // 🔐 افتراضياً مخفي
+    this.selectedListType = 'مفرد', // نوع القائمة
   }) : super(key: key);
 
   @override
@@ -5856,6 +5954,104 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     return options;
   }
 
+  // 🤖 دالة جلب السعر التلقائي بناءً على إعدادات التطبيق
+  Future<void> _applyAutoPriceIfEnabled(String productName, String saleType) async {
+    if (widget.databaseService == null || productName.isEmpty || saleType.isEmpty) return;
+    try {
+      final settings = await SettingsManager.getAppSettings();
+      final mode = settings.autoPriceMode; // 0 = off, 1 = last, 3 = avg 3, 5 = avg 5
+      
+      print('🔍 Auto Price: product="$productName", saleType="$saleType", mode=$mode');
+      
+      double? finalPrice;
+
+      // 1. حساب السعر الافتراضي من بيانات المنتج نفسه كثابت إذا لم يتوفر تاريخ
+      Product? product = widget.allProducts.firstWhere(
+        (p) => p.name == productName,
+        orElse: () => Product(
+          id: null, name: '', unit: 'piece', unitPrice: 0, price1: 0,
+          createdAt: DateTime.now(), lastModifiedAt: DateTime.now(),
+        ),
+      );
+
+      double defaultPrice = 0;
+      if (product.id != null) {
+        double basePrice = product.price1 ?? product.unitPrice;
+        if (basePrice > 0) {
+          double conversionFactor = 1.0;
+          if (product.unit == 'piece' && saleType != 'قطعة') {
+            if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
+              try {
+                List<dynamic> hierarchy = json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+                for (var unit in hierarchy) {
+                  if ((unit['unit_name'] ?? unit['name']) == saleType) {
+                    conversionFactor = (unit['quantity'] as num).toDouble();
+                    break;
+                  }
+                }
+              } catch (e) {}
+            }
+          } else if (product.unit == 'meter' && saleType == 'لفة') {
+            conversionFactor = product.lengthPerUnit ?? 1.0;
+          }
+          
+          if ((product.unit == 'piece' && saleType != 'قطعة') || (product.unit == 'meter' && saleType == 'لفة')) {
+            defaultPrice = basePrice * conversionFactor;
+          } else if ((product.unit == 'piece' && saleType == 'قطعة') || (product.unit == 'meter' && saleType == 'متر') || (product.unit != 'piece' && product.unit != 'meter')) {
+            defaultPrice = basePrice;
+          } else {
+            defaultPrice = basePrice;
+          }
+        }
+      }
+
+      // 2. البحث في السجل التاريخي إذا كان الخيار مُفعلاً
+      if (mode > 0) {
+        final double? historicalPrice = await widget.databaseService!.getHistoricalPriceForProduct(productName, saleType, mode);
+        print('📊 Historical Price: $historicalPrice');
+        
+        if (historicalPrice != null && historicalPrice > 0) {
+          finalPrice = historicalPrice;
+        } else {
+          print('⚠️ No historical price found for "$productName" - $saleType, using default price: $defaultPrice');
+          if (defaultPrice > 0) finalPrice = defaultPrice;
+        }
+      } else {
+        print('🔕 Auto Price is disabled (mode=0), using default price: $defaultPrice');
+        if (defaultPrice > 0) finalPrice = defaultPrice;
+      }
+
+      // 3. تطبيق السعر النهائي
+      if (finalPrice != null && finalPrice > 0) {
+        if (mounted) {
+          setState(() {
+            double quantity = _currentItem.quantityIndividual ?? _currentItem.quantityLargeUnit ?? 1;
+            _currentItem = _currentItem.copyWith(
+              appliedPrice: finalPrice,
+              itemTotal: quantity * (finalPrice ?? 0),
+            );
+            _priceController.text = NumberFormat('#,##0.##', 'en_US').format(finalPrice);
+            widget.onItemUpdated(_currentItem);
+          });
+          
+          // ⚡ تحديد السعر بالكامل ليسهل مسحه
+          Future.delayed(const Duration(milliseconds: 50), () {
+            if (mounted) {
+              if (_priceController.text.isNotEmpty) {
+                 _priceController.selection = TextSelection(
+                   baseOffset: 0,
+                   extentOffset: _priceController.text.length,
+                 );
+              }
+            }
+          });
+        }
+      }
+    } catch (e) {
+      print('❌ Auto Price Error: $e');
+    }
+  }
+
   void _updateQuantity(String value) {
     double? newQuantity = double.tryParse(value);
     if (newQuantity == null || newQuantity <= 0) return;
@@ -5876,6 +6072,11 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
       _priceController.text = _formatNumber(_currentItem.appliedPrice);
     });
     widget.onItemUpdated(_currentItem);
+    
+    // 💡 تطبيق التسعير التلقائي عند إدخال الكمية (إذا لم يكن هناك سعر)
+    if (_currentItem.appliedPrice <= 0 && _currentItem.productName.isNotEmpty && _currentItem.saleType != null) {
+      _applyAutoPriceIfEnabled(_currentItem.productName, _currentItem.saleType!);
+    }
   }
 
   void _updateSaleType(String newType) {
@@ -5935,7 +6136,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         saleType: newType,
         appliedPrice: newAppliedPrice,
         unitsInLargeUnit: conversionFactor != 1.0 ? conversionFactor : null,
-        itemTotal: quantity * newAppliedPrice,
+        itemTotal: quantity * (newAppliedPrice ?? 0),
         quantityIndividual:
             (newType == 'قطعة' || newType == 'متر') ? quantity : null,
         quantityLargeUnit:
@@ -5954,6 +6155,8 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     });
     // تحديث أقل سعر تاريخي عند تغيير نوع البيع
     _fetchLowestRecentPrice();
+    // 💡 تطبيق التسعير التلقائي عند تغيير نوع البيع
+    _applyAutoPriceIfEnabled(_currentItem.productName, newType);
   }
 
   void _updatePrice(String value) {
@@ -6517,6 +6720,65 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                           style: Theme.of(context).textTheme.bodyMedium),
               ),
             ),
+            // 🔐 عمود التكلفة (يظهر فقط إذا كان مفعلاً)
+            if (widget.showCostPrice)
+              Expanded(
+                flex: 2,
+                child: Container(
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    border: Border(right: BorderSide(color: gridBorderColor, width: 1)),
+                  ),
+                  child: Builder(
+                    builder: (context) {
+                      // جلب سعر التكلفة من المنتج
+                      final product = widget.allProducts.firstWhere(
+                        (p) => p.name == _currentItem.productName,
+                        orElse: () => Product(
+                          id: null,
+                          name: '',
+                          unit: 'piece',
+                          unitPrice: 0,
+                          costPrice: 0,
+                          price1: 0,
+                          createdAt: DateTime.now(),
+                          lastModifiedAt: DateTime.now(),
+                        ),
+                      );
+                      
+                      // حساب التكلفة حسب نوع البيع
+                      double costPrice = product.costPrice ?? 0;
+                      if (_currentItem.saleType != null && _currentItem.saleType != 'قطعة' && _currentItem.saleType != 'متر') {
+                        // إذا كان هناك unit_costs، استخدمها
+                        try {
+                          if (product.unitCosts != null && product.unitCosts!.isNotEmpty) {
+                            final Map<String, dynamic> unitCostsMap = json.decode(product.unitCosts!);
+                            if (unitCostsMap.containsKey(_currentItem.saleType)) {
+                              costPrice = (unitCostsMap[_currentItem.saleType] as num).toDouble();
+                            } else if (product.unit == 'meter' && _currentItem.saleType == 'لفة') {
+                              // للفة: التكلفة = التكلفة الأساسية * الطول
+                              costPrice = (product.costPrice ?? 0) * (product.lengthPerUnit ?? 1);
+                            } else {
+                              // للهرمية: التكلفة = التكلفة الأساسية * عدد الوحدات
+                              costPrice = (product.costPrice ?? 0) * (_currentItem.unitsInLargeUnit ?? 1);
+                            }
+                          }
+                        } catch (e) {
+                          print('Error calculating cost price: $e');
+                        }
+                      }
+                      
+                      return Text(
+                        formatCurrency(costPrice),
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.green),
+                      );
+                    },
+                  ),
+                ),
+              ),
             // أيقونات التنبيه في أقصى اليمين
             SizedBox(
               width: 80, // زيادة العرض لاستيعاب أيقونتين

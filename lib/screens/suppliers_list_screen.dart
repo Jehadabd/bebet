@@ -23,19 +23,29 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
   List<Supplier> _filteredSuppliers = [];
   String _filterType = 'all';
   bool _isLoading = true;
+  bool _isFirstLoad = true; // 🚀 لتمييز أول تحميل
   
   final NumberFormat _nf = NumberFormat('#,##0', 'en');
 
   @override
   void initState() {
     super.initState();
-    _loadSuppliers();
+    _loadSuppliers(forceRefresh: true);
     _loadInvoiceCount();
   }
 
-  Future<void> _loadSuppliers() async {
-    setState(() => _isLoading = true);
-    await _suppliersService.ensureTables();
+  /// 🚀 تحميل الموردين مع Cache ذكي
+  /// forceRefresh = true يعني تجاهل Cache وأعد التحميل من قاعدة البيانات
+  Future<void> _loadSuppliers({bool forceRefresh = false}) async {
+    // إذا لم يكن هناك طلب للتحديث القسري، نستخدم Cache الموجود في SuppliersService
+    if (!forceRefresh && !_isFirstLoad) {
+      // Cache موجود بالفعل في SuppliersService.getAllSuppliers()
+      // لا حاجة لإظهار loading
+    } else {
+      setState(() => _isLoading = true);
+    }
+    
+    // 🚀 Cache يتم إدارته تلقائياً في SuppliersService
     final list = await _suppliersService.getAllSuppliers();
     
     if (mounted) {
@@ -44,6 +54,7 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
         _suppliers.addAll(list);
         _applyFilter();
         _isLoading = false;
+        _isFirstLoad = false;
       });
     }
   }
@@ -81,7 +92,7 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
   Future<void> _insertSupplier(Supplier s) async {
     final id = await _suppliersService.insertSupplier(s);
     final created = s.copyWith(id: id);
-    _loadSuppliers();
+    _loadSuppliers(forceRefresh: true); // 🚀 تحديث قسري بعد الإضافة
   }
 
   void _openSupplierDetails(Supplier supplier) {
@@ -89,7 +100,7 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
       MaterialPageRoute(
         builder: (_) => SupplierDetailsScreen(supplier: supplier),
       ),
-    ).then((_) => _loadSuppliers());
+    ).then((_) => _loadSuppliers(forceRefresh: true)); // 🚀 تحديث قسري بعد العودة من التفاصيل
   }
 
   String? _pendingAIType;
@@ -183,7 +194,7 @@ class _SuppliersListScreenState extends State<SuppliersListScreen> {
       ),
     );
     if (saved == true && mounted) {
-      await _loadSuppliers();
+      await _loadSuppliers(forceRefresh: true); // 🚀 تحديث قسري بعد حفظ AI
     }
   }
 

@@ -34,6 +34,37 @@ class DatabaseService {
   // تحكم بالطباعات التشخيصية من مصدر واحد
   // معطل في الإصدار النهائي لتجنب الطباعات المزعجة
   static const bool _verboseLogs = false;
+  
+  // 🚀 Cache للمنتجات والزبائن - تسريع العمليات
+  static List<Product>? _productsCache;
+  static DateTime? _productsCacheTime;
+  static List<Customer>? _customersCache;
+  static DateTime? _customersCacheTime;
+  static const Duration _cacheValidDuration = Duration(minutes: 5);
+  
+  /// 🚀 التحقق من صلاحية Cache المنتجات
+  static bool get _isProductsCacheValid {
+    if (_productsCacheTime == null || _productsCache == null) return false;
+    return DateTime.now().difference(_productsCacheTime!) < _cacheValidDuration;
+  }
+  
+  /// 🚀 التحقق من صلاحية Cache الزبائن
+  static bool get _isCustomersCacheValid {
+    if (_customersCacheTime == null || _customersCache == null) return false;
+    return DateTime.now().difference(_customersCacheTime!) < _cacheValidDuration;
+  }
+  
+  /// 🚀 إبطال Cache المنتجات
+  void invalidateProductsCache() {
+    _productsCache = null;
+    _productsCacheTime = null;
+  }
+  
+  /// 🚀 إبطال Cache الزبائن
+  void invalidateCustomersCache() {
+    _customersCache = null;
+    _customersCacheTime = null;
+  }
 
   factory DatabaseService() => _instance;
 
@@ -2302,15 +2333,30 @@ class DatabaseService {
       print('✅ تم إضافة معاملة الدين المبدئي: ${customer.currentTotalDebt} دينار للعميل: ${customer.name}');
     }
     
+    // 🚀 إبطال Cache بعد إضافة عميل
+    invalidateCustomersCache();
+    
     return customerId;
   }
 
+  /// 🚀 جلب جميع الزبائن مع Cache ذكي
   Future<List<Customer>> getAllCustomers({String orderBy = 'name ASC'}) async {
+    // 🚀 تحقق من Cache أولاً
+    if (_isCustomersCacheValid && _customersCache != null) {
+      return List.from(_customersCache!);
+    }
+    
     final db = await database;
     try {
       final List<Map<String, dynamic>> maps =
           await db.query('customers', orderBy: orderBy);
-      return List.generate(maps.length, (i) => Customer.fromMap(maps[i]));
+      final customers = List.generate(maps.length, (i) => Customer.fromMap(maps[i]));
+      
+      // 🚀 تحديث Cache
+      _customersCache = customers;
+      _customersCacheTime = DateTime.now();
+      
+      return customers;
     } catch (e) {
       print('Error getting all customers: $e');
       throw Exception(_handleDatabaseError(e));
@@ -2475,6 +2521,9 @@ class DatabaseService {
       }
     }
     
+    // 🚀 إبطال Cache بعد تحديث عميل
+    invalidateCustomersCache();
+    
     return result;
   }
 
@@ -2589,6 +2638,9 @@ class DatabaseService {
         }
       }
       
+      // 🚀 إبطال Cache بعد حذف عميل
+      invalidateCustomersCache();
+      
       return result;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -2607,6 +2659,33 @@ class DatabaseService {
       return List.generate(maps.length, (i) => Customer.fromMap(maps[i]));
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  /// ⚡ التحقق من وجود عميل بالاسم (للتحقق من التكرار)
+  Future<bool> isCustomerNameExists(String name, {int? excludeId}) async {
+    final db = await database;
+    try {
+      final normalizedName = normalizeArabic(name.trim().toLowerCase());
+      String whereClause = 'name_norm = ?';
+      List<dynamic> whereArgs = [normalizedName];
+      
+      if (excludeId != null) {
+        whereClause += ' AND id != ?';
+        whereArgs.add(excludeId);
+      }
+      
+      final List<Map<String, dynamic>> maps = await db.query(
+        'customers',
+        where: whereClause,
+        whereArgs: whereArgs,
+        limit: 1,
+      );
+      
+      return maps.isNotEmpty;
+    } catch (e) {
+      print('Error checking customer name exists: $e');
+      return false;
     }
   }
 
@@ -2653,18 +2732,37 @@ class DatabaseService {
         print('WARN: Failed to build unit_costs on insert: $e');
       }
       
-      return await db.insert('products', productMap);
+      final result = await db.insert('products', productMap);
+      
+      // 🚀 إبطال Cache بعد الكتابة
+      invalidateProductsCache();
+      
+      return result;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
   }
 
+  /// 🚀 جلب جميع المنتجات مع Cache ذكي
+  /// إذا كانت Cache صالحة، يعيد البيانات فوراً من الذاكرة
+  /// وإلا يجلب من قاعدة البيانات ويحدث Cache
   Future<List<Product>> getAllProducts({String orderBy = 'name ASC'}) async {
+    // 🚀 تحقق من Cache أولاً
+    if (_isProductsCacheValid && _productsCache != null) {
+      return List.from(_productsCache!);
+    }
+    
     final db = await database;
     try {
       final List<Map<String, dynamic>> maps =
           await db.query('products', orderBy: orderBy);
-      return List.generate(maps.length, (i) => Product.fromMap(maps[i]));
+      final products = List.generate(maps.length, (i) => Product.fromMap(maps[i]));
+      
+      // 🚀 تحديث Cache
+      _productsCache = products;
+      _productsCacheTime = DateTime.now();
+      
+      return products;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
@@ -2673,11 +2771,16 @@ class DatabaseService {
   Future<int> deleteProduct(int id) async {
     final db = await database;
     try {
-      return await db.delete(
+      final result = await db.delete(
         'products',
         where: 'id = ?',
         whereArgs: [id],
       );
+      
+      // 🚀 إبطال Cache بعد الحذف
+      invalidateProductsCache();
+      
+      return result;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
@@ -5045,6 +5148,33 @@ class DatabaseService {
     }
   }
 
+  // 💰 جلب متوسط أسعار آخر (limit) فواتير لصنف معين ونوع بيع معين
+  Future<double?> getHistoricalPriceForProduct(String productName, String? saleType, int limit) async {
+    if (limit <= 0) return null;
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> results = await db.query(
+        'invoice_items',
+        columns: ['applied_price'],
+        where: 'product_name = ? AND sale_type = ?',
+        whereArgs: [productName, saleType ?? ''],
+        orderBy: 'id DESC', // أحدث الفواتير أولاً
+        limit: limit,
+      );
+
+      if (results.isEmpty) return null;
+
+      double sum = 0;
+      for (var row in results) {
+        sum += (row['applied_price'] as num).toDouble();
+      }
+      return sum / results.length;
+    } catch (e) {
+      print('Error fetching historical price: $e');
+      return null;
+    }
+  }
+
   /// ضبط المساهمة الحالية لهذه الفاتورة في دين العميل بشكل مباشر (تعديل حي)
   /// newContribution هي قيمة الدين التي يجب أن تمثلها هذه الفاتورة حالياً.
   /// الدالة تحسب الفرق مع المساهمة الحالية (من جميع معاملات هذه الفاتورة ما عدا المدفوعات اليدوية)
@@ -5972,12 +6102,17 @@ class DatabaseService {
         print('WARN: Failed to recalculate unit_costs: $e');
       }
       
-      return await db.update(
+      final result = await db.update(
         'products',
         productMap,
         where: 'id = ?',
         whereArgs: [product.id!],
       );
+      
+      // 🚀 إبطال Cache بعد التحديث
+      invalidateProductsCache();
+      
+      return result;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }

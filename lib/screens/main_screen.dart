@@ -7,12 +7,14 @@ import '../providers/app_provider.dart';
 import '../services/database_service.dart';
 import '../services/telegram_backup_service.dart';
 import '../services/telegram_invoice_export_service.dart';
+import '../services/discord_backup_service.dart';
 import '../services/api_health_service.dart';  // ✅ خدمة اختبار الاتصال
 import '../models/customer.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/password_service.dart';
 import '../screens/general_settings_screen.dart';
 import '../services/pdf_service.dart';
+import '../services/settings_manager.dart';
 import 'customer_details_screen.dart'; // إضافة استيراد شاشة تفاصيل العميل
 
 class MainScreen extends StatefulWidget {
@@ -509,6 +511,10 @@ class _MainScreenState extends State<MainScreen> {
                 final telegramService = TelegramBackupService();
                 final lastUploadTime = await telegramService.getLastUploadTime();
                 
+                // جلب إعداد التليجرام
+                final appSettings = await SettingsManager.getAppSettings();
+                final bool telegramSyncEnabled = appSettings.telegramSyncEnabled;
+                
                 // طباعة معلومات التشخيص
                 final diagnostics = await telegramService.getDiagnostics();
                 print('📊 معلومات تشخيص Telegram:');
@@ -528,12 +534,19 @@ class _MainScreenState extends State<MainScreen> {
                       },
                     );
 
-                    // 2) إرسال الفواتير الجديدة إلى Telegram (إذا كان هناك وقت سابق)
-                    if (telegramService.isConfigured && lastUploadTime != null) {
+                    // 2) إرسال الفواتير الجديدة إلى Telegram و/أو Discord
+                    final discordService2 = DiscordBackupService()..loadSettings();
+                    final bool shouldSendInvoices = (telegramService.isConfigured && telegramSyncEnabled) || discordService2.isEnabled;
+                    
+                    if (shouldSendInvoices) {
+                      // إذا لا يوجد وقت رفع سابق (جهاز جديد)، أرسل فواتير آخر 30 يوم
+                      final effectiveUploadTime = lastUploadTime ?? DateTime.now().subtract(const Duration(days: 30));
                       statusNotifier.value = 'جاري إرسال الفواتير الجديدة...';
                       final exportService = TelegramInvoiceExportService();
                       final exportResult = await exportService.exportAndSendNewInvoices(
-                        afterDate: lastUploadTime,
+                        afterDate: effectiveUploadTime,
+                        sendToTelegram: telegramService.isConfigured && telegramSyncEnabled,
+                        sendToDiscord: discordService2.isEnabled,
                         onProgress: (current, total, status) {
                           if (total > 0) {
                             progressNotifier.value = 0.5 + (current / total) * 0.40;
@@ -547,25 +560,42 @@ class _MainScreenState extends State<MainScreen> {
                         allInvoicesSentSuccessfully = false;
                         errors.add('فشل إرسال ${exportResult.failedCount} فاتورة');
                       }
-                    } else if (!telegramService.isConfigured) {
-                      errors.add('إعدادات Telegram غير مكتملة');
+                    } else {
+                      // لا تليجرام ولا ديسكورد مفعل
+                      print('⚠️ لا يوجد خدمة إرسال مفعلة - تخطي إرسال الفواتير');
                     }
 
-                    // 3) إرسال الملخص الشهري إلى Telegram
-                    if (telegramService.isConfigured) {
+                    // 3) إرسال الملخص الشهري إلى Telegram و Discord
+                    final discordService = DiscordBackupService()..loadSettings();
+                    final bool shouldSendTelegramSummary = telegramService.isConfigured && telegramSyncEnabled;
+                    
+                    if (shouldSendTelegramSummary || discordService.isEnabled) {
                       statusNotifier.value = 'جاري إرسال الملخص الشهري...';
                       progressNotifier.value = 0.92;
-                      final summaryResult = await telegramService.sendMonthlySummaryWithDetails();
-                      if (!summaryResult.success) {
-                        errors.add('فشل إرسال الملخص الشهري: ${summaryResult.errorMessage}');
-                        if (summaryResult.errorDetails != null) {
-                          errors.add('التفاصيل: ${summaryResult.errorDetails}');
+
+                      final monthlySummaryMessage = await telegramService.buildMonthlySummaryMessage();
+
+                      if (shouldSendTelegramSummary) {
+                        final summaryResult = await telegramService.sendMessageWithDetails(monthlySummaryMessage);
+                        if (!summaryResult.success) {
+                          errors.add('فشل إرسال الملخص الشهري إلى Telegram: ${summaryResult.errorMessage}');
+                          if (summaryResult.errorDetails != null) {
+                            errors.add('التفاصيل: ${summaryResult.errorDetails}');
+                          }
+                        }
+                      }
+
+                      if (discordService.isEnabled) {
+                        final discordSummarySent = await discordService.sendMessage(monthlySummaryMessage);
+                        if (!discordSummarySent) {
+                          errors.add('فشل إرسال الملخص الشهري إلى Discord');
                         }
                       }
                     }
 
-                    // 4) حفظ وقت الرفع الحالي فقط إذا نجح إرسال جميع الفواتير
-                    if (allInvoicesSentSuccessfully && errors.isEmpty) {
+                    // 4) حفظ وقت الرفع الحالي
+                    // حفظ وقت الرفع حتى لو فشل التليجرام (لمنع تراكم الفواتير)
+                    if (allInvoicesSentSuccessfully) {
                       await telegramService.saveLastUploadTime();
                     }
                     

@@ -1,6 +1,7 @@
 // widgets/editable_invoice_item_row.dart
 // widgets/editable_invoice_item_row.dart
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../models/invoice_item.dart';
 import 'formatters.dart';
 import '../models/product.dart';
@@ -8,6 +9,7 @@ import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'safe_autocomplete.dart';
 import '../services/database_service.dart';
+import '../services/settings_manager.dart';
 
 class EditableInvoiceItemRow extends StatefulWidget {
   final InvoiceItem item;
@@ -84,6 +86,22 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     _quantityFocusNode = widget.quantityFocusNode ?? FocusNode();
     _priceFocusNode = widget.priceFocusNode ?? FocusNode();
     _saleTypeFocusNode = FocusNode();
+    
+    // 💡 تحديد النص بالكامل عند الدخول إلى حقل السعر ليسهل مسحه مباشرةً
+    _priceFocusNode.addListener(_onPriceFocusChange);
+  }
+
+  void _onPriceFocusChange() {
+    if (_priceFocusNode.hasFocus) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_priceController.text.isNotEmpty) {
+          _priceController.selection = TextSelection(
+            baseOffset: 0,
+            extentOffset: _priceController.text.length,
+          );
+        }
+      });
+    }
   }
   
   // ═══════════════════════════════════════════════════════════════════════════
@@ -143,6 +161,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   @override
   void dispose() {
     _closeSaleTypeDropdown();
+    _priceFocusNode.removeListener(_onPriceFocusChange); // إزالة المستمع
     _quantityController.dispose();
     _priceController.dispose();
     if (widget.detailsFocusNode == null) {
@@ -263,6 +282,112 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         .toList();
   }
 
+  // 🤖 دالة جلب السعر التلقائي بناءً على إعدادات التطبيق
+  Future<void> _applyAutoPriceIfEnabled(String productName, String saleType) async {
+    if (widget.databaseService == null || productName.isEmpty || saleType.isEmpty) return;
+    
+    try {
+      final settings = await SettingsManager.getAppSettings();
+      final mode = settings.autoPriceMode; // 0 = off, 1 = last, 3 = avg 3, 5 = avg 5
+      
+      print('🔍 Auto Price: product="$productName", saleType="$saleType", mode=$mode');
+      
+      double? finalPrice;
+
+      // 1. حساب السعر الافتراضي من بيانات المنتج نفسه كثابت إذا لم يتوفر تاريخ
+      Product? product = widget.allProducts.firstWhere(
+        (p) => p.name == productName,
+        orElse: () => Product(
+          id: null,
+          name: '',
+          unit: 'piece',
+          unitPrice: 0,
+          price1: 0,
+          createdAt: DateTime.now(),
+          lastModifiedAt: DateTime.now(),
+        ),
+      );
+
+      double defaultPrice = 0;
+      if (product.id != null) {
+        double basePrice = product.price1 ?? product.unitPrice;
+        if (basePrice > 0) {
+          double conversionFactor = 1.0;
+          if (product.unit == 'piece' && saleType != 'قطعة') {
+            if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
+              try {
+                List<dynamic> hierarchy = json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+                for (var unit in hierarchy) {
+                  if ((unit['unit_name'] ?? unit['name']) == saleType) {
+                    conversionFactor = (unit['quantity'] as num).toDouble();
+                    break;
+                  }
+                }
+              } catch (e) {}
+            }
+          } else if (product.unit == 'meter' && saleType == 'لفة') {
+            conversionFactor = product.lengthPerUnit ?? 1.0;
+          }
+          
+          if ((product.unit == 'piece' && saleType != 'قطعة') || (product.unit == 'meter' && saleType == 'لفة')) {
+            defaultPrice = basePrice * conversionFactor;
+          } else if ((product.unit == 'piece' && saleType == 'قطعة') || (product.unit == 'meter' && saleType == 'متر') || (product.unit != 'piece' && product.unit != 'meter')) {
+            defaultPrice = basePrice;
+          } else {
+            defaultPrice = basePrice;
+          }
+        }
+      }
+
+      // 2. البحث في السجل التاريخي إذا كان الخيار مُفعلاً
+      if (mode > 0) {
+        final double? historicalPrice = await widget.databaseService!.getHistoricalPriceForProduct(productName, saleType, mode);
+        
+        print('📊 Historical Price: $historicalPrice');
+        
+        if (historicalPrice != null && historicalPrice > 0) {
+          finalPrice = historicalPrice;
+        } else {
+          print('⚠️ No historical price found for "$productName" - $saleType, using default price: $defaultPrice');
+          if (defaultPrice > 0) finalPrice = defaultPrice;
+        }
+      } else {
+        print('🔕 Auto Price is disabled (mode=0), using default price: $defaultPrice');
+        if (defaultPrice > 0) finalPrice = defaultPrice;
+      }
+
+      // 3. تطبيق السعر النهائي
+      if (finalPrice != null && finalPrice > 0) {
+        if (mounted) {
+          setState(() {
+            _currentItem = _currentItem.copyWith(
+              appliedPrice: finalPrice,
+              itemTotal: _getCorrectQuantity(_currentItem) * finalPrice,
+            );
+            _priceController.text = NumberFormat('#,##0.##', 'en_US').format(finalPrice);
+            widget.onItemUpdated(_currentItem);
+          });
+          
+          // ⚡ تحديد السعر بالكامل ليسهل مسحه
+          Future.delayed(const Duration(milliseconds: 50), () {
+            if (mounted) {
+              if (_priceController.text.isNotEmpty) {
+                 _priceController.selection = TextSelection(
+                   baseOffset: 0,
+                   extentOffset: _priceController.text.length,
+                 );
+              }
+            }
+          });
+        }
+      } else {
+        print('⚠️ Could not resolve any price for "$productName" - $saleType');
+      }
+    } catch (e) {
+      print('❌ Auto Price Error: $e');
+    }
+  }
+
   void _updateQuantity(String value) {
     double? newQuantity = double.tryParse(value.replaceAll(',', ''));
     if (newQuantity == null || newQuantity <= 0) return;
@@ -285,6 +410,11 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
       _priceController.text = NumberFormat('#,##0.##', 'en_US').format(_currentItem.appliedPrice);
       widget.onItemUpdated(_currentItem);
     });
+    
+    // 💡 تطبيق التسعير التلقائي عند إدخال الكمية (إذا لم يكن هناك سعر)
+    if (_currentItem.appliedPrice <= 0 && _currentItem.productName.isNotEmpty && _currentItem.saleType != null) {
+      _applyAutoPriceIfEnabled(_currentItem.productName, _currentItem.saleType!);
+    }
   }
 
   void _updateSaleType(String newType) {
@@ -355,6 +485,28 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
       // FocusScope.of(context).requestFocus(_priceFocusNode); // <-- Removed auto focus to price here to allow user to confirm with Enter
       setState(() {
         _openPriceDropdown = true;
+      });
+      
+      // 💡 تطبيق التسعير التلقائي عند تغيير نوع البيع
+      _applyAutoPriceIfEnabled(_currentItem.productName, newType).then((_) {
+        // ⚡ تحديد السعر بالكامل بعد تطبيق التسعير التلقائي
+        if (mounted && _priceController.text.isNotEmpty) {
+          Future.delayed(const Duration(milliseconds: 50), () {
+            if (mounted) {
+              _priceController.selection = TextSelection(
+                baseOffset: 0,
+                extentOffset: _priceController.text.length,
+              );
+            }
+          });
+        }
+      });
+      
+      // ⚡ نقل التركيز إلى حقل السعر
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _priceFocusNode.requestFocus();
+        }
       });
     });
   }
@@ -513,6 +665,9 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                                         _currentItem.copyWith(productName: val);
                                   },
                                   onSubmitted: (val) {
+                                    if (val.isNotEmpty && _currentItem.saleType != null) {
+                                      _applyAutoPriceIfEnabled(val, _currentItem.saleType!);
+                                    }
                                     onFieldSubmitted();
                                   },
                                 );
@@ -548,6 +703,9 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                                   widget.onItemUpdated(_currentItem);
                                 });
                                 detailsController?.text = selection;
+                                // 💡 تطبيق التسعير التلقائي بعد اختيار المنتج مباشرةً
+                                _applyAutoPriceIfEnabled(selection, defaultSaleType);
+                                
                                 WidgetsBinding.instance.addPostFrameCallback((_) {
                                   _quantityFocusNode.requestFocus();
                                 });

@@ -13,16 +13,19 @@ import '../models/product.dart';
 import 'database_service.dart';
 import 'settings_manager.dart';
 import 'telegram_backup_service.dart';
+import 'discord_backup_service.dart';
 import 'pdf_header.dart';
 
 class TelegramInvoiceExportService {
   final DatabaseService _db = DatabaseService();
   final TelegramBackupService _telegram = TelegramBackupService();
 
-  /// تصدير الفواتير المُنشأة بعد تاريخ معين وإرسالها إلى Telegram
+  /// تصدير الفواتير المُنشأة بعد تاريخ معين وإرسالها إلى Telegram و/أو Discord
   Future<TelegramExportResult> exportAndSendNewInvoices({
     required DateTime afterDate,
     Function(int current, int total, String status)? onProgress,
+    bool sendToTelegram = true,
+    bool sendToDiscord = true,
   }) async {
     final result = TelegramExportResult();
     
@@ -38,6 +41,10 @@ class TelegramInvoiceExportService {
       }
 
       result.totalCount = invoices.length;
+      
+      // التحقق من Discord
+      final discordService = DiscordBackupService()..loadSettings();
+      final bool discordEnabled = sendToDiscord && discordService.isEnabled;
       
       // تحميل الموارد
       onProgress?.call(0, invoices.length, 'جاري تحميل الموارد...');
@@ -58,7 +65,8 @@ class TelegramInvoiceExportService {
       final startMsg = '📋 بدء إرسال ${invoices.length} فاتورة جديدة\n'
           '🏪 $branchName\n'
           '📅 منذ: ${_formatDateTime(afterDate)}';
-      await _telegram.sendMessage(startMsg);
+      if (sendToTelegram) await _telegram.sendMessage(startMsg);
+      if (discordEnabled) await discordService.sendMessage(startMsg);
 
       // إنشاء مجلد مؤقت
       final tempDir = await getTemporaryDirectory();
@@ -120,7 +128,7 @@ class TelegramInvoiceExportService {
           final pdfFile = File('${exportDir.path}/$fileName');
           await pdfFile.writeAsBytes(await pdf.save());
 
-          // إرسال إلى Telegram
+          // وصف الفاتورة المشترك
           final caption = '🧾 فاتورة #${invoice.id}\n'
               '🏪 $branchName\n'
               '👤 ${invoice.customerName}\n'
@@ -128,15 +136,27 @@ class TelegramInvoiceExportService {
               '📈 الربح: ${_formatNumber(invoiceProfit)} د.ع\n'
               '📅 ${_formatDate(invoice.invoiceDate)}';
           
-          final sent = await _telegram.sendDocument(file: pdfFile, caption: caption);
+          bool sentSuccessfully = false;
           
-          if (sent) {
+          // إرسال إلى Telegram
+          if (sendToTelegram) {
+            final sent = await _telegram.sendDocument(file: pdfFile, caption: caption);
+            if (sent) sentSuccessfully = true;
+          }
+          
+          // إرسال إلى Discord
+          if (discordEnabled) {
+            final sent = await discordService.sendBackupFile(pdfFile, caption: caption);
+            if (sent) sentSuccessfully = true;
+          }
+          
+          if (sentSuccessfully) {
             result.sentCount++;
           } else {
             result.failedCount++;
           }
 
-          // تأخير 3.5 ثواني لتجنب rate limiting (حد Telegram: 20 رسالة/دقيقة)
+          // تأخير لتجنب rate limiting
           await Future.delayed(const Duration(milliseconds: 3500));
           
         } catch (e) {
@@ -154,7 +174,8 @@ class TelegramInvoiceExportService {
           '🏪 $branchName\n'
           '${result.failedCount > 0 ? '❌ فشل: ${result.failedCount}\n' : ''}'
           '${result.skippedCount > 0 ? '⏭️ تم تخطي: ${result.skippedCount}\n' : ''}';
-      await _telegram.sendMessage(endMsg);
+      if (sendToTelegram) await _telegram.sendMessage(endMsg);
+      if (discordEnabled) await discordService.sendMessage(endMsg);
 
       result.success = true;
       result.message = 'تم إرسال ${result.sentCount} فاتورة';
