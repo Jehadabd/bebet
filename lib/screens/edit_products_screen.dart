@@ -8,6 +8,7 @@ import '../models/product.dart';
 import '../services/database_service.dart';
 import '../services/password_service.dart';
 import '../services/cache_service.dart'; // 🚀 استيراد خدمة Cache
+import '../services/custom_units_service.dart'; // 🆕 استيراد خدمة الوحدات المخصصة
 import '../widgets/formatters.dart';
 import 'dart:convert';
 
@@ -303,56 +304,60 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
   late TextEditingController _costPriceController;
   late TextEditingController _piecesPerUnitController;
   late TextEditingController _lengthPerUnitController;
-  String _selectedUnit = 'piece';
+  String _selectedUnit = 'قطعة'; // ديناميكية - تُحمّل من المنتج
   bool _showCostPrice = true;
   final PasswordService _passwordService = PasswordService();
   List<Map<String, dynamic>> _unitHierarchyList = [];
-  final List<String> _unitOptions = [
-    'باكيت',
-    'ربطة',
-    'سيت',
-    'كيس',
-    'صندوق',
-    'كرتون',
+  
+  // الوحدات الكبيرة تُحمّل ديناميكياً
+  List<String> _largeUnitOptions = [
+    'باكيت', 'ربطة', 'سيت', 'كيس', 'صندوق', 'كرتون', 'لفة', 'علبة'
   ];
+  // الوحدات الأساسية
+  List<String> _baseUnitOptions = ['قطعة', 'متر', 'كيلو', 'غرام'];
 
   Map<String, double> _computeUnitCostsPreview() {
     final Map<String, double> costs = {};
     final double baseCost = double.tryParse(_removeCommas(_costPriceController.text.trim())) ?? (widget.product.costPrice ?? 0.0);
     if (baseCost <= 0) return costs;
 
-    if (_selectedUnit == 'piece') {
-      double current = baseCost;
-      costs['قطعة'] = current;
-      if (_unitHierarchyList.isNotEmpty) {
-        try {
-          for (final level in _unitHierarchyList) {
-            final String unitName = (level['unit_name'] ?? '').toString();
-            if (unitName.isEmpty) continue;
-            final double qty = (level['quantity'] is num)
-                ? (level['quantity'] as num).toDouble()
-                : double.tryParse((level['quantity'] ?? '').toString()) ?? 1.0;
-            current = current * qty;
-            costs[unitName] = current;
-          }
-        } catch (_) {}
-      }
-    } else if (_selectedUnit == 'meter') {
-      costs['متر'] = baseCost;
-      final double length = double.tryParse(_removeCommas(_lengthPerUnitController.text.trim())) ?? (widget.product.lengthPerUnit ?? 0.0);
-      if (length > 0) {
-        costs['لفة'] = baseCost * length;
-      }
-    } else {
-      // وحدات أخرى كقاعدة
-      costs[_selectedUnit] = baseCost;
+    // استخدام الوحدة الأساسية الديناميكية بدلاً من piece/meter hardcoded
+    String baseUnitKey = _selectedUnit.isNotEmpty ? _selectedUnit : 'قطعة';
+    double current = baseCost;
+    costs[baseUnitKey] = current;
+    
+    if (_unitHierarchyList.isNotEmpty) {
+      try {
+        for (final level in _unitHierarchyList) {
+          final String unitName = (level['unit_name'] ?? '').toString();
+          if (unitName.isEmpty) continue;
+          final double qty = (level['quantity'] is num)
+              ? (level['quantity'] as num).toDouble()
+              : double.tryParse((level['quantity'] ?? '').toString()) ?? 1.0;
+          current = current * qty;
+          costs[unitName] = current;
+        }
+      } catch (_) {}
     }
+    
+    // إذا كان هناك طول وحدة (مثل متر/لفة)
+    final double length = double.tryParse(_removeCommas(_lengthPerUnitController.text.trim())) ?? (widget.product.lengthPerUnit ?? 0.0);
+    if (length > 0 && _unitHierarchyList.isEmpty) {
+      String largeUnitName;
+      final unitLower = _selectedUnit.toLowerCase();
+      if (unitLower.contains('متر') || _selectedUnit == 'meter') largeUnitName = 'لفة';
+      else if (unitLower.contains('قطع') || _selectedUnit == 'piece') largeUnitName = 'كرتون';
+      else largeUnitName = 'علبة';
+      costs[largeUnitName] = baseCost * length;
+    }
+    
     return costs;
   }
 
   @override
   void initState() {
     super.initState();
+    _loadCustomUnits(); // تحميل الوحدات المخصصة
     _nameController = TextEditingController(text: widget.product.name);
     _unitPriceController =
         TextEditingController(text: _formatNumber(widget.product.unitPrice));
@@ -372,13 +377,16 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
         text: widget.product.piecesPerUnit?.toString() ?? '');
     _lengthPerUnitController = TextEditingController(
         text: widget.product.lengthPerUnit?.toString() ?? '');
-    _selectedUnit = widget.product.unit;
-    // Normalize legacy/base unit: 'roll' should not be a base option; treat it as 'meter'
-    if (_selectedUnit == 'roll') {
-      _selectedUnit = 'meter';
-    }
-    if (_selectedUnit == 'piece' &&
-        widget.product.unitHierarchy != null &&
+    
+    // تحويل الوحدات القديمة (piece/meter) إلى الوحدات العربية الجديدة
+    String rawUnit = widget.product.unit;
+    if (rawUnit == 'piece') rawUnit = 'قطعة';
+    if (rawUnit == 'meter') rawUnit = 'متر';
+    if (rawUnit == 'roll') rawUnit = 'لفة';
+    _selectedUnit = rawUnit;
+    
+    // تحميل الهرمية إذا وجدت
+    if (widget.product.unitHierarchy != null &&
         widget.product.unitHierarchy!.isNotEmpty) {
       try {
         final List<dynamic> parsed =
@@ -389,6 +397,17 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
         _unitHierarchyList = [];
       }
     }
+  }
+
+  /// تحميل الوحدات المخصصة
+  Future<void> _loadCustomUnits() async {
+    final baseUnits = await CustomUnitsService.getBaseUnits();
+    final largeUnits = await CustomUnitsService.getLargeUnits();
+    if (!mounted) return;
+    setState(() {
+      _baseUnitOptions = baseUnits;
+      _largeUnitOptions = largeUnits;
+    });
   }
 
   @override
@@ -569,14 +588,6 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
       }
     }
     
-    // التحقق من طول اللفة للمنتجات المباعة بالمتر
-    if (_selectedUnit == 'meter') {
-      final lengthText = _removeCommas(_lengthPerUnitController.text.trim());
-      if (lengthText.isNotEmpty && double.tryParse(lengthText) == null) {
-        validationErrors.add('طول اللفة غير صالح: "$lengthText"');
-      }
-    }
-    
     // عرض أخطاء التحقق إن وجدت
     if (validationErrors.isNotEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -592,7 +603,8 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
     String? unitHierarchyJson;
     String? unitCostsJson;
     
-    if (_selectedUnit == 'piece' && _unitHierarchyList.isNotEmpty) {
+    // بناء الهرمية والتكاليف لأي وحدة (دينامي)
+    if (_unitHierarchyList.isNotEmpty) {
       final filtered = _unitHierarchyList
           .where((row) =>
               row['unit_name'] != null &&
@@ -607,12 +619,13 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                 })
             .toList());
         
-        // حساب unit_costs تلقائياً
+        // حساب unit_costs تلقائياً باستخدام الوحدة الأساسية الديناميكية
         final baseCost = double.tryParse(costPriceText) ?? (widget.product.costPrice ?? 0.0);
         if (baseCost > 0) {
+          String baseUnitKey = _selectedUnit.isNotEmpty ? _selectedUnit : 'قطعة';
           final Map<String, double> unitCosts = {};
           double currentCost = baseCost;
-          unitCosts['قطعة'] = currentCost;
+          unitCosts[baseUnitKey] = currentCost;
           
           for (final level in filtered) {
             final String unitName = (level['unit_name'] ?? '').toString();
@@ -627,15 +640,20 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
       }
     }
     
-    if (_selectedUnit == 'meter') {
-      unitHierarchyJson = null;
-      // حساب unit_costs للمنتجات المباعة بالمتر
+    // بناء تكلفة الوحدة الكبيرة عند وجود طول وحدة
+    if (_lengthPerUnitController.text.trim().isNotEmpty) {
       final baseCost = double.tryParse(costPriceText) ?? (widget.product.costPrice ?? 0.0);
       final length = double.tryParse(_removeCommas(_lengthPerUnitController.text.trim())) ?? (widget.product.lengthPerUnit ?? 0.0);
-      if (baseCost > 0 && length > 0) {
+      if (baseCost > 0 && length > 0 && unitCostsJson == null) {
+        String largeUnitName;
+        final unitLower = _selectedUnit.toLowerCase();
+        if (unitLower.contains('متر') || _selectedUnit == 'meter') largeUnitName = 'لفة';
+        else if (unitLower.contains('قطع') || _selectedUnit == 'piece') largeUnitName = 'كرتون';
+        else largeUnitName = 'علبة';
+        
         unitCostsJson = json.encode({
-          'متر': baseCost,
-          'لفة': baseCost * length,
+          _selectedUnit: baseCost,
+          largeUnitName: baseCost * length,
         });
       }
     }
@@ -660,12 +678,10 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
       costPrice: _showCostPrice && costPriceText.isNotEmpty
           ? double.tryParse(costPriceText)
           : widget.product.costPrice,
-      piecesPerUnit: _selectedUnit == 'piece' &&
-              _piecesPerUnitController.text.trim().isNotEmpty
+      piecesPerUnit: _piecesPerUnitController.text.trim().isNotEmpty
           ? int.tryParse(_piecesPerUnitController.text.trim())
           : null,
-      lengthPerUnit: _selectedUnit == 'meter' &&
-              _lengthPerUnitController.text.trim().isNotEmpty
+      lengthPerUnit: _lengthPerUnitController.text.trim().isNotEmpty
           ? double.tryParse(_removeCommas(_lengthPerUnitController.text.trim()))
           : null,
       lastModifiedAt: DateTime.now(),
@@ -819,26 +835,35 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                 decoration: const InputDecoration(labelText: 'اسم البضاعة'),
               ),
               const SizedBox(height: 16),
-              DropdownButtonFormField<String>(
-                value: _selectedUnit,
-                decoration: const InputDecoration(labelText: 'وحدة البيع'),
-                items: const [
-                  DropdownMenuItem(value: 'piece', child: Text('قطعة')),
-                  DropdownMenuItem(value: 'meter', child: Text('متر')),
-                ],
-                onChanged: (value) {
-                  if (value != null) {
-                    setState(() {
-                      _selectedUnit = value;
-                      if (_selectedUnit != 'piece') {
-                        _unitHierarchyList.clear();
-                      }
-                    });
+              // وحدة البيع - Autocomplete مع خيارات + كتابة حرة
+              Autocomplete<String>(
+                optionsBuilder: (textEditingValue) {
+                  if (textEditingValue.text.isEmpty) return _baseUnitOptions;
+                  final query = textEditingValue.text.toLowerCase();
+                  return _baseUnitOptions.where((u) => u.toLowerCase().contains(query)).toList();
+                },
+                onSelected: (selection) async {
+                  setState(() => _selectedUnit = selection);
+                  await CustomUnitsService.addBaseUnit(selection);
+                },
+                fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                  if (_selectedUnit.isNotEmpty && controller.text.isEmpty) {
+                    controller.text = _selectedUnit;
                   }
+                  return TextFormField(
+                    controller: controller,
+                    focusNode: focusNode,
+                    decoration: const InputDecoration(
+                      labelText: 'وحدة البيع (الأساسية)',
+                      hintText: 'اختر أو اكتب: قطعة، متر، كيلو...',
+                      suffixIcon: Icon(Icons.arrow_drop_down),
+                    ),
+                    onChanged: (val) => _selectedUnit = val,
+                  );
                 },
               ),
-              if (_selectedUnit == 'piece')
-                Column(
+              // إضافة وحدات أكبر - متاح لجميع الوحدات
+              Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const SizedBox(height: 16.0),
@@ -853,26 +878,33 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                         children: [
                           Expanded(
                             flex: 2,
-                            child: DropdownButtonFormField<String>(
-                              value: row['unit_name'],
-                              decoration:
-                                  const InputDecoration(labelText: 'اسم الوحدة', isDense: true, contentPadding: EdgeInsets.symmetric(vertical: 12.0, horizontal: 10.0)),
-                              items: _unitOptions
-                                  .map((unit) => DropdownMenuItem(
-                                        value: unit,
-                                        child: Text(unit),
-                                      ))
-                                  .toList(),
-                              onChanged: (val) {
-                                setState(() {
-                                  _unitHierarchyList[idx]['unit_name'] = val;
-                                });
+                            child: Autocomplete<String>(
+                              optionsBuilder: (textEditingValue) {
+                                final query = textEditingValue.text.toLowerCase();
+                                return _largeUnitOptions.where((u) => u.toLowerCase().contains(query)).toList();
                               },
-                              validator: (val) {
-                                if (val == null || val.isEmpty) {
-                                  return 'اختر اسم الوحدة';
+                              onSelected: (val) async {
+                                setState(() => _unitHierarchyList[idx]['unit_name'] = val);
+                                await CustomUnitsService.addLargeUnit(val);
+                              },
+                              fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                                if (row['unit_name'] != null && controller.text.isEmpty) {
+                                  controller.text = row['unit_name'];
                                 }
-                                return null;
+                                return TextFormField(
+                                  controller: controller,
+                                  focusNode: focusNode,
+                                  decoration: const InputDecoration(labelText: 'اسم الوحدة', isDense: true, contentPadding: EdgeInsets.symmetric(vertical: 12.0, horizontal: 10.0)),
+                                  onChanged: (val) {
+                                    _unitHierarchyList[idx]['unit_name'] = val;
+                                  },
+                                  validator: (val) {
+                                    if (val == null || val.isEmpty) {
+                                      return 'اختر أو اكتب اسم الوحدة';
+                                    }
+                                    return null;
+                                  },
+                                );
                               },
                             ),
                           ),
@@ -914,14 +946,6 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                       ),
                     ),
                   ],
-                ),
-              if (_selectedUnit == 'meter')
-                TextField(
-                  controller: _lengthPerUnitController,
-                  decoration:
-                      const InputDecoration(labelText: 'عدد الأمتار في اللفة'),
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
                 ),
               const SizedBox(height: 16),
               TextFormField(

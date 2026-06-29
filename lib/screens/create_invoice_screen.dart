@@ -39,7 +39,7 @@ import '../models/invoice_adjustment.dart';
 import '../services/drive_service.dart';
 import 'invoice_actions.dart';
 import 'invoice_history_screen.dart';
-import '../services/password_service.dart'; // Added for password protection
+
 import '../utils/money_calculator.dart'; // Added for profit calculation fix
 import '../services/smart_search/smart_search.dart'; // 🧠 البحث الذكي
 import '../services/invoice_suspend_service.dart';
@@ -186,7 +186,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         // Check if specific cost exists for this sale type (e.g. cost of 'Carton')
         if (unitCosts.containsKey(saleType)) {
            costPerSaleUnit = unitCosts[saleType]!;
-        } else if (productUnit == 'meter' && saleType == 'لفة') {
+        } else if ((productUnit == 'meter' || productUnit == 'متر') && saleType == 'لفة') {
            // Special case for Rolls: Cost = Base Cost * Length
            costPerSaleUnit = productBaseCost * lengthPerUnit;
         } else {
@@ -214,63 +214,48 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     _currentInvoiceProfit = totalProfit - discount;
   }
 
-  Future<void> _toggleProfitVisibility() async {
-    if (_isProfitVisible) {
-      setState(() {
-        _isProfitVisible = false;
-      });
-    } else {
-      // Show password dialog
-      final controller = TextEditingController();
-      final shouldShow = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('أدخل رمز المرور'),
-          content: TextField(
-            controller: controller,
-            obscureText: true,
-            keyboardType: TextInputType.number,
-            autofocus: true,
-            decoration: const InputDecoration(hintText: '****'),
-            onSubmitted: (value) async {
-              if (await PasswordService().verifyPassword(value)) {
-                Navigator.pop(context, true);
-              } else {
-                Navigator.pop(context, false);
-              }
-            },
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('إلغاء'),
-            ),
-            TextButton(
-              onPressed: () async {
-                if (await PasswordService().verifyPassword(controller.text)) {
-                  Navigator.pop(context, true);
-                } else {
-                  Navigator.pop(context, false);
-                }
-              },
-              child: const Text('تأكيد'),
-            ),
-          ],
-        ),
-      );
+  // ✅ مطلوب المستخدم: الضغط على إجمالي الربح لا يفعل شيئاً
+  void _toggleProfitVisibility() {
+    // intentionally no-op
+  }
 
-      if (shouldShow == true) {
+  // ✅ اختصار عالمي داخل الشاشة: Ctrl+D (ضغط مستمر = إظهار، رفع أي زر = إخفاء فوري)
+  bool _handleGlobalCtrlD(KeyEvent event) {
+    final bool isCtrlKey = event.logicalKey == LogicalKeyboardKey.controlLeft ||
+        event.logicalKey == LogicalKeyboardKey.controlRight;
+
+    // دعم التخطيط العربي/الإنجليزي: logical + physical
+    final bool isDKey = event.logicalKey == LogicalKeyboardKey.keyD ||
+        event.physicalKey == PhysicalKeyboardKey.keyD;
+
+    // عند الضغط على Ctrl + D نظهر عمود التكلفة والربح
+    if ((event is KeyDownEvent || event is KeyRepeatEvent) &&
+        HardwareKeyboard.instance.isControlPressed &&
+        isDKey) {
+      if (!_showCostPrice || !_isProfitVisible) {
         _calculateProfit();
         setState(() {
+          _showCostPrice = true;
           _isProfitVisible = true;
         });
-      } else if (shouldShow == false) { // Explicit check for false (wrong password or cancel)
-         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('رمز المرور غير صحيح')),
-        );
       }
+      return true;
     }
+
+    // عند رفع Ctrl أو D نخفي فوراً
+    if (event is KeyUpEvent && (isCtrlKey || isDKey)) {
+      if (_showCostPrice || _isProfitVisible) {
+        setState(() {
+          _showCostPrice = false;
+          _isProfitVisible = false;
+        });
+      }
+      return true;
+    }
+
+    return false;
   }
+
   
   // دالة لإظهار Dialog الحفظ عند الرجوع
   Future<bool> _showSaveDialog() async {
@@ -536,7 +521,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
   @override
   void initState() {
     super.initState();
+
+    // تسجيل معالج الاختصار بشكل مبكر وبشكل مضمون
+    HardwareKeyboard.instance.addHandler(_handleGlobalCtrlD);
+
     try {
+
       printingService = getPlatformPrintingService();
       invoiceToManage = widget.existingInvoice;
       isViewOnly = widget.isViewOnly;
@@ -981,6 +971,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
   @override
   void dispose() {
     try {
+      // إزالة مستمع الاختصار العالمي
+      HardwareKeyboard.instance.removeHandler(_handleGlobalCtrlD);
+
       // إزالة المستمعين
       customerNameController.removeListener(_onFieldChanged);
       customerPhoneController.removeListener(_onFieldChanged);
@@ -1233,59 +1226,74 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         }
         
         double baseUnitsPerSelectedUnit = 1.0;
-      // --- تعديل منطق التسعير التراكمي ---
-      if (_selectedProduct!.unit == 'piece' &&
-          selectedUnitForItem != 'قطعة') {
-          // إذا كان هناك تسلسل هرمي للوحدات
-          if (_selectedProduct!.unitHierarchy != null &&
-              _selectedProduct!.unitHierarchy!.isNotEmpty) {
-            try {
-              final List<dynamic> hierarchy = json.decode(
-                  _selectedProduct!.unitHierarchy!.replaceAll("'", '"'));
-              List<num> factors = [];
-              for (int i = 0; i < hierarchy.length; i++) {
-                final unitName =
-                    hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
-                final quantity =
-                    num.tryParse(hierarchy[i]['quantity'].toString()) ?? 1;
-                factors.add(quantity);
-                if (unitName == selectedUnitForItem) {
-                  break;
-                }
-              }
-              baseUnitsPerSelectedUnit = factors.fold(1, (a, b) => a * b);
-              finalAppliedPrice =
-                  _selectedPriceLevel! * baseUnitsPerSelectedUnit;
-            } catch (e) {
-              // fallback: منطق قديم
-              final selectedHierarchyUnit = _currentUnitHierarchy.firstWhere(
-                (element) =>
-                    (element['unit_name'] ?? element['name']) ==
-                    selectedUnitForItem,
-                orElse: () => {},
-              );
-              if (selectedHierarchyUnit.isNotEmpty) {
-                baseUnitsPerSelectedUnit = double.tryParse(
-                        selectedHierarchyUnit['quantity'].toString()) ??
-                    1.0;
-                if (isCustomPrice) {
-                  finalAppliedPrice = _selectedPriceLevel!;
-                } else {
-                  finalAppliedPrice =
-                      _selectedPriceLevel! * baseUnitsPerSelectedUnit;
-                }
-              }
+
+      // --- تعديل منطق التسعير التراكمي - يدعم أي وحدة ---
+      // تحديد الوحدة الأساسية الفعلية للمنتج
+      String baseUnit = _selectedProduct!.unit;
+      if (baseUnit == 'piece') baseUnit = 'قطعة';
+      if (baseUnit == 'meter') baseUnit = 'متر';
+      
+      bool isBaseSaleType = (selectedUnitForItem == baseUnit);
+
+      // البحث عن معامل التحويل في التسلسل الهرمي لأي وحدة
+      if (!isBaseSaleType && _selectedProduct!.unitHierarchy != null &&
+          _selectedProduct!.unitHierarchy!.isNotEmpty) {
+        try {
+          final List<dynamic> hierarchy = json.decode(
+              _selectedProduct!.unitHierarchy!.replaceAll("'", '"'));
+          List<num> factors = [];
+          for (int i = 0; i < hierarchy.length; i++) {
+            final unitName =
+                hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
+            final quantity =
+                num.tryParse(hierarchy[i]['quantity'].toString()) ?? 1;
+            factors.add(quantity);
+            if (unitName == selectedUnitForItem) {
+              break;
             }
           }
-        } else if (_selectedProduct!.unit == 'meter' &&
-            selectedUnitForItem == 'لفة') {
+          baseUnitsPerSelectedUnit = factors.fold(1, (a, b) => a * b);
+          if (!isCustomPrice) {
+            finalAppliedPrice = _selectedPriceLevel! * baseUnitsPerSelectedUnit;
+          }
+        } catch (e) {
+          // fallback: منطق قديم
+          final selectedHierarchyUnit = _currentUnitHierarchy.firstWhere(
+            (element) =>
+                (element['unit_name'] ?? element['name']) ==
+                selectedUnitForItem,
+            orElse: () => {},
+          );
+          if (selectedHierarchyUnit.isNotEmpty) {
+            baseUnitsPerSelectedUnit = double.tryParse(
+                    selectedHierarchyUnit['quantity'].toString()) ??
+                1.0;
+            if (isCustomPrice) {
+              finalAppliedPrice = _selectedPriceLevel!;
+            } else {
+              finalAppliedPrice = _selectedPriceLevel! * baseUnitsPerSelectedUnit;
+            }
+          }
+        }
+      }
+
+      // إذا لم نجد في الهرمية، جرب lengthPerUnit
+      if (baseUnitsPerSelectedUnit == 1.0 && !isBaseSaleType &&
+          (_selectedProduct!.lengthPerUnit ?? 0) > 0) {
+        final unitLower = baseUnit.toLowerCase();
+        String expectedLarge;
+        if (unitLower.contains('متر') || _selectedProduct!.unit == 'meter') expectedLarge = 'لفة';
+        else if (unitLower.contains('قطع') || _selectedProduct!.unit == 'piece') expectedLarge = 'كرتون';
+        else expectedLarge = 'علبة';
+
+        if (selectedUnitForItem == expectedLarge) {
           baseUnitsPerSelectedUnit = _selectedProduct!.lengthPerUnit ?? 1.0;
-          if (isCustomPrice) {
-            finalAppliedPrice = _selectedPriceLevel!;
-          } else {
+          if (!isCustomPrice) {
             finalAppliedPrice = _selectedPriceLevel! * baseUnitsPerSelectedUnit;
           }
         }
+      }
+
         final double totalBaseUnitsSold =
             inputQuantity * baseUnitsPerSelectedUnit;
         final double finalItemCostPrice =
@@ -1293,10 +1301,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         final double finalItemTotal = inputQuantity * finalAppliedPrice;
         double? quantityIndividual;
         double? quantityLargeUnit;
-        if ((_selectedProduct!.unit == 'piece' &&
-                selectedUnitForItem == 'قطعة') ||
-            (_selectedProduct!.unit == 'meter' &&
-                selectedUnitForItem == 'متر')) {
+
+        // تحديد مكان الكمية بناءً على ما إذا كانت وحدة أساسية أم لا
+        if (isBaseSaleType) {
           quantityIndividual = inputQuantity;
         } else {
           quantityLargeUnit = inputQuantity;
@@ -1915,7 +1922,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                         Expanded(flex: 1, child: Text('العدد', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))),
                         Expanded(flex: 1, child: Text('نوع البيع', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))),
                         Expanded(flex: 1, child: Text('السعر', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))),
-                        Expanded(flex: 1, child: Text('عدد الوحدات', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))),
+                        Expanded(flex: 1, child: Text('التعبئة', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))),
                         Expanded(flex: 1, child: Text('حذف', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))),
                       ],
                     ),
@@ -2621,7 +2628,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
       print('Auto-save suspended invoice error: $e');
     }
   }
-  // 2. أضف دالة توليد الوحدات:
+  // 2. دالة توليد الوحدات (معممة لأي وحدة):
   void _onProductSelected(Product product) {
     try {
       setState(() {
@@ -2629,38 +2636,49 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         _quantityController.clear();
         _currentUnitHierarchy = [];
         currentUnitOptions = [];
-        if (product.unit == 'piece') {
-          currentUnitOptions.add('قطعة');
-          selectedUnitForItem = 'قطعة';
-          if (product.unitHierarchy != null &&
-              product.unitHierarchy!.isNotEmpty) {
-            try {
-              final List<dynamic> parsed =
-                  json.decode(product.unitHierarchy!.replaceAll("'", '"'));
-              _currentUnitHierarchy =
-                  parsed.map((e) => Map<String, dynamic>.from(e)).toList();
-              currentUnitOptions.addAll(_currentUnitHierarchy
-                  .map((e) => (e['unit_name'] ?? e['name'] ?? '').toString()));
-              print(
-                  'DEBUG: product.unitHierarchy = \u001b[32m${product.unitHierarchy}\u001b[0m');
-              print(
-                  'DEBUG: currentUnitOptions = \u001b[36m$currentUnitOptions\u001b[0m');
-              print(
-                  'DEBUG: _currentUnitHierarchy = \u001b[35m$_currentUnitHierarchy\u001b[0m');
-            } catch (e) {
-              print('Error parsing unit hierarchy for ${product.name}: $e');
-            }
+        
+        // تحويل الوحدات القديمة (piece/meter) إلى العربية
+        String baseUnit = product.unit;
+        if (baseUnit == 'piece') baseUnit = 'قطعة';
+        if (baseUnit == 'meter') baseUnit = 'متر';
+        
+        // إضافة الوحدة الأساسية ديناميكياً
+        currentUnitOptions.add(baseUnit);
+        selectedUnitForItem = baseUnit;
+        
+        // إضافة الوحدات من التسلسل الهرمي إذا وجد
+        if (product.unitHierarchy != null &&
+            product.unitHierarchy!.isNotEmpty) {
+          try {
+            final List<dynamic> parsed =
+                json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+            _currentUnitHierarchy =
+                parsed.map((e) => Map<String, dynamic>.from(e)).toList();
+            currentUnitOptions.addAll(_currentUnitHierarchy
+                .map((e) => (e['unit_name'] ?? e['name'] ?? '').toString()));
+          } catch (e) {
+            print('Error parsing unit hierarchy for ${product.name}: $e');
           }
-        } else if (product.unit == 'meter') {
-          currentUnitOptions = ['متر'];
-          selectedUnitForItem = 'متر';
-          if (product.lengthPerUnit != null && product.lengthPerUnit! > 0) {
-            currentUnitOptions.add('لفة');
-          }
-        } else {
-          currentUnitOptions.add(product.unit);
-          selectedUnitForItem = product.unit;
         }
+        
+        // إضافة الوحدة الكبيرة إذا كان هناك lengthPerUnit (مثل متر/لفة)
+        if (product.lengthPerUnit != null && product.lengthPerUnit! > 0 && 
+            _currentUnitHierarchy.isEmpty) {
+          // تحديد اسم الوحدة الكبيرة بناءً على الوحدة الأساسية
+          String largeUnitName;
+          final unitLower = baseUnit.toLowerCase();
+          if (unitLower.contains('متر') || baseUnit == 'meter') largeUnitName = 'لفة';
+          else if (unitLower.contains('قطع') || baseUnit == 'piece') largeUnitName = 'كرتون';
+          else largeUnitName = 'علبة'; // افتراضي
+          
+          if (!currentUnitOptions.contains(largeUnitName)) {
+            currentUnitOptions.add(largeUnitName);
+          }
+        }
+        
+        print(
+            'DEBUG: product.unit = $baseUnit, options = $currentUnitOptions');
+
         double? newPriceLevel;
         switch (_selectedListType) {
           case 'مفرد':
@@ -3350,37 +3368,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
           // المحتوى الرئيسي
           AbsorbPointer(
             absorbing: isSaving,
-            child: KeyboardListener(
-              focusNode: FocusNode(),
-              autofocus: true, // ✅ التركيز التلقائي لاستقبال الأحداث
-              onKeyEvent: (KeyEvent event) {
-                // 🔐 الكشف عن Ctrl+D لإظهار/إخفاء عمود التكلفة
-                final isCtrlPressed = HardwareKeyboard.instance.isControlPressed;
-                final isDPressed = event.logicalKey.keyLabel == 'D' || 
-                                   event.logicalKey.keyLabel == 'd';
-                
-                if (event is KeyDownEvent && isCtrlPressed && isDPressed) {
-                  print('🔐 Ctrl+D pressed - showing cost column');
-                  // عند الضغط على Ctrl+D: إظهار العمود
-                  setState(() {
-                    _showCostPrice = true;
-                  });
-                } else if (event is KeyUpEvent) {
-                  // عند رفع الإصبع عن Ctrl أو D: إخفاء العمود
-                  final isCtrlReleased = event.logicalKey.keyLabel == 'Control Left' ||
-                                         event.logicalKey.keyLabel == 'Control Right';
-                  final isDReleased = event.logicalKey.keyLabel == 'D' || 
-                                      event.logicalKey.keyLabel == 'd';
-                  
-                  if ((isCtrlReleased || isDReleased) && _showCostPrice) {
-                    print('🔐 Ctrl or D released - hiding cost column');
-                    setState(() {
-                      _showCostPrice = false;
-                    });
-                  }
-                }
-              },
-              child: Scaffold(
+            child: Scaffold(
         appBar: AppBar(
           title: Text(invoiceToManage != null 
               ? (isViewOnly ? 'عرض فاتورة' : 'تعديل فاتورة')
@@ -3931,6 +3919,17 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                             inputFormatters: [
                               ThousandSeparatorDecimalInputFormatter(),
                             ],
+                            onFieldSubmitted: (value) {
+                              // ⚡ إضافة سريعة بـ Enter: عند الضغط على Enter في حقل الكمية
+                              // يتم إضافة الصنف للفاتورة مباشرة والتركيز يعود للبحث
+                              if (!isViewOnly && _selectedProduct != null && _selectedPriceLevel != null) {
+                                _addInvoiceItem();
+                                // إرجاع التركيز لحقل بحث المنتج بعد الإضافة
+                                WidgetsBinding.instance.addPostFrameCallback((_) {
+                                  _searchFocusNode.requestFocus();
+                                });
+                              }
+                            },
                             validator: (value) {
                               if (value == null || value.isEmpty) {
                                 return 'الرجاء إدخال الكمية';
@@ -4264,7 +4263,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                             Expanded(
                                 flex: 2,
                                 child: Center(
-                                    child: Text('عدد الوحدات',
+                                    child: Text('التعبئة',
                                         style: TextStyle(
                                             fontWeight: FontWeight.bold)))),
                             // 🔐 عمود التكلفة (مخفي افتراضياً، يظهر بـ Ctrl+D)
@@ -4555,7 +4554,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                                                     DataColumn(label: Text('العدد')),
                                                     DataColumn(label: Text('نوع البيع')),
                                                     DataColumn(label: Text('السعر')),
-                                                    DataColumn(label: Text('عدد الوحدات')),
+                                                    DataColumn(label: Text('التعبئة')),
                                                     DataColumn(label: Text('التاريخ/الوقت')),
                                                   ],
                                                   rows: List<DataRow>.generate(
@@ -4881,7 +4880,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
           ),
         ),
             ), // نهاية Scaffold
-          ), // نهاية KeyboardListener
           ), // نهاية AbsorbPointer
           // ═══════════════════════════════════════════════════════════════════════════
           // 🔄 مؤشر التحميل أثناء الحفظ
@@ -5685,7 +5683,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         else if (product.costPrice != null && product.costPrice! > 0) {
           // إذا كان البيع بوحدة كبيرة، احسب التكلفة
           final double uilu = _currentItem.unitsInLargeUnit ?? 1;
-          if (saleType != 'قطعة' && saleType != 'متر' && uilu > 1) {
+          if (!_isBaseUnitSaleType(saleType, _currentItem.productName) && uilu > 1) {
             effectiveCostPerUnit = product.costPrice! * uilu;
           } else {
             effectiveCostPerUnit = product.costPrice;
@@ -5831,22 +5829,37 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         lastModifiedAt: DateTime.now(),
       ),
     );
-    List<String> options = ['قطعة'];
-    if (product.unit == 'piece' &&
-        product.unitHierarchy != null &&
-        product.unitHierarchy!.isNotEmpty) {
+    
+    // تحويل الوحدة الأساسية (piece → قطعة, meter → متر)
+    String baseUnit = product.unit;
+    if (baseUnit == 'piece') baseUnit = 'قطعة';
+    if (baseUnit == 'meter') baseUnit = 'متر';
+    
+    List<String> options = [baseUnit];
+    
+    // إضافة الوحدات من التسلسل الهرمي (أي نوع وحدة)
+    if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
       try {
         List<dynamic> hierarchy =
             json.decode(product.unitHierarchy!.replaceAll("'", '"'));
         options.addAll(
             hierarchy.map((e) => (e['unit_name'] ?? e['name']).toString()));
       } catch (e) {}
-    } else if (product.unit == 'meter' && product.lengthPerUnit != null) {
-      options = ['متر'];
-      options.add('لفة');
-    } else if (product.unit != 'piece' && product.unit != 'meter') {
-      options = [product.unit];
     }
+    
+    // إضافة الوحدة الكبيرة بناءً على lengthPerUnit إذا لم تكن موجودة (مثل متر/لفة أو قطعة/كرتون)
+    if ((product.lengthPerUnit ?? 0) > 0) {
+      String largeUnitName;
+      final unitLower = baseUnit.toLowerCase();
+      if (unitLower.contains('متر') || product.unit == 'meter') largeUnitName = 'لفة';
+      else if (unitLower.contains('قطع') || product.unit == 'piece') largeUnitName = 'كرتون';
+      else largeUnitName = 'علبة';
+      
+      if (!options.contains(largeUnitName)) {
+        options.add(largeUnitName);
+      }
+    }
+    
     // إزالة التكرار والقيم الفارغة
     options = options.where((e) => e != null && e.isNotEmpty).toSet().toList();
     // إذا كانت قيمة saleType غير موجودة أضفها
@@ -5929,22 +5942,37 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         lastModifiedAt: DateTime.now(),
       ),
     );
-    List<String> options = ['قطعة'];
-    if (product.unit == 'piece' &&
-        product.unitHierarchy != null &&
-        product.unitHierarchy!.isNotEmpty) {
+    
+    // تحويل الوحدة الأساسية (piece → قطعة, meter → متر)
+    String baseUnit = product.unit;
+    if (baseUnit == 'piece') baseUnit = 'قطعة';
+    if (baseUnit == 'meter') baseUnit = 'متر';
+    
+    List<String> options = [baseUnit];
+    
+    // إضافة الوحدات من التسلسل الهرمي (أي نوع وحدة)
+    if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
       try {
         List<dynamic> hierarchy =
             json.decode(product.unitHierarchy!.replaceAll("'", '"'));
         options.addAll(
             hierarchy.map((e) => (e['unit_name'] ?? e['name']).toString()));
       } catch (e) {}
-    } else if (product.unit == 'meter' && product.lengthPerUnit != null) {
-      options = ['متر'];
-      options.add('لفة');
-    } else if (product.unit != 'piece' && product.unit != 'meter') {
-      options = [product.unit];
     }
+    
+    // إضافة الوحدة الكبيرة بناءً على lengthPerUnit إذا لم تكن موجودة
+    if ((product.lengthPerUnit ?? 0) > 0) {
+      String largeUnitName;
+      final unitLower = baseUnit.toLowerCase();
+      if (unitLower.contains('متر') || product.unit == 'meter') largeUnitName = 'لفة';
+      else if (unitLower.contains('قطع') || product.unit == 'piece') largeUnitName = 'كرتون';
+      else largeUnitName = 'علبة';
+      
+      if (!options.contains(largeUnitName)) {
+        options.add(largeUnitName);
+      }
+    }
+    
     options = options.where((e) => e != null && e.isNotEmpty).toSet().toList();
     if (_currentItem.saleType != null &&
         _currentItem.saleType!.isNotEmpty &&
@@ -5974,12 +6002,20 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         ),
       );
 
+      // تحديد الوحدة الأساسية ديناميكياً
+      String baseUnit = product.unit;
+      if (baseUnit == 'piece') baseUnit = 'قطعة';
+      if (baseUnit == 'meter') baseUnit = 'متر';
+      bool isBaseSale = (saleType == baseUnit);
+
       double defaultPrice = 0;
       if (product.id != null) {
         double basePrice = product.price1 ?? product.unitPrice;
         if (basePrice > 0) {
           double conversionFactor = 1.0;
-          if (product.unit == 'piece' && saleType != 'قطعة') {
+          
+          // البحث عن عامل التحويل للوحدات غير الأساسية
+          if (!isBaseSale) {
             if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
               try {
                 List<dynamic> hierarchy = json.decode(product.unitHierarchy!.replaceAll("'", '"'));
@@ -5991,16 +6027,17 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 }
               } catch (e) {}
             }
-          } else if (product.unit == 'meter' && saleType == 'لفة') {
-            conversionFactor = product.lengthPerUnit ?? 1.0;
+            // إذا لم نجد في الهرمي، جرب lengthPerUnit
+            if (conversionFactor == 1.0 && (product.lengthPerUnit ?? 0) > 0) {
+              conversionFactor = product.lengthPerUnit!.toDouble();
+            }
           }
           
-          if ((product.unit == 'piece' && saleType != 'قطعة') || (product.unit == 'meter' && saleType == 'لفة')) {
+          // حساب السعر النهائي بناءً على عامل التحويل
+          if (!isBaseSale && conversionFactor > 1.0) {
             defaultPrice = basePrice * conversionFactor;
-          } else if ((product.unit == 'piece' && saleType == 'قطعة') || (product.unit == 'meter' && saleType == 'متر') || (product.unit != 'piece' && product.unit != 'meter')) {
-            defaultPrice = basePrice;
           } else {
-            defaultPrice = basePrice;
+            defaultPrice = basePrice; // الوحدة الأساسية أو بدون تحويل
           }
         }
       }
@@ -6055,17 +6092,22 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   void _updateQuantity(String value) {
     double? newQuantity = double.tryParse(value);
     if (newQuantity == null || newQuantity <= 0) return;
+    
+    // تحديد الوحدة الأساسية الفعلية للمنتج الحالي
+    String baseUnit = _getBaseUnitForCurrentProduct();
+    bool isBaseSaleType = (_currentItem.saleType == baseUnit);
+    
     setState(() {
       // منطق موحد: دائماً المبلغ = السعر الحالي × العدد الحالي مباشرة
       _currentItem = _currentItem.copyWith(
         quantityIndividual:
-            (_currentItem.saleType == 'قطعة' || _currentItem.saleType == 'متر')
+            isBaseSaleType
                 ? newQuantity
                 : null,
         quantityLargeUnit:
-            (_currentItem.saleType != 'قطعة' && _currentItem.saleType != 'متر')
-                ? newQuantity
-                : null,
+            isBaseSaleType
+                ? null
+                : newQuantity,
         itemTotal: newQuantity * _currentItem.appliedPrice,
       );
       // لا تفرض ".00" عند الكتابة؛ استخدم تنسيق أرقام بدون كسور ثابتة
@@ -6076,6 +6118,38 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     // 💡 تطبيق التسعير التلقائي عند إدخال الكمية (إذا لم يكن هناك سعر)
     if (_currentItem.appliedPrice <= 0 && _currentItem.productName.isNotEmpty && _currentItem.saleType != null) {
       _applyAutoPriceIfEnabled(_currentItem.productName, _currentItem.saleType!);
+    }
+  }
+  
+  /// دالة مساعدة: تحديد الوحدة الأساسية للمنتج الحالي (مع تحويل piece→قطعة, meter→متر)
+  String _getBaseUnitForCurrentProduct() {
+    try {
+      final product = widget.allProducts.firstWhere(
+        (p) => p.name == _currentItem.productName,
+      );
+      String baseUnit = product.unit;
+      if (baseUnit == 'piece') baseUnit = 'قطعة';
+      if (baseUnit == 'meter') baseUnit = 'متر';
+      return baseUnit;
+    } catch (e) {
+      return 'قطعة'; // افتراضي
+    }
+  }
+  
+  /// دالة مساعدة: التحقق مما إذا كان نوع البيع هو الوحدة الأساسية (لأي منتج)
+  bool _isBaseUnitSaleType(String? saleType, String productName) {
+    if (saleType == null || saleType.isEmpty) return false;
+    try {
+      final product = widget.allProducts.firstWhere(
+        (p) => p.name == productName,
+      );
+      String baseUnit = product.unit;
+      if (baseUnit == 'piece') baseUnit = 'قطعة';
+      if (baseUnit == 'meter') baseUnit = 'متر';
+      return (saleType == baseUnit);
+    } catch (e) {
+      // إذا لم يتم العثور على المنتج، نتحقق من القيم القياسية فقط
+      return (saleType == 'قطعة' || saleType == 'متر');
     }
   }
 
@@ -6092,43 +6166,74 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         lastModifiedAt: DateTime.now(),
       ),
     );
-    double conversionFactor = 1.0;
-    if (product != null) {
-      if (product.unit == 'piece' && newType != 'قطعة') {
-        if (product.unitHierarchy != null &&
-            product.unitHierarchy!.isNotEmpty) {
-          try {
-            List<dynamic> hierarchy =
-                json.decode(product.unitHierarchy!.replaceAll("'", '"'));
-            for (var unit in hierarchy) {
-              if ((unit['unit_name'] ?? unit['name']) == newType) {
-                conversionFactor = (unit['quantity'] as num).toDouble();
-                break;
-              }
-            }
-          } catch (e) {}
+    
+    // تحديد الوحدة الأساسية الفعلية للمنتج (ديناميكي)
+    String baseUnit = product.unit;
+    if (baseUnit == 'piece') baseUnit = 'قطعة';
+    if (baseUnit == 'meter') baseUnit = 'متر';
+    
+    // 🔧 هل نوع البيع الجديد هو الوحدة الأساسية؟
+    // للوحدات المخصصة: إذا كان newType غير موجود في الهرمي ← هو الوحدة الأساسية
+    bool newTypeIsBase = (newType == baseUnit);
+    if (!newTypeIsBase && product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
+      try {
+        List<dynamic> hierarchy =
+            json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+        bool foundInHierarchy = false;
+        for (var unit in hierarchy) {
+          final unitName = unit['unit_name'] ?? unit['name'];
+          if (unitName == newType) {
+            foundInHierarchy = true;
+            break;
+          }
         }
-      } else if (product.unit == 'meter' && newType == 'لفة') {
-        conversionFactor = product.lengthPerUnit ?? 1.0;
-      }
+        if (!foundInHierarchy) {
+          // newType غير موجود في التسلسل الهرمي → هو الوحدة الأساسية (مثل "jjj")
+          newTypeIsBase = true;
+          // نحدّث baseUnit ليكون اسم الوحدة الحقيقي للاستخدام لاحقاً
+          baseUnit = newType;
+        }
+      } catch (e) {}
     }
+    // هل نوع البيع الحالي هو الوحدة الأساسية؟
+    bool oldTypeIsBase = (_currentItem.saleType == baseUnit);
+    
+    double conversionFactor = 1.0;
+    
+    // البحث عن عامل التحويل في التسلسل الهرمي لأي وحدة ليست أساسية
+    if (!newTypeIsBase && product.unitHierarchy != null &&
+        product.unitHierarchy!.isNotEmpty) {
+      try {
+        List<dynamic> hierarchy =
+            json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+        for (var unit in hierarchy) {
+          if ((unit['unit_name'] ?? unit['name']) == newType) {
+            conversionFactor = (unit['quantity'] as num).toDouble();
+            break;
+          }
+        }
+      } catch (e) {}
+    }
+    
+    // إذا لم نجد في التسلسل الهرمي، جرب lengthPerUnit
+    if (conversionFactor == 1.0 && !newTypeIsBase && (product.lengthPerUnit ?? 0) > 0) {
+      conversionFactor = product.lengthPerUnit!.toDouble();
+    }
+    
     setState(() {
       double newAppliedPrice;
-      if ((product?.unit == 'piece' && newType != 'قطعة') ||
-          (product?.unit == 'meter' && newType == 'لفة')) {
-        // عند التحويل من قطعة إلى باكيت أو من متر إلى لفة: السعر للوحدة الكبيرة = السعر الحالي × عامل التحويل
+      
+      if (!newTypeIsBase && oldTypeIsBase) {
+        // التحويل من الوحدة الأساسية → وحدة كبيرة: السعر × عامل التحويل
         newAppliedPrice = _currentItem.appliedPrice * conversionFactor;
-      } else if ((product?.unit == 'piece' &&
-              _currentItem.saleType != 'قطعة' &&
-              newType == 'قطعة') ||
-          (product?.unit == 'meter' &&
-              _currentItem.saleType == 'لفة' &&
-              newType == 'متر')) {
-        // عند التحويل من باكيت إلى قطعة أو من لفة إلى متر: السعر للوحدة الصغيرة = السعر الحالي ÷ عامل التحويل
+      } else if (newTypeIsBase && !oldTypeIsBase) {
+        // التحويل من وحدة كبيرة → الوحدة الأساسية: السعر ÷ عامل التحويل
         newAppliedPrice = _currentItem.appliedPrice / conversionFactor;
       } else {
+        // التحويل بين وحدات كبيرة بعضها البعض، أو نفس الوحدة
         newAppliedPrice = _currentItem.appliedPrice;
       }
+      
       double quantity = _currentItem.quantityIndividual ??
           _currentItem.quantityLargeUnit ??
           1;
@@ -6138,9 +6243,9 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         unitsInLargeUnit: conversionFactor != 1.0 ? conversionFactor : null,
         itemTotal: quantity * (newAppliedPrice ?? 0),
         quantityIndividual:
-            (newType == 'قطعة' || newType == 'متر') ? quantity : null,
+            newTypeIsBase ? quantity : null,
         quantityLargeUnit:
-            (newType != 'قطعة' && newType != 'متر') ? quantity : null,
+            newTypeIsBase ? null : quantity,
       );
       _quantityController.text = quantity.toString();
       // لا تفرض ".00" أثناء التحرير؛ اظهر فواصل فقط
@@ -6702,20 +6807,16 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
               child: Container(
                 alignment: Alignment.center,
                 child: widget.isViewOnly
-                  ? ((widget.item.saleType == 'قطعة' ||
-                          widget.item.saleType == 'متر')
+                  ? (_isBaseUnitSaleType(widget.item.saleType, widget.item.productName))
                       ? const SizedBox.shrink()
                       : Text(
-                          widget.item.unitsInLargeUnit?.toStringAsFixed(0) ??
-                              '',
+                          widget.item.unitsInLargeUnit?.toStringAsFixed(0) ?? '',
                           textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.bodyMedium))
-                  : (_currentItem.saleType == 'قطعة' ||
-                          _currentItem.saleType == 'متر')
+                          style: Theme.of(context).textTheme.bodyMedium)
+                  : (_isBaseUnitSaleType(_currentItem.saleType, _currentItem.productName))
                       ? const SizedBox.shrink()
                       : Text(
-                          _currentItem.unitsInLargeUnit?.toStringAsFixed(0) ??
-                              '',
+                          _currentItem.unitsInLargeUnit?.toStringAsFixed(0) ?? '',
                           textAlign: TextAlign.center,
                           style: Theme.of(context).textTheme.bodyMedium),
               ),
@@ -6748,18 +6849,15 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                       
                       // حساب التكلفة حسب نوع البيع
                       double costPrice = product.costPrice ?? 0;
-                      if (_currentItem.saleType != null && _currentItem.saleType != 'قطعة' && _currentItem.saleType != 'متر') {
+                      if (_currentItem.saleType != null && !_isBaseUnitSaleType(_currentItem.saleType, _currentItem.productName)) {
                         // إذا كان هناك unit_costs، استخدمها
                         try {
                           if (product.unitCosts != null && product.unitCosts!.isNotEmpty) {
                             final Map<String, dynamic> unitCostsMap = json.decode(product.unitCosts!);
                             if (unitCostsMap.containsKey(_currentItem.saleType)) {
                               costPrice = (unitCostsMap[_currentItem.saleType] as num).toDouble();
-                            } else if (product.unit == 'meter' && _currentItem.saleType == 'لفة') {
-                              // للفة: التكلفة = التكلفة الأساسية * الطول
-                              costPrice = (product.costPrice ?? 0) * (product.lengthPerUnit ?? 1);
-                            } else {
-                              // للهرمية: التكلفة = التكلفة الأساسية * عدد الوحدات
+                            } else if (!_isBaseUnitSaleType(_currentItem.saleType, _currentItem.productName) && _currentItem.unitsInLargeUnit != null && _currentItem.unitsInLargeUnit! > 1) {
+                              // للوحدة الكبيرة: التكلفة = التكلفة الأساسية * عدد الوحدات
                               costPrice = (product.costPrice ?? 0) * (_currentItem.unitsInLargeUnit ?? 1);
                             }
                           }

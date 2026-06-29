@@ -108,27 +108,70 @@ class InvoiceItem {
   factory InvoiceItem.fromMap(Map<String, dynamic> map) {
     // ═══════════════════════════════════════════════════════════════════════════
     // 🔧 إصلاح: تنظيف البيانات - استخدام الكمية الصحيحة بناءً على نوع البيع
+    // يدعم الآن: قطعة/متر القياسية + أي وحدة مخصصة
+    //
+    // المبدأ: نستخدم مؤشرات متعددة لتحديد الوحدة الأساسية vs الكبيرة:
+    //   1. unitsInLargeUnit > 1 + saleType غير أساسي معروف → وحدة كبيرة
+    //   2. quantityIndividual != null → عادةً وحدة أساسية
+    //   3. مقارنة saleType مع baseUnit (piece→قطعة, meter→متر)
     // ═══════════════════════════════════════════════════════════════════════════
     final String? saleType = map['sale_type'] as String?;
     double? quantityIndividual = map['quantity_individual'] as double?;
     double? quantityLargeUnit = map['quantity_large_unit'] as double?;
+    final double? unitsInLargeUnit = map['units_in_large_unit'] as double?;
+
+    // تحديد الوحدة الأساسية من حقل unit (piece→قطعة, meter→متر)
+    final String rawUnit = map['unit'] as String? ?? '';
+    String baseUnit = rawUnit;
+    if (baseUnit == 'piece') baseUnit = 'قطعة';
+    if (baseUnit == 'meter') baseUnit = 'متر';
+
+    // 🔑 المنطق المحسّن للكشف عن الوحدة الأساسية
+    // الأولوية: نثق بقيمة quantity_individual إذا كانت محددة (_updateSaleType يضبطها)
     
-    // إذا كان نوع البيع قطعة أو متر، استخدم quantityIndividual فقط
-    // وإلا استخدم quantityLargeUnit فقط
-    if (saleType == 'قطعة' || saleType == 'متر') {
-      // للوحدات الصغيرة: استخدم quantityIndividual، وإذا كانت null استخدم quantityLargeUnit
+    // المؤشر الأقوى: قيمة محددة في quantityIndividual ← وحدة أساسية بغض النظر عن أي شيء
+    final bool qtyIndExplicitlySet = (quantityIndividual != null && quantityIndividual! > 0);
+    
+    bool isBaseSaleType;
+    
+    final bool hasValidUnitsInLargeUnit = (unitsInLargeUnit != null && unitsInLargeUnit! > 1);
+    final bool saleTypeMatchesBase = (saleType == baseUnit);
+    final bool isKnownBaseUnit = (saleType == 'قطعة' || saleType == 'متر' || saleType == 'piece');
+    
+    if (qtyIndExplicitlySet) {
+      // 🔑 quantityIndividual له قيمة ← وحدة أساسية (المؤشر الأكثر موثوقية)
+      isBaseSaleType = true;
+    } else if (!hasValidUnitsInLargeUnit) {
+      // بدون تحويل وحدات → دائماً وحدة أساسية
+      isBaseSaleType = true;
+    } else if (isKnownBaseUnit) {
+      // saleType هو قطعة أو متر → وحدة أساسية
+      isBaseSaleType = true;
+    } else if (saleTypeMatchesBase) {
+      // saleType يطابق baseUnit (أياً كانا) → وحدة أساسية
+      isBaseSaleType = true;
+    } else if (saleType == null || saleType!.isEmpty) {
+      // saleType فارغ → اعتبره وحدة أساسية
+      isBaseSaleType = true;
+    } else {
+      // باقي الحالات: unitsInLargeUnit > 1 و saleType ≠ baseUnit ولا qtyIndividual → وحدة كبيرة
+      isBaseSaleType = false;
+    }
+
+    if (isBaseSaleType) {
+      // للوحدات الأساسية: استخدم quantityIndividual
       if (quantityIndividual == null && quantityLargeUnit != null) {
         quantityIndividual = quantityLargeUnit;
       }
       quantityLargeUnit = null; // مسح القيمة الأخرى
-    } else if (saleType != null && saleType.isNotEmpty) {
-      // للوحدات الكبيرة (لفة، كرتون، إلخ): استخدم quantityLargeUnit
+    } else {
+      // للوحدات الكبيرة (لفة، كرتون، Q، jjj، إلخ): استخدم quantityLargeUnit
       if (quantityLargeUnit == null && quantityIndividual != null) {
         quantityLargeUnit = quantityIndividual;
       }
       quantityIndividual = null; // مسح القيمة الأخرى
     }
-    
+
     return InvoiceItem(
       id: map['id'] as int?,
       invoiceId: map['invoice_id'] ?? 0,
@@ -143,7 +186,7 @@ class InvoiceItem {
       appliedPrice: map['applied_price'] ?? 0.0,
       itemTotal: map['item_total'] ?? 0.0,
       saleType: saleType,
-      unitsInLargeUnit: map['units_in_large_unit'] as double?,
+      unitsInLargeUnit: unitsInLargeUnit,
       uniqueId: map['unique_id'] ?? 'item_${DateTime.now().microsecondsSinceEpoch}',
     );
   }

@@ -32,6 +32,7 @@ import '../services/smart_search/smart_search.dart'; // 🧠 البحث الذك
 import '../services/invoice_prediction_service.dart'; // 🔮 التوقعات الذكية
 import '../services/firebase_sync/firebase_sync_helper.dart'; // 🔥 Firebase Sync
 import '../services/sync/sync_security.dart'; // 🔐 Sync UUID Generation
+import '../services/financial_guardians.dart'; // 🛡️ Financial Guardians
 import 'create_invoice_screen.dart';
 
 /// واجهة تحدد المتغيرات المطلوبة للتعامل مع الفواتير
@@ -227,7 +228,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
       return _ValidationResult(isValid: true);
     }
     
-    final oldInvoice = widget.existingInvoice;
+    final oldInvoice = invoiceToManage;
     if (oldInvoice == null) {
       return _ValidationResult(isValid: true);
     }
@@ -769,6 +770,14 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           pointsRate: installerPointsRate, // حفظ معدل النقاط مع الفاتورة
         );
 
+        // 🛡️ الطبقة الدفاعية: حارس الفواتير النقدية والمدقق الرياضي
+        try {
+          FinancialGuardians.validateCashInvoiceIntegrity(invoice);
+          FinancialGuardians.auditInvoiceMath(invoice, invoiceItems, totalAmount, discount);
+        } catch (e) {
+          throw Exception(e.toString());
+        }
+
         int invoiceId;
         if (isNewInvoice) {
           invoiceId = await txn.insert('invoices', invoice.toMap());
@@ -854,7 +863,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
         // ═══════════════════════════════════════════════════════════════════════════
         
         if (!isNewInvoice) {
-          final oldInvoice = widget.existingInvoice ?? invoiceToManage!;
+          final oldInvoice = invoiceToManage!;
           final oldPaymentType = oldInvoice.paymentType;
           final oldCustomerId = oldInvoice.customerId;
           final newCustomerId = customer?.id;
@@ -1199,11 +1208,11 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
             entityType: 'invoice',
             entityId: savedInvoice!.id!,
             oldValues: isNewInvoice ? null : jsonEncode({
-              'total_amount': widget.existingInvoice?.totalAmount,
-              'discount': widget.existingInvoice?.discount,
-              'payment_type': widget.existingInvoice?.paymentType,
-              'paid_amount': widget.existingInvoice?.amountPaidOnInvoice,
-              'customer_id': widget.existingInvoice?.customerId,
+              'total_amount': invoiceToManage?.totalAmount,
+              'discount': invoiceToManage?.discount,
+              'payment_type': invoiceToManage?.paymentType,
+              'paid_amount': invoiceToManage?.amountPaidOnInvoice,
+              'customer_id': invoiceToManage?.customerId,
             }),
             newValues: jsonEncode({
               'total_amount': totalAmount,
@@ -1227,8 +1236,8 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
               entityId: customerId,
               oldValues: isNewInvoice ? null : jsonEncode({
                 'invoice_id': savedInvoice!.id,
-                'total_amount': widget.existingInvoice?.totalAmount,
-                'payment_type': widget.existingInvoice?.paymentType,
+                'total_amount': invoiceToManage?.totalAmount,
+                'payment_type': invoiceToManage?.paymentType,
               }),
               newValues: jsonEncode({
                 'invoice_id': savedInvoice!.id,
@@ -1421,40 +1430,82 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
       }
 
       String buildUnitConversionStringForPdf(InvoiceItem item, Product? product) {
-        if (item.unit == 'meter') {
-          if (item.saleType == 'لفة' && item.unitsInLargeUnit != null) {
-            return item.unitsInLargeUnit!.toString();
-          } else {
+        // 1) إذا لا يوجد تحويل وحدات فعلي، لا نعرض شيئاً
+        if (item.unitsInLargeUnit == null || item.unitsInLargeUnit! <= 1) {
+          return '';
+        }
+
+        // 2) نفس منطق شاشة الإنشاء: إذا نوع البيع هو الوحدة الأساسية → فارغ
+        if (product != null && item.saleType != null && item.saleType!.isNotEmpty) {
+          String baseUnit = product.unit;
+          if (baseUnit == 'piece') baseUnit = 'قطعة';
+          if (baseUnit == 'meter') baseUnit = 'متر';
+          if (item.saleType == baseUnit) {
             return '';
           }
         }
-        if (item.saleType == 'قطعة' || item.saleType == 'متر') {
+
+        // 3) مؤشر إضافي موثوق: quantityIndividual يعني بيع بالأصغر
+        if (item.quantityIndividual != null && item.quantityIndividual! > 0) {
           return '';
         }
-        if (product == null ||
-            product.unitHierarchy == null ||
-            product.unitHierarchy!.isEmpty) {
-          return item.unitsInLargeUnit?.toString() ?? '';
-        }
-        try {
-          final List<dynamic> hierarchy =
-              json.decode(product.unitHierarchy!.replaceAll("'", '"'));
-          List<String> factors = [];
-          for (int i = 0; i < hierarchy.length; i++) {
-            final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
-            final quantity = hierarchy[i]['quantity'];
-            factors.add(quantity.toString());
-            if (unitName == item.saleType) {
-              break;
+
+        // 4) إن كان saleType غير موجود في الهرمية فهو غالباً أصغر وحدة مخصصة
+        if (product != null &&
+            product.unitHierarchy != null &&
+            product.unitHierarchy!.isNotEmpty &&
+            item.saleType != null &&
+            item.saleType!.isNotEmpty) {
+          try {
+            final List<dynamic> hierarchy =
+                json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+            bool foundInHierarchy = false;
+            for (int i = 0; i < hierarchy.length; i++) {
+              final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
+              if (unitName == item.saleType) {
+                foundInHierarchy = true;
+                break;
+              }
             }
+            if (!foundInHierarchy) {
+              return '';
+            }
+          } catch (e) {
+            // في حالة خطأ parsing، نكمل بقية المنطق
           }
-          if (factors.isEmpty) {
-            return item.unitsInLargeUnit?.toString() ?? '';
-          }
-          return factors.join(' × ');
-        } catch (e) {
-          return item.unitsInLargeUnit?.toString() ?? '';
         }
+
+        // 5) حالة المتر/لفة
+        if ((item.unit == 'meter' || item.saleType == 'متر') && item.saleType == 'لفة') {
+          return item.unitsInLargeUnit!.toString();
+        }
+
+        // 6) بناء سلسلة التحويل من الهرمية للوحدة الكبيرة (مثل 12 × 6)
+        if (product != null &&
+            product.unitHierarchy != null &&
+            product.unitHierarchy!.isNotEmpty) {
+          try {
+            final List<dynamic> hierarchy =
+                json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+            List<String> factors = [];
+            for (int i = 0; i < hierarchy.length; i++) {
+              final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
+              final quantity = hierarchy[i]['quantity'];
+              factors.add(quantity.toString());
+              if (unitName == item.saleType) {
+                break;
+              }
+            }
+            if (factors.isNotEmpty) {
+              return factors.join(' × ');
+            }
+          } catch (e) {
+            // fallback للأسفل
+          }
+        }
+
+        // 7) fallback للوحدة الكبيرة
+        return item.unitsInLargeUnit?.toString() ?? '';
       }
 
       final allProducts = await db.getAllProducts();
@@ -1706,7 +1757,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                                 _headerCell('السعر', font,
                                     color: PdfColor.fromInt(
                                         appSettings.itemPriceColor)),
-                                _headerCell('عدد الوحدات', font),
+                                _headerCell('التعبئة', font),
                                 _headerCell('العدد', font,
                                     color: PdfColor.fromInt(
                                         appSettings.itemQuantityColor)),

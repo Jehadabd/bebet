@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
+import '../services/custom_units_service.dart';
 import '../widgets/formatters.dart';
 import 'dart:convert';
 
@@ -59,7 +60,7 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
   
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
-  String _selectedUnit = 'piece'; // Default unit
+  String _selectedUnit = 'قطعة'; // الافتراضي - يمكن تغييره من القائمة
   final _unitPriceController = TextEditingController();
   final _costPriceController = TextEditingController();
   final _piecesPerUnitController =
@@ -73,23 +74,47 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
 
   final DatabaseService _db = DatabaseService();
 
+  // قائمة الوحدات المقترحة (تُحمّل من SharedPreferences)
+  List<String> _baseUnitOptions = ['قطعة', 'متر'];
+  List<String> _largeUnitOptions = ['كرتون', 'صندوق', 'ربطة', 'كيس', 'سيت', 'باكيت', 'لفة'];
+
   @override
   void initState() {
     super.initState();
+    _loadCustomUnits();
     _updateUnitCostControllers();
+  }
+
+  /// تحميل الوحدات المخصصة من التخزين المحلي
+  Future<void> _loadCustomUnits() async {
+    final baseUnits = await CustomUnitsService.getBaseUnits();
+    final largeUnits = await CustomUnitsService.getLargeUnits();
+    if (!mounted) return;
+    setState(() {
+      _baseUnitOptions = baseUnits;
+      _largeUnitOptions = largeUnits;
+    });
+  }
+
+  /// حفظ وحدة أساسية جديدة إذا كانت مخصصة
+  Future<void> _saveBaseUnitIfNew(String unitName) async {
+    if (unitName.trim().isNotEmpty && !_baseUnitOptions.contains(unitName.trim())) {
+      await CustomUnitsService.addBaseUnit(unitName.trim());
+      await _loadCustomUnits();
+    }
+  }
+
+  /// حفظ وحدة كبيرة جديدة إذا كانت مخصصة
+  Future<void> _saveLargeUnitIfNew(String unitName) async {
+    if (unitName.trim().isNotEmpty && !_largeUnitOptions.contains(unitName.trim())) {
+      await CustomUnitsService.addLargeUnit(unitName.trim());
+      await _loadCustomUnits();
+    }
   }
 
   // --- وحدة هرمية الوحدات ---
   List<Map<String, dynamic>> _unitHierarchyList = [];
-  final List<String> _allUnitOptions = [
-    'سيت',
-    'باكيت',
-    'ربطة',
-    'كيس',
-    'صندوق',
-    'كرتون',
-  ];
-  final List<String> _terminalUnits = ['كرتون', 'صندوق', 'ربطة'];
+  // الوحدات الكبيرة تُحمّل ديناميكياً من _largeUnitOptions
 
   // --- تكلفة الوحدات ---
   Map<String, TextEditingController> _unitCostControllers = {};
@@ -108,8 +133,9 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
     }
     _unitCostControllers.clear();
 
-    // إضافة متحكم للوحدة الأساسية
-    _unitCostControllers['قطعة'] = TextEditingController(
+    // إضافة متحكم للوحدة الأساسية (ديناميكية - ليست 'قطعة' فقط)
+    final baseUnitKey = _selectedUnit.isNotEmpty ? _selectedUnit : 'قطعة';
+    _unitCostControllers[baseUnitKey] = TextEditingController(
       text: _costPriceController.text.isEmpty ? '' : _costPriceController.text,
     );
 
@@ -152,14 +178,15 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
   String? _buildUnitCostsJson() {
     final unitCostsMap = <String, double>{};
     
-    // إضافة تكلفة الوحدة الأساسية
+    // إضافة تكلفة الوحدة الأساسية (ديناميكية)
+    final baseUnitKey = _selectedUnit.isNotEmpty ? _selectedUnit : 'قطعة';
     if (_costPriceController.text.trim().isNotEmpty) {
-      unitCostsMap['قطعة'] = double.tryParse(_cleanNumber(_costPriceController.text.trim())) ?? 0.0;
+      unitCostsMap[baseUnitKey] = double.tryParse(_cleanNumber(_costPriceController.text.trim())) ?? 0.0;
     }
 
     // إضافة تكلفة الوحدات الإضافية (المحسوبة تلقائياً)
     for (var entry in _unitCostControllers.entries) {
-      if (entry.key != 'قطعة' && entry.value.text.trim().isNotEmpty) {
+      if (entry.key != baseUnitKey && entry.value.text.trim().isNotEmpty) {
         unitCostsMap[entry.key] = double.tryParse(_cleanNumber(entry.value.text.trim())) ?? 0.0;
       }
     }
@@ -174,19 +201,8 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
     });
   }
 
-  List<String> _availableUnitOptions(int idx) {
-    final used = _unitHierarchyList
-        .take(idx)
-        .map((e) => e['unit_name'])
-        .whereType<String>()
-        .toSet();
-    return _allUnitOptions.where((u) => !used.contains(u)).toList();
-  }
-
   bool get _canAddMoreUnits {
-    if (_unitHierarchyList.isEmpty) return true;
-    final last = _unitHierarchyList.last['unit_name'];
-    return last == null || !_terminalUnits.contains(last);
+    return true; // لم يعد هناك قيود على الوحدات الطرفية - المستخدم حر في إضافة ما يشاء
   }
 
   @override
@@ -302,14 +318,6 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
         }
       }
       
-      // التحقق من طول اللفة للمنتجات المباعة بالمتر
-      if (_selectedUnit == 'meter') {
-        final lengthText = _cleanNumber(_lengthPerUnitController.text.trim());
-        if (lengthText.isNotEmpty && double.tryParse(lengthText) == null) {
-          validationErrors.add('طول اللفة غير صالح: "${_lengthPerUnitController.text.trim()}"');
-        }
-      }
-      
       // عرض أخطاء التحقق إن وجدت
       if (validationErrors.isNotEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -326,7 +334,8 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
       String? unitHierarchyJson;
       String? unitCostsJson;
       
-      if (_selectedUnit == 'piece' && _unitHierarchyList.isNotEmpty) {
+      // بناء الهرمية لأي وحدة (لم يعد مقيداً بـ piece/meter)
+      if (_unitHierarchyList.isNotEmpty) {
         final filtered = _unitHierarchyList
             .where((row) =>
                 row['unit_name'] != null &&
@@ -342,13 +351,26 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
               .toList());
           unitCostsJson = _buildUnitCostsJson();
         }
-      } else if (_selectedUnit == 'meter' && _lengthPerUnitController.text.trim().isNotEmpty) {
-        // بناء التسلسل الهرمي التلقائي للمنتجات المباعة بالمتر
+      } else if (_lengthPerUnitController.text.trim().isNotEmpty) {
+        // بناء التسلسل الهرمي التلقائي عند وجود طول الوحدة (مثل متر/لفة أو أي وحدة مشابهة)
         final lengthPerUnit = double.tryParse(_cleanNumber(_lengthPerUnitController.text.trim()));
         if (lengthPerUnit != null && lengthPerUnit > 0) {
+          // تحديد اسم الوحدة الكبيرة تلقائياً بناءً على الوحدة الأساسية
+          String largeUnitName;
+          final unitLower = _selectedUnit.toLowerCase();
+          if (unitLower.contains('متر') || _selectedUnit == 'meter') {
+            largeUnitName = 'لفة';
+          } else if (unitLower.contains('قطع') || _selectedUnit == 'piece') {
+            largeUnitName = 'كرتون';
+          } else if (unitLower.contains('كيلو')) {
+            largeUnitName = 'صندوق';
+          } else {
+            largeUnitName = 'علبة'; // افتراضي
+          }
+          
           unitHierarchyJson = json.encode([
             {
-              'unit_name': 'لفة',
+              'unit_name': largeUnitName,
               'quantity': lengthPerUnit,
             }
           ]);
@@ -357,8 +379,8 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
           final costPrice = double.tryParse(costPriceText) ?? 0.0;
           if (costPrice > 0) {
             unitCostsJson = json.encode({
-              'متر': costPrice,
-              'لفة': costPrice * lengthPerUnit,
+              _selectedUnit: costPrice,
+              largeUnitName: costPrice * lengthPerUnit,
             });
           }
         }
@@ -367,31 +389,25 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
       print('DEBUG: unitHierarchyJson = $unitHierarchyJson'); // طباعة تتبع
       print('DEBUG: unitCostsJson = $unitCostsJson'); // طباعة تتبع
       
-      if (_selectedUnit == 'piece' &&
-          (_unitHierarchyList.isNotEmpty &&
-              (unitHierarchyJson == null || unitHierarchyJson == '[]'))) {
+      // التحقق من صحة البيانات (عام لأي نوع وحدة)
+      if (_unitHierarchyList.isNotEmpty &&
+          (unitHierarchyJson == null || unitHierarchyJson == '[]')) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content:
-                const Text('يرجى تعبئة جميع وحدات البيع الهيراركية بشكل صحيح!'),
-            backgroundColor: Theme.of(context)
-                .colorScheme
-                .error, // استخدام لون الخطأ من الثيم
+                const Text('يرجى تعبئة جميع الوحدات الكبيرة بشكل صحيح!'),
+            backgroundColor: Theme.of(context).colorScheme.error,
           ),
         );
         return;
       }
       
-      if (_selectedUnit == 'meter' &&
-          _lengthPerUnitController.text.trim().isNotEmpty &&
+      if (_lengthPerUnitController.text.trim().isNotEmpty &&
           (unitHierarchyJson == null || unitCostsJson == null)) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content:
-                const Text('يرجى إدخال تكلفة المتر وطول اللفة بشكل صحيح!'),
-            backgroundColor: Theme.of(context)
-                .colorScheme
-                .error,
+            content: const Text('يرجى إدخال بيانات الوحدة الكبيرة بشكل صحيح!'),
+            backgroundColor: Theme.of(context).colorScheme.error,
           ),
         );
         return;
@@ -400,15 +416,13 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
       // إنشاء كائن المنتج
       final newProduct = Product(
         name: inputName,
-        unit: _selectedUnit,
+        unit: _selectedUnit, // الوحدة الأساسية (ديناميكية - أي نص)
         unitPrice: double.tryParse(_cleanNumber(_unitPriceController.text.trim())) ?? 0.0,
         costPrice: costPriceText.isNotEmpty ? double.tryParse(costPriceText) : null,
-        piecesPerUnit: _selectedUnit == 'piece' &&
-                _piecesPerUnitController.text.trim().isNotEmpty
+        piecesPerUnit: _piecesPerUnitController.text.trim().isNotEmpty
             ? int.tryParse(_piecesPerUnitController.text.trim())
             : null,
-        lengthPerUnit: _selectedUnit == 'meter' &&
-                _lengthPerUnitController.text.trim().isNotEmpty
+        lengthPerUnit: _lengthPerUnitController.text.trim().isNotEmpty
             ? double.tryParse(_cleanNumber(_lengthPerUnitController.text.trim()))
             : null,
         price1: double.tryParse(price1Text) ?? 0.0,
@@ -469,9 +483,11 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
         _price4Controller.clear();
         _price5Controller.clear();
         setState(() {
-          _selectedUnit = 'piece';
+          _selectedUnit = 'قطعة';
           _unitHierarchyList.clear();
         });
+        // حفظ الوحدة الأساسية إذا كانت جديدة
+        await _saveBaseUnitIfNew(_selectedUnit);
       } catch (e) {
         // تحسين رسالة الخطأ
         String errorMessage;
@@ -655,21 +671,52 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                   },
                 ),
                 const SizedBox(height: 20.0), // مسافة أكبر
-                DropdownButtonFormField<String>(
-                  value: _selectedUnit,
-                  decoration: const InputDecoration(labelText: 'وحدة البيع'),
-                  items: const [
-                    DropdownMenuItem(value: 'piece', child: Text('قطعة')),
-                    DropdownMenuItem(value: 'meter', child: Text('متر')),
-                  ],
-                  onChanged: (value) {
-                    if (value != null) {
-                      setState(() {
-                        _selectedUnit = value;
-                        _lengthPerUnitController.clear();
-                        // لا يتم مسح _unitHierarchyList هنا
-                      });
+                // وحدة البيع - Autocomplete مع خيارات مقترحة + كتابة حرة
+                Autocomplete<String>(
+                  optionsBuilder: (TextEditingValue textEditingValue) {
+                    if (textEditingValue.text.isEmpty) {
+                      return _baseUnitOptions;
                     }
+                    final query = textEditingValue.text.toLowerCase();
+                    final matches = _baseUnitOptions.where((unit) => unit.toLowerCase().contains(query)).toList();
+                    // إذا كان النص المدخل ليس من الخيارات، نعرضه كخيار جديد
+                    if (matches.isEmpty || !_baseUnitOptions.any((u) => u.toLowerCase() == query)) {
+                      return [...matches, textEditingValue.text.trim()];
+                    }
+                    return matches;
+                  },
+                  onSelected: (String selection) {
+                    setState(() {
+                      _selectedUnit = selection;
+                      _saveBaseUnitIfNew(selection);
+                      _updateUnitCostControllers();
+                    });
+                  },
+                  fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                    // تعيين القيمة الابتدائية
+                    if (_selectedUnit.isNotEmpty && controller.text.isEmpty) {
+                      controller.text = _selectedUnit;
+                    }
+                    controller.selection = TextSelection.fromPosition(TextPosition(offset: controller.text.length));
+                    
+                    return TextFormField(
+                      controller: controller,
+                      focusNode: focusNode,
+                      decoration: const InputDecoration(
+                        labelText: 'وحدة البيع (الأساسية)',
+                        hintText: 'اختر أو اكتب: قطعة، متر، كيلو، علبة...',
+                        suffixIcon: Icon(Icons.arrow_drop_down),
+                      ),
+                      onChanged: (value) {
+                        _selectedUnit = value;
+                      },
+                      validator: (value) {
+                        if (value == null || value.isEmpty) {
+                          return 'الرجاء إدخال وحدة البيع';
+                        }
+                        return null;
+                      },
+                    );
                   },
                 ),
                 const SizedBox(height: 20.0),
@@ -694,7 +741,7 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                 ),
                 const SizedBox(height: 24.0), // مسافة أكبر قبل القسم الجديد
                 Visibility(
-                  visible: _selectedUnit == 'piece',
+                  visible: true, // إظهار لجميع الوحدات - لم يعد مقيداً بـ 'piece'
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -713,7 +760,7 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                         int idx = entry.key;
                         var row = entry.value;
                         String prevUnit = idx == 0
-                            ? 'قطعة'
+                            ? _selectedUnit
                             : (_unitHierarchyList[idx - 1]['unit_name'] ??
                                 'الوحدة السابقة');
                         String label =
@@ -731,47 +778,44 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                                 children: [
                                   Expanded(
                                     flex: 2,
-                                    child: DropdownButtonFormField<String>(
-                                      value: row['unit_name'],
-                                      decoration: const InputDecoration(
-                                        labelText: 'اسم الوحدة',
-                                        isDense:
-                                            true, // لجعل حقل القائمة المنسدلة أكثر إحكاماً
-                                        contentPadding: EdgeInsets.symmetric(
-                                            vertical: 12.0, horizontal: 10.0),
-                                      ),
-                                      items: _availableUnitOptions(idx)
-                                          .map((unit) => DropdownMenuItem(
-                                                value: unit,
-                                                child: Text(unit,
-                                                    style: Theme.of(context)
-                                                        .textTheme
-                                                        .bodyMedium),
-                                              ))
-                                          .toList(),
-                                                                              onChanged: (val) {
-                                          setState(() {
-                                            _unitHierarchyList[idx]['unit_name'] =
-                                                val;
-                                            if (val != null &&
-                                                _terminalUnits.contains(val) &&
-                                                idx <
-                                                    _unitHierarchyList.length -
-                                                        1) {
-                                              _unitHierarchyList.removeRange(
-                                                  idx + 1,
-                                                  _unitHierarchyList.length);
-                                            }
-                                            _updateUnitCostControllers();
-                                            // حساب التكلفة تلقائياً بعد تحديث المتحكمات
-                                            _calculateUnitCosts();
-                                          });
-                                        },
-                                      validator: (val) {
-                                        if (val == null || val.isEmpty) {
-                                          return 'اختر اسم الوحدة';
+                                    // Autocomplete للوحدات الكبيرة مع خيارات + كتابة حرة
+                                    child: Autocomplete<String>(
+                                      optionsBuilder: (textEditingValue) {
+                                        final query = textEditingValue.text.toLowerCase();
+                                        return _largeUnitOptions
+                                            .where((u) => u.toLowerCase().contains(query))
+                                            .toList();
+                                      },
+                                      onSelected: (val) {
+                                        setState(() {
+                                          _unitHierarchyList[idx]['unit_name'] = val;
+                                          _saveLargeUnitIfNew(val);
+                                          _updateUnitCostControllers();
+                                          _calculateUnitCosts();
+                                        });
+                                      },
+                                      fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                                        if (row['unit_name'] != null && controller.text.isEmpty) {
+                                          controller.text = row['unit_name'];
                                         }
-                                        return null;
+                                        return TextFormField(
+                                          controller: controller,
+                                          focusNode: focusNode,
+                                          decoration: const InputDecoration(
+                                            labelText: 'اسم الوحدة',
+                                            isDense: true,
+                                            contentPadding: EdgeInsets.symmetric(vertical: 12.0, horizontal: 10.0),
+                                          ),
+                                          onChanged: (val) {
+                                            _unitHierarchyList[idx]['unit_name'] = val;
+                                          },
+                                          validator: (val) {
+                                            if (val == null || val.isEmpty) {
+                                              return 'اختر أو اكتب اسم الوحدة';
+                                            }
+                                            return null;
+                                          },
+                                        );
                                       },
                                     ),
                                   ),
@@ -841,7 +885,7 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                                 Expanded(
                                   flex: 2,
                                   child: Text(
-                                    'قطعة',
+                                    _selectedUnit, // عرض اسم الوحدة الأساسية ديناميكياً
                                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                                       fontWeight: FontWeight.w600,
                                     ),
@@ -937,26 +981,6 @@ class _ProductEntryScreenState extends State<ProductEntryScreen> {
                           ),
                         ),
                     ],
-                  ),
-                ),
-                const SizedBox(height: 24.0), // مسافة أكبر
-                Visibility(
-                  visible: _selectedUnit == 'meter',
-                  child: TextFormField(
-                    controller: _lengthPerUnitController,
-                    decoration: const InputDecoration(
-                        labelText: 'طول القطعة الكاملة (بالمتر)'),
-                    keyboardType:
-                        const TextInputType.numberWithOptions(decimal: true),
-                    validator: (value) {
-                      if (_selectedUnit == 'meter' &&
-                          value != null &&
-                          value.isNotEmpty &&
-                          double.tryParse(value) == null) {
-                        return 'الرجاء إدخال رقم صحيح';
-                      }
-                      return null;
-                    },
                   ),
                 ),
                 const SizedBox(height: 24.0), // مسافة قبل حقول الأسعار

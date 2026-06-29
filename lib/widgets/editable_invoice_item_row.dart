@@ -108,14 +108,40 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
   // 🔧 دالة مساعدة: الحصول على الكمية الصحيحة بناءً على نوع البيع
   // ═══════════════════════════════════════════════════════════════════════════
   double _getCorrectQuantity(InvoiceItem item) {
-    // إذا كان نوع البيع قطعة أو متر، استخدم quantityIndividual
-    // وإلا استخدم quantityLargeUnit (للفة، كرتون، إلخ)
     if (item.saleType == 'قطعة' || item.saleType == 'متر') {
       return item.quantityIndividual ?? item.quantityLargeUnit ?? 0;
     } else {
-      // للوحدات الكبيرة (لفة، كرتون، إلخ) استخدم quantityLargeUnit أولاً
       return item.quantityLargeUnit ?? item.quantityIndividual ?? 0;
     }
+  }
+
+  // 🔧 دالة مساعدة: التحقق إذا كان نوع البيع هو الوحدة الأساسية للمنتج
+  bool _isBaseUnit(String? saleType, String productName) {
+    if (saleType == null || saleType.isEmpty) return true;
+    
+    final product = widget.allProducts.firstWhere(
+      (p) => p.name == productName,
+      orElse: () => Product(
+        id: null,
+        name: '',
+        unit: 'piece',
+        unitPrice: 0,
+        price1: 0,
+        createdAt: DateTime.now(),
+        lastModifiedAt: DateTime.now(),
+      ),
+    );
+    
+    String baseUnit = product.unit;
+    if (baseUnit == 'piece') baseUnit = 'قطعة';
+    if (baseUnit == 'meter') baseUnit = 'متر';
+    
+    return saleType == baseUnit;
+  }
+
+  // 🔧 دالة مساعدة: الحصول على قيمة unitsInLargeUnit من الـ item
+  double unitsInLargeUnitValue(InvoiceItem item) {
+    return item.unitsInLargeUnit ?? 1.0;
   }
 
   @override
@@ -248,21 +274,36 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         lastModifiedAt: DateTime.now(),
       ),
     );
-    List<String> options = ['قطعة'];
-    if (product.unit == 'piece' &&
-        product.unitHierarchy != null &&
-        product.unitHierarchy!.isNotEmpty) {
+
+    // تحويل الوحدات القديمة
+    String baseUnit = product.unit;
+    if (baseUnit == 'piece') baseUnit = 'قطعة';
+    if (baseUnit == 'meter') baseUnit = 'متر';
+
+    List<String> options = [baseUnit];
+
+    // إضافة الوحدات من التسلسل الهرمي لأي منتج (وليس فقط piece)
+    if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
       try {
         List<dynamic> hierarchy =
             json.decode(product.unitHierarchy!.replaceAll("'", '"'));
         options.addAll(hierarchy
             .map((e) => (e['unit_name'] ?? e['name'] ?? '').toString()));
       } catch (e) {}
-    } else if (product.unit == 'meter' && product.lengthPerUnit != null) {
-      options = ['متر'];
-      options.add('لفة');
-    } else if (product.unit != 'piece' && product.unit != 'meter') {
-      options = [product.unit];
+    }
+
+    // إضافة الوحدة الكبيرة إذا كان هناك lengthPerUnit وبدون هرمية
+    if ((product.lengthPerUnit ?? 0) > 0 && 
+        !(product.unitHierarchy?.isNotEmpty ?? false)) {
+      String largeUnitName;
+      final unitLower = baseUnit.toLowerCase();
+      if (unitLower.contains('متر') || product.unit == 'meter') largeUnitName = 'لفة';
+      else if (unitLower.contains('قطع') || product.unit == 'piece') largeUnitName = 'كرتون';
+      else largeUnitName = 'علبة'; // افتراضي لأي وحدة أخرى
+      
+      if (!options.contains(largeUnitName)) {
+        options.add(largeUnitName);
+      }
     }
     options = options.where((e) => e != null && e.isNotEmpty).toSet().toList();
     if (_currentItem.saleType != null &&
@@ -312,27 +353,42 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
       if (product.id != null) {
         double basePrice = product.price1 ?? product.unitPrice;
         if (basePrice > 0) {
+          // تحديد الوحدة الأساسية الفعلية
+          String baseUnit = product.unit;
+          if (baseUnit == 'piece') baseUnit = 'قطعة';
+          if (baseUnit == 'meter') baseUnit = 'متر';
+          
+          bool isBaseSaleType = (saleType == baseUnit);
           double conversionFactor = 1.0;
-          if (product.unit == 'piece' && saleType != 'قطعة') {
-            if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
-              try {
-                List<dynamic> hierarchy = json.decode(product.unitHierarchy!.replaceAll("'", '"'));
-                for (var unit in hierarchy) {
-                  if ((unit['unit_name'] ?? unit['name']) == saleType) {
-                    conversionFactor = (unit['quantity'] as num).toDouble();
-                    break;
-                  }
+
+          // البحث عن معامل التحويل في الهرمية لأي وحدة (ليس فقط piece/meter)
+          if (!isBaseSaleType && product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
+            try {
+              List<dynamic> hierarchy = json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+              for (var unit in hierarchy) {
+                if ((unit['unit_name'] ?? unit['name']) == saleType) {
+                  conversionFactor = (unit['quantity'] as num).toDouble();
+                  break;
                 }
-              } catch (e) {}
+              }
+            } catch (e) {}
+          }
+
+          // إذا لم نجد في الهرمية، جرب lengthPerUnit
+          if (conversionFactor == 1.0 && !isBaseSaleType && (product.lengthPerUnit ?? 0) > 0) {
+            final unitLower = baseUnit.toLowerCase();
+            String expectedLarge;
+            if (unitLower.contains('متر') || product.unit == 'meter') expectedLarge = 'لفة';
+            else if (unitLower.contains('قطع') || product.unit == 'piece') expectedLarge = 'كرتون';
+            else expectedLarge = 'علبة';
+
+            if (saleType == expectedLarge) {
+              conversionFactor = product.lengthPerUnit ?? 1.0;
             }
-          } else if (product.unit == 'meter' && saleType == 'لفة') {
-            conversionFactor = product.lengthPerUnit ?? 1.0;
           }
           
-          if ((product.unit == 'piece' && saleType != 'قطعة') || (product.unit == 'meter' && saleType == 'لفة')) {
+          if (!isBaseSaleType && conversionFactor > 1.0) {
             defaultPrice = basePrice * conversionFactor;
-          } else if ((product.unit == 'piece' && saleType == 'قطعة') || (product.unit == 'meter' && saleType == 'متر') || (product.unit != 'piece' && product.unit != 'meter')) {
-            defaultPrice = basePrice;
           } else {
             defaultPrice = basePrice;
           }
@@ -392,8 +448,10 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     double? newQuantity = double.tryParse(value.replaceAll(',', ''));
     if (newQuantity == null || newQuantity <= 0) return;
     
+    bool isBase = _isBaseUnit(_currentItem.saleType, _currentItem.productName);
+    
     setState(() {
-      if (_currentItem.saleType == 'قطعة' || _currentItem.saleType == 'متر') {
+      if (isBase) {
         _currentItem = _currentItem.copyWith(
           quantityIndividual: newQuantity,
           quantityLargeUnit: null,
@@ -430,53 +488,73 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
         lastModifiedAt: DateTime.now(),
       ),
     );
+
+    // تحديد الوحدة الأساسية الفعلية للمنتج
+    String baseUnit = product.unit;
+    if (baseUnit == 'piece') baseUnit = 'قطعة';
+    if (baseUnit == 'meter') baseUnit = 'متر';
+
+    bool isNewTypeBaseUnit = (newType == baseUnit);
     double conversionFactor = 1.0;
-    if (product != null) {
-      if (product.unit == 'piece' && newType != 'قطعة') {
-        if (product.unitHierarchy != null &&
-            product.unitHierarchy!.isNotEmpty) {
-          try {
-            List<dynamic> hierarchy =
-                json.decode(product.unitHierarchy!.replaceAll("'", '"'));
-            for (var unit in hierarchy) {
-              if ((unit['unit_name'] ?? unit['name']) == newType) {
-                conversionFactor = (unit['quantity'] as num).toDouble();
-                break;
-              }
-            }
-          } catch (e) {}
+
+    // البحث عن معامل التحويل في التسلسل الهرمي لأي وحدة
+    if (!isNewTypeBaseUnit && product.unitHierarchy != null &&
+        product.unitHierarchy!.isNotEmpty) {
+      try {
+        List<dynamic> hierarchy =
+            json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+        for (var unit in hierarchy) {
+          if ((unit['unit_name'] ?? unit['name']) == newType) {
+            conversionFactor = (unit['quantity'] as num).toDouble();
+            break;
+          }
         }
-      } else if (product.unit == 'meter' && newType == 'لفة') {
+      } catch (e) {}
+    }
+
+    // إذا لم نجد في الهرمية، جرب lengthPerUnit
+    if (conversionFactor == 1.0 && !isNewTypeBaseUnit &&
+        (product.lengthPerUnit ?? 0) > 0) {
+      final unitLower = baseUnit.toLowerCase();
+      String expectedLarge;
+      if (unitLower.contains('متر') || product.unit == 'meter') expectedLarge = 'لفة';
+      else if (unitLower.contains('قطع') || product.unit == 'piece') expectedLarge = 'كرتون';
+      else expectedLarge = 'علبة';
+
+      if (newType == expectedLarge) {
         conversionFactor = product.lengthPerUnit ?? 1.0;
       }
     }
+
     setState(() {
       double newAppliedPrice;
-      if ((product?.unit == 'piece' && newType != 'قطعة') ||
-          (product?.unit == 'meter' && newType == 'لفة')) {
+      bool wasLargeUnit = (_currentItem.saleType != null &&
+          !_isBaseUnit(_currentItem.saleType, _currentItem.productName));
+
+      if (!isNewTypeBaseUnit && wasLargeUnit) {
+        // التحويل بين وحدتين كبيرتين (نادر)
+        newAppliedPrice = _currentItem.appliedPrice / (unitsInLargeUnitValue(_currentItem) > 0 ? unitsInLargeUnitValue(_currentItem) : 1.0) * conversionFactor;
+      } else if (isNewTypeBaseUnit && wasLargeUnit) {
+        // الانتقال من كبيرة → أساسية: قسم السعر على معامل التحويل
+        double oldFactor = unitsInLargeUnitValue(_currentItem);
+        newAppliedPrice = oldFactor > 0 ? _currentItem.appliedPrice / oldFactor : _currentItem.appliedPrice;
+      } else if (!isNewTypeBaseUnit) {
+        // الانتقال من أساسية → كبيرة: اضرب في معامل التحويل
         newAppliedPrice = _currentItem.appliedPrice * conversionFactor;
-      } else if ((product?.unit == 'piece' &&
-              _currentItem.saleType != 'قطعة' &&
-              newType == 'قطعة') ||
-          (product?.unit == 'meter' &&
-              _currentItem.saleType == 'لفة' &&
-              newType == 'متر')) {
-        newAppliedPrice = _currentItem.appliedPrice / conversionFactor;
       } else {
         newAppliedPrice = _currentItem.appliedPrice;
       }
+
       double quantity = _currentItem.quantityIndividual ??
-          _currentItem.quantityLargeUnit ??
-          1;
+          _currentItem.quantityLargeUnit ?? 1;
+
       _currentItem = _currentItem.copyWith(
         saleType: newType,
         appliedPrice: newAppliedPrice,
-        unitsInLargeUnit: conversionFactor != 1.0 ? conversionFactor : null,
+        unitsInLargeUnit: (!isNewTypeBaseUnit && conversionFactor > 1.0) ? conversionFactor : null,
         itemTotal: quantity * newAppliedPrice,
-        quantityIndividual:
-            (newType == 'قطعة' || newType == 'متر') ? quantity : null,
-        quantityLargeUnit:
-            (newType != 'قطعة' && newType != 'متر') ? quantity : null,
+        quantityIndividual: isNewTypeBaseUnit ? quantity : null,
+        quantityLargeUnit: !isNewTypeBaseUnit ? quantity : null,
       );
       _quantityController.text = NumberFormat('#,##0.##', 'en_US').format(quantity);
       _priceController.text =
@@ -893,26 +971,22 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                 ),
               ),
             ),
-            // عمود عدد الوحدات
+            // عمود عدد الوحدات - يظهر فقط إذا كان نوع البيع ليس الوحدة الأساسية
             Expanded(
               flex: 2,
               child: widget.isViewOnly
-                  ? ((displayItem.saleType == 'قطعة' ||
-                          displayItem.saleType == 'متر')
+                  ? (_isBaseUnit(displayItem.saleType, displayItem.productName)
                       ? const SizedBox.shrink()
                       : Text(
-                          displayItem.unitsInLargeUnit?.toStringAsFixed(0) ??
-                              '',
+                          displayItem.unitsInLargeUnit?.toStringAsFixed(0) ?? '',
                           textAlign: TextAlign.center,
                           style: Theme.of(context).textTheme.bodyMedium))
-                  : (_currentItem.saleType == 'قطعة' ||
-                          _currentItem.saleType == 'متر')
+                  : (_isBaseUnit(_currentItem.saleType, _currentItem.productName)
                       ? const SizedBox.shrink()
                       : Text(
-                          _currentItem.unitsInLargeUnit?.toStringAsFixed(0) ??
-                              '',
+                          _currentItem.unitsInLargeUnit?.toStringAsFixed(0) ?? '',
                           textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.bodyMedium),
+                          style: Theme.of(context).textTheme.bodyMedium)),
             ),
             // زر الحذف
             if (!widget.isViewOnly && !widget.isPlaceholder)

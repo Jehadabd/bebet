@@ -4,7 +4,7 @@ import 'dart:convert';
 class Product {
   final int? id;
   final String name;
-  final String unit; // 'piece' or 'meter'
+  final String unit; // وحدة البيع الأساسية (نص حر: قطعة، متر، كيلو، علبة، إلخ)
   final double unitPrice;
   final double? costPrice;
   final int? piecesPerUnit;
@@ -162,29 +162,51 @@ class Product {
     return levels;
   }
 
-  // دالة جديدة لحساب التكلفة للمنتجات المباعة بالمتر
-  double? getMeterProductCost(String saleUnit) {
-    if (unit != 'meter') return null;
+  // دالة عامة لحساب التكلفة لأي وحدة بيع
+  double? getProductCostForUnit(String saleUnit) {
+    final costs = getUnitCostsMap();
     
-    if (saleUnit == 'متر') {
+    // إذا كان نوع البيع هو الوحدة الأساسية
+    if (saleUnit == unit) {
       return costPrice;
-    } else if (saleUnit == 'لفة' && lengthPerUnit != null) {
-      // تكلفة اللفة = تكلفة المتر × عدد الأمتار في اللفة
-      return (costPrice ?? 0.0) * lengthPerUnit!;
+    }
+    
+    // البحث في تكاليف الوحدات المحفوظة
+    if (costs.containsKey(saleUnit)) {
+      return costs[saleUnit];
+    }
+    
+    // البحث في التسلسل الهرمي
+    final hierarchy = getUnitHierarchyList();
+    double? multiplier;
+    for (var item in hierarchy) {
+      if (item['unit_name'] == saleUnit) {
+        multiplier = (item['quantity'] as num?)?.toDouble();
+        break;
+      }
+    }
+    
+    if (multiplier != null && costPrice != null) {
+      return costPrice! * multiplier;
     }
     
     return null;
   }
 
-  // دالة جديدة لبناء التسلسل الهرمي التلقائي للمنتجات المباعة بالمتر
-  String? buildMeterUnitHierarchy() {
-    if (unit != 'meter' || lengthPerUnit == null || lengthPerUnit! <= 0) {
+  // دالة عامة لبناء التسلسل الهرمي التلقائي للوحدات
+  String? buildAutoUnitHierarchy() {
+    if (lengthPerUnit == null || lengthPerUnit! <= 0) {
+      // إذا كان هناك تسلسل هرمي محدد مسبقاً من المستخدم، استخدمه
+      if (unitHierarchy != null && unitHierarchy!.isNotEmpty) {
+        return unitHierarchy;
+      }
       return null;
     }
     
+    // بناء هرمية تلقائية بناءً على طول الوحدة (للمتر/لفة)
     final hierarchy = [
       {
-        'unit_name': 'لفة',
+        'unit_name': _getLargeUnitName(),
         'quantity': lengthPerUnit,
       }
     ];
@@ -192,17 +214,48 @@ class Product {
     return jsonEncode(hierarchy);
   }
 
-  // دالة جديدة لبناء تكلفة الوحدات التلقائية للمنتجات المباعة بالمتر
-  String? buildMeterUnitCosts() {
-    if (unit != 'meter' || costPrice == null || lengthPerUnit == null) {
-      return null;
+  // دالة لتحديد اسم الوحدة الكبيرة التلقائية
+  String _getLargeUnitName() {
+    // تحديد اسم الوحدة الكبيرة بناءً على الوحدة الأساسية
+    final unitLower = unit.toLowerCase();
+    if (unitLower.contains('متر') || unitLower == 'meter') return 'لفة';
+    if (unitLower.contains('قطع') || unitLower == 'piece') return 'كرتون';
+    if (unitLower.contains('كيلو')) return 'صندوق';
+    if (unitLower.contains('غرام')) return 'كيس';
+    // افتراضي: "وحدة كبيرة"
+    return 'علبة';
+  }
+
+  // دالة عامة لبناء تكلفة الوحدات التلقائية
+  String? buildAutoUnitCosts() {
+    if (costPrice == null) return null;
+    
+    final costs = <String, dynamic>{};
+    
+    // إضافة تكلفة الوحدة الأساسية
+    costs[unit] = costPrice;
+    
+    // إذا كان هناك طول وحدة (مثل المتر/لفة)
+    if (lengthPerUnit != null && lengthPerUnit! > 0) {
+      costs[_getLargeUnitName()] = costPrice! * lengthPerUnit!;
     }
     
-    final costs = {
-      'متر': costPrice,
-      'لفة': costPrice! * lengthPerUnit!,
-    };
+    // إذا كان هناك تسلسلهرمي، احسب التكاليف تراكمياً
+    if (unitHierarchy != null && unitHierarchy!.isNotEmpty) {
+      try {
+        final hierarchy = getUnitHierarchyList();
+        double currentCost = costPrice!;
+        for (final item in hierarchy) {
+          final qty = (item['quantity'] as num?)?.toDouble() ?? 1.0;
+          currentCost = currentCost * qty;
+          final unitName = (item['unit_name'] ?? '').toString();
+          if (unitName.isNotEmpty) {
+            costs[unitName] = currentCost;
+          }
+        }
+      } catch (_) {}
+    }
     
-    return jsonEncode(costs);
+    return costs.isEmpty ? null : jsonEncode(costs);
   }
 }

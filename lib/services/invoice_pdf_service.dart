@@ -100,7 +100,7 @@ class InvoicePdfService {
                       pw.TableRow(children: [
                         headerCell('المبلغ', font, color: PdfColor.fromInt(appSettings.itemTotalColor), fontSettings: appSettings.fontSettings.amount),
                         headerCell('السعر', font, color: PdfColor.fromInt(appSettings.itemPriceColor), fontSettings: appSettings.fontSettings.price),
-                        headerCell('عدد الوحدات', font, fontSettings: appSettings.fontSettings.unitsCount),
+                        headerCell('التعبئة', font, fontSettings: appSettings.fontSettings.unitsCount),
                         headerCell('العدد', font, color: PdfColor.fromInt(appSettings.itemQuantityColor), fontSettings: appSettings.fontSettings.quantity),
                         headerCell('التفاصيل', font, color: PdfColor.fromInt(appSettings.itemDetailsColor), fontSettings: appSettings.fontSettings.productDetails),
                         headerCell('ID', font, color: PdfColor.fromInt(appSettings.itemSerialColor), fontSettings: appSettings.fontSettings.productId),
@@ -449,40 +449,85 @@ class InvoicePdfService {
   }
 
   static String buildUnitConversionStringForPdf(InvoiceItem item, Product? product) {
-    if (item.unit == 'meter') {
-      if (item.saleType == 'لفة' && item.unitsInLargeUnit != null) {
-        return item.unitsInLargeUnit!.toString();
-      } else {
+    /// 🔧 دالة محسّنة: عرض "عدد الوحدات" فقط عند البيع بوحدة كبيرة (ليست الأساسية)
+    /// 
+    /// المبدأ: نستخدم عدة طبقات تحقق:
+    ///   1. unitsInLargeUnit <= 1 → لا يوجد تحويل → فارغ
+    ///   2. quantityIndividual > 0 → وحدة أساسية → فارغ
+    ///   3. saleType غير موجود في الهرمي → وحدة أساسية مخصصة → فارغ
+    ///   4. saleType مطابق للوحدة الأساسية المعروفة → فارغ
+    
+    // 1. إذا لم يكن هناك unitsInLargeUnit صالح → فارغ فوراً
+    if (item.unitsInLargeUnit == null || item.unitsInLargeUnit! <= 1) {
+      return '';
+    }
+    
+    // 2. 🔑 نفس منطق شاشة الإنشاء: إذا saleType == baseUnit → فارغ دائماً
+    if (product != null && item.saleType != null && item.saleType!.isNotEmpty) {
+      String baseUnit = product.unit;
+      if (baseUnit == 'piece') baseUnit = 'قطعة';
+      if (baseUnit == 'meter') baseUnit = 'متر';
+      if (item.saleType == baseUnit) {
         return '';
       }
     }
-    if (item.saleType == 'قطعة' || item.saleType == 'متر') {
+
+    // 3. مؤشر إضافي: quantityIndividual محدد → وحدة أساسية
+    if (item.quantityIndividual != null && item.quantityIndividual! > 0) {
       return '';
     }
-    if (product == null ||
-        product.unitHierarchy == null ||
-        product.unitHierarchy!.isEmpty) {
-      return item.unitsInLargeUnit?.toString() ?? '';
-    }
-    try {
-      final List<dynamic> hierarchy =
-          json.decode(product.unitHierarchy!.replaceAll("'", '"'));
-      List<String> factors = [];
-      for (int i = 0; i < hierarchy.length; i++) {
-        final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
-        final quantity = hierarchy[i]['quantity'];
-        factors.add(quantity.toString());
-        if (unitName == item.saleType) {
-          break;
+    
+    // 4. 🔧 فحص الهرمي: إذا saleType غير موجود في التسلسل الهرمي → وحدة أساسية مخصصة → فارغ
+    if (product != null && 
+        product.unitHierarchy != null && 
+        product.unitHierarchy!.isNotEmpty &&
+        item.saleType != null && item.saleType!.isNotEmpty) {
+      try {
+        final List<dynamic> hierarchy =
+            json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+        bool foundInHierarchy = false;
+        for (int i = 0; i < hierarchy.length; i++) {
+          final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
+          if (unitName == item.saleType) {
+            foundInHierarchy = true;
+            break;
+          }
         }
-      }
-      if (factors.isEmpty) {
-        return item.unitsInLargeUnit?.toString() ?? '';
-      }
-      return factors.join(' × ');
-    } catch (e) {
-      return item.unitsInLargeUnit?.toString() ?? '';
+        if (!foundInHierarchy) {
+          return '';
+        }
+      } catch (e) { /* تجاهل الخطأ */ }
     }
+    
+    // 5. حالة خاصة للمتر/لفة (للتوافق مع البيانات القديمة)
+    if ((item.unit == 'meter' || item.saleType == 'متر') && item.saleType == 'لفة') {
+      return item.unitsInLargeUnit!.toString();
+    }
+    
+    // 5. للمنتجات التي لها هرمية: بناء سلسلة التحويل (مثل "12 × 6")
+    if (product != null &&
+        product.unitHierarchy != null &&
+        product.unitHierarchy!.isNotEmpty) {
+      try {
+        final List<dynamic> hierarchy =
+            json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+        List<String> factors = [];
+        for (int i = 0; i < hierarchy.length; i++) {
+          final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
+          final quantity = hierarchy[i]['quantity'];
+          factors.add(quantity.toString());
+          if (unitName == item.saleType) {
+            break;
+          }
+        }
+        if (factors.isNotEmpty) {
+          return factors.join(' × ');
+        }
+      } catch (e) { /* تجاهل الخطأ */ }
+    }
+    
+    // 6. للحالة العامة: اعرض unitsInLargeUnit مباشرة
+    return item.unitsInLargeUnit?.toString() ?? '';
   }
 
   static String formatNumber(num value, {bool forceDecimal = false}) {

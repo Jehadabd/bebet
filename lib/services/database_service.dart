@@ -30,7 +30,7 @@ class DatabaseService {
   static Database? _database;
   static Completer<Database>? _initDbCompleter; // 🛡️ لمنع Race Condition
   bool _isShuttingDown = false; // 🛡️ لإيقاف الفتح أثناء الإغلاق
-  static const int _databaseVersion = 42; // 🔄 إضافة عمود notes لفواتير قديمة
+  static const int _databaseVersion = 43; // إصلاح جدول products_fts القديم (عمود name → name_norm)
   // تحكم بالطباعات التشخيصية من مصدر واحد
   // معطل في الإصدار النهائي لتجنب الطباعات المزعجة
   static const bool _verboseLogs = false;
@@ -832,6 +832,10 @@ class DatabaseService {
       onOpen: (db) async {
         // تفعيل FOREIGN KEYS لضمان عمل CASCADE
         await db.execute('PRAGMA foreign_keys = ON');
+        
+        // إصلاح حاسم: حذف جدول FTS والمحفزات القديمة وإعادة إنشائها
+        // (بعض المستخدمين لديهم products_fts قديم بعمود 'name' بدلاً من 'name_norm')
+        await _fixLegacyFTSSchema(db);
       },
     );
     
@@ -1338,6 +1342,12 @@ class DatabaseService {
     await db.execute('CREATE INDEX IF NOT EXISTS idx_product_specs_pattern ON product_specs(pattern_normalized)');
 
     // -->> بداية الإضافة: إنشاء جدول FTS5 والمحفزات
+
+    // 0. حذف أي محفزات أو جداول FTS قديمة (للتوافق مع الترحيل)
+    await db.execute('DROP TRIGGER IF EXISTS products_ai;');
+    await db.execute('DROP TRIGGER IF EXISTS products_ad;');
+    await db.execute('DROP TRIGGER IF EXISTS products_au;');
+    await db.execute('DROP TABLE IF EXISTS products_fts;');
 
     // 1. إنشاء جدول FTS5 لفهرسة أسماء المنتجات المطبع
     await db.execute('''
@@ -2113,6 +2123,13 @@ class DatabaseService {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // الإصدار 43: إصلاح جدول FTS القديم (عمود name → name_norm)
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (oldVersion < 43) {
+      await _fixLegacyFTSSchema(db);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // 🔒 تحقق شامل نهائي - ضمان وجود جميع الأعمدة المطلوبة
     // ═══════════════════════════════════════════════════════════════════════════
     await _ensureAllRequiredColumns(db);
@@ -2700,31 +2717,40 @@ class DatabaseService {
       try {
         if (product.costPrice != null && product.costPrice! > 0) {
           final Map<String, dynamic> newUnitCosts = {};
-          if (product.unit == 'piece') {
+          final String baseUnit = product.unit; // الوحدة الأساسية الديناميكية
+          
+          if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
+            // المنتجات ذات التسلسل الهرمي (القديمة piece + الجديدة)
             double currentCost = product.costPrice!;
-            newUnitCosts['قطعة'] = currentCost;
-            if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
-              try {
-                final List<dynamic> hierarchy = jsonDecode(product.unitHierarchy!.replaceAll("'", '"')) as List<dynamic>;
-                for (final level in hierarchy) {
-                  final String unitName = (level['unit_name'] ?? level['name'] ?? '').toString();
-                  final double qty = (level['quantity'] is num)
-                      ? (level['quantity'] as num).toDouble()
-                      : double.tryParse(level['quantity'].toString()) ?? 1.0;
-                  currentCost = currentCost * qty;
-                  if (unitName.isNotEmpty) {
-                    newUnitCosts[unitName] = currentCost;
-                  }
+            newUnitCosts[baseUnit] = currentCost;
+            
+            try {
+              final List<dynamic> hierarchy = jsonDecode(product.unitHierarchy!.replaceAll("'", '"')) as List<dynamic>;
+              for (final level in hierarchy) {
+                final String unitName = (level['unit_name'] ?? level['name'] ?? '').toString();
+                final double qty = (level['quantity'] is num)
+                    ? (level['quantity'] as num).toDouble()
+                    : double.tryParse(level['quantity'].toString()) ?? 1.0;
+                currentCost = currentCost * qty;
+                if (unitName.isNotEmpty) {
+                  newUnitCosts[unitName] = currentCost;
                 }
-              } catch (_) {}
-            }
-          } else if (product.unit == 'meter') {
-            newUnitCosts['متر'] = product.costPrice!;
-            if (product.lengthPerUnit != null && product.lengthPerUnit! > 0) {
-              newUnitCosts['لفة'] = product.costPrice! * product.lengthPerUnit!;
-            }
+              }
+            } catch (_) {}
+          } else if (product.lengthPerUnit != null && product.lengthPerUnit! > 0) {
+            // المنتجات ذات طول وحدة (مثل متر/لفة أو أي وحدة مشابهة)
+            newUnitCosts[baseUnit] = product.costPrice!;
+            // تحديد اسم الوحدة الكبيرة بناءً على الوحدة الأساسية
+            String largeUnitName;
+            final unitLower = baseUnit.toLowerCase();
+            if (unitLower.contains('متر') || baseUnit == 'meter') largeUnitName = 'لفة';
+            else if (unitLower.contains('قطع') || baseUnit == 'piece') largeUnitName = 'كرتون';
+            else if (unitLower.contains('كيلو')) largeUnitName = 'صندوق';
+            else largeUnitName = 'علبة'; // افتراضي
+            newUnitCosts[largeUnitName] = product.costPrice! * product.lengthPerUnit!;
           } else {
-            newUnitCosts[product.unit] = product.costPrice!;
+            // بدون هرمية ولا طول - فقط الوحدة الأساسية
+            newUnitCosts[baseUnit] = product.costPrice!;
           }
           productMap['unit_costs'] = jsonEncode(newUnitCosts);
         }
@@ -6066,34 +6092,39 @@ class DatabaseService {
       try {
         if (product.costPrice != null && product.costPrice! > 0) {
           final Map<String, dynamic> newUnitCosts = {};
-          // المنتجات المباعة بالقطعة: ابنِ التكاليف عبر التسلسل الهرمي
-          if (product.unit == 'piece') {
-            double currentCost = product.costPrice!; // تكلفة القطعة
-            newUnitCosts['قطعة'] = currentCost;
-            if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
-              try {
-                final List<dynamic> hierarchy = jsonDecode(product.unitHierarchy!.replaceAll("'", '"')) as List<dynamic>;
-                for (final level in hierarchy) {
-                  final String unitName = (level['unit_name'] ?? level['name'] ?? '').toString();
-                  final double qty = (level['quantity'] is num)
-                      ? (level['quantity'] as num).toDouble()
-                      : double.tryParse(level['quantity'].toString()) ?? 1.0;
-                  currentCost = currentCost * qty; // تراكمي
-                  if (unitName.isNotEmpty) {
-                    newUnitCosts[unitName] = currentCost;
-                  }
+          final String baseUnit = product.unit; // الوحدة الأساسية الديناميكية
+          
+          // المنتجات ذات التسلسل الهرمي
+          if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
+            double currentCost = product.costPrice!;
+            newUnitCosts[baseUnit] = currentCost;
+            
+            try {
+              final List<dynamic> hierarchy = jsonDecode(product.unitHierarchy!.replaceAll("'", '"')) as List<dynamic>;
+              for (final level in hierarchy) {
+                final String unitName = (level['unit_name'] ?? level['name'] ?? '').toString();
+                final double qty = (level['quantity'] is num)
+                    ? (level['quantity'] as num).toDouble()
+                    : double.tryParse(level['quantity'].toString()) ?? 1.0;
+                currentCost = currentCost * qty; // تراكمي
+                if (unitName.isNotEmpty) {
+                  newUnitCosts[unitName] = currentCost;
                 }
-              } catch (_) {}
-            }
-          } else if (product.unit == 'meter') {
-            // المنتجات المباعة بالمتر: متر و/أو لفة
-            newUnitCosts['متر'] = product.costPrice!;
-            if (product.lengthPerUnit != null && product.lengthPerUnit! > 0) {
-              newUnitCosts['لفة'] = product.costPrice! * product.lengthPerUnit!;
-            }
+              }
+            } catch (_) {}
+          } else if (product.lengthPerUnit != null && product.lengthPerUnit! > 0) {
+            // المنتجات ذات طول وحدة (متر/لفة أو أي وحدة مشابهة)
+            newUnitCosts[baseUnit] = product.costPrice!;
+            String largeUnitName;
+            final unitLower = baseUnit.toLowerCase();
+            if (unitLower.contains('متر') || baseUnit == 'meter') largeUnitName = 'لفة';
+            else if (unitLower.contains('قطع') || baseUnit == 'piece') largeUnitName = 'كرتون';
+            else if (unitLower.contains('كيلو')) largeUnitName = 'صندوق';
+            else largeUnitName = 'علبة'; // افتراضي
+            newUnitCosts[largeUnitName] = product.costPrice! * product.lengthPerUnit!;
           } else {
-            // أي وحدات أخرى: احتفظ بتكلفة الوحدة كما هي كبداية
-            newUnitCosts[product.unit] = product.costPrice!;
+            // أي وحدات أخرى: احتفظ بتكلفة الوحدة الأساسية
+            newUnitCosts[baseUnit] = product.costPrice!;
           }
           productMap['unit_costs'] = jsonEncode(newUnitCosts);
         }
@@ -6225,6 +6256,143 @@ class DatabaseService {
     }
   }
 
+  /// إصلاح حاسم: إعادة بناء جدول products_fts والمحفزات القديمة
+  /// بعض المستخدمين لديهم جدول FTS قديم بعمود 'name' بدلاً من 'name_norm'
+  /// مما يسبب خطأ: "table products_fts has no column named name"
+  Future<void> _fixLegacyFTSSchema(Database db) async {
+    try {
+      // 1. التحقق من وجود الجدول
+      final tables = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='products_fts'"
+      );
+      
+      if (tables.isEmpty) {
+        // لا يوجد جدول FTS - أنشئه بالشكل الصحيح
+        print('📋 إنشاء جدول FTS5 جديد (لم يكن موجوداً)...');
+        await db.execute('''
+          CREATE VIRTUAL TABLE IF NOT EXISTS products_fts USING fts5(
+            name_norm,
+            content='products',
+            content_rowid='id',
+            tokenize = 'unicode61 remove_diacritics 2'
+          )
+        ''');
+        
+        // إنشاء المحفزات
+        await _createFTSTriggers(db);
+        
+        // تعبئة الفهرس
+        final countRes = await db.rawQuery("SELECT COUNT(1) as c FROM products WHERE name_norm IS NOT NULL");
+        final count = (countRes.first['c'] as int?) ?? 0;
+        if (count > 0) {
+          await db.execute(
+            'INSERT INTO products_fts(rowid, name_norm) SELECT id, name_norm FROM products WHERE name_norm IS NOT NULL'
+          );
+          print('✅ تم فهرسة $count منتج في FTS5');
+        }
+        return;
+      }
+
+      // 2. التحقق من أعمدة الجدول الحالي
+      final ftsInfo = await db.rawQuery("PRAGMA table_info(products_fts);");
+      final columns = ftsInfo.map((col) => col['name'] as String).toList();
+      
+      bool needsRebuild = false;
+      
+      // إذا كان يحتوي على عمود 'name' (القديم) بدلاً من أو مع 'name_norm' (الجديد)
+      if (columns.contains('name') && !columns.contains('name_norm')) {
+        print('⚠️ كشف FTS قديم بعمود "name" - إعادة البناء...');
+        needsRebuild = true;
+      }
+      
+      // أيضاً إذا كان العمود الرئيسي غير صحيح
+      if (columns.length > 0 && columns.first != 'name_norm') {
+        if (!needsRebuild) {
+          print('⚠️ هيكل FTS غير متوافق - إعادة البناء...');
+          needsRebuild = true;
+        }
+      }
+
+      // 3. إذا لزم الإصلاح - حذف وإعادة إنشاء
+      if (needsRebuild) {
+        print('🔄 إعادة بناء جدول products_fts...');
+        
+        // حذف المحفزات القديمة
+        try { await db.execute('DROP TRIGGER IF EXISTS products_ai'); } catch (_) {}
+        try { await db.execute('DROP TRIGGER IF EXISTS products_ad'); } catch (_) {}
+        try { await db.execute('DROP TRIGGER IF EXISTS products_au'); } catch (_) {}
+        
+        // حذف الجدول
+        await db.execute('DROP TABLE IF EXISTS products_fts');
+        
+        // إعادة إنشائه بالشكل الصحيح
+        await db.execute('''
+          CREATE VIRTUAL TABLE products_fts USING fts5(
+            name_norm,
+            content='products',
+            content_rowid='id',
+            tokenize = 'unicode61 remove_diacritics 2'
+          )
+        ''');
+        
+        // إنشاء المحفزات
+        await _createFTSTriggers(db);
+        
+        // تعبئة البيانات
+        final productCountRes = await db.rawQuery("SELECT COUNT(1) as c FROM products WHERE name_norm IS NOT NULL");
+        final int pCount = (productCountRes.first['c'] as int?) ?? 0;
+        if (pCount > 0) {
+          await db.execute(
+            'INSERT INTO products_fts(rowid, name_norm) SELECT id, name_norm FROM products WHERE name_norm IS NOT NULL'
+          );
+          print('✅ تم إصلاح FTS وفهرسة $pCount منتج');
+        } else {
+          // إذا لم يكن هناك name_norm، نحاول من عمود name
+          final allProducts = await db.rawQuery('SELECT id, name FROM products');
+          for (final p in allProducts) {
+            final norm = normalizeArabic(p['name'] as String? ?? '');
+            await db.update('products', {'name_norm': norm}, where: 'id = ?', whereArgs: [p['id']]);
+            await db.execute('INSERT INTO products_fts(rowid, name_norm) VALUES (?, ?)', [p['id'], norm]);
+          }
+          print('✅ تم إنشاء name_norm وفهرسة ${allProducts.length} منتج');
+        }
+      } else {
+        // الجدول صحيح - تأكد فقط من وجود المحفزات الصحيحة
+        await _createFTSTriggers(db);
+        print('✅ جدول products_ftس سليم');
+      }
+    } catch (e) {
+      print('❌ خطأ في إصلاح FTS: $e');
+    }
+  }
+
+  /// إنشاء محفزات FTS5 للمحافظة على تزامن الفهرس
+  Future<void> _createFTSTriggers(Database db) async {
+    // مهم جداً: لا نستخدم IF NOT EXISTS قبل حذف القديم، لأن بعض النسخ القديمة
+    // لديها محفز products_ai يكتب في عمود name وهذا سبب الخطأ الحالي.
+    await db.execute('DROP TRIGGER IF EXISTS products_ai;');
+    await db.execute('DROP TRIGGER IF EXISTS products_ad;');
+    await db.execute('DROP TRIGGER IF EXISTS products_au;');
+
+    await db.execute('''
+      CREATE TRIGGER products_ai AFTER INSERT ON products BEGIN
+        INSERT INTO products_fts(rowid, name_norm) VALUES (new.id, new.name_norm);
+      END;
+    ''');
+    await db.execute('''
+      CREATE TRIGGER products_ad AFTER DELETE ON products BEGIN
+        INSERT INTO products_fts(products_fts, rowid, name_norm) VALUES ('delete', old.id, old.name_norm);
+      END;
+    ''');
+    await db.execute('''
+      CREATE TRIGGER products_au AFTER UPDATE ON products BEGIN
+        INSERT INTO products_fts(products_fts, rowid, name_norm) VALUES ('delete', old.id, old.name_norm);
+        INSERT INTO products_fts(rowid, name_norm) VALUES (new.id, new.name_norm);
+      END;
+    ''');
+  }
+
+
   /// دالة لتهيئة العمود المطبع وFTS5 للمنتجات الموجودة
   Future<void> initializeFTSForExistingProducts() async {
     final db = await database;
@@ -6256,8 +6424,11 @@ class DatabaseService {
           print('تم تحديث جميع المنتجات بأسماء مطبعة');
         }
 
-        // إعادة إنشاء جدول FTS5 من الصفر
+        // إعادة إنشاء جدول FTS5 من الصفر (مع حذف المحفزات القديمة أولاً)
         try {
+          await txn.execute('DROP TRIGGER IF EXISTS products_ai;');
+          await txn.execute('DROP TRIGGER IF EXISTS products_ad;');
+          await txn.execute('DROP TRIGGER IF EXISTS products_au;');
           await txn.execute('DROP TABLE IF EXISTS products_fts;');
         } catch (e) {
           print('خطأ أثناء حذف جدول FTS القديم: $e');

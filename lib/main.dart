@@ -1,6 +1,8 @@
 // main.dart
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -42,7 +44,24 @@ void main(List<String> args) async {
     args,
     "alnaser_debt_book_instance_lock_id",
     onSecondWindow: (args) {
-      print('⚠️ تم محاولة فتح نسخة أخرى وتم إبراز النافذة الحالية.');
+      print('⚠️ تم محاولة فتح نسخة أخرى، سيتم إظهار النافذة الحالية.');
+      Future(() async {
+        try {
+          final isMinimized = await windowManager.isMinimized();
+          if (isMinimized) {
+            await windowManager.restore();
+          }
+
+          final isVisible = await windowManager.isVisible();
+          if (!isVisible) {
+            await windowManager.show();
+          }
+
+          await windowManager.focus();
+        } catch (e) {
+          print('⚠️ تعذر إبراز النافذة الحالية: $e');
+        }
+      });
     },
   );
 
@@ -115,7 +134,9 @@ Future<void> _initializeBackgroundServices() async {
       try {
         final dbService = DatabaseService();
         await dbService.performQuickIntegrityCheck();
-        print('✅ اكتمل الفحص السريع للبيانات');
+        
+        // 🛡️ الفحص السريع للبيانات تلقائياً
+        print('✅ اكتمل الفحص السريع للبيانات وتدقيق الأرصدة');
       } catch (e) {
         // تجاهل الخطأ
       }
@@ -163,6 +184,17 @@ Future<void> _initializeBackgroundServices() async {
   print('✨ اكتملت جميع مهام التهيئة الخلفية!');
 }
 
+// ⌨️ نوايا الاختصارات العالمية (F1, F2, F3)
+class _NavigateToDebtRegisterIntent extends Intent {
+  const _NavigateToDebtRegisterIntent();
+}
+class _NavigateToCreateInvoiceIntent extends Intent {
+  const _NavigateToCreateInvoiceIntent();
+}
+class _NavigateToEditProductsIntent extends Intent {
+  const _NavigateToEditProductsIntent();
+}
+
 class MyApp extends StatefulWidget {
   final String initialRoute;
 
@@ -172,8 +204,50 @@ class MyApp extends StatefulWidget {
   State<MyApp> createState() => _MyAppState();
 }
 
+// 🔑 مفتاح تنقل عام للاستخدام من أي مكان
+final GlobalKey<NavigatorState> globalNavigatorKey = GlobalKey<NavigatorState>();
+
+// 📍 تتبع اسم المسار الحالي لتفادي إعادة فتح نفس الشاشة عند الاختصارات
+String? _currentRouteName;
+
+class AppRouteObserver extends NavigatorObserver {
+  void _updateCurrentRoute(Route<dynamic>? route) {
+    final name = route?.settings.name;
+    if (name != null && name.isNotEmpty) {
+      _currentRouteName = name;
+    }
+  }
+
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    super.didPush(route, previousRoute);
+    _updateCurrentRoute(route);
+  }
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    super.didReplace(newRoute: newRoute, oldRoute: oldRoute);
+    _updateCurrentRoute(newRoute);
+  }
+
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    super.didPop(route, previousRoute);
+    _updateCurrentRoute(previousRoute);
+  }
+}
+
+final AppRouteObserver appRouteObserver = AppRouteObserver();
+
+
 class _MyAppState extends State<MyApp> with WindowListener {
   bool _isClosing = false;
+
+  void _navigateIfNotCurrent(String routeName) {
+    if (_currentRouteName == routeName) return;
+    globalNavigatorKey.currentState?.pushNamed(routeName);
+  }
+
 
   @override
   void initState() {
@@ -189,31 +263,38 @@ class _MyAppState extends State<MyApp> with WindowListener {
 
   @override
   void onWindowClose() async {
-    if (_isClosing) return; // تم بدء الإغلاق بالفعل
-    
-    setState(() => _isClosing = true);
-    
-    // 🛡️ إغلاق قواعد البيانات وإلغاء الاشتراكات
+    if (_isClosing) return;
+
+    _isClosing = true;
+    if (mounted) setState(() {});
+
+    // تنظيف الموارد بمهلة زمنية قصيرة
     try {
-      final dbService = DatabaseService();
-      await dbService.closeDatabaseForShutdown();
-      
-      // ✅ إصلاح: await على dispose لضمان إغلاق Firebase SDK بشكل نظيف
-      // قبل كان بدون await مما يسبب بقاء العملية في الخلفية
+      await DatabaseService().closeDatabaseForShutdown().timeout(
+        const Duration(seconds: 3),
+        onTimeout: () => print('⚠️ انتهت مهلة إغلاق قاعدة البيانات.'),
+      );
+    } catch (e) {
+      print('⚠️ خطأ أثناء إغلاق قاعدة البيانات: $e');
+    }
+
+    try {
       await FirebaseSyncService().dispose().timeout(
         const Duration(seconds: 3),
-        onTimeout: () => print('⚠️ انتهت مهلة إغلاق Firebase'),
+        onTimeout: () => print('⚠️ انتهت مهلة إغلاق Firebase.'),
       );
-      
     } catch (e) {
-      print('⚠️ خطأ أثناء إغلاق الموارد: $e');
+      print('⚠️ خطأ أثناء إغلاق Firebase: $e');
     }
-    
-    // ✅ إصلاح: تقليل الانتظار من 1500ms إلى 500ms لأن كل شيء أُغلق بشكل صحيح
-    await Future.delayed(const Duration(milliseconds: 500));
-    
-    // إغلاق النافذة فعلياً وإنهاء العملية
-    await windowManager.destroy();
+
+    // 🛡️ نسمح بالإغلاق أولاً (احتياطاً)
+    try {
+      await windowManager.setPreventClose(false);
+    } catch (_) {}
+
+    // ⚠️ مهم جداً: لا نستخدم windowManager.destroy() أو close()
+    // لأنهما قد يدمران النافذة قبل أن ينفذ exit(0)، فتتعلق العملية في الخلفية.
+    // exit(0) هو الطريقة الوحيدة الموثوقة لإنهاء تطبيق Flutter Desktop بالكامل.
     exit(0);
   }
 
@@ -256,7 +337,31 @@ class _MyAppState extends State<MyApp> with WindowListener {
         ChangeNotifierProvider(create: (_) => AppProvider()),
         Provider<PrintingService>(create: (_) => PrintingServiceWindows()),
       ],
-      child: MaterialApp(
+      child: Shortcuts(
+        shortcuts: <LogicalKeySet, Intent>{
+          // ⌨️ F1 → سجل الديون
+          LogicalKeySet(LogicalKeyboardKey.f1): const _NavigateToDebtRegisterIntent(),
+          // ⌨️ F2 → إنشاء فاتورة
+          LogicalKeySet(LogicalKeyboardKey.f2): const _NavigateToCreateInvoiceIntent(),
+          // ⌨️ F3 → تعديل القوائم/المنتجات
+          LogicalKeySet(LogicalKeyboardKey.f3): const _NavigateToEditProductsIntent(),
+        },
+        child: Actions(
+          actions: <Type, Action<Intent>>{
+            _NavigateToDebtRegisterIntent: CallbackAction<_NavigateToDebtRegisterIntent>(
+              // إذا كنا في نفس الشاشة لا نفعل شيئاً
+              onInvoke: (_) => _navigateIfNotCurrent('/debt_register'),
+            ),
+            _NavigateToCreateInvoiceIntent: CallbackAction<_NavigateToCreateInvoiceIntent>(
+              // إذا كنا في نفس الشاشة لا نفعل شيئاً
+              onInvoke: (_) => _navigateIfNotCurrent('/create_invoice'),
+            ),
+            _NavigateToEditProductsIntent: CallbackAction<_NavigateToEditProductsIntent>(
+              // F3 → تعديل القوائم، وإذا كنا فيها لا نفعل شيئاً
+              onInvoke: (_) => _navigateIfNotCurrent('/edit_invoices'),
+            ),
+          },
+          child: MaterialApp(
         title: 'دفتر ديوني',
         theme: ThemeData(
           primarySwatch: Colors.blue,
@@ -319,7 +424,11 @@ class _MyAppState extends State<MyApp> with WindowListener {
           '/firebase_sync_settings': (context) => const FirebaseSyncSettingsScreen(),
         },
         initialRoute: widget.initialRoute,
+        navigatorKey: globalNavigatorKey,
+        navigatorObservers: [appRouteObserver],
       ),
+        ), // نهاية Actions
+      ), // نهاية Shortcuts
     );
   }
 }

@@ -478,44 +478,90 @@ class PdfService {
   }
 
   // دالة مساعدة لبناء سلسلة التحويل للوحدة المختارة
+  // 🔧 محدّثة: تدعم الوحدات المخصصة (ليس فقط قطعة/متر)
+  // تستخدم quantityIndividual كمؤثر موثوق للوحدة الأساسية + فحص الهرمي
   String buildUnitConversionStringPdf(dynamic item, List products) {
-    // المنتجات التي تباع بالامتار
-    if (item['unit'] == 'meter') {
-      if (item['saleType'] == 'لفة' && item['unitsInLargeUnit'] != null) {
-        return item['unitsInLargeUnit'].toString();
-      } else {
-        return '';
-      }
+    final String? saleType = item['saleType'] as String?;
+    final double? unitsInLargeUnit = item['unitsInLargeUnit'] as double?;
+
+    // 1. إذا لم يكن هناك unitsInLargeUnit صالح → فارغ
+    if (unitsInLargeUnit == null || unitsInLargeUnit <= 1) {
+      return '';
     }
-    // المنتجات التي تباع بالقطعة ولها تسلسل هرمي
+
     final product = products.firstWhere(
       (p) => p.name == item['productName'],
       orElse: () => null,
     );
-    if (product == null ||
-        product.unitHierarchy == null ||
-        product.unitHierarchy.isEmpty) {
-      return item['unitsInLargeUnit']?.toString() ?? '';
+
+    // 2. 🔑 نفس منطق شاشة الإنشاء: إذا saleType == baseUnit → فارغ دائماً
+    if (product != null && saleType != null && saleType.isNotEmpty) {
+      String baseUnit = product.unit;
+      if (baseUnit == 'piece') baseUnit = 'قطعة';
+      if (baseUnit == 'meter') baseUnit = 'متر';
+      if (saleType == baseUnit) {
+        return '';
+      }
     }
-    try {
-      final List<dynamic> hierarchy =
-          json.decode(product.unitHierarchy.replaceAll("'", '"'));
-      List<String> factors = [];
-      for (int i = 0; i < hierarchy.length; i++) {
-        final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
-        final quantity = hierarchy[i]['quantity'];
-        factors.add(quantity.toString());
-        if (unitName == item['saleType']) {
-          break;
+
+    // 3. مؤشر إضافي: quantityIndividual محدد → وحدة أساسية
+    final double? qtyIndividual = item['quantityIndividual'] as double?;
+    bool isBaseUnitSale = (qtyIndividual != null && qtyIndividual > 0);
+    if (isBaseUnitSale) {
+      return '';
+    }
+
+    // 4. 🔧 فحص الهرمي: إذا saleType غير موجود في التسلسل الهرمي → وحدة أساسية مخصصة → فارغ
+    if (product != null &&
+        product.unitHierarchy != null &&
+        product.unitHierarchy.isNotEmpty &&
+        saleType != null && saleType.isNotEmpty) {
+      try {
+        final List<dynamic> hierarchy =
+            json.decode(product.unitHierarchy.replaceAll("'", '"'));
+        bool foundInHierarchy = false;
+        for (int i = 0; i < hierarchy.length; i++) {
+          final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
+          if (unitName == saleType) {
+            foundInHierarchy = true;
+            break;
+          }
         }
-      }
-      if (factors.isEmpty) {
-        return item['unitsInLargeUnit']?.toString() ?? '';
-      }
-      return factors.join(' × ');
-    } catch (e) {
-      return item['unitsInLargeUnit']?.toString() ?? '';
+        if (!foundInHierarchy) {
+          return '';
+        }
+      } catch (e) { /* تجاهل الخطأ */ }
     }
+
+    // 5. حالة خاصة للمتر/لفة
+    if ((item['unit'] == 'meter') && saleType == 'لفة') {
+      return unitsInLargeUnit.toString();
+    }
+
+    // 6. المنتجات التي لها تسلسل هرمي: بناء سلسلة التحويل (مثل "12 × 6")
+    if (product != null &&
+        product.unitHierarchy != null &&
+        product.unitHierarchy.isNotEmpty) {
+      try {
+        final List<dynamic> hierarchy =
+            json.decode(product.unitHierarchy.replaceAll("'", '"'));
+        List<String> factors = [];
+        for (int i = 0; i < hierarchy.length; i++) {
+          final unitName = hierarchy[i]['unit_name'] ?? hierarchy[i]['name'];
+          final quantity = hierarchy[i]['quantity'];
+          factors.add(quantity.toString());
+          if (unitName == saleType) {
+            break;
+          }
+        }
+        if (factors.isNotEmpty) {
+          return factors.join(' × ');
+        }
+      } catch (e) { /* تجاهل الخطأ */ }
+    }
+
+    // 7. للحالة العامة: اعرض unitsInLargeUnit مباشرة
+    return unitsInLargeUnit.toString();
   }
 
   /// 📄 إنشاء ملف PDF يحتوي على كشوفات حسابات جميع العملاء

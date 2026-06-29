@@ -3,14 +3,18 @@ import 'dart:convert';
 import '../models/product.dart';
 
 class ProductCostService {
-  /// حساب تكلفة الوحدة بناءً على نوع البيع
+  /// حساب تكلفة الوحدة بناءً على نوع البيع (معمم لأي وحدة)
   static double? calculateUnitCost(Product product, String saleUnit, double quantity) {
     try {
       final unitCosts = product.getUnitCostsMap();
       
+      // تحديد مفتاح الوحدة الأساسية (ديناميكي)
+      final String baseUnitKey = _getBaseUnitKey(product.unit);
+      
       // إذا كان نوع البيع هو الوحدة الأساسية
-      if (saleUnit == product.unit) {
-        return unitCosts['قطعة'];
+      if (saleUnit == product.unit || saleUnit == baseUnitKey) {
+        // البحث أولاً بالمفتاح الأصلي ثم بالمفتاح المحول
+        return unitCosts[product.unit] ?? unitCosts[baseUnitKey] ?? unitCosts['قطعة'];
       }
       
       // البحث في الوحدات الإضافية
@@ -26,10 +30,21 @@ class ProductCostService {
     }
   }
 
-  /// حساب التكلفة من الوحدة الأساسية
+  /// تحويل مفتاح الوحدة الأساسية (للتوافق مع البيانات القديمة)
+  static String _getBaseUnitKey(String rawUnit) {
+    if (rawUnit == 'piece') return 'قطعة';
+    if (rawUnit == 'meter') return 'متر';
+    return rawUnit;
+  }
+
+  /// حساب التكلفة من الوحدة الأساسية (معمم)
   static double? _calculateCostFromBaseUnit(Product product, String saleUnit, double quantity) {
     try {
-      final baseUnitCost = product.getUnitCostsMap()['قطعة'];
+      final costs = product.getUnitCostsMap();
+      final String baseKey = _getBaseUnitKey(product.unit);
+      
+      // البحث عن تكلفة الوحدة الأساسية بأكثر من مفتاح محتمل
+      double? baseUnitCost = costs[product.unit] ?? costs[baseKey] ?? costs['قطعة'] ?? costs['متر'];
       if (baseUnitCost == null) return null;
       
       final hierarchy = product.getUnitHierarchyList();
@@ -38,7 +53,7 @@ class ProductCostService {
       // البحث عن الوحدة في التسلسل الهرمي
       for (var item in hierarchy) {
         if (item['unit_name'] == saleUnit) {
-          multiplier = (item['quantity'] as num).toDouble();
+          multiplier = (item['quantity'] as num?)?.toDouble() ?? 1.0;
           break;
         }
       }
@@ -85,16 +100,18 @@ class ProductCostService {
   /// الحصول على جميع مستويات الوحدات مع تكلفتها
   static Map<String, double?> getAllUnitCosts(Product product) {
     final costs = <String, double?>{};
+    final String baseKey = _getBaseUnitKey(product.unit);
     
-    // إضافة الوحدة الأساسية
-    costs[product.unit] = product.getUnitCostsMap()['قطعة'];
+    // إضافة الوحدة الأساسية (مع البحث عن المفتاح الصحيح)
+    final unitCostsMap = product.getUnitCostsMap();
+    costs[product.unit] = unitCostsMap[product.unit] ?? unitCostsMap[baseKey] ?? unitCostsMap['قطعة'];
     
     // إضافة الوحدات الإضافية
     final hierarchy = product.getUnitHierarchyList();
     for (var item in hierarchy) {
       if (item['unit_name'] != null) {
         final unitName = item['unit_name'] as String;
-        costs[unitName] = product.getUnitCostsMap()[unitName];
+        costs[unitName] = unitCostsMap[unitName];
       }
     }
     
@@ -120,13 +137,21 @@ class ProductCostService {
     }
   }
 
-  /// تحديث تكلفة الوحدات بناءً على التكلفة الأساسية
+  /// تحديث تكلفة الوحدات بناءً على التكلفة الأساسية (معمم)
   static Map<String, double> updateUnitCostsFromBase(Product product) {
     final updatedCosts = <String, double>{};
-    final baseCost = product.getUnitCostsMap()['قطعة'];
+    final String baseKey = _getBaseUnitKey(product.unit);
+    
+    // البحث عن تكلفة الوحدة الأساسية
+    final unitCostsMap = product.getUnitCostsMap();
+    final baseCost = unitCostsMap[product.unit] ?? unitCostsMap[baseKey] ?? unitCostsMap['قطعة'];
     
     if (baseCost != null) {
-      updatedCosts['قطعة'] = baseCost;
+      // إضافة التكلفة بمفتاح الوحدة الأصلي والمحول
+      updatedCosts[product.unit] = baseCost;
+      if (baseKey != product.unit) {
+        updatedCosts[baseKey] = baseCost;
+      }
       
       final hierarchy = product.getUnitHierarchyList();
       for (var item in hierarchy) {
@@ -141,23 +166,25 @@ class ProductCostService {
     return updatedCosts;
   }
 
-  /// التحقق من صحة التكلفة
+  /// التحقق من صحة التكلفة (معمم لأي وحدة أساسية)
   static bool validateUnitCosts(Product product) {
     try {
       final costs = product.getUnitCostsMap();
-      final hierarchy = product.getUnitHierarchyList();
+      final String baseKey = _getBaseUnitKey(product.unit);
       
-      // التحقق من وجود تكلفة للوحدة الأساسية
-      if (!costs.containsKey('قطعة') || costs['قطعة'] == null) {
+      // التحقق من وجود تكلفة للوحدة الأساسية (بأي مفتاح)
+      final baseCost = costs[product.unit] ?? costs[baseKey] ?? costs['قطعة'];
+      if (baseCost == null) {
         return false;
       }
       
       // التحقق من صحة التكلفة في التسلسل الهرمي
+      final hierarchy = product.getUnitHierarchyList();
       for (var item in hierarchy) {
         if (item['unit_name'] != null && item['quantity'] != null) {
           final unitName = item['unit_name'] as String;
           final quantity = (item['quantity'] as num).toInt();
-          final expectedCost = costs['قطعة']! * quantity;
+          final expectedCost = baseCost * quantity;
           
           // التحقق من أن التكلفة المدخلة صحيحة أو فارغة
           if (costs.containsKey(unitName) && costs[unitName] != null) {

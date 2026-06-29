@@ -103,26 +103,39 @@ class _InvoiceItemsTableState extends State<InvoiceItemsTable> {
 
   List<String> _getUnitsForProduct(Product? product) {
     if (product == null) return [];
-    if (product.unit == 'piece') {
-      List<String> units = ['قطعة'];
-      if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
-        try {
-          final List<dynamic> parsed =
-              json.decode(product.unitHierarchy!.replaceAll("'", '"'));
-          units.addAll(parsed
-              .map((e) => (e['unit_name'] ?? e['name'] ?? '').toString()));
-        } catch (e) {}
-      }
-      return units;
-    } else if (product.unit == 'meter') {
-      List<String> units = ['متر'];
-      if (product.lengthPerUnit != null && product.lengthPerUnit! > 0) {
-        units.add('لفة');
-      }
-      return units;
-    } else {
-      return [product.unit];
+    
+    // تحويل الوحدات القديمة (piece -> قطعة, meter -> متر)
+    String baseUnit = product.unit;
+    if (baseUnit == 'piece') baseUnit = 'قطعة';
+    if (baseUnit == 'meter') baseUnit = 'متر';
+    
+    List<String> units = [baseUnit];
+    
+    // إضافة الوحدات من التسلسل الهرمي
+    if (product.unitHierarchy != null && product.unitHierarchy!.isNotEmpty) {
+      try {
+        final List<dynamic> parsed =
+            json.decode(product.unitHierarchy!.replaceAll("'", '"'));
+        units.addAll(parsed
+            .map((e) => (e['unit_name'] ?? e['name'] ?? '').toString()));
+      } catch (e) {}
     }
+    
+    // إضافة الوحدة الكبيرة إذا كان هناك lengthPerUnit وبدون هرمية
+    if ((product.lengthPerUnit ?? 0) > 0 && 
+        !(product.unitHierarchy?.isNotEmpty ?? false)) {
+      String largeUnitName;
+      final unitLower = baseUnit.toLowerCase();
+      if (unitLower.contains('متر') || product.unit == 'meter') largeUnitName = 'لفة';
+      else if (unitLower.contains('قطع') || product.unit == 'piece') largeUnitName = 'كرتون';
+      else largeUnitName = 'علبة';
+      
+      if (!units.contains(largeUnitName)) {
+        units.add(largeUnitName);
+      }
+    }
+    
+    return units;
   }
 
   Product? _findProductByName(String? name) {
@@ -135,12 +148,31 @@ class _InvoiceItemsTableState extends State<InvoiceItemsTable> {
   }
 
   String _getUnitsCount(Product? product, String? unitType) {
-    if (product == null || unitType == null) return '-';
-    if (product.unit == 'meter' && unitType == 'لفة') {
-      return product.lengthPerUnit?.toString() ?? '-';
+    if (product == null || unitType == null) return '';
+    
+    // تحويل الوحدة الأساسية
+    String baseUnit = product.unit;
+    if (baseUnit == 'piece') baseUnit = 'قطعة';
+    if (baseUnit == 'meter') baseUnit = 'متر';
+    
+    // إذا كان نوع البيع هو الوحدة الأساسية → فارغ
+    if (unitType == baseUnit) return '';
+    
+    // التحقق من الوحدات الكبيرة بناءً على lengthPerUnit (للمتر/لفة أو أي وحدة مشابهة)
+    if ((product.lengthPerUnit ?? 0) > 0) {
+      final unitLower = baseUnit.toLowerCase();
+      String expectedLarge;
+      if (unitLower.contains('متر') || product.unit == 'meter') expectedLarge = 'لفة';
+      else if (unitLower.contains('قطع') || product.unit == 'piece') expectedLarge = 'كرتون';
+      else expectedLarge = 'علبة';
+      
+      if (unitType == expectedLarge) {
+        return product.lengthPerUnit?.toString() ?? '';
+      }
     }
-    if (product.unit == 'piece' &&
-        product.unitHierarchy != null &&
+    
+    // البحث في التسلسل الهرمي
+    if (product.unitHierarchy != null &&
         product.unitHierarchy!.isNotEmpty) {
       try {
         final List<dynamic> parsed =
@@ -152,12 +184,11 @@ class _InvoiceItemsTableState extends State<InvoiceItemsTable> {
           result *= qty;
           if (name == unitType) break;
         }
-        return result > 1 ? result.toString() : '-';
-      } catch (e) {
-        return '-';
-      }
+        return result > 1 ? result.toString() : '';
+      } catch (e) {}
     }
-    return '-';
+    
+    return '';
   }
 
   @override
@@ -192,7 +223,7 @@ class _InvoiceItemsTableState extends State<InvoiceItemsTable> {
                       label: SizedBox(width: 70, child: Text('السعر')),
                       numeric: true),
                   DataColumn(
-                      label: SizedBox(width: 70, child: Text('عدد الوحدات')),
+                      label: SizedBox(width: 70, child: Text('التعبئة')),
                       numeric: true),
                   DataColumn(
                       label: SizedBox(width: 80, child: Text('المبلغ')),
