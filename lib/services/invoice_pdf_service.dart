@@ -14,6 +14,7 @@ import 'package:alnaser/models/app_settings.dart';
 import 'package:alnaser/models/font_settings.dart';
 import 'package:alnaser/services/font_manager.dart';
 import 'package:alnaser/services/pdf_header.dart';
+import 'package:alnaser/services/stamp_manager.dart';
 
 class InvoicePdfService {
   static Future<pw.Document> generateInvoicePdf({
@@ -38,6 +39,8 @@ class InvoicePdfService {
     required DateTime? createdAt,
     required AppSettings appSettings,
   }) async {
+    await StampManager.loadStamps(appSettings);
+    
     final pdf = pw.Document();
     const itemsPerPage = 20;
     final totalPages = (invoiceItems.length / itemsPerPage).ceil();
@@ -60,7 +63,16 @@ class InvoicePdfService {
                     crossAxisAlignment: pw.CrossAxisAlignment.start,
                     children: [
                   // استخدام الهيدر الموحد من pdf_header.dart
-                  buildPdfHeader(font, alnaserFont, logoImage, appSettings: appSettings),
+                  buildPdfHeader(
+                    font, 
+                    alnaserFont, 
+                    logoImage, 
+                    appSettings: appSettings,
+                    paymentType: paymentType,
+                    invoiceId: invoiceId,
+                    totalAmount: afterDiscount,
+                    itemsCount: invoiceItems.length,
+                  ),
                   pw.Row(
                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                     children: [
@@ -226,6 +238,7 @@ class InvoicePdfService {
     required pw.MemoryImage logoImage,
     required AppSettings appSettings,
   }) async {
+    await StampManager.loadStamps(appSettings);
     final pdf = pw.Document();
     const itemsPerPage = 20; // عدد أقل لأن الهيدر أكبر
     final totalPages = (invoiceItems.length / itemsPerPage).ceil().clamp(1, 9999);

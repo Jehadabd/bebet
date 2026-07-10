@@ -18,6 +18,7 @@ import '../services/invoice_pdf_service.dart';
 import 'package:alnaser/services/settings_manager.dart';
 import 'package:alnaser/models/app_settings.dart';
 import '../services/smart_search/smart_search.dart'; // 🧠 البحث الذكي
+import 'dart:async'; // Added for Timer
 
 class EditInvoicesScreen extends StatefulWidget {
   const EditInvoicesScreen({super.key});
@@ -29,85 +30,112 @@ class EditInvoicesScreen extends StatefulWidget {
 class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _idController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
   String _searchName = '';
   String _searchId = '';
-  List<Invoice> _filteredInvoices = [];
-  List<Invoice> _allInvoices = [];
+  List<Invoice> _invoices = [];
   bool _loading = true;
+  bool _isFetchingMore = false;
+  bool _hasMoreData = true;
+  int _currentPage = 0;
+  final int _pageSize = 50;
+  Timer? _debounce;
   Map<int, List<InvoiceAdjustment>> _invoiceAdjustments = {};
   Map<int, double> _settlementTotals = {}; // إجمالي التسويات لكل فاتورة
 
   @override
   void initState() {
     super.initState();
-    _fetchInvoices();
-    _nameController.addListener(_onNameChanged);
-    _idController.addListener(_onIdChanged);
+    _fetchInvoices(refresh: true);
+    _nameController.addListener(_onSearchChanged);
+    _idController.addListener(_onSearchChanged);
+    _scrollController.addListener(_onScroll);
   }
 
-  void _fetchInvoices() async {
-    setState(() => _loading = true);
-    // Ensure `listen: false` when calling provider methods in initState or async methods
-    final provider = Provider.of<AppProvider>(context, listen: false);
-    final allInvoicesList = await provider.getAllInvoices();
-    final invoices = allInvoicesList.where((inv) => inv.status != 'معلقة').toList();
-    
-    // جلب معلومات التسويات لكل فاتورة
-    final db = DatabaseService();
-    Map<int, List<InvoiceAdjustment>> adjustments = {};
-    Map<int, double> totals = {};
-    
-    for (final invoice in invoices) {
-      final invoiceAdjustments = await db.getInvoiceAdjustments(invoice.id!);
-      adjustments[invoice.id!] = invoiceAdjustments;
-      
-      // حساب إجمالي التسويات (amountDelta يحمل الإشارة: موجب للزيادة وسالب للإرجاع)
-      double total = 0.0;
-      for (final adj in invoiceAdjustments) {
-        total += adj.amountDelta;
-      }
-      totals[invoice.id!] = total;
-    }
-    
-    setState(() {
-      _allInvoices = invoices;
-      _invoiceAdjustments = adjustments;
-      _settlementTotals = totals;
-      _applyFilters();
-      _loading = false;
-    });
-  }
-
-  void _onNameChanged() {
-    setState(() {
+  void _onSearchChanged() {
+    if (_debounce?.isActive ?? false) _debounce!.cancel();
+    _debounce = Timer(const Duration(milliseconds: 500), () {
       _searchName = _nameController.text.trim();
-      _applyFilters();
-    });
-  }
-
-  void _onIdChanged() {
-    setState(() {
       _searchId = _idController.text.trim();
-      _applyFilters();
+      _fetchInvoices(refresh: true);
     });
   }
 
-  void _applyFilters() {
-    List<Invoice> filtered = _allInvoices;
-    if (_searchName.isNotEmpty) {
-      filtered = filtered
-          .where((inv) => inv.customerName
-              .toLowerCase()
-              .contains(_searchName.toLowerCase()))
-          .toList();
+  void _onScroll() {
+    if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 200) {
+      _fetchInvoices();
     }
-    if (_searchId.isNotEmpty) {
-      final id = int.tryParse(_searchId);
-      if (id != null) {
-        filtered = filtered.where((inv) => inv.id == id).toList();
+  }
+
+  Future<void> _fetchInvoices({bool refresh = false}) async {
+    if (refresh) {
+      setState(() {
+        _loading = true;
+        _currentPage = 0;
+        _hasMoreData = true;
+        _invoices.clear();
+        _invoiceAdjustments.clear();
+        _settlementTotals.clear();
+      });
+    } else {
+      if (_isFetchingMore || !_hasMoreData) return;
+      setState(() => _isFetchingMore = true);
+    }
+    
+    final db = DatabaseService();
+    try {
+      final newInvoices = await db.getInvoicesPaginated(
+        limit: _pageSize,
+        offset: _currentPage * _pageSize,
+        searchName: _searchName,
+        searchId: _searchId,
+      );
+      
+      if (newInvoices.isEmpty) {
+        setState(() {
+          _hasMoreData = false;
+          _loading = false;
+          _isFetchingMore = false;
+        });
+        return;
+      }
+      
+      final newInvoiceIds = newInvoices.map((e) => e.id!).toList();
+      final adjustmentsMap = await db.getInvoiceAdjustmentsMapForIds(newInvoiceIds);
+      
+      Map<int, List<InvoiceAdjustment>> adjustments = {};
+      Map<int, double> totals = {};
+      
+      for (final invoice in newInvoices) {
+        final invoiceAdjustments = adjustmentsMap[invoice.id!] ?? [];
+        adjustments[invoice.id!] = invoiceAdjustments;
+        
+        double total = 0.0;
+        for (final adj in invoiceAdjustments) {
+          total += adj.amountDelta;
+        }
+        totals[invoice.id!] = total;
+      }
+      
+      setState(() {
+        _currentPage++;
+        _invoices.addAll(newInvoices);
+        _invoiceAdjustments.addAll(adjustments);
+        _settlementTotals.addAll(totals);
+        if (newInvoices.length < _pageSize) {
+          _hasMoreData = false;
+        }
+      });
+    } catch (e) {
+      print("Error fetching paginated invoices: $e");
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _isFetchingMore = false;
+        });
       }
     }
-    _filteredInvoices = filtered;
   }
 
   // دالة لاعتراض زر الرجوع
@@ -119,12 +147,13 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
 
   @override
   void dispose() {
-    _nameController
-        .removeListener(_onNameChanged); // Remove listeners before disposing
-    _idController
-        .removeListener(_onIdChanged); // Remove listeners before disposing
+    _debounce?.cancel();
+    _nameController.removeListener(_onSearchChanged);
+    _idController.removeListener(_onSearchChanged);
+    _scrollController.removeListener(_onScroll);
     _nameController.dispose();
     _idController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -327,7 +356,7 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                     ),
                     const SizedBox(height: 24), // Increased spacing
                     Expanded(
-                      child: _filteredInvoices.isEmpty
+                      child: _invoices.isEmpty
                           ? Center(
                               child: Text(
                                 'لا توجد قوائم مطابقة',
@@ -340,12 +369,23 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                               ),
                             )
                           : ListView.builder(
+                              controller: _scrollController,
                               padding: const EdgeInsets.symmetric(
                                   vertical:
                                       12.0), // Padding for the list itself
-                              itemCount: _filteredInvoices.length,
+                              itemCount: _invoices.length + (_isFetchingMore ? 1 : 0),
                               itemBuilder: (context, index) {
-                                final invoice = _filteredInvoices[index];
+                                if (index == _invoices.length) {
+                                  return const Padding(
+                                    padding: EdgeInsets.all(16.0),
+                                    child: Center(
+                                      child: CircularProgressIndicator(
+                                        color: Color(0xFF3F51B5),
+                                      ),
+                                    ),
+                                  );
+                                }
+                                final invoice = _invoices[index];
                                 return Card(
                                   // Card theme applied from ThemeData
                                   margin: const EdgeInsets.only(
@@ -489,7 +529,7 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                                           ),
                                         ),
                                       ).then((_) {
-                                        _fetchInvoices();
+                                        _fetchInvoices(refresh: true);
                                       });
                                     },
                                   ),

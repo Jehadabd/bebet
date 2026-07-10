@@ -43,11 +43,17 @@ class AppSettings {
   final String branchName; // 'الفرع الرئيسي' أو 'الفرع الثاني' أو 'الفرع الثالث'
   
   // 💰 إعدادات التسعير التلقائي في الفاتورة
-  final int autoPriceMode; // 0 = مطفأ, 1 = آخر سعر, 3 = متوسط آخر 3, 5 = متوسط آخر 5
+  final int autoPriceMode; // 0=مطفأ, 1=آخر سعر, 3=متوسط آخر 3, 5=متوسط آخر 5, 11=متوسط شهر, 12=متوسط شهرين, 13=متوسط 3 أشهر, 21=أكثر تكراراً شهر, 22=أكثر تكراراً شهرين, 23=أكثر تكراراً 3 أشهر, 99=🔮 تسعير ذكي (AI)
+  final double wholesaleCustomerLimit; // الحد المالي لاعتبار العميل جملة
 
   // ✈️ إرسال التليجرام التلقائي
   final bool telegramSyncEnabled;
   final DateTime? telegramTurnOffDate;
+
+  // 🏷️ إعدادات الختم
+  final String stampType; // 'barcode', 'colored', 'ink', 'custom'
+  final String? customCashStampPath;
+  final String? customCreditStampPath;
 
   AppSettings({
     this.phoneNumbers = const [],
@@ -82,6 +88,10 @@ class AppSettings {
     int? autoPriceMode,
     bool? telegramSyncEnabled,
     DateTime? telegramTurnOffDate,
+    String? stampType,
+    this.customCashStampPath,
+    this.customCreditStampPath,
+    double? wholesaleCustomerLimit,
   }) : remainingAmountColor = remainingAmountColor ?? Colors.black.value,
        discountColor = discountColor ?? Colors.black.value,
        loadingFeesColor = loadingFeesColor ?? Colors.black.value,
@@ -112,7 +122,9 @@ class AppSettings {
        branchName = branchName ?? 'الفرع الرئيسي',
        autoPriceMode = autoPriceMode ?? 0,
        telegramSyncEnabled = telegramSyncEnabled ?? true,
-       telegramTurnOffDate = telegramTurnOffDate;
+       telegramTurnOffDate = telegramTurnOffDate,
+       stampType = stampType ?? 'barcode',
+       wholesaleCustomerLimit = wholesaleCustomerLimit ?? 5000000.0;
 
   Map<String, dynamic> toJson() => {
         'phoneNumbers': phoneNumbers,
@@ -147,6 +159,10 @@ class AppSettings {
         'autoPriceMode': autoPriceMode,
         'telegramSyncEnabled': telegramSyncEnabled,
         'telegramTurnOffDate': telegramTurnOffDate?.toIso8601String(),
+        'stampType': stampType,
+        'customCashStampPath': customCashStampPath,
+        'customCreditStampPath': customCreditStampPath,
+        'wholesaleCustomerLimit': wholesaleCustomerLimit,
       };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -182,6 +198,10 @@ class AppSettings {
         autoPriceMode: json['autoPriceMode'] ?? 0,
         telegramSyncEnabled: json['telegramSyncEnabled'] ?? true,
         telegramTurnOffDate: json['telegramTurnOffDate'] != null ? DateTime.tryParse(json['telegramTurnOffDate']) : null,
+        stampType: json['stampType'] ?? 'barcode',
+        customCashStampPath: json['customCashStampPath'],
+        customCreditStampPath: json['customCreditStampPath'],
+        wholesaleCustomerLimit: (json['wholesaleCustomerLimit'] as num?)?.toDouble() ?? 5000000.0,
       );
 
   AppSettings copyWith({
@@ -217,6 +237,10 @@ class AppSettings {
     int? autoPriceMode,
     bool? telegramSyncEnabled,
     DateTime? telegramTurnOffDate,
+    String? stampType,
+    String? customCashStampPath,
+    String? customCreditStampPath,
+    double? wholesaleCustomerLimit,
   }) {
     return AppSettings(
       phoneNumbers: phoneNumbers ?? this.phoneNumbers,
@@ -251,6 +275,10 @@ class AppSettings {
       autoPriceMode: autoPriceMode ?? this.autoPriceMode,
       telegramSyncEnabled: telegramSyncEnabled ?? this.telegramSyncEnabled,
       telegramTurnOffDate: telegramTurnOffDate ?? this.telegramTurnOffDate,
+      stampType: stampType ?? this.stampType,
+      customCashStampPath: customCashStampPath ?? this.customCashStampPath,
+      customCreditStampPath: customCreditStampPath ?? this.customCreditStampPath,
+      wholesaleCustomerLimit: wholesaleCustomerLimit ?? this.wholesaleCustomerLimit,
     );
   }
 }

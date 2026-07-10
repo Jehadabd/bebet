@@ -33,7 +33,7 @@ class SmartSearchDatabase {
 
     return await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -157,6 +157,20 @@ class SmartSearchDatabase {
       ON product_sequences(from_product_id)
     ''');
 
+    // 🆕 جدول علاقات مستويات الأسعار
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS price_level_associations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id_a INTEGER NOT NULL,
+        product_id_b INTEGER NOT NULL,
+        price_level_a TEXT NOT NULL,
+        price_level_b TEXT NOT NULL,
+        co_occurrence_count INTEGER DEFAULT 1,
+        updated_at TEXT NOT NULL,
+        UNIQUE(product_id_a, product_id_b, price_level_a, price_level_b)
+      )
+    ''');
+
     print('✅ Smart Search database tables created successfully');
   }
 
@@ -183,7 +197,24 @@ class SmartSearchDatabase {
         CREATE INDEX IF NOT EXISTS idx_sequences_from 
         ON product_sequences(from_product_id)
       ''');
-      print('✅ Upgrade completed.');
+      print('✅ Upgrade to version 2 completed.');
+    }
+    
+    if (oldVersion < 3) {
+      print('🔄 Upgrading Smart Search database to version 3...');
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS price_level_associations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          product_id_a INTEGER NOT NULL,
+          product_id_b INTEGER NOT NULL,
+          price_level_a TEXT NOT NULL,
+          price_level_b TEXT NOT NULL,
+          co_occurrence_count INTEGER DEFAULT 1,
+          updated_at TEXT NOT NULL,
+          UNIQUE(product_id_a, product_id_b, price_level_a, price_level_b)
+        )
+      ''');
+      print('✅ Upgrade to version 3 completed.');
     }
   }
 
@@ -339,6 +370,86 @@ class SmartSearchDatabase {
       FROM product_associations 
       WHERE product_id_a IN ($placeholders) OR product_id_b IN ($placeholders)
     ''', [...productIds, ...productIds, ...productIds]);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🆕 دوال علاقات مستويات الأسعار
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// إضافة أو تحديث علاقة سعرية بين منتجين
+  Future<void> upsertPriceLevelAssociation({
+    required int productIdA,
+    required int productIdB,
+    required String priceLevelA,
+    required String priceLevelB,
+  }) async {
+    final db = await database;
+    final now = DateTime.now().toIso8601String();
+
+    // ترتيب المنتجات لضمان الاتساق
+    final int idA = productIdA < productIdB ? productIdA : productIdB;
+    final int idB = productIdA < productIdB ? productIdB : productIdA;
+    final String levelA = productIdA < productIdB ? priceLevelA : priceLevelB;
+    final String levelB = productIdA < productIdB ? priceLevelB : priceLevelA;
+
+    await db.rawInsert('''
+      INSERT INTO price_level_associations 
+        (product_id_a, product_id_b, price_level_a, price_level_b, co_occurrence_count, updated_at)
+      VALUES (?, ?, ?, ?, 1, ?)
+      ON CONFLICT(product_id_a, product_id_b, price_level_a, price_level_b) DO UPDATE SET
+        co_occurrence_count = co_occurrence_count + 1,
+        updated_at = ?
+    ''', [idA, idB, levelA, levelB, now, now]);
+  }
+
+  /// الاستعلام عن المستوى السعري المتوقع للمنتج ب بناءً على مستوى المنتج أ
+  Future<String?> getExpectedPriceLevel({
+    required int queryProductId,
+    required List<Map<String, dynamic>> contextProducts, // [{ 'id': 1, 'level': 'wholesale' }]
+  }) async {
+    if (contextProducts.isEmpty) return null;
+    
+    final db = await database;
+    final Map<String, int> levelScores = {'wholesale': 0, 'average': 0, 'retail': 0};
+
+    for (var contextItem in contextProducts) {
+      final int contextId = contextItem['id'];
+      final String contextLevel = contextItem['level'];
+
+      final int idA = queryProductId < contextId ? queryProductId : contextId;
+      final int idB = queryProductId < contextId ? contextId : queryProductId;
+
+      final results = await db.query(
+        'price_level_associations',
+        where: 'product_id_a = ? AND product_id_b = ? AND ' + 
+               (queryProductId < contextId ? 'price_level_b = ?' : 'price_level_a = ?'),
+        whereArgs: [idA, idB, contextLevel],
+      );
+
+      for (var row in results) {
+        final String queryLevel = queryProductId < contextId 
+            ? row['price_level_a'] as String 
+            : row['price_level_b'] as String;
+        final int count = row['co_occurrence_count'] as int;
+        
+        if (levelScores.containsKey(queryLevel)) {
+          levelScores[queryLevel] = levelScores[queryLevel]! + count;
+        }
+      }
+    }
+
+    // إرجاع المستوى ذو الرصيد الأعلى
+    String? bestLevel;
+    int maxScore = 0;
+    
+    levelScores.forEach((level, score) {
+      if (score > maxScore) {
+        maxScore = score;
+        bestLevel = level;
+      }
+    });
+
+    return bestLevel;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

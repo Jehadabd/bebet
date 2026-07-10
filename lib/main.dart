@@ -8,7 +8,6 @@ import 'package:provider/provider.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:get_storage/get_storage.dart';
-import 'package:windows_single_instance/windows_single_instance.dart'; // 🛡️ لمنع النسخ المتعددة
 import 'package:firebase_core/firebase_core.dart';
 import 'package:window_manager/window_manager.dart'; // 🛡️ لإدارة النافذة والإغلاق النظيف
 import 'firebase_options.dart';
@@ -35,35 +34,15 @@ import 'services/printing_service.dart';
 import 'services/sync/sync_tracker.dart'; // 🔄 تتبع المزامنة
 import 'services/firebase_sync/firebase_sync.dart'; // 🔥 مزامنة Firebase
 import 'services/firebase_sync/firebase_auth_service.dart'; // 🔐 مصادقة Firebase
+import 'services/smart_pricing_service.dart'; // 🔮 محرك التسعير الذكي
+
+// 🛡️ ملاحظة: Single Instance يُعالج على مستوى C++ في main.cpp
+// باستخدام Named Mutex + RegisterWindowMessage قبل تشغيل Flutter
+
+
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // 🛡️ منع فتح نسخ متعددة وإبراز النافذة المفتوحة مسبقاً
-  await WindowsSingleInstance.ensureSingleInstance(
-    args,
-    "alnaser_debt_book_instance_lock_id",
-    onSecondWindow: (args) {
-      print('⚠️ تم محاولة فتح نسخة أخرى، سيتم إظهار النافذة الحالية.');
-      Future(() async {
-        try {
-          final isMinimized = await windowManager.isMinimized();
-          if (isMinimized) {
-            await windowManager.restore();
-          }
-
-          final isVisible = await windowManager.isVisible();
-          if (!isVisible) {
-            await windowManager.show();
-          }
-
-          await windowManager.focus();
-        } catch (e) {
-          print('⚠️ تعذر إبراز النافذة الحالية: $e');
-        }
-      });
-    },
-  );
 
   // تهيئة GetStorage
   await GetStorage.init();
@@ -177,6 +156,18 @@ Future<void> _initializeBackgroundServices() async {
         }
       } catch (e) {
         print('⚠️ تحذير: فشل تهيئة Firebase بالكامل: $e');
+      }
+    }),
+
+    // المهمة 4: 🔮 محرك التسعير الذكي
+    Future(() async {
+      try {
+        final smartPricingService = SmartPricingService();
+        final dbService = DatabaseService();
+        await smartPricingService.initialize(dbService);
+        print('✅ تم تهيئة محرك التسعير الذكي');
+      } catch (e) {
+        print('⚠️ تحذير: فشل تهيئة محرك التسعير الذكي: $e');
       }
     }),
   ]);

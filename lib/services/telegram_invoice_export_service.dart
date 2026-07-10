@@ -15,6 +15,7 @@ import 'settings_manager.dart';
 import 'telegram_backup_service.dart';
 import 'discord_backup_service.dart';
 import 'pdf_header.dart';
+import 'stamp_manager.dart';
 
 class TelegramInvoiceExportService {
   final DatabaseService _db = DatabaseService();
@@ -203,6 +204,7 @@ class TelegramInvoiceExportService {
     required double previousDebt,
     required double currentDebt,
   }) async {
+    await StampManager.loadStamps(appSettings);
     final pdf = pw.Document();
     
     const itemsPerPage = 19;

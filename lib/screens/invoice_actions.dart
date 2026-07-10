@@ -22,6 +22,7 @@ import '../models/invoice_item.dart';
 import '../models/printer_device.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
+import '../services/stamp_manager.dart';
 import '../services/drive_service.dart';
 import '../services/expert_training_service.dart'; // 🧠 التدريب الخبير التدريجي
 import '../services/pdf_header.dart';
@@ -33,6 +34,7 @@ import '../services/invoice_prediction_service.dart'; // 🔮 التوقعات �
 import '../services/firebase_sync/firebase_sync_helper.dart'; // 🔥 Firebase Sync
 import '../services/sync/sync_security.dart'; // 🔐 Sync UUID Generation
 import '../services/financial_guardians.dart'; // 🛡️ Financial Guardians
+import '../services/smart_pricing_service.dart'; // 🔮 محرك التسعير الذكي
 import 'create_invoice_screen.dart';
 
 /// واجهة تحدد المتغيرات المطلوبة للتعامل مع الفواتير
@@ -1308,6 +1310,68 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           } catch (e) {
             print('⚠️ [BG] PredictionService training error: $e');
           }
+          try {
+            // 4️⃣ 🔮 تحديث إحصائيات التسعير الذكي لكل صنف في الفاتورة وبناء علاقات مستويات الأسعار
+            final smartPricing = SmartPricingService();
+            final smartSearchDb = SmartSearchDatabase.instance;
+            
+            // قراءة مستويات أسعار الفاتورة الحالية لربطها ببعض
+            List<Map<String, dynamic>> invoicePriceLevels = [];
+            final dbService = DatabaseService();
+            final database = await dbService.database;
+
+            final customerId = savedInvoice!.customerId;
+            // تحديث التسعير الذكي حتى بدون زبون (تم إلغاء شرط if (customerId != null))
+            final productsList = await db.getAllProducts();
+            final productIdByName = <String, int>{};
+            for (var p in productsList) {
+              if (p.id != null) productIdByName[p.name] = p.id!;
+            }
+            
+            // 1. حساب مستوى السعر لكل عنصر
+            for (var item in invoiceItems.where(_isInvoiceItemComplete)) {
+              final productId = productIdByName[item.productName];
+              if (productId != null && item.appliedPrice > 0) {
+                // تحديث الإحصائيات
+                await smartPricing.updateOnInvoiceSave(
+                  productId: productId,
+                  customerId: customerId, // قد يكون null في الفواتير النقدية
+                  price: item.appliedPrice,
+                  saleType: item.saleType,
+                  invoiceDate: selectedDate.toIso8601String(),
+                );
+                
+                // جلب الإحصائيات لتحديد المستوى
+                String level = 'average';
+                final statsMap = await database.query('product_price_stats', where: 'product_id = ?', whereArgs: [productId]);
+                if (statsMap.isNotEmpty) {
+                  double median = (statsMap.first['median_price'] as num).toDouble();
+                  if (item.appliedPrice <= median * 0.95) level = 'wholesale';
+                  else if (item.appliedPrice >= median * 1.05) level = 'retail';
+                }
+                invoicePriceLevels.add({'id': productId, 'level': level});
+              }
+            }
+
+            // 2. بناء العلاقات السعرية بين العناصر
+            for (int i = 0; i < invoicePriceLevels.length; i++) {
+              for (int j = i + 1; j < invoicePriceLevels.length; j++) {
+                final itemA = invoicePriceLevels[i];
+                final itemB = invoicePriceLevels[j];
+                
+                if (itemA['id'] != itemB['id']) {
+                  await smartSearchDb.upsertPriceLevelAssociation(
+                    productIdA: itemA['id'],
+                    productIdB: itemB['id'],
+                    priceLevelA: itemA['level'],
+                    priceLevelB: itemB['level'],
+                  );
+                }
+              }
+            }
+          } catch (e) {
+            print('⚠️ [BG] SmartPricing update error: $e');
+          }
         }());
       }
       
@@ -1406,6 +1470,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
       final pdf = pw.Document();
 
       final appSettings = await SettingsManager.getAppSettings();
+      await StampManager.loadStamps(appSettings);
 
       final logoBytes = await rootBundle.load('assets/icon/alnasser.jpg');
       final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
@@ -1713,8 +1778,16 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                     pw.Column(
                       crossAxisAlignment: pw.CrossAxisAlignment.start,
                       children: [
-                        buildPdfHeader(font, alnaserFont, logoImage,
-                            appSettings: appSettings),
+                        buildPdfHeader(
+                          font, 
+                          alnaserFont, 
+                          logoImage,
+                          appSettings: appSettings,
+                          paymentType: paymentType,
+                          invoiceId: invoiceId,
+                          totalAmount: afterDiscount,
+                          itemsCount: filteredItems.length,
+                        ),
                         pw.SizedBox(height: 4),
                         pw.Row(
                           mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,

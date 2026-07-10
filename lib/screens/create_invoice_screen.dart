@@ -1212,7 +1212,42 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         double finalAppliedPrice = _selectedPriceLevel!;
         final mode = (await SettingsManager.getAppSettings()).autoPriceMode;
         
-        if (mode > 0) {
+        if (mode == 99 && _selectedProduct!.id != null) {
+          // 🔮 وضع التسعير الذكي
+          int? customerId = await _resolveCustomerId();
+          
+          // تجميع سياق الفاتورة الحالي
+          List<Map<String, dynamic>> currentContext = [];
+          for (var item in invoiceItems.where((i) => i.productId != null)) {
+            currentContext.add({
+              'product_id': item.productId,
+              'applied_price': item.appliedPrice,
+            });
+          }
+
+          final smartResult = await db.getSmartPriceForProduct(
+            productId: _selectedProduct!.id!,
+            customerId: customerId,
+            saleType: selectedUnitForItem,
+            invoiceItemsContext: currentContext,
+          );
+          
+          if (smartResult != null) {
+            finalAppliedPrice = smartResult.price;
+            print('💰 Smart Price Applied: ${smartResult.price} for ${_selectedProduct!.name} - $selectedUnitForItem (ثقة: ${smartResult.confidence}%, مصدر: ${smartResult.source})');
+            
+            if (mounted) {
+              ScaffoldMessenger.of(context).hideCurrentSnackBar();
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('🔮 سعر مقترح: ${smartResult.price} (ثقة: ${smartResult.confidence}% • من ${smartResult.source})'),
+                  backgroundColor: Colors.deepPurple,
+                  duration: const Duration(seconds: 3),
+                ),
+              );
+            }
+          }
+        } else if (mode > 0) {
           final historicalPrice = await db.getHistoricalPriceForProduct(
             _selectedProduct!.name,
             selectedUnitForItem,
@@ -1447,14 +1482,25 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         hasUnsavedChanges = true;
       }
       
+      // 🧠 الحصول على معلومات المنتج قبل الحذف لإزالته من سياق البحث الذكي
+      final index = invoiceItems.indexWhere((it) => it.uniqueId == uid);
+      if (index != -1) {
+        final itemToRemove = invoiceItems[index];
+        // 🧠 إزالة المنتج من سياق البحث الذكي (لإزالة العقوبة)
+        SmartSearchService.instance.removeProductFromSession(
+          itemToRemove.productId,
+          itemToRemove.productName,
+        );
+      }
+      
       setState(() {
-        final index = invoiceItems.indexWhere((it) => it.uniqueId == uid);
-        if (index == -1) return;
-        if (index < focusNodesList.length) {
-          focusNodesList[index].dispose();
-          focusNodesList.removeAt(index);
+        final idx = invoiceItems.indexWhere((it) => it.uniqueId == uid);
+        if (idx == -1) return;
+        if (idx < focusNodesList.length) {
+          focusNodesList[idx].dispose();
+          focusNodesList.removeAt(idx);
         }
-        invoiceItems.removeAt(index);
+        invoiceItems.removeAt(idx);
         _guardDiscount();
         _updatePaidAmountIfCash();
         
@@ -2451,6 +2497,9 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
 
   Future<void> _performReset() async {
     try {
+      // 🧠 مسح سياق البحث الذكي بالكامل (لإزالة جميع العقوبات)
+      SmartSearchService.instance.forceNewSession();
+      
       setState(() {
         customerNameController.clear();
         noteController.clear();
@@ -4078,8 +4127,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                                                       ),
                                                       TextButton(
                                                         onPressed: () {
-                                                          final v =
-                                                              double.tryParse(
+                                                          final v = double.tryParse(
                                                                   controller
                                                                       .text
                                                                       .trim());
@@ -4299,6 +4347,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                       key: ValueKey(item.uniqueId),
                       item: item,
                       index: index,
+                      currentInvoiceItems: invoiceItems,
                       allProducts: _allProductsForUnits ?? [],
                       isViewOnly: isViewOnly,
                       isPlaceholder: item.productName.isEmpty,
@@ -5337,6 +5386,33 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     }
   }
 
+  /// حل معرف الزبون من اسم الزبون المدخل
+  Future<int?> _resolveCustomerId() async {
+    final name = customerNameController.text.trim();
+    if (name.isEmpty) return null;
+    try {
+      final customers = await db.getAllCustomers();
+      final phone = customerPhoneController.text.trim();
+      if (phone.isNotEmpty) {
+        for (var c in customers) {
+          if (c.name == name && c.phone == phone) return c.id;
+        }
+        for (var c in customers) {
+          if (c.name == name) return c.id;
+        }
+        for (var c in customers) {
+          if (c.phone == phone) return c.id;
+        }
+      } else {
+        for (var c in customers) {
+          if (c.name == name) return c.id;
+        }
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -5578,6 +5654,7 @@ class _PredictionsDialog extends StatelessWidget {
       ),
     );
   }
+
 }
 
 class EditableInvoiceItemRow extends StatefulWidget {
@@ -5597,6 +5674,7 @@ class EditableInvoiceItemRow extends StatefulWidget {
   final VoidCallback? onPriceSubmitted; // جديد: للانتقال إلى الصف التالي عند الضغط على Enter في السعر
   final bool showCostPrice; // 🔐 إظهار عمود التكلفة
   final String selectedListType; // نوع القائمة (مفرد، جملة، إلخ)
+  final List<InvoiceItem> currentInvoiceItems; // جديد: سياق الفاتورة
 
   const EditableInvoiceItemRow({
     Key? key,
@@ -5616,6 +5694,7 @@ class EditableInvoiceItemRow extends StatefulWidget {
     this.onPriceSubmitted, // جديد: للانتقال إلى الصف التالي
     this.showCostPrice = false, // 🔐 افتراضياً مخفي
     this.selectedListType = 'مفرد', // نوع القائمة
+    required this.currentInvoiceItems,
   }) : super(key: key);
 
   @override
@@ -6043,7 +6122,57 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
       }
 
       // 2. البحث في السجل التاريخي إذا كان الخيار مُفعلاً
-      if (mode > 0) {
+      if (mode == 99 && product.id != null) {
+        // 🔮 وضع التسعير الذكي
+        int? customerId;
+        if (widget.currentCustomerName.isNotEmpty) {
+          try {
+            final customers = await widget.databaseService!.getAllCustomers();
+            final name = widget.currentCustomerName;
+            final phone = widget.currentCustomerPhone ?? '';
+            if (phone.isNotEmpty) {
+              for (var c in customers) {
+                if (c.name == name && c.phone == phone) { customerId = c.id; break; }
+              }
+              if (customerId == null) {
+                for (var c in customers) {
+                  if (c.name == name) { customerId = c.id; break; }
+                }
+              }
+            } else {
+              for (var c in customers) {
+                if (c.name == name) { customerId = c.id; break; }
+              }
+            }
+          } catch (_) {}
+        }
+        
+        // تجميع سياق الفاتورة الحالي
+        List<Map<String, dynamic>> currentContext = [];
+        for (var item in widget.currentInvoiceItems.where((i) => i.productId != null)) {
+          currentContext.add({
+            'product_id': item.productId,
+            'applied_price': item.appliedPrice,
+          });
+        }
+
+        final smartResult = await widget.databaseService!.getSmartPriceForProduct(
+          productId: product.id!,
+          customerId: customerId,
+          saleType: saleType,
+          invoiceItemsContext: currentContext,
+        );
+        
+        if (smartResult != null) {
+          finalPrice = smartResult.price;
+          print('🔮 Smart Price: ${smartResult.price} (ثقة: ${smartResult.confidence}%, المصدر: ${smartResult.source})');
+        } else {
+          print('⚠️ No smart price found for "$productName" - $saleType, using default: $defaultPrice');
+          if (defaultPrice > 0) finalPrice = defaultPrice;
+        }
+      } else if (mode == 99) {
+        if (defaultPrice > 0) finalPrice = defaultPrice;
+      } else if (mode > 0) {
         final double? historicalPrice = await widget.databaseService!.getHistoricalPriceForProduct(productName, saleType, mode);
         print('📊 Historical Price: $historicalPrice');
         

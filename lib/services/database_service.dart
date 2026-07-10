@@ -21,9 +21,11 @@ import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:convert';
 import 'dart:async'; // 🔄 Added import for Completer
+import 'dart:math' show sqrt; // 🔮 للتسعير الذكي
 import 'sync/sync_tracker.dart'; // 🔄 تتبع المزامنة
 import 'sync/sync_security.dart'; // 🔄 أمان المزامنة (لتوليد UUID)
 import 'firebase_sync/firebase_sync_helper.dart'; // 🔥 مزامنة Firebase
+import 'smart_pricing_service.dart'; // 🔮 محرك التسعير الذكي
 
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
@@ -2663,6 +2665,23 @@ class DatabaseService {
       throw Exception(_handleDatabaseError(e));
     }
   }
+  /// الحصول على إجمالي سحوبات العميل
+  Future<double> getCustomerTotalPurchases(int customerId) async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> result = await db.rawQuery(
+        "SELECT SUM(total_amount) as total FROM invoices WHERE customer_id = ? AND status != 'ملغاة'",
+        [customerId],
+      );
+      if (result.isNotEmpty && result.first['total'] != null) {
+        return (result.first['total'] as num).toDouble();
+      }
+      return 0.0;
+    } catch (e) {
+      print('Error getting customer total purchases: $e');
+      return 0.0;
+    }
+  }
 
   Future<List<Customer>> searchCustomers(String query) async {
     final db = await database;
@@ -4842,6 +4861,20 @@ class DatabaseService {
     return maps.map((m) => InvoiceAdjustment.fromMap(m)).toList();
   }
 
+  Future<Map<int, List<InvoiceAdjustment>>> getAllInvoiceAdjustmentsMap() async {
+    final db = await database;
+    final maps = await db.query('invoice_adjustments', orderBy: 'created_at ASC, id ASC');
+    final Map<int, List<InvoiceAdjustment>> grouped = {};
+    for (var m in maps) {
+      final adj = InvoiceAdjustment.fromMap(m);
+      if (!grouped.containsKey(adj.invoiceId)) {
+        grouped[adj.invoiceId] = [];
+      }
+      grouped[adj.invoiceId]!.add(adj);
+    }
+    return grouped;
+  }
+
   Future<void> applyInvoiceAdjustment(int invoiceId) async {
     final db = await database;
     await db.transaction((txn) async {
@@ -5174,31 +5207,373 @@ class DatabaseService {
     }
   }
 
-  // 💰 جلب متوسط أسعار آخر (limit) فواتير لصنف معين ونوع بيع معين
-  Future<double?> getHistoricalPriceForProduct(String productName, String? saleType, int limit) async {
-    if (limit <= 0) return null;
+  // 💰 جلب السعر التلقائي لصنف معين ونوع بيع معين
+  // الأوضاع:
+  //   1 = آخر سعر, 3 = متوسط آخر 3, 5 = متوسط آخر 5
+  //   11 = متوسط آخر شهر (تمدد تلقائي), 12 = متوسط آخر شهرين, 13 = متوسط آخر 3 أشهر
+  //   21 = أكثر سعر تكراراً آخر شهر, 22 = أكثر سعر تكراراً آخر شهرين, 23 = أكثر سعر تكراراً آخر 3 أشهر
+  //
+  // قواعد التقريب:
+  //   - آخر سعر (1): بدون تقريب
+  //   - الأكثر تكراراً (21-23): بدون تقريب
+  //   - المتوسط (3,5,11,12,13): تقريب إلى 250 فقط إذا كان السعر ≥ 10,000
+  Future<double?> getHistoricalPriceForProduct(String productName, String? saleType, int mode) async {
+    if (mode <= 0) return null;
     final db = await database;
     try {
-      final List<Map<String, dynamic>> results = await db.query(
-        'invoice_items',
-        columns: ['applied_price'],
-        where: 'product_name = ? AND sale_type = ?',
-        whereArgs: [productName, saleType ?? ''],
-        orderBy: 'id DESC', // أحدث الفواتير أولاً
-        limit: limit,
-      );
+      // ─── وضع آخر سعر (1): بدون تقريب ───
+      if (mode == 1) {
+        final List<Map<String, dynamic>> results = await db.query(
+          'invoice_items',
+          columns: ['applied_price'],
+          where: 'product_name = ? AND sale_type = ?',
+          whereArgs: [productName, saleType ?? ''],
+          orderBy: 'id DESC',
+          limit: 1,
+        );
 
-      if (results.isEmpty) return null;
-
-      double sum = 0;
-      for (var row in results) {
-        sum += (row['applied_price'] as num).toDouble();
+        if (results.isEmpty) return null;
+        return (results.first['applied_price'] as num).toDouble();
       }
-      return sum / results.length;
+
+      // ─── أوضاع المتوسط (3, 5): بناءً على عدد آخر فواتير ───
+      if (mode == 3 || mode == 5) {
+        final List<Map<String, dynamic>> results = await db.query(
+          'invoice_items',
+          columns: ['applied_price'],
+          where: 'product_name = ? AND sale_type = ?',
+          whereArgs: [productName, saleType ?? ''],
+          orderBy: 'id DESC',
+          limit: mode,
+        );
+
+        if (results.isEmpty) return null;
+
+        double sum = 0;
+        for (var row in results) {
+          sum += (row['applied_price'] as num).toDouble();
+        }
+        final avg = sum / results.length;
+        // تقريب إلى 250 فقط إذا كان المتوسط ≥ 10,000
+        return _roundToNearest250IfHigh(avg);
+      }
+
+      // ─── الأوضاع الزمنية (11-13: متوسط، 21-23: أكثر تكراراً) ───
+      if (mode >= 11 && mode <= 23) {
+        final bool isMostFrequent = mode >= 21;
+        final int monthsWindow = isMostFrequent ? (mode - 20) : (mode - 10);
+
+        // 1) إيجاد آخر تاريخ بيع لهذا المنتج (مع التمدد التلقائي)
+        final latestSaleRows = await db.rawQuery(
+          '''SELECT i.invoice_date FROM invoice_items ii
+             JOIN invoices i ON i.id = ii.invoice_id
+             WHERE ii.product_name = ? AND ii.sale_type = ? AND i.status = 'محفوظة'
+             ORDER BY i.invoice_date DESC LIMIT 1''',
+          [productName, saleType ?? ''],
+        );
+
+        if (latestSaleRows.isEmpty) return null;
+
+        final String? latestDateStr = latestSaleRows.first['invoice_date'] as String?;
+        if (latestDateStr == null) return null;
+
+        DateTime latestDate;
+        try {
+          latestDate = DateTime.parse(latestDateStr);
+        } catch (_) {
+          return null;
+        }
+
+        // 2) حساب بداية النافذة الزمنية (آخر X أشهر من تاريخ آخر بيع)
+        final DateTime windowStart = DateTime(
+          latestDate.year,
+          latestDate.month - monthsWindow,
+          latestDate.day,
+        );
+
+        // 3) جلب جميع الأسعار ضمن النافذة الزمنية
+        final List<Map<String, dynamic>> results = await db.rawQuery(
+          '''SELECT ii.applied_price FROM invoice_items ii
+             JOIN invoices i ON i.id = ii.invoice_id
+             WHERE ii.product_name = ? AND ii.sale_type = ? AND i.status = 'محفوظة'
+               AND i.invoice_date >= ? AND i.invoice_date <= ?
+             ORDER BY i.invoice_date DESC''',
+          [productName, saleType ?? '', windowStart.toIso8601String(), latestDate.toIso8601String()],
+        );
+
+        if (results.isEmpty) return null;
+
+        if (isMostFrequent) {
+          // ─── أكثر سعر تكراراً (Mode): بدون تقريب ───
+          final Map<double, int> frequencyMap = {};
+          for (var row in results) {
+            final price = (row['applied_price'] as num).toDouble();
+            frequencyMap[price] = (frequencyMap[price] ?? 0) + 1;
+          }
+
+          double mostFrequentPrice = 0;
+          int maxCount = 0;
+          frequencyMap.forEach((price, count) {
+            if (count > maxCount) {
+              maxCount = count;
+              mostFrequentPrice = price;
+            }
+          });
+
+          return mostFrequentPrice;
+        } else {
+          // ─── متوسط الأسعار: تقريب إلى 250 فقط إذا كان ≥ 10,000 ───
+          double sum = 0;
+          for (var row in results) {
+            sum += (row['applied_price'] as num).toDouble();
+          }
+          final avg = sum / results.length;
+          return _roundToNearest250IfHigh(avg);
+        }
+      }
+
+      return null;
     } catch (e) {
       print('Error fetching historical price: $e');
       return null;
     }
+  }
+
+  /// تقريب السعر إلى أقرب 250 دينار عراقي فقط إذا كان ≥ 10,000
+  double _roundToNearest250IfHigh(double price) {
+    if (price <= 0) return 0;
+    if (price < 10000) return price; // بدون تقريب للأسعار أقل من 10,000
+    return (price / 250).round() * 250.0;
+  }
+
+  /// تقريب السعر إلى أقرب 250 دينار عراقي (للاستخدام العام)
+  double _roundToNearest250(double price) {
+    if (price <= 0) return 0;
+    return (price / 250).round() * 250.0;
+  }
+
+  /// 🔮 التسعير الذكي - الحصول على السعر المناسب للمنتج
+  /// يعتمد على: محرك التسعير الذكي الجديد v3.1
+  Future<SmartPricingResult?> getSmartPriceForProduct({
+    required int productId,
+    int? customerId,
+    String? saleType,
+    List<Map<String, dynamic>>? invoiceItemsContext,
+  }) async {
+    final smartResult = await SmartPricingService().getSmartPriceEnhanced(
+      productId: productId,
+      customerId: customerId,
+      saleType: saleType,
+      invoiceItemsContext: invoiceItemsContext,
+    );
+    
+    if (smartResult != null) {
+      return smartResult;
+    }
+
+    // 🔄 Fallback: البحث عن الأسعار التاريخية بالاسم
+    final product = await getProductById(productId);
+    if (product != null) {
+      final historicalPrice = await getHistoricalPriceForProduct(
+        product.name, 
+        saleType ?? '', 
+        1, // آخر سعر
+      );
+      if (historicalPrice != null && historicalPrice > 0) {
+        return SmartPricingResult(
+          price: historicalPrice,
+          confidence: 50,
+          source: 'آخر سعر تاريخي',
+          reason: 'لا توجد بيانات تسعير ذكي، تم استخدام آخر سعر من الفواتير',
+        );
+      }
+    }
+    return null;
+  }
+
+  /// حساب نسبة الثقة للأسعار
+  int _calculatePriceConfidence(List<double> prices) {
+    if (prices.isEmpty) return 0;
+    if (prices.length < 3) return 30;
+
+    final mean = prices.reduce((a, b) => a + b) / prices.length;
+    if (mean == 0) return 0;
+
+    final variance = prices.map((p) => (p - mean) * (p - mean)).reduce((a, b) => a + b) / prices.length;
+    final stdDev = sqrt(variance);
+    final cv = stdDev / mean;
+
+    if (cv < 0.05) return 98;
+    if (cv < 0.10) return 90;
+    if (cv < 0.15) return 80;
+    if (cv < 0.20) return 70;
+    if (cv < 0.30) return 60;
+    if (cv < 0.50) return 50;
+    return 40;
+  }
+
+  /// تحديث إحصائيات التسعير الذكي عند حفظ فاتورة
+  Future<void> updateSmartPricingStats({
+    required int productId,
+    required int customerId,
+    required double price,
+    String? saleType,
+    required String invoiceDate,
+  }) async {
+    final db = await database;
+
+    // 1. تحديث إحصائيات المنتج
+    await _updateProductPriceStats(db, productId, price, invoiceDate);
+
+    // 2. تحديث إحصائيات الزبون+المنتج
+    await _updateCustomerProductPriceStats(db, customerId, productId, price, invoiceDate);
+
+    // 3. إضافة للـ buffer
+    await _addToRecentSalesBuffer(db, productId, customerId, price, saleType, invoiceDate);
+  }
+
+  /// تحديث إحصائيات سعر المنتج
+  Future<void> _updateProductPriceStats(Database db, int productId, double price, String invoiceDate) async {
+    // جلب الأسعار الحديثة
+    final recentPrices = await db.rawQuery('''
+      SELECT price FROM recent_sales_buffer
+      WHERE product_id = ?
+      ORDER BY invoice_date DESC
+      LIMIT 20
+    ''', [productId]);
+
+    final prices = recentPrices.map((s) => (s['price'] as num).toDouble()).toList();
+    prices.add(price);
+
+    final mostFrequent = _findMostFrequentPrice(prices);
+    final median = _calculateMedianPrice(prices);
+    final confidence = _calculatePriceConfidence(prices);
+
+    await db.insert(
+      'product_price_stats',
+      {
+        'product_id': productId,
+        'last_price': price,
+        'most_frequent_price': mostFrequent,
+        'median_price': median,
+        'sale_count': prices.length,
+        'last_sale_date': invoiceDate,
+        'confidence': confidence,
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// تحديث إحصائيات الزبون+المنتج
+  Future<void> _updateCustomerProductPriceStats(
+    Database db,
+    int customerId,
+    int productId,
+    double price,
+    String invoiceDate,
+  ) async {
+    // جلب الأسعار السابقة
+    final customerSales = await db.rawQuery('''
+      SELECT price FROM recent_sales_buffer
+      WHERE product_id = ? AND customer_id = ?
+      ORDER BY invoice_date DESC
+      LIMIT 20
+    ''', [productId, customerId]);
+
+    final prices = customerSales.map((s) => (s['price'] as num).toDouble()).toList();
+    prices.add(price);
+
+    final mostFrequent = _findMostFrequentPrice(prices);
+    final confidence = _calculatePriceConfidence(prices);
+
+    await db.insert(
+      'customer_product_stats',
+      {
+        'customer_id': customerId,
+        'product_id': productId,
+        'last_price': price,
+        'most_frequent_price': mostFrequent,
+        'purchase_count': prices.length,
+        'last_purchase_date': invoiceDate,
+        'confidence': confidence,
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// إضافة للـ buffer مع الحفاظ على آخر 20 فقط
+  Future<void> _addToRecentSalesBuffer(
+    Database db,
+    int productId,
+    int customerId,
+    double price,
+    String? saleType,
+    String invoiceDate,
+  ) async {
+    // إضافة السجل الجديد
+    await db.insert('recent_sales_buffer', {
+      'product_id': productId,
+      'customer_id': customerId,
+      'price': price,
+      'sale_type': saleType ?? '',
+      'invoice_date': invoiceDate,
+      'created_at': DateTime.now().toIso8601String(),
+    });
+
+    // حذف الأسعار القديمة (أبعد من آخر 20)
+    await db.rawQuery('''
+      DELETE FROM recent_sales_buffer
+      WHERE product_id = ? AND id NOT IN (
+        SELECT id FROM recent_sales_buffer
+        WHERE product_id = ?
+        ORDER BY invoice_date DESC
+        LIMIT 20
+      )
+    ''', [productId, productId]);
+  }
+
+  /// إيجاد السعر الأكثر تكراراً
+  double _findMostFrequentPrice(List<double> prices) {
+    if (prices.isEmpty) return 0;
+    
+    final frequencyMap = <double, int>{};
+    for (var price in prices) {
+      frequencyMap[price] = (frequencyMap[price] ?? 0) + 1;
+    }
+
+    double mostFrequent = prices.first;
+    int maxCount = 0;
+    frequencyMap.forEach((price, count) {
+      if (count > maxCount) {
+        maxCount = count;
+        mostFrequent = price;
+      }
+    });
+
+    return mostFrequent;
+  }
+
+  /// حساب الوسيط
+  double _calculateMedianPrice(List<double> prices) {
+    if (prices.isEmpty) return 0;
+    
+    final sorted = List<double>.from(prices)..sort();
+    final length = sorted.length;
+    
+    if (length % 2 == 0) {
+      return (sorted[length ~/ 2 - 1] + sorted[length ~/ 2]) / 2;
+    } else {
+      return sorted[length ~/ 2];
+    }
+  }
+
+  /// 🔮 إعادة بناء جميع إحصائيات التسعير الذكي
+  Future<void> rebuildSmartPricingStats() async {
+    final smartPricing = SmartPricingService();
+    await smartPricing.initialize(this);
+    await smartPricing.rebuildAllStats();
   }
 
   /// ضبط المساهمة الحالية لهذه الفاتورة في دين العميل بشكل مباشر (تعديل حي)
@@ -5428,6 +5803,69 @@ class DatabaseService {
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
+  }
+
+  // --- التحميل التدريجي والبحث (Pagination) ---
+  Future<List<Invoice>> getInvoicesPaginated({
+    int limit = 50,
+    int offset = 0,
+    String searchName = '',
+    String searchId = '',
+  }) async {
+    final db = await database;
+    try {
+      String whereClause = "status != 'معلقة'";
+      List<dynamic> whereArgs = [];
+
+      if (searchName.isNotEmpty) {
+        whereClause += " AND customer_name LIKE ?";
+        whereArgs.add('%$searchName%');
+      }
+      if (searchId.isNotEmpty) {
+        final id = int.tryParse(searchId);
+        if (id != null) {
+          whereClause += " AND id = ?";
+          whereArgs.add(id);
+        }
+      }
+
+      final List<Map<String, dynamic>> maps = await db.query(
+        'invoices',
+        where: whereClause,
+        whereArgs: whereArgs,
+        orderBy: 'invoice_date DESC, id DESC',
+        limit: limit,
+        offset: offset,
+      );
+      return List.generate(maps.length, (i) => Invoice.fromMap(maps[i]));
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  Future<Map<int, List<InvoiceAdjustment>>> getInvoiceAdjustmentsMapForIds(List<int> invoiceIds) async {
+    if (invoiceIds.isEmpty) return {};
+    final db = await database;
+    
+    // إنشاء العناصر النائبة لجملة IN (مثلاً ?,?,?)
+    final placeholders = List.filled(invoiceIds.length, '?').join(',');
+    
+    final maps = await db.query(
+      'invoice_adjustments', 
+      where: 'invoice_id IN ($placeholders)',
+      whereArgs: invoiceIds,
+      orderBy: 'created_at ASC, id ASC'
+    );
+    
+    final Map<int, List<InvoiceAdjustment>> grouped = {};
+    for (var m in maps) {
+      final adj = InvoiceAdjustment.fromMap(m);
+      if (!grouped.containsKey(adj.invoiceId)) {
+        grouped[adj.invoiceId] = [];
+      }
+      grouped[adj.invoiceId]!.add(adj);
+    }
+    return grouped;
   }
 
   /// جلب الفواتير المُنشأة بعد تاريخ معين (للنسخ الاحتياطي إلى Telegram)

@@ -329,7 +329,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
     
     try {
       final settings = await SettingsManager.getAppSettings();
-      final mode = settings.autoPriceMode; // 0 = off, 1 = last, 3 = avg 3, 5 = avg 5
+      final mode = settings.autoPriceMode; // 0 = off, 1 = last, 3 = avg 3, 5 = avg 5, 99 = smart AI
       
       print('🔍 Auto Price: product="$productName", saleType="$saleType", mode=$mode');
       
@@ -397,15 +397,38 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
 
       // 2. البحث في السجل التاريخي إذا كان الخيار مُفعلاً
       if (mode > 0) {
-        final double? historicalPrice = await widget.databaseService!.getHistoricalPriceForProduct(productName, saleType, mode);
-        
-        print('📊 Historical Price: $historicalPrice');
-        
-        if (historicalPrice != null && historicalPrice > 0) {
-          finalPrice = historicalPrice;
-        } else {
-          print('⚠️ No historical price found for "$productName" - $saleType, using default price: $defaultPrice');
+        // 🔮 وضع التسعير الذكي
+        if (mode == 99 && product.id != null && (widget.customerId ?? 0) > 0) {
+          print('🔮 Using Smart Pricing for product_id=${product.id}, customer_id=${widget.customerId}');
+          final smartResult = await widget.databaseService!.getSmartPriceForProduct(
+            productId: product.id!,
+            customerId: widget.customerId ?? 0,
+            saleType: saleType,
+          );
+          
+          if (smartResult != null) {
+            finalPrice = smartResult.price;
+            print('🔮 Smart Price: ${smartResult.price} (ثقة: ${smartResult.confidence}%, المصدر: ${smartResult.source})');
+          } else {
+            print('⚠️ No smart price found, using default: $defaultPrice');
+            if (defaultPrice > 0) finalPrice = defaultPrice;
+          }
+        } else if (mode == 99) {
+          // التسعير الذكي غير متاح (لا يوجد product.id أو customerId)
+          print('⚠️ Smart Pricing unavailable (product.id=${product.id}, customerId=${widget.customerId}), using default: $defaultPrice');
           if (defaultPrice > 0) finalPrice = defaultPrice;
+        } else {
+          // الأوضاع التقليدية
+          final double? historicalPrice = await widget.databaseService!.getHistoricalPriceForProduct(productName, saleType, mode);
+          
+          print('📊 Historical Price: $historicalPrice');
+          
+          if (historicalPrice != null && historicalPrice > 0) {
+            finalPrice = historicalPrice;
+          } else {
+            print('⚠️ No historical price found for "$productName" - $saleType, using default price: $defaultPrice');
+            if (defaultPrice > 0) finalPrice = defaultPrice;
+          }
         }
       } else {
         print('🔕 Auto Price is disabled (mode=0), using default price: $defaultPrice');

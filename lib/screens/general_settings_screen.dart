@@ -18,6 +18,8 @@ import '../services/invoice_prediction_service.dart' as invoice_prediction; // �
 import '../services/expert_training_service.dart'; // العقل المدبر للتدريب
 import 'financial_audit_screen.dart'; // 🛡️ شاشة التدقيق المالي
 import 'discord_settings_screen.dart'; // 📱 إعدادات Discord
+import 'package:file_picker/file_picker.dart';
+import '../services/smart_pricing_service.dart';
 
 class GeneralSettingsScreen extends StatefulWidget {
   const GeneralSettingsScreen({super.key});
@@ -59,9 +61,18 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
   bool _autoScrollInvoice = true;
   int _autoPriceMode = 0;
   
+  // 🔮 إعدادات التسعير الذكي
+  double _wholesaleCustomerLimit = 5000000.0;
+  final TextEditingController _wholesaleLimitController = TextEditingController();
+  
   // ✈️ إعدادات التليجرام
   bool _telegramSyncEnabled = true;
   DateTime? _telegramTurnOffDate;
+  
+  // 🏷️ إعدادات الختم
+  String _stampType = 'barcode';
+  String? _customCashStampPath;
+  String? _customCreditStampPath;
   
   // 🔄 إعدادات المزامنة
   bool _syncFullTransferMode = false;
@@ -114,6 +125,10 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
     _autoScrollInvoice = _appSettings.autoScrollInvoice;
     _autoPriceMode = _appSettings.autoPriceMode;
     
+    // تحميل إعدادات التسعير الذكي
+    _wholesaleCustomerLimit = _appSettings.wholesaleCustomerLimit;
+    _wholesaleLimitController.text = _wholesaleCustomerLimit.toStringAsFixed(0);
+    
     // تحميل إعدادات التليجرام
     _telegramSyncEnabled = _appSettings.telegramSyncEnabled;
     _telegramTurnOffDate = _appSettings.telegramTurnOffDate;
@@ -128,6 +143,11 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
     
     // تحميل اسم الفرع
     _branchName = _appSettings.branchName;
+    
+    // تحميل إعدادات الختم
+    _stampType = _appSettings.stampType;
+    _customCashStampPath = _appSettings.customCashStampPath;
+    _customCreditStampPath = _appSettings.customCreditStampPath;
     
     // تحميل وصف الشركة
     _companyDescriptionController.text = _appSettings.companyDescription;
@@ -180,6 +200,9 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
       syncAutoCreateCustomers: _syncAutoCreateCustomers,
       storeSection: _storeSection,
       branchName: _branchName,
+      stampType: _stampType,
+      customCashStampPath: _customCashStampPath,
+      customCreditStampPath: _customCreditStampPath,
     );
     await SettingsManager.saveAppSettings(_appSettings);
     if (mounted) {
@@ -953,6 +976,13 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                       DropdownMenuItem(value: 1, child: Text('آخر سعر')),
                       DropdownMenuItem(value: 3, child: Text('متوسط آخر 3')),
                       DropdownMenuItem(value: 5, child: Text('متوسط آخر 5')),
+                      DropdownMenuItem(value: 11, child: Text('متوسط آخر شهر')),
+                      DropdownMenuItem(value: 12, child: Text('متوسط آخر شهرين')),
+                      DropdownMenuItem(value: 13, child: Text('متوسط آخر 3 أشهر')),
+                      DropdownMenuItem(value: 21, child: Text('الأكثر تكراراً - شهر')),
+                      DropdownMenuItem(value: 22, child: Text('الأكثر تكراراً - شهرين')),
+                      DropdownMenuItem(value: 23, child: Text('الأكثر تكراراً - 3 أشهر')),
+                      DropdownMenuItem(value: 99, child: Text('🔮 تسعير ذكي (AI)')),
                     ],
                     onChanged: (val) {
                       if (val != null) {
@@ -963,6 +993,101 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                     },
                   ),
                 ),
+              ],
+            ),
+          ),
+          
+          // 🏷️ إعدادات الختم
+          _buildSettingsCard(
+            icon: Icons.qr_code_scanner,
+            iconColor: Colors.deepOrange,
+            title: 'إعدادات ختم الفاتورة',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                DropdownButtonFormField<String>(
+                  value: _stampType,
+                  decoration: InputDecoration(
+                    labelText: 'نوع الختم',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: primaryColor, width: 2),
+                    ),
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: 'barcode', child: Text('ختم باركود (الافتراضي)')),
+                    DropdownMenuItem(value: 'barcode_black', child: Text('ختم باركود (أسود للطابعة العادية)')),
+                    DropdownMenuItem(value: 'colored', child: Text('الختم الثابت الملون')),
+                    DropdownMenuItem(value: 'ink', child: Text('الختم الثابت الحبري')),
+                    DropdownMenuItem(value: 'custom', child: Text('ختم مخصص (اختيار صورة)')),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() {
+                        _stampType = value;
+                      });
+                    }
+                  },
+                ),
+                if (_stampType == 'custom') ...[
+                  const SizedBox(height: 16),
+                  Text('اختيار صور الختم المخصص:', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey[700])),
+                  const SizedBox(height: 8),
+                  // Cash Stamp
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.image, color: Colors.green),
+                    title: const Text('صورة ختم النقد'),
+                    subtitle: Text(_customCashStampPath ?? 'لم يتم اختيار صورة', style: const TextStyle(fontSize: 10), maxLines: 1, overflow: TextOverflow.ellipsis),
+                    trailing: TextButton(
+                      onPressed: () async {
+                        FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.image);
+                        if (result != null && result.files.single.path != null) {
+                          setState(() {
+                            _customCashStampPath = result.files.single.path;
+                          });
+                        }
+                      },
+                      child: const Text('اختيار'),
+                    ),
+                  ),
+                  // Credit Stamp
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.image, color: Colors.red),
+                    title: const Text('صورة ختم الآجل'),
+                    subtitle: Text(_customCreditStampPath ?? 'لم يتم اختيار صورة', style: const TextStyle(fontSize: 10), maxLines: 1, overflow: TextOverflow.ellipsis),
+                    trailing: TextButton(
+                      onPressed: () async {
+                        FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.image);
+                        if (result != null && result.files.single.path != null) {
+                          setState(() {
+                            _customCreditStampPath = result.files.single.path;
+                          });
+                        }
+                      },
+                      child: const Text('اختيار'),
+                    ),
+                  ),
+                  if (_customCashStampPath != null || _customCreditStampPath != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8.0),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          icon: const Icon(Icons.clear, color: Colors.red, size: 16),
+                          label: const Text('مسح الصور المخصصة', style: TextStyle(color: Colors.red, fontSize: 12)),
+                          onPressed: () {
+                            setState(() {
+                              _customCashStampPath = null;
+                              _customCreditStampPath = null;
+                            });
+                          },
+                        ),
+                      ),
+                    ),
+                ],
               ],
             ),
           ),
@@ -1283,6 +1408,32 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
             ),
           ),
           
+          // 🔮 إعدادات التسعير الذكي
+          _buildSettingsCard(
+            icon: Icons.price_change,
+            iconColor: Colors.deepPurple,
+            title: 'إعدادات التسعير الذكي',
+            child: Column(
+              children: [
+                _buildActionTile(
+                  icon: Icons.monetization_on,
+                  iconColor: Colors.green,
+                  title: 'حد العميل الجملة',
+                  subtitle: 'العميل الذي تتجاوز سحوباته ${_wholesaleCustomerLimit.toStringAsFixed(0)} يعتبر جملة',
+                  onTap: () => _editWholesaleLimit(),
+                ),
+                const Divider(height: 1),
+                _buildActionTile(
+                  icon: Icons.model_training,
+                  iconColor: Colors.purple,
+                  title: 'إعادة تدريب محرك التسعير',
+                  subtitle: 'مسح وإعادة بناء الإحصائيات لجميع الأصناف',
+                  onTap: () => _trainSmartPricing(),
+                ),
+              ],
+            ),
+          ),
+          
           // 🛡️ أدوات الحماية والتدقيق المالي
           _buildSettingsCard(
             icon: Icons.verified_user,
@@ -1327,6 +1478,127 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
         ],
       ),
     );
+  }
+
+  // 🧠 دالة تعديل حد الجملة
+  Future<void> _editWholesaleLimit() async {
+    _wholesaleLimitController.text = _wholesaleCustomerLimit.toStringAsFixed(0);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('حد العميل الجملة'),
+        content: TextField(
+          controller: _wholesaleLimitController,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            labelText: 'المبلغ (مثال: 5000000)',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple),
+            child: const Text('حفظ'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      final val = double.tryParse(_wholesaleLimitController.text);
+      if (val != null && val >= 0) {
+        setState(() {
+          _wholesaleCustomerLimit = val;
+        });
+        await _saveSettings();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('✅ تم حفظ حد الجملة بنجاح'), backgroundColor: Colors.green),
+          );
+        }
+      }
+    }
+  }
+
+  // 🧠 دالة تدريب التسعير الذكي
+  Future<void> _trainSmartPricing() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.price_change, color: Colors.deepPurple),
+            SizedBox(width: 8),
+            Text('تدريب محرك التسعير الذكي'),
+          ],
+        ),
+        content: const Text(
+          'سيقوم النظام بقراءة جميع الفواتير وبناء إحصائيات التسعير من جديد.\n'
+          'قد يستغرق هذا بعض الوقت بناءً على حجم البيانات.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.play_arrow),
+            label: const Text('بدء التدريب'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple),
+            onPressed: () => Navigator.pop(context, true),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const AlertDialog(
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('جاري تدريب محرك التسعير...'),
+            SizedBox(height: 8),
+            Text(
+              'يرجى الانتظار ولا تغلق التطبيق',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      final smartPricing = SmartPricingService();
+      await smartPricing.rebuildAllStats();
+
+      if (mounted) {
+        Navigator.pop(context); // إغلاق نافذة التحميل
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ اكتمل تدريب محرك التسعير بنجاح'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ حدث خطأ أثناء التدريب: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   // 🧠 دالة تدريب البحث الذكي
