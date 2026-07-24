@@ -303,14 +303,7 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
             title: const Text('تعديل القوائم (الفواتير)'),
             // The title style is now managed by appBarTheme.titleTextStyle
           ),
-        body: _loading
-            ? const Center(
-                child: CircularProgressIndicator(
-                  color:
-                      Color(0xFF3F51B5), // Explicitly set color for indicator
-                ),
-              )
-            : Padding(
+        body: Padding(
                 padding:
                     const EdgeInsets.all(24.0), // Increased overall padding
                 child: Column(
@@ -356,18 +349,24 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                     ),
                     const SizedBox(height: 24), // Increased spacing
                     Expanded(
-                      child: _invoices.isEmpty
-                          ? Center(
-                              child: Text(
-                                'لا توجد قوائم مطابقة',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodyLarge
-                                    ?.copyWith(
-                                        color: Colors
-                                            .grey[600]), // Themed text style
+                      child: _loading 
+                          ? const Center(
+                              child: CircularProgressIndicator(
+                                color: Color(0xFF3F51B5), // Explicitly set color for indicator
                               ),
                             )
+                          : _invoices.isEmpty
+                              ? Center(
+                                  child: Text(
+                                    'لا توجد قوائم مطابقة',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodyLarge
+                                        ?.copyWith(
+                                            color: Colors
+                                                .grey[600]), // Themed text style
+                                  ),
+                                )
                           : ListView.builder(
                               controller: _scrollController,
                               padding: const EdgeInsets.symmetric(
@@ -396,7 +395,7 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                                         vertical:
                                             12.0), // Increased internal padding for ListTile
                                     title: Text(
-                                      invoice.customerName,
+                                      '${invoice.customerName} - فاتورة #${invoice.formattedInvoiceNumber}',
                                       style: Theme.of(context)
                                           .textTheme
                                           .bodyLarge
@@ -411,7 +410,7 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
                                         Text(
-                                          'التاريخ: ${DateFormat('yyyy/MM/dd').format(invoice.invoiceDate)}', // Consistent date format
+                                          'التاريخ: ${invoice.formattedInvoiceDate}', // Consistent date format
                                           style: Theme.of(context)
                                               .textTheme
                                               .bodyMedium

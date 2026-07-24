@@ -41,7 +41,12 @@ class MoneyCalculator {
   /// تقريب الرقم إلى عدد محدد من الخانات العشرية
   static double _round(double value) {
     num mod = pow(10.0, _precision);
-    return ((value * mod).round().toDouble() / mod);
+    double result = ((value * mod).round().toDouble() / mod);
+    // 🔒 التخلص من الصفر السالب الذي يظهر بسبب أخطاء التقريب (Floating Point)
+    if (result == -0.0 || (result.abs() < 0.0001)) {
+      return 0.0;
+    }
+    return result;
   }
   
   /// التحقق من تساوي رقمين (مع هامش خطأ ضئيل جداً)

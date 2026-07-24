@@ -45,6 +45,9 @@ class AppSettings {
   // 💰 إعدادات التسعير التلقائي في الفاتورة
   final int autoPriceMode; // 0=مطفأ, 1=آخر سعر, 3=متوسط آخر 3, 5=متوسط آخر 5, 11=متوسط شهر, 12=متوسط شهرين, 13=متوسط 3 أشهر, 21=أكثر تكراراً شهر, 22=أكثر تكراراً شهرين, 23=أكثر تكراراً 3 أشهر, 99=🔮 تسعير ذكي (AI)
   final double wholesaleCustomerLimit; // الحد المالي لاعتبار العميل جملة
+  
+  // ⚡ إعدادات الأداء
+  final bool enableSmartSearchRamCache; // تفعيل الذاكرة المؤقتة للبحث الذكي
 
   // ✈️ إرسال التليجرام التلقائي
   final bool telegramSyncEnabled;
@@ -92,6 +95,7 @@ class AppSettings {
     this.customCashStampPath,
     this.customCreditStampPath,
     double? wholesaleCustomerLimit,
+    bool? enableSmartSearchRamCache,
   }) : remainingAmountColor = remainingAmountColor ?? Colors.black.value,
        discountColor = discountColor ?? Colors.black.value,
        loadingFeesColor = loadingFeesColor ?? Colors.black.value,
@@ -124,7 +128,8 @@ class AppSettings {
        telegramSyncEnabled = telegramSyncEnabled ?? true,
        telegramTurnOffDate = telegramTurnOffDate,
        stampType = stampType ?? 'barcode',
-       wholesaleCustomerLimit = wholesaleCustomerLimit ?? 5000000.0;
+       wholesaleCustomerLimit = wholesaleCustomerLimit ?? 5000000.0,
+       enableSmartSearchRamCache = enableSmartSearchRamCache ?? true;
 
   Map<String, dynamic> toJson() => {
         'phoneNumbers': phoneNumbers,
@@ -163,6 +168,7 @@ class AppSettings {
         'customCashStampPath': customCashStampPath,
         'customCreditStampPath': customCreditStampPath,
         'wholesaleCustomerLimit': wholesaleCustomerLimit,
+        'enableSmartSearchRamCache': enableSmartSearchRamCache,
       };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -202,6 +208,7 @@ class AppSettings {
         customCashStampPath: json['customCashStampPath'],
         customCreditStampPath: json['customCreditStampPath'],
         wholesaleCustomerLimit: (json['wholesaleCustomerLimit'] as num?)?.toDouble() ?? 5000000.0,
+        enableSmartSearchRamCache: json['enableSmartSearchRamCache'] ?? true,
       );
 
   AppSettings copyWith({
@@ -241,6 +248,7 @@ class AppSettings {
     String? customCashStampPath,
     String? customCreditStampPath,
     double? wholesaleCustomerLimit,
+    bool? enableSmartSearchRamCache,
   }) {
     return AppSettings(
       phoneNumbers: phoneNumbers ?? this.phoneNumbers,
@@ -279,6 +287,7 @@ class AppSettings {
       customCashStampPath: customCashStampPath ?? this.customCashStampPath,
       customCreditStampPath: customCreditStampPath ?? this.customCreditStampPath,
       wholesaleCustomerLimit: wholesaleCustomerLimit ?? this.wholesaleCustomerLimit,
+      enableSmartSearchRamCache: enableSmartSearchRamCache ?? this.enableSmartSearchRamCache,
     );
   }
 }

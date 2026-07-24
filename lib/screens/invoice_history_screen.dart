@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'dart:convert';
 import '../services/database_service.dart';
+import '../models/invoice.dart';
 
 class InvoiceHistoryScreen extends StatefulWidget {
   final int invoiceId;
@@ -25,6 +26,7 @@ class _InvoiceHistoryScreenState extends State<InvoiceHistoryScreen> {
   List<Map<String, dynamic>> _snapshots = [];
   bool _isLoading = true;
   String? _errorMessage;
+  Invoice? _invoice;
 
   @override
   void initState() {
@@ -40,8 +42,10 @@ class _InvoiceHistoryScreenState extends State<InvoiceHistoryScreen> {
 
     try {
       final snapshots = await _db.getInvoiceSnapshots(widget.invoiceId);
+      final invoice = await _db.getInvoiceById(widget.invoiceId);
       setState(() {
         _snapshots = snapshots;
+        _invoice = invoice;
         _isLoading = false;
       });
     } catch (e) {
@@ -868,7 +872,7 @@ class _InvoiceHistoryScreenState extends State<InvoiceHistoryScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('سجل تعديلات الفاتورة', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            Text('فاتورة رقم #${widget.invoiceId}', style: const TextStyle(fontSize: 12, color: Colors.white70)),
+            Text('فاتورة رقم ${_invoice?.formattedInvoiceNumber ?? widget.invoiceId}', style: const TextStyle(fontSize: 12, color: Colors.white70)),
           ],
         ),
         elevation: 0,

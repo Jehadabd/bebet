@@ -65,6 +65,9 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
   double _wholesaleCustomerLimit = 5000000.0;
   final TextEditingController _wholesaleLimitController = TextEditingController();
   
+  // ⚡ إعدادات أداء البحث الذكي
+  bool _enableSmartSearchRamCache = true;
+  
   // ✈️ إعدادات التليجرام
   bool _telegramSyncEnabled = true;
   DateTime? _telegramTurnOffDate;
@@ -128,6 +131,9 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
     // تحميل إعدادات التسعير الذكي
     _wholesaleCustomerLimit = _appSettings.wholesaleCustomerLimit;
     _wholesaleLimitController.text = _wholesaleCustomerLimit.toStringAsFixed(0);
+    
+    // تحميل إعدادات أداء البحث الذكي
+    _enableSmartSearchRamCache = _appSettings.enableSmartSearchRamCache;
     
     // تحميل إعدادات التليجرام
     _telegramSyncEnabled = _appSettings.telegramSyncEnabled;
@@ -203,6 +209,7 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
       stampType: _stampType,
       customCashStampPath: _customCashStampPath,
       customCreditStampPath: _customCreditStampPath,
+      enableSmartSearchRamCache: _enableSmartSearchRamCache,
     );
     await SettingsManager.saveAppSettings(_appSettings);
     if (mounted) {
@@ -1339,6 +1346,18 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
             title: 'البحث الذكي (AI)',
             child: Column(
               children: [
+                SwitchListTile(
+                  title: const Text('تسريع البحث (الذاكرة المؤقتة)'),
+                  subtitle: const Text('حفظ علاقات الفاتورة الحالية في الذاكرة لتقليل التأخير أثناء الكتابة'),
+                  value: _enableSmartSearchRamCache,
+                  activeColor: Colors.deepPurple,
+                  onChanged: (bool value) {
+                    setState(() {
+                      _enableSmartSearchRamCache = value;
+                    });
+                  },
+                ),
+                const Divider(height: 1),
                 _buildActionTile(
                   icon: Icons.model_training,
                   iconColor: Colors.purple,

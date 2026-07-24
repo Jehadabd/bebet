@@ -142,6 +142,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
   final ScrollController _scrollController = ScrollController();
   bool _autoScrollEnabled = true; // سيتم تحميله من الإعدادات
   double _currentInvoiceProfit = 0.0;
+  double _currentInvoiceProfitPercentage = 0.0;
 
   void _calculateProfit() {
     double totalProfit = 0.0;
@@ -212,6 +213,17 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
     
     // Subtract discount from profit
     _currentInvoiceProfit = totalProfit - discount;
+    
+    // حساب نسبة الربح
+    double itemsTotal = invoiceItems.where((item) => _isInvoiceItemComplete(item)).fold(0.0, (sum, item) => sum + item.itemTotal);
+    final double loadingFee = double.tryParse(loadingFeeController.text.replaceAll(',', '')) ?? 0.0;
+    final double netTotal = (itemsTotal + loadingFee) - discount;
+    
+    if (netTotal > 0) {
+      _currentInvoiceProfitPercentage = (_currentInvoiceProfit / netTotal) * 100;
+    } else {
+      _currentInvoiceProfitPercentage = 0.0;
+    }
   }
 
   // ✅ مطلوب المستخدم: الضغط على إجمالي الربح لا يفعل شيئاً
@@ -4910,7 +4922,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                           const SizedBox(width: 8),
                           Text(
                             _isProfitVisible
-                                ? 'إجمالي الربح: ${formatNumber(_currentInvoiceProfit)}'
+                                ? 'إجمالي الربح: ${formatNumber(_currentInvoiceProfit)} | النسبة: ${_currentInvoiceProfitPercentage.toStringAsFixed(1)}%'
                                 : 'إجمالي الربح: ***',
                             style: TextStyle(
                               fontWeight: FontWeight.bold,
@@ -6995,12 +7007,23 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                         }
                       }
                       
-                      return Text(
-                        formatCurrency(costPrice),
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.green),
+                      return Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            formatCurrency(costPrice),
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.green),
+                          ),
+                          if (product.costPriceLastModifiedAt != null)
+                            Text(
+                              DateFormat('yyyy-MM-dd').format(product.costPriceLastModifiedAt!),
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(fontSize: 10, color: Colors.grey),
+                            ),
+                        ],
                       );
                     },
                   ),

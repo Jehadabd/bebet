@@ -20,7 +20,28 @@ class Invoice {
   bool isLocked;
   double pointsRate; // معدل النقاط لكل 100,000
   String? notes; // ملاحظة اختيارية للفاتورة
+  int? monthlySequenceNumber; // رقم الفاتورة التسلسلي ضمن الشهر
 
+  String get formattedInvoiceNumber {
+    final yearStr = invoiceDate.year.toString();
+    final monthStr = invoiceDate.month.toString().padLeft(2, '0');
+    final seq = monthlySequenceNumber ?? id ?? 0;
+    return '$yearStr$monthStr$seq';
+  }
+  
+  String get formattedInvoiceDate {
+    final year = invoiceDate.year;
+    final month = invoiceDate.month.toString().padLeft(2, '0');
+    final day = invoiceDate.day.toString().padLeft(2, '0');
+    final hour = invoiceDate.hour.toString().padLeft(2, '0');
+    final minute = invoiceDate.minute.toString().padLeft(2, '0');
+    return '$hour:$minute $day/$month/$year';
+  }
+  
+  /// الحصول على التاريخ والوقت كاملين في سطر واحد
+  String get formattedDateTime {
+    return formattedInvoiceDate;
+  }
   Invoice({
     this.id,
     required this.customerName,
@@ -41,6 +62,7 @@ class Invoice {
     this.isLocked = false,
     this.pointsRate = 1.0,
     this.notes,
+    this.monthlySequenceNumber,
   });
 
   // Convert an Invoice object into a Map object
@@ -65,6 +87,7 @@ class Invoice {
       'is_locked': isLocked ? 1 : 0,
       'points_rate': pointsRate,
       'notes': notes,
+      'monthly_sequence_number': monthlySequenceNumber,
     };
   }
 
@@ -90,6 +113,7 @@ class Invoice {
       isLocked: (map['is_locked'] ?? 0) == 1,
       pointsRate: (map['points_rate'] as num?)?.toDouble() ?? 1.0,
       notes: map['notes'] as String?,
+      monthlySequenceNumber: map['monthly_sequence_number'] as int?,
     );
   }
 
@@ -114,6 +138,7 @@ class Invoice {
     bool? isLocked,
     double? pointsRate,
     String? notes,
+    int? monthlySequenceNumber,
   }) {
     return Invoice(
       id: id ?? this.id,
@@ -135,6 +160,7 @@ class Invoice {
       isLocked: isLocked ?? this.isLocked,
       pointsRate: pointsRate ?? this.pointsRate,
       notes: notes ?? this.notes,
+      monthlySequenceNumber: monthlySequenceNumber ?? this.monthlySequenceNumber,
     );
   }
 }

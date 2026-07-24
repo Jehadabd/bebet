@@ -5,7 +5,7 @@ import 'package:alnaser/services/settings_manager.dart';
 import 'package:alnaser/models/app_settings.dart';
 import 'package:alnaser/services/stamp_manager.dart';
 
-pw.Widget _buildStamp(pw.Font font, String paymentType, int invoiceId, double totalAmount, int itemsCount, {bool isBlack = false}) {
+pw.Widget _buildStamp(pw.Font font, String paymentType, int invoiceId, double totalAmount, int itemsCount, {bool isBlack = false, String? formattedInvoiceNumber}) {
   final isCash = paymentType == 'نقد';
   final color = isBlack ? PdfColors.black : (isCash ? PdfColor.fromHex('#1A365D') : PdfColor.fromHex('#9B2C2C'));
   final text = isCash ? 'نقداً' : 'آجل';
@@ -72,7 +72,7 @@ pw.Widget _buildStamp(pw.Font font, String paymentType, int invoiceId, double to
           barcode: pw.Barcode.qrCode(
             errorCorrectLevel: pw.BarcodeQRCorrectionLevel.medium,
           ),
-          data: 'رقم الفاتورة: $invoiceId\nالمبلغ: $totalAmount\nعدد العناصر: $itemsCount',
+          data: 'رقم الفاتورة: ${formattedInvoiceNumber ?? invoiceId}\nالمبلغ: $totalAmount\nعدد العناصر: $itemsCount',
           width: 35,
           height: 35,
           color: color,
@@ -104,6 +104,7 @@ pw.Widget buildPdfHeader(
      int? invoiceId,
      double? totalAmount,
      int? itemsCount,
+     String? formattedInvoiceNumber,
     }) {
   return pw.Column(
     children: [
@@ -206,9 +207,9 @@ pw.Widget buildPdfHeader(
                       else if (appSettings.stampType == 'custom')
                         _buildImageStamp(StampManager.customCash, StampManager.customCredit, paymentType)
                       else if (appSettings.stampType == 'barcode_black')
-                        _buildStamp(font, paymentType, invoiceId, totalAmount, itemsCount, isBlack: true)
+                        _buildStamp(font, paymentType, invoiceId, totalAmount, itemsCount, isBlack: true, formattedInvoiceNumber: formattedInvoiceNumber)
                       else
-                        _buildStamp(font, paymentType, invoiceId, totalAmount, itemsCount, isBlack: false),
+                        _buildStamp(font, paymentType, invoiceId, totalAmount, itemsCount, isBlack: false, formattedInvoiceNumber: formattedInvoiceNumber),
                   ],
                 ),
               ],

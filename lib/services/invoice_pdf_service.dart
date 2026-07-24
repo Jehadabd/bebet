@@ -72,6 +72,7 @@ class InvoicePdfService {
                     invoiceId: invoiceId,
                     totalAmount: afterDiscount,
                     itemsCount: invoiceItems.length,
+                    formattedInvoiceNumber: invoiceToManage?.formattedInvoiceNumber,
                   ),
                   pw.Row(
                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
@@ -81,13 +82,10 @@ class InvoicePdfService {
                       pw.Text(
                           'العنوان: ${customerAddress.isNotEmpty ? customerAddress : ' ______'}',
                           style: pw.TextStyle(font: font, fontSize: 11)),
-                      pw.Text('رقم الفاتورة: $invoiceId',
+                      pw.Text('رقم الفاتورة: ${invoiceToManage?.formattedInvoiceNumber ?? invoiceId}',
                           style: pw.TextStyle(font: font, fontSize: 10)),
                       pw.Text(
-                          'الوقت: ${createdAt?.hour.toString().padLeft(2, '0') ?? DateTime.now().hour.toString().padLeft(2, '0')}:${createdAt?.minute.toString().padLeft(2, '0') ?? DateTime.now().minute.toString().padLeft(2, '0')}',
-                          style: pw.TextStyle(font: font, fontSize: 11)),
-                      pw.Text(
-                        'التاريخ: ${selectedDate.year}/${selectedDate.month}/${selectedDate.day}',
+                        'التاريخ والوقت: ${invoiceToManage?.formattedInvoiceDate ?? '${createdAt?.hour.toString().padLeft(2, '0') ?? DateTime.now().hour.toString().padLeft(2, '0')}:${createdAt?.minute.toString().padLeft(2, '0') ?? DateTime.now().minute.toString().padLeft(2, '0')} ${selectedDate.day.toString().padLeft(2, '0')}/${selectedDate.month.toString().padLeft(2, '0')}/${selectedDate.year}'}',
                         style: pw.TextStyle(font: font, fontSize: 11),
                       ),
                     ],

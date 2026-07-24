@@ -16,6 +16,7 @@ class Product {
   final double? price5;
   final String? unitHierarchy; // JSON string representing the unit hierarchy
   final String? unitCosts; // JSON string representing costs for each unit level
+  final DateTime? costPriceLastModifiedAt;
   final DateTime createdAt;
   final DateTime lastModifiedAt;
 
@@ -34,6 +35,7 @@ class Product {
     this.price5,
     this.unitHierarchy,
     this.unitCosts,
+    this.costPriceLastModifiedAt,
     required this.createdAt,
     required this.lastModifiedAt,
   });
@@ -54,6 +56,7 @@ class Product {
       'price5': price5,
       'unit_hierarchy': unitHierarchy,
       'unit_costs': unitCosts,
+      'cost_price_last_modified_at': costPriceLastModifiedAt?.toIso8601String(),
       'created_at': createdAt.toIso8601String(),
       'last_modified_at': lastModifiedAt.toIso8601String(),
     };
@@ -75,6 +78,9 @@ class Product {
       price5: (map['price5'] as num?)?.toDouble(),
       unitHierarchy: map['unit_hierarchy'] as String?,
       unitCosts: map['unit_costs'] as String?,
+      costPriceLastModifiedAt: map['cost_price_last_modified_at'] != null 
+          ? DateTime.parse(map['cost_price_last_modified_at'] as String) 
+          : null,
       createdAt: DateTime.parse(map['created_at'] as String),
       lastModifiedAt: DateTime.parse(map['last_modified_at'] as String),
     );
@@ -96,6 +102,7 @@ class Product {
     double? price5,
     String? unitHierarchy,
     String? unitCosts,
+    DateTime? costPriceLastModifiedAt,
     DateTime? createdAt,
     DateTime? lastModifiedAt,
   }) {
@@ -114,6 +121,7 @@ class Product {
       price5: price5 ?? this.price5,
       unitHierarchy: unitHierarchy ?? this.unitHierarchy,
       unitCosts: unitCosts ?? this.unitCosts,
+      costPriceLastModifiedAt: costPriceLastModifiedAt ?? this.costPriceLastModifiedAt,
       createdAt: createdAt ?? this.createdAt,
       lastModifiedAt: lastModifiedAt ?? this.lastModifiedAt,
     );

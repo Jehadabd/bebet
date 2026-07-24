@@ -415,7 +415,7 @@ class _ProductMonthDetailsScreenState extends State<ProductMonthDetailsScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'فاتورة رقم: ${invoiceData.invoice.id}',
+                          'فاتورة رقم: ${invoiceData.invoice.formattedInvoiceNumber}',
                           style: const TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.bold,

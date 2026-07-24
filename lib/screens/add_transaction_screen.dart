@@ -153,9 +153,10 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     super.dispose();
   }
 
-  // Helper to format currency with thousand separators (no decimals)
+  // Helper to format currency with thousand separators (shows decimals only if they exist)
   String formatCurrency(num value) {
-    return NumberFormat('#,##0', 'en_US').format(value);
+    if (value == 0 || value.abs() < 0.0001) return '0';
+    return NumberFormat('#,##0.###', 'en_US').format(value);
   }
 
   Future<void> _saveTransaction() async {
@@ -663,10 +664,10 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                       color:
                           Theme.of(context).colorScheme.primary), // Themed icon
                 ),
-                keyboardType: TextInputType.number,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 inputFormatters: [
-                  FilteringTextInputFormatter.digitsOnly,
-                  ThousandSeparatorInputFormatter(),
+                  FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                  ThousandSeparatorDecimalInputFormatter(),
                   LengthLimitingTextInputFormatter(15),
                 ],
                 onChanged: (_) => setState(() {}),
@@ -685,9 +686,11 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                     // Preserving original functional constraint
                     return 'المبلغ أكبر من الحد المسموح به';
                   }
-                  if (!_isDebt && number > widget.customer.currentTotalDebt) {
-                    // Preserving original functional constraint
-                    return 'المبلغ المدخل أكبر من الدين الحالي';
+                  if (!_isDebt) {
+                    final diff = MoneyCalculator.subtract(number, widget.customer.currentTotalDebt);
+                    if (diff > 0.0) {
+                      return 'أكبر من الدين بـ $diff (الفعلي: ${widget.customer.currentTotalDebt})';
+                    }
                   }
                   return null;
                 },

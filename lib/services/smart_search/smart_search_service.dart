@@ -6,6 +6,7 @@ import '../database_service.dart';
 import 'smart_search_db.dart';
 import 'smart_search_models.dart';
 import 'smart_search_trainer.dart';
+import '../settings_manager.dart';
 
 /// منتج مع نقاط الترتيب
 class _ScoredProduct {
@@ -144,6 +145,7 @@ class SmartSearchService {
       _sessionContext.addedProductIds.remove(productId);
     }
     _sessionContext.addedProductNames.remove(productName);
+    _sessionContext.isRelationshipsDirty = true; // 🆕 طلب تحديث الذاكرة المؤقتة
     
     // إعادة حساب العلامات التجارية والكلمات الأخيرة
     _sessionContext.detectedBrands.clear();
@@ -235,18 +237,31 @@ class SmartSearchService {
         brandQueriesFutures.add(_mainDb.searchProductsSmart('$brand $query'));
       }
 
-      // 3. جلب المنتجات المرتبطة (Associations) بالتوازي أيضاً
-      Future<Map<int, Map<String, dynamic>>> associationsFuture = Future.value({});
-      if (_sessionContext.addedProductIds.isNotEmpty) {
-        associationsFuture = _smartDb.getAssociatedProductsForList(
-          _sessionContext.addedProductIds,
-        );
-      }
+      // 3 & 3.5 جلب المنتجات المرتبطة وعلاقات الترتيب (مع استخدام الذاكرة المؤقتة Session Cache)
+      final settings = await SettingsManager.getAppSettings();
+      final useRamCache = settings.enableSmartSearchRamCache;
       
-      // 🆕 3.5 جلب علاقات الترتيب لجميع المنتجات المضافة وليس الأخير فقط (التراكمية)
-      Future<List<ProductSequence>> sequencesFuture = Future.value([]);
-      if (_sessionContext.addedProductIds.isNotEmpty) {
-        sequencesFuture = _smartDb.getSequencesForList(_sessionContext.addedProductIds);
+      Future<Map<int, Map<String, dynamic>>> associationsFuture;
+      Future<List<ProductSequence>> sequencesFuture;
+      
+      if (useRamCache) {
+          if (_sessionContext.isRelationshipsDirty && _sessionContext.addedProductIds.isNotEmpty) {
+            final newAssociations = await _smartDb.getAssociatedProductsForList(_sessionContext.addedProductIds);
+            final newSequences = await _smartDb.getSequencesForList(_sessionContext.addedProductIds);
+            
+            _sessionContext.cachedAssociations = newAssociations;
+            _sessionContext.cachedSequences = newSequences;
+            _sessionContext.isRelationshipsDirty = false;
+          }
+          associationsFuture = Future.value(_sessionContext.cachedAssociations);
+          sequencesFuture = Future.value(_sessionContext.cachedSequences);
+      } else {
+          associationsFuture = _sessionContext.addedProductIds.isNotEmpty 
+              ? _smartDb.getAssociatedProductsForList(_sessionContext.addedProductIds)
+              : Future.value({});
+          sequencesFuture = _sessionContext.addedProductIds.isNotEmpty
+              ? _smartDb.getSequencesForList(_sessionContext.addedProductIds)
+              : Future.value([]);
       }
 
       // انتظار جميع الاستعلامات المتوازية
@@ -316,6 +331,31 @@ class SmartSearchService {
     List<String>? currentInvoiceProductNames,
   }) {
     // 🚀 تحضير مسبق (Pre-compute) لزيادة السرعة خارج حلقة الفحص البطيئة 🚀
+    
+    // 🆕 خريطة للوصول الفوري للعلاقات المتسلسلة (O(1) بدلاً من O(N) لكل منتج)
+    final Map<int, List<ProductSequence>> sequencesMap = {};
+    for (final seq in sequences) {
+      sequencesMap.putIfAbsent(seq.toProductId, () => []).add(seq);
+    }
+    
+    // 🆕 خريطة للوصول الفوري لعلامات العملاء والمُركبين
+    final Map<String, double> customerBrandScores = {};
+    for (final pref in _sessionContext.customerPreferences) {
+      final brandNorm = _normalizeForBrandMatch(pref.brand);
+      final monthsPassed = DateTime.now().difference(pref.lastPurchase).inDays / 30.0;
+      double decayFactor = 1.0 - (monthsPassed * (1.0 / 24.0));
+      if (decayFactor < 0) decayFactor = 0;
+      customerBrandScores[brandNorm] = (pref.percentage * 0.5) * decayFactor;
+    }
+    
+    final Map<String, double> installerBrandScores = {};
+    for (final pref in _sessionContext.installerPreferences) {
+      final brandNorm = _normalizeForBrandMatch(pref.brand);
+      final monthsPassed = DateTime.now().difference(pref.lastPurchase).inDays / 30.0;
+      double decayFactor = 1.0 - (monthsPassed * (1.0 / 24.0));
+      if (decayFactor < 0) decayFactor = 0;
+      installerBrandScores[brandNorm] = (pref.percentage * 0.3) * decayFactor;
+    }
     
     // استخراج "عائلة" المنتجات المضافة (الكلمات الأولى)
     final addedProductFamilies = _extractProductFamilies(_sessionContext.addedProductNames);
@@ -407,31 +447,14 @@ class SmartSearchService {
       // 2.5 نقاط تفضيلات العميل والمُركّب (مع التقادم الزمني)
       // ═══════════════════════════════════════════════════════════════════
       if (productBrandNormalized != null) {
-        // تفضيلات العميل
-        for (final pref in _sessionContext.customerPreferences) {
-          if (_normalizeForBrandMatch(pref.brand) == productBrandNormalized) {
-             final monthsPassed = DateTime.now().difference(pref.lastPurchase).inDays / 30.0;
-             // التقادم أبطأ هنا (سنتين) لأن تفضيل الماركة يدوم طويلاً
-             double decayFactor = 1.0 - (monthsPassed * (1.0 / 24.0)); 
-             if (decayFactor < 0) decayFactor = 0;
-             
-             // نعطي نقاط بناءً على النسبة المئوية للتفضيل (0-100) - بحد أقصى 50 نقطة
-             score += (pref.percentage * 0.5) * decayFactor;
-             break;
-          }
+        // تفضيلات العميل (من الخريطة المعدة مسبقاً) O(1)
+        if (customerBrandScores.containsKey(productBrandNormalized)) {
+          score += customerBrandScores[productBrandNormalized]!;
         }
         
-        // تفضيلات المُركّب
-        for (final pref in _sessionContext.installerPreferences) {
-          if (_normalizeForBrandMatch(pref.brand) == productBrandNormalized) {
-             final monthsPassed = DateTime.now().difference(pref.lastPurchase).inDays / 30.0;
-             double decayFactor = 1.0 - (monthsPassed * (1.0 / 24.0)); 
-             if (decayFactor < 0) decayFactor = 0;
-             
-             // بحد أقصى 30 نقطة
-             score += (pref.percentage * 0.3) * decayFactor;
-             break;
-          }
+        // تفضيلات المُركّب (من الخريطة المعدة مسبقاً) O(1)
+        if (installerBrandScores.containsKey(productBrandNormalized)) {
+          score += installerBrandScores[productBrandNormalized]!;
         }
       }
       
@@ -456,7 +479,7 @@ class SmartSearchService {
         
         // 🆕 3.5 نقاط الترتيب التراكمية (Sequence) مع التقادم الزمني والمسافة
         // المنتج الحالي يجمع نقاطاً من جميع المنتجات التي سبقته في الفاتورة الحالية
-        final productSequences = sequences.where((s) => s.toProductId == productId).toList();
+        final productSequences = sequencesMap[productId] ?? [];
         for (final sequence in productSequences) {
           final monthsPassed = DateTime.now().difference(sequence.lastOccurred).inDays / 30.0;
           double decayFactor = 1.0 - (monthsPassed * (1.0 / 12.0));

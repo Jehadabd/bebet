@@ -3,6 +3,7 @@
 
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
+import 'package:intl/intl.dart';
 import '../models/customer.dart'; // تأكد من أن المسار صحيح وأن النموذج محدث
 import '../models/transaction.dart'; // DebtTransaction - تأكد من أن المسار صحيح
 import '../models/product.dart'; // تأكد من أن المسار صحيح
@@ -32,7 +33,7 @@ class DatabaseService {
   static Database? _database;
   static Completer<Database>? _initDbCompleter; // 🛡️ لمنع Race Condition
   bool _isShuttingDown = false; // 🛡️ لإيقاف الفتح أثناء الإغلاق
-  static const int _databaseVersion = 43; // إصلاح جدول products_fts القديم (عمود name → name_norm)
+  static const int _databaseVersion = 44; // إضافة عمود cost_price_last_modified_at للمنتجات
   // تحكم بالطباعات التشخيصية من مصدر واحد
   // معطل في الإصدار النهائي لتجنب الطباعات المزعجة
   static const bool _verboseLogs = false;
@@ -550,6 +551,15 @@ class DatabaseService {
           await _database!.execute('ALTER TABLE invoices ADD COLUMN final_total REAL;');
           // تحديث الفواتير الموجودة: تعيين total_amount كقيمة مبدئية لـ final_total
           await _database!.execute('UPDATE invoices SET final_total = total_amount;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      
+      final hasMonthlySeq = invInfo.any((col) => col['name'] == 'monthly_sequence_number');
+      if (!hasMonthlySeq) {
+        try {
+          await _database!.execute('ALTER TABLE invoices ADD COLUMN monthly_sequence_number INTEGER;');
         } catch (e) {
           // تجاهل الخطأ
         }
@@ -1181,6 +1191,7 @@ class DatabaseService {
         price4 REAL,
         price5 REAL,
         unit_hierarchy TEXT,
+        cost_price_last_modified_at TEXT,
         created_at TEXT NOT NULL,
         last_modified_at TEXT NOT NULL
       )
@@ -1486,6 +1497,11 @@ class DatabaseService {
       await db.execute('ALTER TABLE transactions ADD COLUMN synced_at TEXT;');
       
       await db.execute('CREATE INDEX IF NOT EXISTS idx_transactions_sync_uuid ON transactions(sync_uuid)');
+    } catch (_) {}
+
+    // إضافة عمود تاريخ آخر تحديث لسعر التكلفة للمنتجات
+    try {
+      await db.execute('ALTER TABLE products ADD COLUMN cost_price_last_modified_at TEXT;');
     } catch (_) {}
 
     // جدول المرفوعات (returns)
@@ -2129,6 +2145,17 @@ class DatabaseService {
     // ═══════════════════════════════════════════════════════════════════════════
     if (oldVersion < 43) {
       await _fixLegacyFTSSchema(db);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // الإصدار 44: إضافة حقل cost_price_last_modified_at لجدول المنتجات
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (oldVersion < 44) {
+      try {
+        await db.execute('ALTER TABLE products ADD COLUMN cost_price_last_modified_at TEXT;');
+      } catch (e) {
+        print('DEBUG DB: Error adding cost_price_last_modified_at: $e');
+      }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -4203,14 +4230,19 @@ class DatabaseService {
           lastBalanceAfter = (invoiceTransactions.last['new_balance_after_transaction'] as num?)?.toDouble();
         }
         
+        final seq = invoice['monthly_sequence_number'] as int?;
+        final formattedNum = seq != null
+            ? '${DateFormat('yyyyMM').format(invoiceDate)}$seq'
+            : invoiceId.toString();
+        
         // تحديد الوصف
         String description;
         if (paymentType == 'نقد') {
-          description = 'فاتورة #$invoiceId (نقد)';
+          description = 'فاتورة #$formattedNum (نقد)';
         } else if (netAmount.abs() < 0.01) {
-          description = 'فاتورة #$invoiceId (مسددة)';
+          description = 'فاتورة #$formattedNum (مسددة)';
         } else {
-          description = 'فاتورة #$invoiceId';
+          description = 'فاتورة #$formattedNum';
         }
         
         result.add(GroupedTransactionItem(
@@ -4219,6 +4251,7 @@ class DatabaseService {
           amount: netAmount,
           description: description,
           invoiceId: invoiceId,
+          monthlySequenceNumber: seq,
           invoiceTotal: totalAmount,
           invoicePaid: paidAmount,
           paymentType: paymentType,
@@ -4368,8 +4401,27 @@ class DatabaseService {
   Future<int> insertInvoice(Invoice invoice) async {
     final db = await database;
     try {
-      // No serial number generation needed
-      final id = await db.insert('invoices', invoice.toMap());
+      // Generate monthly_sequence_number if null
+      int nextSeq = 1;
+      if (invoice.monthlySequenceNumber == null) {
+        final dateStr = invoice.invoiceDate.toIso8601String().substring(0, 7); // YYYY-MM
+        final result = await db.rawQuery('''
+          SELECT MAX(monthly_sequence_number) as max_seq 
+          FROM invoices 
+          WHERE strftime('%Y-%m', invoice_date) = ?
+        ''', [dateStr]);
+        
+        if (result.isNotEmpty && result.first['max_seq'] != null) {
+          nextSeq = (result.first['max_seq'] as int) + 1;
+        }
+      } else {
+        nextSeq = invoice.monthlySequenceNumber!;
+      }
+      
+      final mapToSave = invoice.toMap();
+      mapToSave['monthly_sequence_number'] = nextSeq;
+      
+      final id = await db.insert('invoices', mapToSave);
       // Initialize final_total to equal total_amount at creation
       try {
         await db.rawUpdate('UPDATE invoices SET final_total = total_amount WHERE id = ? AND (final_total IS NULL OR final_total = 0)', [id]);
@@ -4476,8 +4528,22 @@ class DatabaseService {
           // حذف العناصر القديمة
           await txn.delete('invoice_items', where: 'invoice_id = ?', whereArgs: [invoiceId]);
         } else {
-          invoiceId = await txn.insert('invoices', invoiceToSave.toMap());
-          invoiceToSave = invoiceToSave.copyWith(id: invoiceId);
+          // Generate monthly_sequence_number
+          final dateStr = invoiceToSave.invoiceDate.toIso8601String().substring(0, 7);
+          final seqResult = await txn.rawQuery('''
+            SELECT MAX(monthly_sequence_number) as max_seq 
+            FROM invoices 
+            WHERE strftime('%Y-%m', invoice_date) = ?
+          ''', [dateStr]);
+          int nextSeq = 1;
+          if (seqResult.isNotEmpty && seqResult.first['max_seq'] != null) {
+            nextSeq = (seqResult.first['max_seq'] as int) + 1;
+          }
+          final mapToSave = invoiceToSave.toMap();
+          mapToSave['monthly_sequence_number'] = nextSeq;
+
+          invoiceId = await txn.insert('invoices', mapToSave);
+          invoiceToSave = invoiceToSave.copyWith(id: invoiceId, monthlySequenceNumber: nextSeq);
         }
 
         // 4. حفظ العناصر (Items Saving)
@@ -6396,7 +6462,7 @@ class DatabaseService {
       }
       
       // ترتيب النتائج حسب الأولوية
-      return allResults.take(100).toList();
+      return allResults.take(50).toList();
       
     } catch (e) {
       print('Error in smart search: $e');
@@ -6432,7 +6498,7 @@ class DatabaseService {
         JOIN products p ON p.id = products_fts.rowid
         WHERE products_fts MATCH ?
         ORDER BY rank_score ASC
-        LIMIT 500
+        LIMIT 50
       ''', [ftsQuery]);
       
       return List.generate(maps.length, (i) => Product.fromMap(maps[i]));
@@ -6462,7 +6528,7 @@ class DatabaseService {
         FROM products p
         WHERE p.name_norm LIKE ? OR p.name_norm LIKE ?
         ORDER BY relevance_score DESC, p.name_norm ASC
-        LIMIT 30
+        LIMIT 15
       ''', [
         normalizedQuery,           // تطابق كامل
         '$normalizedQuery%',       // يبدأ بالكلمة
@@ -12049,6 +12115,9 @@ class GroupedTransactionItem {
   /// رقم الفاتورة (للفواتير فقط)
   final int? invoiceId;
   
+  /// الرقم المتسلسل الشهري للفاتورة
+  final int? monthlySequenceNumber;
+
   /// إجمالي الفاتورة (للفواتير فقط)
   final double? invoiceTotal;
   
@@ -12077,6 +12146,7 @@ class GroupedTransactionItem {
     required this.description,
     this.transactionType,
     this.invoiceId,
+    this.monthlySequenceNumber,
     this.invoiceTotal,
     this.invoicePaid,
     this.paymentType,
@@ -12124,6 +12194,15 @@ class GroupedTransactionItem {
   
   /// هل المبلغ سالب (تسديد)؟
   bool get isPayment => amount < 0;
+
+  /// الحصول على رقم الفاتورة المنسق (YYYYMM + التسلسل الشهري)
+  String get formattedInvoiceNumber {
+    if (monthlySequenceNumber != null) {
+      final yearMonth = DateFormat('yyyyMM').format(date);
+      return '$yearMonth$monthlySequenceNumber';
+    }
+    return invoiceId?.toString() ?? '';
+  }
 
   @override
   String toString() {

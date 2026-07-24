@@ -3328,7 +3328,7 @@ class GroupedTransactionListTile extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'تفاصيل فاتورة #${item.invoiceId}',
+                          'تفاصيل فاتورة #${item.formattedInvoiceNumber.isNotEmpty ? item.formattedInvoiceNumber : item.invoiceId}',
                           style: Theme.of(context).textTheme.titleMedium?.copyWith(
                                 fontWeight: FontWeight.bold,
                               ),

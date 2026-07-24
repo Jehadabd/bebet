@@ -77,7 +77,7 @@ class TelegramInvoiceExportService {
       // معالجة كل فاتورة
       for (var i = 0; i < invoices.length; i++) {
         final invoice = invoices[i];
-        onProgress?.call(i + 1, invoices.length, 'فاتورة #${invoice.id} - ${invoice.customerName}');
+        onProgress?.call(i + 1, invoices.length, 'فاتورة #${invoice.formattedInvoiceNumber} - ${invoice.customerName}');
         
         try {
           // جلب أصناف الفاتورة
@@ -125,17 +125,17 @@ class TelegramInvoiceExportService {
           // حفظ PDF مؤقتاً
           final safeCustomerName = _sanitizeFileName(invoice.customerName);
           final safeBranchName = _sanitizeFileName(branchName);
-          final fileName = '${safeBranchName}_فاتورة_${invoice.id}_$safeCustomerName.pdf';
+          final fileName = '${safeBranchName}_فاتورة_${invoice.formattedInvoiceNumber}_$safeCustomerName.pdf';
           final pdfFile = File('${exportDir.path}/$fileName');
           await pdfFile.writeAsBytes(await pdf.save());
 
           // وصف الفاتورة المشترك
-          final caption = '🧾 فاتورة #${invoice.id}\n'
+          final caption = '🧾 فاتورة #${invoice.formattedInvoiceNumber}\n'
               '🏪 $branchName\n'
               '👤 ${invoice.customerName}\n'
               '💰 ${_formatNumber(afterDiscount)} د.ع\n'
               '📈 الربح: ${_formatNumber(invoiceProfit)} د.ع\n'
-              '📅 ${_formatDate(invoice.invoiceDate)}';
+              '📅 ${invoice.formattedInvoiceDate}';
           
           bool sentSuccessfully = false;
           
@@ -240,13 +240,10 @@ class TelegramInvoiceExportService {
                           pw.Text(
                               'العنوان: ${invoice.customerAddress?.isNotEmpty == true ? invoice.customerAddress : ' ______'}',
                               style: pw.TextStyle(font: font, fontSize: 11)),
-                          pw.Text('رقم الفاتورة: ${invoice.id}',
+                          pw.Text('رقم الفاتورة: ${invoice.formattedInvoiceNumber}',
                               style: pw.TextStyle(font: font, fontSize: 10)),
                           pw.Text(
-                              'الوقت: ${invoice.createdAt?.hour.toString().padLeft(2, '0') ?? DateTime.now().hour.toString().padLeft(2, '0')}:${invoice.createdAt?.minute.toString().padLeft(2, '0') ?? DateTime.now().minute.toString().padLeft(2, '0')}',
-                              style: pw.TextStyle(font: font, fontSize: 11)),
-                          pw.Text(
-                              'التاريخ: ${invoice.invoiceDate.year}/${invoice.invoiceDate.month}/${invoice.invoiceDate.day}',
+                              'التاريخ: ${invoice.formattedDateTime}',
                               style: pw.TextStyle(font: font, fontSize: 11)),
                         ],
                       ),

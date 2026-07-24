@@ -48,13 +48,13 @@ class SavedInvoicesScreen extends StatelessWidget {
                     margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     child: ListTile(
                       title: Text(
-                        invoice.customerName,
+                        '${invoice.customerName} - فاتورة #${invoice.formattedInvoiceNumber}',
                         style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
                       subtitle: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('التاريخ: ${invoice.invoiceDate.toString().split(' ')[0]}'),
+                          Text('التاريخ: ${invoice.formattedInvoiceDate}'),
                           if (invoice.customerPhone != null && invoice.customerPhone!.isNotEmpty)
                             Text('الهاتف: ${invoice.customerPhone}'),
                         ],

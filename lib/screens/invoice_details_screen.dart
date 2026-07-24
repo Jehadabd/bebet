@@ -64,7 +64,7 @@ class _InvoiceDetailsScreenState extends State<InvoiceDetailsScreen> {
       backgroundColor: const Color(0xFFF5F7FB),
       appBar: AppBar(
         title: Text(
-          'فاتورة رقم ${widget.invoiceId}',
+          'فاتورة رقم ${_invoice?.formattedInvoiceNumber ?? widget.invoiceId}',
           style: const TextStyle(fontSize: 18),
         ),
         centerTitle: true,
@@ -127,7 +127,7 @@ class _InvoiceDetailsScreenState extends State<InvoiceDetailsScreen> {
               children: [
                 Expanded(
                   child: Text(
-                    'فاتورة رقم ${_invoice!.id}',
+                    'فاتورة رقم ${_invoice!.formattedInvoiceNumber}',
                     style: const TextStyle(
                       fontSize: 20,
                       fontWeight: FontWeight.bold,

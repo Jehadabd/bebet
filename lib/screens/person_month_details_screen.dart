@@ -322,7 +322,7 @@ class _PersonMonthDetailsScreenState extends State<PersonMonthDetailsScreen> {
                 children: [
                   Expanded(
                     child: Text(
-                      'فاتورة رقم ${invoice.id}',
+                      'فاتورة رقم ${invoice.formattedInvoiceNumber}',
                       style: const TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,

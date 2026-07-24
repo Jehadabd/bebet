@@ -658,6 +658,10 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
       }
     }
     
+    final newCostPrice = _showCostPrice && costPriceText.isNotEmpty
+        ? double.tryParse(costPriceText)
+        : widget.product.costPrice;
+
     final updatedProduct = widget.product.copyWith(
       name: inputName,
       unit: _selectedUnit,
@@ -675,9 +679,8 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
       price5: _price5Controller.text.trim().isNotEmpty
           ? double.tryParse(_removeCommas(_price5Controller.text.trim()))
           : null,
-      costPrice: _showCostPrice && costPriceText.isNotEmpty
-          ? double.tryParse(costPriceText)
-          : widget.product.costPrice,
+      costPrice: newCostPrice,
+      costPriceLastModifiedAt: (newCostPrice != widget.product.costPrice) ? DateTime.now() : widget.product.costPriceLastModifiedAt,
       piecesPerUnit: _piecesPerUnitController.text.trim().isNotEmpty
           ? int.tryParse(_piecesPerUnitController.text.trim())
           : null,
@@ -964,6 +967,14 @@ class _ProductEditScreenState extends State<ProductEditScreen> {
                 ],
                 onChanged: (_) => setState(() {}),
               ),
+              if (widget.product.costPriceLastModifiedAt != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4.0, right: 4.0),
+                  child: Text(
+                    'آخر تحديث: ${DateFormat('yyyy-MM-dd HH:mm').format(widget.product.costPriceLastModifiedAt!)}',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                  ),
+                ),
               const SizedBox(height: 16),
               // معاينة تكاليف الوحدات حسب الهرمية
               Builder(builder: (context) {

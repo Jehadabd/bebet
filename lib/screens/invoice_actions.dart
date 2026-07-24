@@ -1738,10 +1738,31 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                 : currentDebt;
 
       int invoiceId;
+      String? computedFormattedInvoiceNumber;
       if (invoiceToManage != null && invoiceToManage!.id != null) {
         invoiceId = invoiceToManage!.id!;
+        computedFormattedInvoiceNumber = invoiceToManage!.formattedInvoiceNumber;
       } else {
         invoiceId = (await db.getLastInvoiceId()) + 1;
+        // حساب الرقم المنسق حتى لو لم تُحفظ الفاتورة بعد
+        try {
+          final dateStr = '${selectedDate.year}-${selectedDate.month.toString().padLeft(2, '0')}';
+          final dbInstance = await db.database;
+          final result = await dbInstance.rawQuery('''
+            SELECT MAX(monthly_sequence_number) as max_seq 
+            FROM invoices 
+            WHERE strftime('%Y-%m', invoice_date) = ?
+          ''', [dateStr]);
+          int nextSeq = 1;
+          if (result.isNotEmpty && result.first['max_seq'] != null) {
+            nextSeq = (result.first['max_seq'] as int) + 1;
+          }
+          final yearStr = selectedDate.year.toString();
+          final monthStr = selectedDate.month.toString().padLeft(2, '0');
+          computedFormattedInvoiceNumber = '$yearStr$monthStr$nextSeq';
+        } catch (_) {
+          // في حالة الفشل، نستخدم invoiceId
+        }
       }
 
       final List<Map<String, dynamic>> combinedRows = [
@@ -1787,6 +1808,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                           invoiceId: invoiceId,
                           totalAmount: afterDiscount,
                           itemsCount: filteredItems.length,
+                          formattedInvoiceNumber: computedFormattedInvoiceNumber,
                         ),
                         pw.SizedBox(height: 4),
                         pw.Row(
@@ -1797,13 +1819,10 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                             pw.Text(
                                 'العنوان: ${customerAddressController.text.isNotEmpty ? customerAddressController.text : ' ______'}',
                                 style: pw.TextStyle(font: font, fontSize: 11)),
-                            pw.Text('رقم الفاتورة: $invoiceId',
+                            pw.Text('رقم الفاتورة: ${computedFormattedInvoiceNumber ?? invoiceId}',
                                 style: pw.TextStyle(font: font, fontSize: 10)),
                             pw.Text(
-                                'الوقت: ${invoiceToManage?.createdAt?.hour.toString().padLeft(2, '0') ?? DateTime.now().hour.toString().padLeft(2, '0')}:${invoiceToManage?.createdAt?.minute.toString().padLeft(2, '0') ?? DateTime.now().minute.toString().padLeft(2, '0')}',
-                                style: pw.TextStyle(font: font, fontSize: 11)),
-                            pw.Text(
-                                'التاريخ: ${selectedDate.year}/${selectedDate.month}/${selectedDate.day}',
+                                'التاريخ: ${invoiceToManage?.formattedInvoiceDate ?? '${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')} ${selectedDate.day.toString().padLeft(2, '0')}/${selectedDate.month.toString().padLeft(2, '0')}/${selectedDate.year}'}',
                                 style: pw.TextStyle(font: font, fontSize: 11)),
                           ],
                         ),
