@@ -509,6 +509,7 @@ class _MainScreenState extends State<MainScreen> {
 
                 // جلب وقت آخر رفع
                 final telegramService = TelegramBackupService();
+                await telegramService.loadSettings();
                 final lastUploadTime = await telegramService.getLastUploadTime();
                 
                 // جلب إعداد التليجرام

@@ -48,7 +48,7 @@ class SavedInvoicesScreen extends StatelessWidget {
                     margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     child: ListTile(
                       title: Text(
-                        '${invoice.customerName} - فاتورة #${invoice.formattedInvoiceNumber}',
+                        invoice.customerName,
                         style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
                       subtitle: Column(

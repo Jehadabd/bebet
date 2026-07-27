@@ -47,6 +47,11 @@ class TelegramBackupService {
 
   // مفاتيح التخزين
   static const String _lastUploadTimeKey = 'telegram_last_upload_time';
+  static const String _customBotTokenKey = 'telegram_custom_bot_token';
+  static const String _customChannelIdKey = 'telegram_custom_channel_id';
+
+  String? customBotToken;
+  String? customChannelId;
   
   // آخر خطأ حدث (للتشخيص)
   String? _lastError;
@@ -58,8 +63,9 @@ class TelegramBackupService {
   static const String _fallbackChannelIdElectric = '-1003625352513'; // كهربائيات
   static const String _fallbackChannelIdHealth = '-1003392606317'; // صحيات
 
-  // الحصول على البيانات من .env مع fallback آمن
+  // الحصول على البيانات من .env مع fallback آمن (تُستخدم فقط إذا لم يتم ضبط إعدادات مخصصة)
   String get _botToken {
+    if (customBotToken != null && customBotToken!.isNotEmpty) return customBotToken!;
     try {
       final envToken = dotenv.env['TELEGRAM_BOT_TOKEN'];
       if (envToken != null && envToken.trim().isNotEmpty) {
@@ -95,20 +101,24 @@ class TelegramBackupService {
     return _fallbackChannelIdHealth;
   }
 
-  /// الحصول على Channel ID بناءً على قسم المحل المحدد في الإعدادات
+  /// الحصول على Channel ID (الأولوية للقناة المخصصة الموحدة، ثم حسب القسم)
   Future<String> _getChannelId() async {
+    if (customChannelId != null && customChannelId!.isNotEmpty) {
+      return customChannelId!;
+    }
+    
     final settings = await SettingsManager.getAppSettings();
     final section = settings.storeSection;
     print('📡 القسم المحدد: $section');
     
     if (section == 'صحيات') {
       final channelId = _channelIdHealth;
-      print('📡 استخدام قناة الصحيات: $channelId');
+      print('📡 استخدام قناة الصحيات الافتراضية: $channelId');
       return channelId;
     }
     
     final channelId = _channelIdElectric;
-    print('📡 استخدام قناة الكهربائيات: $channelId');
+    print('📡 استخدام قناة الكهربائيات الافتراضية: $channelId');
     return channelId;
   }
 
@@ -124,13 +134,68 @@ class TelegramBackupService {
     final settings = await SettingsManager.getAppSettings();
     return {
       'botTokenConfigured': _botToken.isNotEmpty,
-      'botTokenSource': dotenv.env['TELEGRAM_BOT_TOKEN']?.isNotEmpty == true ? '.env' : 'fallback',
+      'botTokenSource': customBotToken?.isNotEmpty == true ? 'custom' : (dotenv.env['TELEGRAM_BOT_TOKEN']?.isNotEmpty == true ? '.env' : 'fallback'),
+      'channelIdSource': customChannelId?.isNotEmpty == true ? 'custom_unified' : 'section_based',
       'channelIdElectric': _channelIdElectric,
       'channelIdHealth': _channelIdHealth,
       'currentSection': settings.storeSection,
       'activeChannelId': await _getChannelId(),
       'lastError': _lastError,
     };
+  }
+
+  /// تحميل الإعدادات من SharedPreferences
+  Future<void> loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    customBotToken = prefs.getString(_customBotTokenKey);
+    customChannelId = prefs.getString(_customChannelIdKey);
+  }
+
+  /// حفظ الإعدادات في SharedPreferences
+  Future<void> saveSettings({String? botToken, String? channelId}) async {
+    final prefs = await SharedPreferences.getInstance();
+    
+    if (botToken != null && botToken.isNotEmpty) {
+      await prefs.setString(_customBotTokenKey, botToken.trim());
+      customBotToken = botToken.trim();
+    } else {
+      await prefs.remove(_customBotTokenKey);
+      customBotToken = null;
+    }
+
+    if (channelId != null && channelId.isNotEmpty) {
+      await prefs.setString(_customChannelIdKey, channelId.trim());
+      customChannelId = channelId.trim();
+    } else {
+      await prefs.remove(_customChannelIdKey);
+      customChannelId = null;
+    }
+  }
+
+  /// اختبار الاتصال (ترسل رسالة باستخدام التوكن والآي دي المخصص)
+  Future<bool> testConnection(String testBotToken, String testChannelId) async {
+    try {
+      final httpClient = HttpClient()
+        ..badCertificateCallback = (X509Certificate cert, String host, int port) {
+          return host.contains('telegram.org') || host.contains('api.telegram.org');
+        };
+      
+      final uri = Uri.parse('https://api.telegram.org/bot$testBotToken/sendMessage');
+      final request = await httpClient.postUrl(uri);
+      request.headers.set('Content-Type', 'application/x-www-form-urlencoded');
+      
+      final text = '🔄 رسالة اختبار من التطبيق لتأكيد اتصال Telegram.';
+      final body = 'chat_id=${Uri.encodeComponent(testChannelId)}&text=${Uri.encodeComponent(text)}&parse_mode=HTML';
+      request.write(body);
+      
+      final response = await request.close().timeout(const Duration(seconds: 15));
+      httpClient.close();
+
+      return response.statusCode == 200;
+    } catch (e) {
+      print('❌ خطأ أثناء اختبار اتصال Telegram: $e');
+      return false;
+    }
   }
 
   /// إرسال ملف إلى قناة Telegram مع تفاصيل الخطأ

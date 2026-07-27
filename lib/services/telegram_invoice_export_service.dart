@@ -235,16 +235,44 @@ class TelegramInvoiceExportService {
                       pw.Row(
                         mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                         children: [
-                          pw.Text('السيد: ${invoice.customerName}',
-                              style: pw.TextStyle(font: font, fontSize: 12)),
-                          pw.Text(
-                              'العنوان: ${invoice.customerAddress?.isNotEmpty == true ? invoice.customerAddress : ' ______'}',
-                              style: pw.TextStyle(font: font, fontSize: 11)),
-                          pw.Text('رقم الفاتورة: ${invoice.formattedInvoiceNumber}',
-                              style: pw.TextStyle(font: font, fontSize: 10)),
-                          pw.Text(
-                              'التاريخ: ${invoice.formattedDateTime}',
-                              style: pw.TextStyle(font: font, fontSize: 11)),
+                          pw.Container(
+                            width: 140,
+                            child: pw.Text('السيد: ${invoice.customerName}',
+                                style: pw.TextStyle(font: font, fontSize: 12),
+                                maxLines: 1,
+                                overflow: pw.TextOverflow.clip),
+                          ),
+                          pw.Container(
+                            width: 115, // Reduced from 130
+                            child: pw.Text(
+                                'العنوان: ${invoice.customerAddress?.isNotEmpty == true ? invoice.customerAddress : ' ______'}',
+                                style: pw.TextStyle(font: font, fontSize: 11),
+                                maxLines: 1,
+                                overflow: pw.TextOverflow.clip),
+                          ),
+                          pw.Container(
+                            width: 100,
+                            child: pw.Text('رقم الفاتورة: ${invoice.formattedInvoiceNumber}',
+                                style: pw.TextStyle(font: font, fontSize: 10),
+                                maxLines: 1,
+                                overflow: pw.TextOverflow.clip),
+                          ),
+                          pw.Container(
+                            width: 100,
+                            child: pw.Text('الهاتف: ${invoice.customerPhone?.isNotEmpty == true ? invoice.customerPhone : '___________'}',
+                                style: pw.TextStyle(font: font, fontSize: 11),
+                                maxLines: 1,
+                                overflow: pw.TextOverflow.clip),
+                          ),
+                          pw.Padding(
+                            padding: const pw.EdgeInsets.only(right: 15), // Added exactly the 15 points taken from Address
+                            child: pw.Container(
+                              alignment: pw.Alignment.centerLeft,
+                              child: pw.Text(
+                                  'التاريخ: ${invoice.formattedDateTime}',
+                                  style: pw.TextStyle(font: font, fontSize: 11)),
+                            ),
+                          ),
                         ],
                       ),
                       pw.Divider(height: 5, thickness: 0.5),

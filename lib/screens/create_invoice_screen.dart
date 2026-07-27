@@ -2626,6 +2626,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
       if (invoiceToManage == null ||
           invoiceToManage!.status != 'معلقة' ||
           (invoiceToManage?.isLocked ?? false)) return;
+          
+      if (customerNameController.text.trim().isEmpty) {
+        return; // لا تحفظ تلقائياً إذا كان الاسم فارغاً
+      }
+      
       Customer? customer;
       if (customerNameController.text.trim().isNotEmpty) {
         final customers = await db.getAllCustomers();
@@ -6638,6 +6643,9 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                       focusNode: focusNode,
                       textAlign: TextAlign.center,
                       keyboardType: const TextInputType.numberWithOptions(signed: false, decimal: false),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(RegExp(r'[0-9]')),
+                      ],
                       decoration: InputDecoration(
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(4),
@@ -6805,6 +6813,9 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                         textAlign: TextAlign.center,
                         keyboardType: const TextInputType.numberWithOptions(
                             decimal: true),
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
+                        ],
                         enabled: !widget.isViewOnly,
                         onChanged: _updateQuantity, // الآن أصبح آمناً
                         focusNode: _quantityFocusNode,
@@ -6909,6 +6920,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                             decimal: true),
                         enabled: !widget.isViewOnly,
                         inputFormatters: [
+                          FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
                           ThousandSeparatorDecimalInputFormatter(),
                         ],
                         onChanged: _updatePrice, // الآن أصبح آمناً
@@ -7021,7 +7033,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
                             Text(
                               DateFormat('yyyy-MM-dd').format(product.costPriceLastModifiedAt!),
                               textAlign: TextAlign.center,
-                              style: const TextStyle(fontSize: 10, color: Colors.grey),
+                              style: const TextStyle(fontSize: 10, color: Colors.red),
                             ),
                         ],
                       );

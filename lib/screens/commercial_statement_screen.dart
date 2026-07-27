@@ -1,12 +1,622 @@
-// screens/commercial_statement_screen.dart
-// شاشة كشف الحساب التجاري
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/intl.dart';
 import 'dart:io';
 import 'package:printing/printing.dart';
 import '../models/customer.dart';
 import '../services/commercial_statement_service.dart';
 import '../services/pdf_service.dart';
+
+class _NumericMaterialLocalizationsDelegate
+    extends LocalizationsDelegate<MaterialLocalizations> {
+  const _NumericMaterialLocalizationsDelegate();
+
+  @override
+  bool isSupported(Locale locale) => true;
+
+  @override
+  Future<MaterialLocalizations> load(Locale locale) async {
+    final original = await GlobalMaterialLocalizations.delegate.load(locale);
+    return _NumericMaterialLocalizations(original);
+  }
+
+  @override
+  bool shouldReload(_NumericMaterialLocalizationsDelegate old) => false;
+}
+
+class _NumericMaterialLocalizations implements MaterialLocalizations {
+  final MaterialLocalizations original;
+  _NumericMaterialLocalizations(this.original);
+
+  @override
+  String formatMonthYear(DateTime date) {
+    final y = date.year.toString();
+    final m = date.month.toString().padLeft(2, '0');
+    return '$y / $m';
+  }
+
+  @override
+  String formatMediumDate(DateTime date) {
+    final y = date.year.toString();
+    final m = date.month.toString().padLeft(2, '0');
+    final d = date.day.toString().padLeft(2, '0');
+    return '$y / $m / $d';
+  }
+
+  @override
+  String formatShortMonth(int monthIndex) {
+    return monthIndex.toString().padLeft(2, '0');
+  }
+
+  @override
+  String formatFullDate(DateTime date) {
+    final y = date.year.toString();
+    final m = date.month.toString().padLeft(2, '0');
+    final d = date.day.toString().padLeft(2, '0');
+    return '$y / $m / $d';
+  }
+
+  @override
+  String formatCompactDate(DateTime date) {
+    final y = date.year.toString();
+    final m = date.month.toString().padLeft(2, '0');
+    final d = date.day.toString().padLeft(2, '0');
+    return '$y/$m/$d';
+  }
+
+  @override
+  String formatShortDate(DateTime date) {
+    final y = date.year.toString();
+    final m = date.month.toString().padLeft(2, '0');
+    final d = date.day.toString().padLeft(2, '0');
+    return '$y/$m/$d';
+  }
+
+  @override
+  String get openAppDrawerTooltip => (original as dynamic).openAppDrawerTooltip;
+  @override
+  String get backButtonTooltip => (original as dynamic).backButtonTooltip;
+  @override
+  String get clearButtonTooltip => (original as dynamic).clearButtonTooltip;
+  @override
+  String get closeButtonTooltip => (original as dynamic).closeButtonTooltip;
+  @override
+  String get deleteButtonTooltip => (original as dynamic).deleteButtonTooltip;
+  @override
+  String get moreButtonTooltip => (original as dynamic).moreButtonTooltip;
+  @override
+  String get nextMonthTooltip => (original as dynamic).nextMonthTooltip;
+  @override
+  String get previousMonthTooltip => (original as dynamic).previousMonthTooltip;
+  @override
+  String get firstPageTooltip => (original as dynamic).firstPageTooltip;
+  @override
+  String get lastPageTooltip => (original as dynamic).lastPageTooltip;
+  @override
+  String get nextPageTooltip => (original as dynamic).nextPageTooltip;
+  @override
+  String get previousPageTooltip => (original as dynamic).previousPageTooltip;
+  @override
+  String get showMenuTooltip => (original as dynamic).showMenuTooltip;
+  @override
+  String get licensesPageTitle => (original as dynamic).licensesPageTitle;
+  @override
+  String get rowsPerPageTitle => (original as dynamic).rowsPerPageTitle;
+  @override
+  String get cancelButtonLabel => (original as dynamic).cancelButtonLabel;
+  @override
+  String get closeButtonLabel => (original as dynamic).closeButtonLabel;
+  @override
+  String get continueButtonLabel => (original as dynamic).continueButtonLabel;
+  @override
+  String get copyButtonLabel => (original as dynamic).copyButtonLabel;
+  @override
+  String get cutButtonLabel => (original as dynamic).cutButtonLabel;
+  @override
+  String get scanTextButtonLabel => (original as dynamic).scanTextButtonLabel;
+  @override
+  String get okButtonLabel => (original as dynamic).okButtonLabel;
+  @override
+  String get pasteButtonLabel => (original as dynamic).pasteButtonLabel;
+  @override
+  String get selectAllButtonLabel => (original as dynamic).selectAllButtonLabel;
+  @override
+  String get lookUpButtonLabel => (original as dynamic).lookUpButtonLabel;
+  @override
+  String get searchWebButtonLabel => (original as dynamic).searchWebButtonLabel;
+  @override
+  String get shareButtonLabel => (original as dynamic).shareButtonLabel;
+  @override
+  String get viewLicensesButtonLabel => (original as dynamic).viewLicensesButtonLabel;
+  @override
+  String get anteMeridiemAbbreviation => (original as dynamic).anteMeridiemAbbreviation;
+  @override
+  String get postMeridiemAbbreviation => (original as dynamic).postMeridiemAbbreviation;
+  @override
+  String get timePickerHourModeAnnouncement => (original as dynamic).timePickerHourModeAnnouncement;
+  @override
+  String get timePickerMinuteModeAnnouncement => (original as dynamic).timePickerMinuteModeAnnouncement;
+  @override
+  String get modalBarrierDismissLabel => (original as dynamic).modalBarrierDismissLabel;
+  @override
+  String get menuDismissLabel => (original as dynamic).menuDismissLabel;
+  @override
+  String get drawerLabel => (original as dynamic).drawerLabel;
+  @override
+  String get popupMenuLabel => (original as dynamic).popupMenuLabel;
+  @override
+  String get menuBarMenuLabel => (original as dynamic).menuBarMenuLabel;
+  @override
+  String get dialogLabel => (original as dynamic).dialogLabel;
+  @override
+  String get alertDialogLabel => (original as dynamic).alertDialogLabel;
+  @override
+  String get searchFieldLabel => (original as dynamic).searchFieldLabel;
+  @override
+  String get currentDateLabel => (original as dynamic).currentDateLabel;
+  @override
+  String get selectedDateLabel => (original as dynamic).selectedDateLabel;
+  @override
+  String get scrimLabel => (original as dynamic).scrimLabel;
+  @override
+  String get bottomSheetLabel => (original as dynamic).bottomSheetLabel;
+  @override
+  ScriptCategory get scriptCategory => (original as dynamic).scriptCategory;
+  @override
+  List<String> get narrowWeekdays => (original as dynamic).narrowWeekdays;
+  @override
+  int get firstDayOfWeekIndex => (original as dynamic).firstDayOfWeekIndex;
+  @override
+  String get dateSeparator => (original as dynamic).dateSeparator;
+  @override
+  String get dateHelpText => (original as dynamic).dateHelpText;
+  @override
+  String get selectYearSemanticsLabel => (original as dynamic).selectYearSemanticsLabel;
+  @override
+  String get unspecifiedDate => (original as dynamic).unspecifiedDate;
+  @override
+  String get unspecifiedDateRange => (original as dynamic).unspecifiedDateRange;
+  @override
+  String get dateInputLabel => (original as dynamic).dateInputLabel;
+  @override
+  String get dateRangeStartLabel => (original as dynamic).dateRangeStartLabel;
+  @override
+  String get dateRangeEndLabel => (original as dynamic).dateRangeEndLabel;
+  @override
+  String get invalidDateFormatLabel => (original as dynamic).invalidDateFormatLabel;
+  @override
+  String get invalidDateRangeLabel => (original as dynamic).invalidDateRangeLabel;
+  @override
+  String get dateOutOfRangeLabel => (original as dynamic).dateOutOfRangeLabel;
+  @override
+  String get saveButtonLabel => (original as dynamic).saveButtonLabel;
+  @override
+  String get datePickerHelpText => (original as dynamic).datePickerHelpText;
+  @override
+  String get dateRangePickerHelpText => (original as dynamic).dateRangePickerHelpText;
+  @override
+  String get calendarModeButtonLabel => (original as dynamic).calendarModeButtonLabel;
+  @override
+  String get inputDateModeButtonLabel => (original as dynamic).inputDateModeButtonLabel;
+  @override
+  String get timePickerDialHelpText => (original as dynamic).timePickerDialHelpText;
+  @override
+  String get timePickerInputHelpText => (original as dynamic).timePickerInputHelpText;
+  @override
+  String get timePickerHourLabel => (original as dynamic).timePickerHourLabel;
+  @override
+  String get timePickerMinuteLabel => (original as dynamic).timePickerMinuteLabel;
+  @override
+  String get invalidTimeLabel => (original as dynamic).invalidTimeLabel;
+  @override
+  String get dialModeButtonLabel => (original as dynamic).dialModeButtonLabel;
+  @override
+  String get inputTimeModeButtonLabel => (original as dynamic).inputTimeModeButtonLabel;
+  @override
+  String get signedInLabel => (original as dynamic).signedInLabel;
+  @override
+  String get hideAccountsLabel => (original as dynamic).hideAccountsLabel;
+  @override
+  String get showAccountsLabel => (original as dynamic).showAccountsLabel;
+  @override
+  String get reorderItemToStart => (original as dynamic).reorderItemToStart;
+  @override
+  String get reorderItemToEnd => (original as dynamic).reorderItemToEnd;
+  @override
+  String get reorderItemUp => (original as dynamic).reorderItemUp;
+  @override
+  String get reorderItemDown => (original as dynamic).reorderItemDown;
+  @override
+  String get reorderItemLeft => (original as dynamic).reorderItemLeft;
+  @override
+  String get reorderItemRight => (original as dynamic).reorderItemRight;
+  @override
+  String get refreshIndicatorSemanticLabel => (original as dynamic).refreshIndicatorSemanticLabel;
+  @override
+  String get keyboardKeyAlt => (original as dynamic).keyboardKeyAlt;
+  @override
+  String get keyboardKeyAltGraph => (original as dynamic).keyboardKeyAltGraph;
+  @override
+  String get keyboardKeyBackspace => (original as dynamic).keyboardKeyBackspace;
+  @override
+  String get keyboardKeyCapsLock => (original as dynamic).keyboardKeyCapsLock;
+  @override
+  String get keyboardKeyChannelDown => (original as dynamic).keyboardKeyChannelDown;
+  @override
+  String get keyboardKeyChannelUp => (original as dynamic).keyboardKeyChannelUp;
+  @override
+  String get keyboardKeyControl => (original as dynamic).keyboardKeyControl;
+  @override
+  String get keyboardKeyDelete => (original as dynamic).keyboardKeyDelete;
+  @override
+  String get keyboardKeyEject => (original as dynamic).keyboardKeyEject;
+  @override
+  String get keyboardKeyEnd => (original as dynamic).keyboardKeyEnd;
+  @override
+  String get keyboardKeyEscape => (original as dynamic).keyboardKeyEscape;
+  @override
+  String get keyboardKeyFn => (original as dynamic).keyboardKeyFn;
+  @override
+  String get keyboardKeyHome => (original as dynamic).keyboardKeyHome;
+  @override
+  String get keyboardKeyInsert => (original as dynamic).keyboardKeyInsert;
+  @override
+  String get keyboardKeyMeta => (original as dynamic).keyboardKeyMeta;
+  @override
+  String get keyboardKeyMetaMacOs => (original as dynamic).keyboardKeyMetaMacOs;
+  @override
+  String get keyboardKeyMetaWindows => (original as dynamic).keyboardKeyMetaWindows;
+  @override
+  String get keyboardKeyNumLock => (original as dynamic).keyboardKeyNumLock;
+  @override
+  String get keyboardKeyNumpad1 => (original as dynamic).keyboardKeyNumpad1;
+  @override
+  String get keyboardKeyNumpad2 => (original as dynamic).keyboardKeyNumpad2;
+  @override
+  String get keyboardKeyNumpad3 => (original as dynamic).keyboardKeyNumpad3;
+  @override
+  String get keyboardKeyNumpad4 => (original as dynamic).keyboardKeyNumpad4;
+  @override
+  String get keyboardKeyNumpad5 => (original as dynamic).keyboardKeyNumpad5;
+  @override
+  String get keyboardKeyNumpad6 => (original as dynamic).keyboardKeyNumpad6;
+  @override
+  String get keyboardKeyNumpad7 => (original as dynamic).keyboardKeyNumpad7;
+  @override
+  String get keyboardKeyNumpad8 => (original as dynamic).keyboardKeyNumpad8;
+  @override
+  String get keyboardKeyNumpad9 => (original as dynamic).keyboardKeyNumpad9;
+  @override
+  String get keyboardKeyNumpad0 => (original as dynamic).keyboardKeyNumpad0;
+  @override
+  String get keyboardKeyNumpadAdd => (original as dynamic).keyboardKeyNumpadAdd;
+  @override
+  String get keyboardKeyNumpadComma => (original as dynamic).keyboardKeyNumpadComma;
+  @override
+  String get keyboardKeyNumpadDecimal => (original as dynamic).keyboardKeyNumpadDecimal;
+  @override
+  String get keyboardKeyNumpadDivide => (original as dynamic).keyboardKeyNumpadDivide;
+  @override
+  String get keyboardKeyNumpadEnter => (original as dynamic).keyboardKeyNumpadEnter;
+  @override
+  String get keyboardKeyNumpadEqual => (original as dynamic).keyboardKeyNumpadEqual;
+  @override
+  String get keyboardKeyNumpadMultiply => (original as dynamic).keyboardKeyNumpadMultiply;
+  @override
+  String get keyboardKeyNumpadParenLeft => (original as dynamic).keyboardKeyNumpadParenLeft;
+  @override
+  String get keyboardKeyNumpadParenRight => (original as dynamic).keyboardKeyNumpadParenRight;
+  @override
+  String get keyboardKeyNumpadSubtract => (original as dynamic).keyboardKeyNumpadSubtract;
+  @override
+  String get keyboardKeyPageDown => (original as dynamic).keyboardKeyPageDown;
+  @override
+  String get keyboardKeyPageUp => (original as dynamic).keyboardKeyPageUp;
+  @override
+  String get keyboardKeyPower => (original as dynamic).keyboardKeyPower;
+  @override
+  String get keyboardKeyPowerOff => (original as dynamic).keyboardKeyPowerOff;
+  @override
+  String get keyboardKeyPrintScreen => (original as dynamic).keyboardKeyPrintScreen;
+  @override
+  String get keyboardKeyScrollLock => (original as dynamic).keyboardKeyScrollLock;
+  @override
+  String get keyboardKeySelect => (original as dynamic).keyboardKeySelect;
+  @override
+  String get keyboardKeyShift => (original as dynamic).keyboardKeyShift;
+  @override
+  String get keyboardKeySpace => (original as dynamic).keyboardKeySpace;
+  @override
+  String aboutListTileTitle(String applicationName) => original.aboutListTileTitle(applicationName);
+  @override
+  String licensesPackageDetailText(int licenseCount) => original.licensesPackageDetailText(licenseCount);
+  @override
+  String pageRowsInfoTitle(int firstRow, int lastRow, int rowCount, bool rowCountIsApproximate) => original.pageRowsInfoTitle(firstRow, lastRow, rowCount, rowCountIsApproximate);
+  @override
+  String tabLabel({required int tabIndex, required int tabCount}) => original.tabLabel(tabIndex: tabIndex, tabCount: tabCount);
+  @override
+  String selectedRowCountTitle(int selectedRowCount) => original.selectedRowCountTitle(selectedRowCount);
+  @override
+  String scrimOnTapHint(String modalRouteContentName) => original.scrimOnTapHint(modalRouteContentName);
+  @override
+  TimeOfDayFormat timeOfDayFormat({bool alwaysUse24HourFormat = false}) => original.timeOfDayFormat(alwaysUse24HourFormat: alwaysUse24HourFormat);
+  @override
+  String formatDecimal(int number) => original.formatDecimal(number);
+  @override
+  String formatHour(TimeOfDay timeOfDay, {bool alwaysUse24HourFormat = false}) => original.formatHour(timeOfDay, alwaysUse24HourFormat: alwaysUse24HourFormat);
+  @override
+  String formatMinute(TimeOfDay timeOfDay) => original.formatMinute(timeOfDay);
+  @override
+  String formatTimeOfDay(TimeOfDay timeOfDay, {bool alwaysUse24HourFormat = false}) => original.formatTimeOfDay(timeOfDay, alwaysUse24HourFormat: alwaysUse24HourFormat);
+  @override
+  String formatYear(DateTime date) => original.formatYear(date);
+  @override
+  String formatShortMonthDay(DateTime date) => original.formatShortMonthDay(date);
+  @override
+  DateTime? parseCompactDate(String? inputString) => original.parseCompactDate(inputString);
+  @override
+  String dateRangeStartDateSemanticLabel(String formattedDate) => original.dateRangeStartDateSemanticLabel(formattedDate);
+  @override
+  String dateRangeEndDateSemanticLabel(String formattedDate) => original.dateRangeEndDateSemanticLabel(formattedDate);
+  @override
+  String remainingTextFieldCharacterCount(int remaining) => original.remainingTextFieldCharacterCount(remaining);
+
+  @override
+  String get collapsedHint => original.collapsedHint;
+  @override
+  String get collapsedIconTapHint => original.collapsedIconTapHint;
+  @override
+  String get expandedHint => original.expandedHint;
+  @override
+  String get expandedIconTapHint => original.expandedIconTapHint;
+  @override
+  String get expansionTileCollapsedHint => original.expansionTileCollapsedHint;
+  @override
+  String get expansionTileCollapsedTapHint => original.expansionTileCollapsedTapHint;
+  @override
+  String get expansionTileExpandedHint => original.expansionTileExpandedHint;
+  @override
+  String get expansionTileExpandedTapHint => original.expansionTileExpandedTapHint;
+}
+
+
+/// حوار اختيار فترة مخصصة بتصميم أنيق وبأرقام فقط
+class CustomDateRangeDialog extends StatefulWidget {
+  final DateTime? initialStartDate;
+  final DateTime? initialEndDate;
+
+  const CustomDateRangeDialog({
+    super.key,
+    this.initialStartDate,
+    this.initialEndDate,
+  });
+
+  @override
+  State<CustomDateRangeDialog> createState() => _CustomDateRangeDialogState();
+}
+
+class _CustomDateRangeDialogState extends State<CustomDateRangeDialog> {
+  late DateTime _startDate;
+  late DateTime _endDate;
+
+  @override
+  void initState() {
+    super.initState();
+    _startDate = widget.initialStartDate ?? DateTime.now().subtract(const Duration(days: 30));
+    _endDate = widget.initialEndDate ?? DateTime.now();
+  }
+
+  String _formatDate(DateTime dt) {
+    return DateFormat('yyyy/MM/dd').format(dt);
+  }
+
+  Future<void> _pickStartDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _startDate,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+      builder: (context, child) {
+        return Localizations.override(
+          context: context,
+          delegates: const [
+            _NumericMaterialLocalizationsDelegate(),
+          ],
+          child: Theme(
+            data: Theme.of(context).copyWith(
+              colorScheme: const ColorScheme.light(primary: Color(0xFF3F51B5)),
+            ),
+            child: child!,
+          ),
+        );
+      },
+    );
+    if (picked != null) {
+      setState(() {
+        _startDate = picked;
+        if (_endDate.isBefore(_startDate)) {
+          _endDate = _startDate;
+        }
+      });
+    }
+  }
+
+  Future<void> _pickEndDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _endDate,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+      builder: (context, child) {
+        return Localizations.override(
+          context: context,
+          delegates: const [
+            _NumericMaterialLocalizationsDelegate(),
+          ],
+          child: Theme(
+            data: Theme.of(context).copyWith(
+              colorScheme: const ColorScheme.light(primary: Color(0xFF3F51B5)),
+            ),
+            child: child!,
+          ),
+        );
+      },
+    );
+    if (picked != null) {
+      setState(() {
+        _endDate = picked;
+        if (_startDate.isAfter(_endDate)) {
+          _startDate = _endDate;
+        }
+      });
+    }
+  }
+
+  void _setPreset(int daysBack) {
+    setState(() {
+      _endDate = DateTime.now();
+      _startDate = DateTime.now().subtract(Duration(days: daysBack));
+    });
+  }
+
+  void _setCurrentMonth() {
+    final now = DateTime.now();
+    setState(() {
+      _startDate = DateTime(now.year, now.month, 1);
+      _endDate = DateTime(now.year, now.month + 1, 0);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      titlePadding: EdgeInsets.zero,
+      title: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: const BoxDecoration(
+          color: Color(0xFF3F51B5),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        child: const Row(
+          children: [
+            Icon(Icons.date_range, color: Colors.white),
+            SizedBox(width: 8),
+            Text(
+              'تحديد فترة مخصصة',
+              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ActionChip(
+                  avatar: const Icon(Icons.flash_on, size: 16),
+                  label: const Text('آخر 7 أيام'),
+                  onPressed: () => _setPreset(7),
+                ),
+                ActionChip(
+                  avatar: const Icon(Icons.history, size: 16),
+                  label: const Text('آخر 30 يوم'),
+                  onPressed: () => _setPreset(30),
+                ),
+                ActionChip(
+                  avatar: const Icon(Icons.calendar_month, size: 16),
+                  label: const Text('الشهر الحالي'),
+                  onPressed: _setCurrentMonth,
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            const Divider(),
+            const SizedBox(height: 8),
+            InkWell(
+              onTap: _pickStartDate,
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.blue.shade300, width: 1.5),
+                  borderRadius: BorderRadius.circular(12),
+                  color: Colors.blue.shade50,
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.play_arrow, color: Colors.blue),
+                        SizedBox(width: 8),
+                        Text('من تاريخ:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                      ],
+                    ),
+                    Text(
+                      _formatDate(_startDate),
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.blue),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            InkWell(
+              onTap: _pickEndDate,
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.indigo.shade300, width: 1.5),
+                  borderRadius: BorderRadius.circular(12),
+                  color: Colors.indigo.shade50,
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.stop, color: Colors.indigo),
+                        SizedBox(width: 8),
+                        Text('إلى تاريخ:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                      ],
+                    ),
+                    Text(
+                      _formatDate(_endDate),
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.indigo),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('إلغاء'),
+        ),
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF3F51B5),
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          onPressed: () => Navigator.pop(context, DateTimeRange(start: _startDate, end: _endDate)),
+          icon: const Icon(Icons.check),
+          label: const Text('تأكيد'),
+        ),
+      ],
+    );
+  }
+}
 
 /// حوار اختيار الفترة الزمنية
 class PeriodSelectionDialog extends StatefulWidget {
@@ -39,6 +649,13 @@ class _PeriodSelectionDialogState extends State<PeriodSelectionDialog> {
                 title: const Text('كشف حساب شامل'),
                 subtitle: const Text('جميع المعاملات منذ البداية'),
                 onTap: () => Navigator.pop(context, {'type': 'all'}),
+              ),
+              const Divider(),
+              ListTile(
+                leading: const Icon(Icons.date_range, color: Colors.green),
+                title: const Text('فترة مخصصة'),
+                subtitle: const Text('اختيار من تاريخ إلى تاريخ'),
+                onTap: () => Navigator.pop(context, {'type': 'custom'}),
               ),
               const Divider(),
               const Padding(
@@ -79,11 +696,12 @@ class _PeriodSelectionDialogState extends State<PeriodSelectionDialog> {
           ),
           ...List.generate(12, (index) {
             final month = index + 1;
+            final monthFormatted = month.toString().padLeft(2, '0');
             return Padding(
               padding: const EdgeInsets.only(right: 32),
               child: ListTile(
                 leading: const Icon(Icons.date_range, color: Colors.orange),
-                title: Text('شهر $month - $year'),
+                title: Text('شهر $monthFormatted - $year'),
                 onTap: () => Navigator.pop(context, {'type': 'month', 'year': year, 'month': month}),
               ),
             );
@@ -230,7 +848,9 @@ class _CommercialStatementScreenState extends State<CommercialStatementScreen> {
     final manualPayments = (summary['manualPayments'] as num?)?.toDouble() ?? 0.0;
     final totalPayments = (summary['totalPayments'] as num?)?.toDouble() ?? 0.0;
     final remainingBalance = (summary['remainingBalance'] as num?)?.toDouble() ?? 0.0;
-    final balanceColor = remainingBalance > 0 ? Colors.red : Colors.green;
+    final periodBalanceColor = remainingBalance > 0 ? Colors.amber[800]! : Colors.blue[800]!;
+    final currentDebt = widget.customer.currentTotalDebt;
+    final currentBalanceColor = currentDebt > 0 ? Colors.red : Colors.green;
 
     return Card(
       margin: const EdgeInsets.all(16),
@@ -281,7 +901,7 @@ class _CommercialStatementScreenState extends State<CommercialStatementScreen> {
               ),
               child: Column(
                 children: [
-                  const Text('إجمالي الديون', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.orange)),
+                  const Text('إجمالي الديون في هذه الفترة', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.orange)),
                   const SizedBox(height: 4),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -306,7 +926,7 @@ class _CommercialStatementScreenState extends State<CommercialStatementScreen> {
               ),
               child: Column(
                 children: [
-                  const Text('إجمالي المدفوعات', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.green)),
+                  const Text('إجمالي المدفوعات في هذه الفترة', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.green)),
                   const SizedBox(height: 4),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -321,20 +941,38 @@ class _CommercialStatementScreenState extends State<CommercialStatementScreen> {
               ),
             ),
             const SizedBox(height: 12),
-            
-            // الرصيد المتبقي
+
+            // الرصيد في نهاية هذه الفترة
             Container(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: remainingBalance > 0 ? Colors.red[50] : Colors.green[50],
+                color: remainingBalance > 0 ? Colors.amber[50] : Colors.blue[50],
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: balanceColor, width: 2),
+                border: Border.all(color: periodBalanceColor, width: 1.5),
               ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('الرصيد المتبقي:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                  Text(_formatCurrency(remainingBalance), style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: balanceColor)),
+                  const Text('الرصيد المتبقي في نهاية هذه الفترة:', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                  Text(_formatCurrency(remainingBalance), style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: periodBalanceColor)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+            
+            // الرصيد المتبقي الحالي حتى اليوم
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: currentDebt > 0 ? Colors.red[50] : Colors.green[50],
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: currentBalanceColor, width: 2),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('الرصيد المتبقي الحالي (حتى اليوم):', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                  Text(_formatCurrency(currentDebt), style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold, color: currentBalanceColor)),
                 ],
               ),
             ),

@@ -2219,9 +2219,22 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
           endDate = DateTime(year, month + 1, 0);
           periodDescription = 'شهر $month - $year';
           break;
+        case 'custom':
+          final picked = await showDialog<DateTimeRange>(
+            context: context,
+            builder: (context) => const CustomDateRangeDialog(),
+          );
+          if (picked == null) return;
+          startDate = picked.start;
+          endDate = picked.end;
+          final df = DateFormat('yyyy/MM/dd');
+          periodDescription = 'من ${df.format(startDate)} إلى ${df.format(endDate)}';
+          break;
         default:
           return;
       }
+      
+      if (!mounted) return;
       
       // الانتقال لشاشة كشف الحساب التجاري
       Navigator.push(

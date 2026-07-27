@@ -958,20 +958,38 @@ class PdfService {
                   mainAxisAlignment: pw.MainAxisAlignment.spaceAround,
                   children: [
                     pw.Column(children: [
-                      pw.Text('إجمالي الديون', style: const pw.TextStyle(fontSize: 9)),
-                      pw.Text(fmt((summary['totalDebts'] as num?) ?? 0), style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold)),
+                      pw.Text('إجمالي الديون (في تلك الفترة)', style: const pw.TextStyle(fontSize: 8)),
+                      pw.Text(fmt((summary['totalDebts'] as num?) ?? 0), style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold, color: PdfColors.orange800)),
                     ]),
                     pw.Column(children: [
-                      pw.Text('إجمالي المدفوعات', style: const pw.TextStyle(fontSize: 9)),
+                      pw.Text('إجمالي المدفوعات (في تلك الفترة)', style: const pw.TextStyle(fontSize: 8)),
                       pw.Text(fmt((summary['totalPayments'] as num?) ?? 0), style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold, color: PdfColors.green700)),
                     ]),
                     pw.Column(children: [
-                      pw.Text('الرصيد المتبقي', style: const pw.TextStyle(fontSize: 9)),
+                      pw.Text('الرصيد في نهاية تلك الفترة', style: const pw.TextStyle(fontSize: 8)),
                       pw.Text(fmt((summary['remainingBalance'] as num?) ?? 0), 
-                        style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, 
-                          color: ((summary['remainingBalance'] as num?) ?? 0) > 0 ? PdfColors.red : PdfColors.green700)),
+                        style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold, 
+                          color: ((summary['remainingBalance'] as num?) ?? 0) > 0 ? PdfColors.amber900 : PdfColors.blue900)),
                     ]),
                   ],
+                ),
+                pw.SizedBox(height: 6),
+                pw.Container(
+                  padding: const pw.EdgeInsets.all(5),
+                  decoration: pw.BoxDecoration(
+                    color: customer.currentTotalDebt > 0 ? PdfColors.red50 : PdfColors.green50,
+                    border: pw.Border.all(color: customer.currentTotalDebt > 0 ? PdfColors.red : PdfColors.green, width: 1),
+                    borderRadius: pw.BorderRadius.circular(4),
+                  ),
+                  child: pw.Row(
+                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                    children: [
+                      pw.Text('الرصيد المتبقي الحالي (حتى اليوم):', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold)),
+                      pw.Text(fmt(customer.currentTotalDebt), 
+                        style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, 
+                          color: customer.currentTotalDebt > 0 ? PdfColors.red : PdfColors.green700)),
+                    ],
+                  ),
                 ),
               ],
             ),

@@ -395,7 +395,7 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                                         vertical:
                                             12.0), // Increased internal padding for ListTile
                                     title: Text(
-                                      '${invoice.customerName} - فاتورة #${invoice.formattedInvoiceNumber}',
+                                      invoice.customerName,
                                       style: Theme.of(context)
                                           .textTheme
                                           .bodyLarge
@@ -571,6 +571,7 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
         allProducts: products,
         customerName: invoice.customerName,
         customerAddress: invoice.customerAddress ?? '',
+        customerPhone: invoice.customerPhone,
         invoiceId: invoice.id ?? 0,
         selectedDate: invoice.invoiceDate,
         discount: invoice.discount,

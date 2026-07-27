@@ -510,6 +510,14 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
 
     if (!formKey.currentState!.validate()) return null;
 
+    if (customerNameController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('لا يمكن حفظ فاتورة بدون اسم عميل!'),
+        backgroundColor: Colors.red,
+      ));
+      return null;
+    }
+
     setState(() {
       isSaving = true;
     });
@@ -1814,16 +1822,60 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                         pw.Row(
                           mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                           children: [
-                            pw.Text('السيد: ${customerNameController.text}',
-                                style: pw.TextStyle(font: font, fontSize: 12)),
-                            pw.Text(
-                                'العنوان: ${customerAddressController.text.isNotEmpty ? customerAddressController.text : ' ______'}',
-                                style: pw.TextStyle(font: font, fontSize: 11)),
-                            pw.Text('رقم الفاتورة: ${computedFormattedInvoiceNumber ?? invoiceId}',
-                                style: pw.TextStyle(font: font, fontSize: 10)),
-                            pw.Text(
-                                'التاريخ: ${invoiceToManage?.formattedInvoiceDate ?? '${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')} ${selectedDate.day.toString().padLeft(2, '0')}/${selectedDate.month.toString().padLeft(2, '0')}/${selectedDate.year}'}',
-                                style: pw.TextStyle(font: font, fontSize: 11)),
+                            pw.Container(
+                              width: 140, // تمت زيادته بمقدار 3 أحرف
+                              child: pw.Text('السيد: ${customerNameController.text}',
+                                  style: pw.TextStyle(font: font, fontSize: 12),
+                                  maxLines: 1,
+                                  overflow: pw.TextOverflow.clip),
+                            ),
+                            pw.Container(
+                              width: 80, // تم ضبطه لتوفير مساحة للتباعد
+                              child: pw.Text(
+                                  'العنوان: ${customerAddressController.text.isNotEmpty ? customerAddressController.text : ' ______'}',
+                                  style: pw.TextStyle(font: font, fontSize: 11),
+                                  maxLines: 1,
+                                  overflow: pw.TextOverflow.clip),
+                            ),
+                            pw.Container(
+                              width: 100, // تمت زيادته بمقدار 3 أحرف
+                              child: pw.Text('رقم الفاتورة: ${computedFormattedInvoiceNumber ?? invoiceId}',
+                                  style: pw.TextStyle(font: font, fontSize: 10),
+                                  maxLines: 1,
+                                  overflow: pw.TextOverflow.clip),
+                            ),
+                            pw.Container(
+                              width: 85, // مساحة كافية لرقم الهاتف
+                              child: pw.Text('الهاتف: ${customerPhoneController.text.isNotEmpty ? customerPhoneController.text : '___________'}',
+                                  style: pw.TextStyle(font: font, fontSize: 11),
+                                  maxLines: 1,
+                                  overflow: pw.TextOverflow.clip),
+                            ),
+                            pw.Container(
+                              width: 130, // مساحة التاريخ
+                              padding: const pw.EdgeInsets.only(right: 5),
+                              child: pw.Directionality(
+                                textDirection: pw.TextDirection.ltr,
+                                child: pw.Row(
+                                  mainAxisAlignment: pw.MainAxisAlignment.start, // سحب التاريخ نحو الحافة اليسرى
+                                  mainAxisSize: pw.MainAxisSize.max,
+                                  children: [
+                                    pw.Text(
+                                      invoiceToManage?.formattedInvoiceDate ?? '${selectedDate.day.toString().padLeft(2, '0')}/${selectedDate.month.toString().padLeft(2, '0')}/${selectedDate.year} ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}',
+                                      style: pw.TextStyle(font: font, fontSize: 11),
+                                    ),
+                                    pw.SizedBox(width: 4),
+                                    pw.Directionality(
+                                      textDirection: pw.TextDirection.rtl,
+                                      child: pw.Text(
+                                        'التاريخ:',
+                                        style: pw.TextStyle(font: font, fontSize: 11),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                         pw.Divider(height: 5, thickness: 0.5),
@@ -2036,7 +2088,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                           pw.SizedBox(height: 6),
                           pw.Align(
                               child: pw.Text(
-                                  'تنويه: أي ملاحظات على تجهيز المواد تُقبل خلال 3 أيام من تاريخ الفاتورة فقط  وشكراً لتعاملكم معنا',
+                                  'تنويه: أي ملاحظات على تجهيز المواد تُقبل خلال 3 أيام من تاريخ الفاتورة فقط  وشكراً لتعاملكم معنا (طُبعت في: ${DateTime.now().day.toString().padLeft(2, '0')}/${DateTime.now().month.toString().padLeft(2, '0')}/${DateTime.now().year} ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')})',
                                   style: pw.TextStyle(
                                       font: font,
                                       fontSize: 11,

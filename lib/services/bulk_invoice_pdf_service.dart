@@ -105,6 +105,7 @@ class BulkInvoicePdfService {
             allProducts: allProducts,
             customerName: invoice.customerName,
             customerAddress: invoice.customerAddress ?? '',
+            customerPhone: invoice.customerPhone,
             invoiceId: invoice.id!,
             selectedDate: invoice.invoiceDate,
             discount: invoice.discount,

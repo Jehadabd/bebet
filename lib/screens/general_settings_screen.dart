@@ -18,6 +18,7 @@ import '../services/invoice_prediction_service.dart' as invoice_prediction; // �
 import '../services/expert_training_service.dart'; // العقل المدبر للتدريب
 import 'financial_audit_screen.dart'; // 🛡️ شاشة التدقيق المالي
 import 'discord_settings_screen.dart'; // 📱 إعدادات Discord
+import 'telegram_settings_screen.dart'; // ✈️ إعدادات Telegram
 import 'package:file_picker/file_picker.dart';
 import '../services/smart_pricing_service.dart';
 
@@ -1214,6 +1215,21 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
             title: 'إرسال الفواتير للتليجرام',
             child: Column(
               children: [
+                _buildActionTile(
+                  icon: Icons.settings,
+                  iconColor: const Color(0xFF0088CC),
+                  title: 'إعدادات قناة Telegram',
+                  subtitle: 'تغيير البوت والقناة واختبار الاتصال',
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const TelegramSettingsScreen(),
+                      ),
+                    );
+                  },
+                ),
+                const Divider(height: 1),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('إرسال الفواتير التلقائي للتليجرام'),

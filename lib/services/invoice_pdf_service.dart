@@ -22,6 +22,7 @@ class InvoicePdfService {
     required List<Product> allProducts,
     required String customerName,
     required String customerAddress,
+    required String? customerPhone,
     required int invoiceId,
     required DateTime selectedDate,
     required double discount,
@@ -53,7 +54,7 @@ class InvoicePdfService {
       pdf.addPage(
         pw.Page(
           pageFormat: PdfPageFormat.a4,
-          margin: pw.EdgeInsets.only(top: 0, bottom: 2, left: 10, right: 10),
+          margin: pw.EdgeInsets.only(top: 0, bottom: 2, left: 25, right: 10),
           build: (pw.Context context) {
             return pw.Directionality(
               textDirection: pw.TextDirection.rtl,
@@ -77,16 +78,59 @@ class InvoicePdfService {
                   pw.Row(
                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                     children: [
-                      pw.Text('السيد: $customerName',
-                          style: pw.TextStyle(font: font, fontSize: 12)),
-                      pw.Text(
-                          'العنوان: ${customerAddress.isNotEmpty ? customerAddress : ' ______'}',
-                          style: pw.TextStyle(font: font, fontSize: 11)),
-                      pw.Text('رقم الفاتورة: ${invoiceToManage?.formattedInvoiceNumber ?? invoiceId}',
-                          style: pw.TextStyle(font: font, fontSize: 10)),
-                      pw.Text(
-                        'التاريخ والوقت: ${invoiceToManage?.formattedInvoiceDate ?? '${createdAt?.hour.toString().padLeft(2, '0') ?? DateTime.now().hour.toString().padLeft(2, '0')}:${createdAt?.minute.toString().padLeft(2, '0') ?? DateTime.now().minute.toString().padLeft(2, '0')} ${selectedDate.day.toString().padLeft(2, '0')}/${selectedDate.month.toString().padLeft(2, '0')}/${selectedDate.year}'}',
-                        style: pw.TextStyle(font: font, fontSize: 11),
+                      pw.Container(
+                        width: 120,
+                        child: pw.Text('السيد: $customerName',
+                            style: pw.TextStyle(font: font, fontSize: 12),
+                            maxLines: 1,
+                            overflow: pw.TextOverflow.clip),
+                      ),
+                      pw.Container(
+                        width: 100,
+                        child: pw.Text(
+                            'العنوان: ${customerAddress.isNotEmpty ? customerAddress : ' ______'}',
+                            style: pw.TextStyle(font: font, fontSize: 11),
+                            maxLines: 1,
+                            overflow: pw.TextOverflow.clip),
+                      ),
+                      pw.Container(
+                        width: 80,
+                        child: pw.Text('رقم الفاتورة: ${invoiceToManage?.formattedInvoiceNumber ?? invoiceId}',
+                            style: pw.TextStyle(font: font, fontSize: 10),
+                            maxLines: 1,
+                            overflow: pw.TextOverflow.clip),
+                      ),
+                      pw.Container(
+                        width: 100,
+                        child: pw.Text('الهاتف: ${customerPhone != null && customerPhone.isNotEmpty ? customerPhone : '___________'}',
+                            style: pw.TextStyle(font: font, fontSize: 11),
+                            maxLines: 1,
+                            overflow: pw.TextOverflow.clip),
+                      ),
+                      pw.Container(
+                        width: 150, // مساحة كافية للتاريخ
+                        padding: const pw.EdgeInsets.only(right: 5), 
+                        child: pw.Directionality(
+                          textDirection: pw.TextDirection.ltr,
+                          child: pw.Row(
+                            mainAxisAlignment: pw.MainAxisAlignment.end, // محاذاة لليمين (باتجاه الهاتف) في سياق LTR
+                            mainAxisSize: pw.MainAxisSize.max,
+                            children: [
+                              pw.Text(
+                                invoiceToManage?.formattedInvoiceDate ?? '${selectedDate.day.toString().padLeft(2, '0')}/${selectedDate.month.toString().padLeft(2, '0')}/${selectedDate.year} ${createdAt?.hour.toString().padLeft(2, '0') ?? DateTime.now().hour.toString().padLeft(2, '0')}:${createdAt?.minute.toString().padLeft(2, '0') ?? DateTime.now().minute.toString().padLeft(2, '0')}',
+                                style: pw.TextStyle(font: font, fontSize: 11),
+                              ),
+                              pw.SizedBox(width: 4),
+                              pw.Directionality(
+                                textDirection: pw.TextDirection.rtl,
+                                child: pw.Text(
+                                  'التاريخ:',
+                                  style: pw.TextStyle(font: font, fontSize: 11),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
                     ],
                   ),
@@ -249,7 +293,7 @@ class InvoicePdfService {
       pdf.addPage(
         pw.Page(
           pageFormat: PdfPageFormat.a4,
-          margin: pw.EdgeInsets.only(top: 0, bottom: 2, left: 10, right: 10),
+          margin: pw.EdgeInsets.only(top: 0, bottom: 2, left: 25, right: 10),
           build: (pw.Context context) {
             return pw.Directionality(
               textDirection: pw.TextDirection.rtl,

@@ -567,6 +567,7 @@ class AppProvider with ChangeNotifier {
       onProgress?.call(0.90);
       try {
         final telegramService = TelegramBackupService();
+        await telegramService.loadSettings();
         if (telegramService.isConfigured) {
           final caption = '📦 نسخة احتياطية - $branchName - ${now.year}/${now.month}/${now.day} ${now.hour}:${now.minute.toString().padLeft(2, '0')}';
           await telegramService.sendDocument(file: zipFile, caption: caption);
