@@ -31,6 +31,7 @@ import 'firebase_sync/firebase_sync_helper.dart'; // 🔥 مزامنة Firebase
 import 'firebase_sync/firebase_sync_service.dart'; // 🛡️ رفع شواهد الحذف فوراً
 import 'firebase_sync/invoice_sync_service.dart'; // 🧾 مزامنة الفواتير الفورية
 import 'firebase_sync/firebase_sync_config.dart'; // 🔧 إعدادات المزامنة (معرف الجهاز)
+import 'database/business/customer_visibility.dart'; // 🛡️ ظهور العميل بعد حذفه
 import 'smart_pricing_service.dart'; // 🔮 محرك التسعير الذكي
 import 'settings_manager.dart'; // إعدادات التطبيق
 import 'invoice_settings_service.dart';
@@ -3177,6 +3178,10 @@ class DatabaseService {
       final contrib = "COALESCE(transaction_type, '') NOT IN ($types)";
       final newContrib = "COALESCE(NEW.transaction_type, '') NOT IN ($types)";
       const linked = "NEW.invoice_sync_uuid IS NOT NULL AND NEW.invoice_sync_uuid != ''";
+      // صف «تعديل حي» قديم يُلغى لأن الفاتورة المعلّقة لا تساهم في الدين، لا
+      // لأن العميل حُذف: إلغاؤه ليس إبطالاً لدين الفاتورة ولا دليلاً عليه.
+      final newVoiding =
+          "$newContrib AND COALESCE(NEW.transaction_type, '') != 'invoice_live_update'";
       const rebalance = '''
         UPDATE customers SET current_total_debt = (
           SELECT COALESCE(SUM(amount_changed), 0) FROM transactions
@@ -3196,12 +3201,12 @@ class DatabaseService {
       await db.execute('''
         CREATE TRIGGER trg_invoice_void_upd
         AFTER UPDATE OF is_deleted ON transactions
-        WHEN NEW.is_deleted = 1 AND COALESCE(OLD.is_deleted, 0) = 0 AND $linked AND $newContrib
+        WHEN NEW.is_deleted = 1 AND COALESCE(OLD.is_deleted, 0) = 0 AND $linked AND $newVoiding
         BEGIN $voidSiblings $rebalance END''');
       await db.execute('''
         CREATE TRIGGER trg_invoice_void_ins_deleted
         AFTER INSERT ON transactions
-        WHEN NEW.is_deleted = 1 AND $linked AND $newContrib
+        WHEN NEW.is_deleted = 1 AND $linked AND $newVoiding
         BEGIN $voidSiblings $rebalance END''');
       await db.execute('''
         CREATE TRIGGER trg_invoice_void_ins_active
@@ -3211,13 +3216,22 @@ class DatabaseService {
                       WHERE v.invoice_sync_uuid = NEW.invoice_sync_uuid
                         AND v.customer_id = NEW.customer_id AND v.is_deleted = 1
                         AND v.id != NEW.id
-                        AND COALESCE(v.transaction_type, '') NOT IN ($types))
+                        AND COALESCE(v.transaction_type, '') NOT IN ($types, 'invoice_live_update'))
         BEGIN
           UPDATE transactions SET is_deleted = 1, is_uploaded = 0 WHERE id = NEW.id;
           $rebalance
         END''');
     } catch (e) {
       print('⚠️ مشغّلات نهائية إبطال دين الفاتورة: $e');
+    }
+
+    // 🛡️ الفاتورة المعلّقة لا تساهم في الدين حتى تُحفظ (كما في المرجع). صفوف
+    // «التعديل الحي» التي كتبتها الإصدارات السابقة لفواتير ما زالت معلّقة
+    // تُلغى بشاهد حذف يتزامن. لا يوجد ما يُلغى بعد أول تشغيل.
+    try {
+      await db.transaction((txn) => voidLiveDebtRows(txn, suspendedOnly: true));
+    } catch (e) {
+      print('⚠️ إلغاء صفوف التعديل الحي للفواتير المعلّقة: $e');
     }
 
     // هوية العميل فريدة: دمج أي تكرار لنفس sync_uuid ثم قيد فريد
@@ -6037,29 +6051,9 @@ class DatabaseService {
         // ═══════════════════════════════════════════════════════════════════════════
         // 🔒 طبقة الحماية 2: تنظيف معاملات التعديل الحي قبل حساب الدين
         // ═══════════════════════════════════════════════════════════════════════════
+        // صفوف من الإصدارات السابقة (لم تعد تُنشأ): تُلغى بشاهد حذف يتزامن.
         if (shouldApplyDebt && customer != null) {
-          final liveUpdates = await txn.query('transactions',
-            where: 'invoice_id = ? AND transaction_type = ?',
-            whereArgs: [invoiceId, 'invoice_live_update']);
-          
-          if (liveUpdates.isNotEmpty) {
-            double liveUpdateSum = 0.0;
-            for (final tx in liveUpdates) {
-              liveUpdateSum += (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
-            }
-            // عكس التأثير على رصيد العميل
-            if (liveUpdateSum.abs() > 0.001) {
-              await txn.rawUpdate(
-                'UPDATE customers SET current_total_debt = current_total_debt - ?, '
-                'last_modified_at = ? WHERE id = ?',
-                [liveUpdateSum, DateTime.now().toIso8601String(), customer.id]);
-            }
-            // حذف المعاملات المؤقتة
-            await txn.delete('transactions',
-              where: 'invoice_id = ? AND transaction_type = ?',
-              whereArgs: [invoiceId, 'invoice_live_update']);
-            print('🔒 [saveCompleteInvoice] تم تنظيف ${liveUpdates.length} معاملة invoice_live_update (مجموع: $liveUpdateSum)');
-          }
+          await voidLiveDebtRows(txn, invoiceId: invoiceId);
         }
 
         if (customer != null && shouldApplyDebt) {
@@ -6818,6 +6812,10 @@ class DatabaseService {
         print('⚠️ تحذير: فشل تسجيل مزامنة حذف معاملات الفاتورة: $e');
       }
       
+      // 🛡️ صفوف «تعديل حي» قديمة لهذه الفاتورة رُفعت كمعاملات مستقلة: تُلغى
+      // بشاهد حذف يتزامن (وتُفكّ عن الفاتورة فلا يطالها الحذف النهائي أدناه).
+      await voidLiveDebtRows(db, invoiceId: id, bumpInvoices: false);
+
       // Delete all transactions associated with this invoice
       await db.delete(
         'transactions',
@@ -7509,9 +7507,13 @@ class DatabaseService {
       final int? customerId = inv['customer_id'] as int?;
       if (customerId == null) return 0.0;
 
-      // الفواتير المعلّقة لها منطق «التحديث الحي» الخاص بها
-      // (setInvoiceDebtContribution) — لا يتدخّل الحارس فيها إطلاقاً.
-      if ((inv['status'] as String?) != 'محفوظة') return 0.0;
+      // الفاتورة المعلّقة لا تساهم في الدين حتى تُحفظ (كما في المرجع): مساهمتها
+      // المتوقعة صفر. المقارنة بـ «معلقة» لا بـ «محفوظة»: حالة قديمة أو فارغة
+      // تُعامل كمحفوظة فلا يُصفَّر دين حقيقي بالخطأ.
+      final bool suspended = (inv['status'] as String?) == 'معلقة';
+      // فاتورة معلّقة وصلت من جهاز آخر: لا صف تصحيح محلي لها (المرجع لا يسوّي
+      // فواتير غيره إطلاقاً). صفوفها تتبع حزمة مالكها وشواهد حذفه.
+      if (suspended && !isLocalOrigin) return 0.0;
 
       final String paymentType = (inv['payment_type'] as String?) ?? '';
       double total = (inv['total_amount'] as num?)?.toDouble() ?? 0.0;
@@ -7527,7 +7529,7 @@ class DatabaseService {
         where: 'invoice_id = ?',
         whereArgs: [invoiceId],
       );
-      if (itemRows.isNotEmpty) {
+      if (itemRows.isNotEmpty && !suspended) {
         double itemsTotal = 0.0;
         for (final it in itemRows) {
           itemsTotal += (it['item_total'] as num?)?.toDouble() ?? 0.0;
@@ -7570,16 +7572,19 @@ class DatabaseService {
       // إلى الحياة بصف تصحيح جديد. الحذف نهائي.
       final String voidPh =
           List<String>.filled(kNonContributionTxTypes.length, '?').join(',');
+      // (إلغاء صف «تعديل حي» قديم ليس إبطالاً: الفاتورة المعلّقة لا تساهم أصلاً)
       final voided = await txn.rawQuery(
         'SELECT 1 FROM transactions WHERE invoice_id = ? AND is_deleted = 1 '
-        'AND (transaction_type IS NULL OR transaction_type NOT IN ($voidPh)) LIMIT 1',
+        'AND (transaction_type IS NULL OR transaction_type NOT IN ($voidPh)) '
+        "AND COALESCE(transaction_type, '') != 'invoice_live_update' LIMIT 1",
         <Object?>[invoiceId, ...kNonContributionTxTypes],
       );
       if (voided.isNotEmpty) return 0.0;
 
       // 1) ما يجب أن تكون عليه مساهمة الفاتورة (صفّ الفاتورة هو المرجع)
-      final double expected =
-          paymentType == 'دين' ? MoneyCalculator.subtract(total, paid) : 0.0;
+      final double expected = (!suspended && paymentType == 'دين')
+          ? MoneyCalculator.subtract(total, paid)
+          : 0.0;
 
       // 2) ما هو مسجّل فعلاً في الدفتر لهذه الفاتورة
       final String placeholders =
@@ -7696,16 +7701,15 @@ class DatabaseService {
       final String placeholders =
           List<String>.filled(kNonContributionTxTypes.length, '?').join(',');
 
-      // كشف الفواتير المحفوظة التي لا يطابق دفترها صفَّها
+      // كشف فواتيري التي لا يطابق دفترها صفَّها (المعلّقة مساهمتها المتوقعة صفر)
       final List<Map<String, Object?>> broken = await db.rawQuery(
         '''
         SELECT i.id AS id
         FROM invoices i
         WHERE i.customer_id = ?
-          AND i.status = 'محفوظة'
           AND COALESCE(i.is_created_by_me, 1) = 1
           AND ABS(
-          (CASE WHEN i.payment_type = 'دين'
+          (CASE WHEN i.payment_type = 'دين' AND COALESCE(i.status, '') != 'معلقة'
                 THEN (
                   (CASE WHEN (SELECT COUNT(*) FROM invoice_items ii
                               WHERE ii.invoice_id = i.id) > 0
@@ -7830,141 +7834,122 @@ class DatabaseService {
     }
   }
 
-  /// ضبط المساهمة الحالية لهذه الفاتورة في دين العميل بشكل مباشر (تعديل حي)
-  /// newContribution هي قيمة الدين التي يجب أن تمثلها هذه الفاتورة حالياً.
-  /// الدالة تحسب الفرق مع المساهمة الحالية (من جميع معاملات هذه الفاتورة ما عدا المدفوعات اليدوية)
-  /// ثم تطبق هذا الفرق على رصيد العميل وتكتب معاملة واحدة بالفارق.
+  /// ⚠️ لم تعد لها وظيفة (كما في مشروع المرجع): الفاتورة المعلّقة لا تساهم في
+  /// دين العميل حتى تُحفظ، ودين الفاتورة المحفوظة من مسؤولية الحارس المحاسبي
+  /// وحده. كانت تكتب صفوف «تعديل حي» (invoice_live_update) في دفتر العميل
+  /// أثناء تعديل فاتورة معلّقة؛ هذه الصفوف تُرفع للسحابة كمعاملات عادية ثم
+  /// تُحذف نهائياً عند الحفظ، والحذف النهائي لا يصل للأجهزة الأخرى فيتضاعف
+  /// الدين عند الجميع (اختبار الأجهزة الوهمية). تُركت للتوافق مع الشاشة فقط.
   Future<void> setInvoiceDebtContribution({
     required int invoiceId,
     required int customerId,
     required double newContribution,
     String? note,
   }) async {
-    final db = await database;
-    await db.transaction((txn) async {
-      // اجمع مساهمة الفاتورة الحالية من كل المعاملات المرتبطة بهذه الفاتورة باستثناء المدفوعات اليدوية
-      // نستثني manual_payment لأنها تمثل تسديد خارجي لا يجب أن يُحتسب ضمن مساهمة الفاتورة نفسها
-      final List<Map<String, Object?>> rows = await txn.query(
-        'transactions',
-        columns: ['amount_changed', 'transaction_type'],
-        where: 'invoice_id = ? AND (transaction_type IS NULL OR transaction_type <> ?)',
-        whereArgs: [invoiceId, 'manual_payment'],
-      );
-      double currentContribution = 0.0;
-      for (final r in rows) {
-        final num? v = r['amount_changed'] as num?;
-        currentContribution += (v ?? 0).toDouble();
-      }
-
-      final double delta = MoneyCalculator.subtract(newContribution, currentContribution);
-      const double eps = 1e-6;
-      if (delta.abs() < eps) {
-        return; // لا حاجة لتغيير
-      }
-
-      // حدّث رصيد العميل
-      final customer = await getCustomerByIdUsingTransaction(txn, customerId);
-      if (customer == null) return;
-      final double newBalance = MoneyCalculator.add(customer.currentTotalDebt, delta);
-      await txn.update(
-        'customers',
-        {
-          'current_total_debt': newBalance,
-          'last_modified_at': DateTime.now().toIso8601String(),
-        },
-        where: 'id = ?',
-        whereArgs: [customerId],
-      );
-
-      // اكتب معاملة تمثل الفارق فقط
-      final now = DateTime.now();
-      final txUuid = UuidHelper.newTransactionUuid();
-      await txn.insert('transactions', {
-        'customer_id': customerId,
-        'transaction_date': now.toIso8601String(),
-        'amount_changed': delta,
-        'new_balance_after_transaction': newBalance,
-        'transaction_note': note ?? 'تعديل حي لمساهمة الفاتورة',
-        'transaction_type': 'invoice_live_update',
-        'description': 'Live delta applied to match invoice contribution',
-        'invoice_id': invoiceId,
-        'created_at': now.toIso8601String(),
-        'audio_note_path': null,
-        'transaction_uuid': txUuid,
-        'sync_uuid': txUuid, // 🔄 إضافة sync_uuid
-      });
-    });
+    // لا شيء عمداً — الحارس المحاسبي يتولى الأمر عند الحفظ.
   }
 
-  /// دالة تنظيف: تحذف جميع سجلات التحديث الحي (invoice_live_update) 
-  /// وترجع تأثيرها على رصيد العميل لتلافي الـ Race Conditions قبل الحفظ النهائي
-  Future<void> deleteLiveDebtTransactions(int invoiceId) async {
-    final db = await database;
-    await db.transaction((txn) async {
-      // 1. البحث عن كل المعاملات من نوع 'invoice_live_update' لهذه الفاتورة
-      final rows = await txn.query(
+  /// 🛡️ إلغاء صفوف «التعديل الحي» (invoice_live_update) القديمة التي أملكها:
+  /// لفاتورة واحدة [invoiceId]، أو لكل الفواتير المعلّقة [suspendedOnly].
+  /// الإلغاء حذف منطقي يُرفع شاهده فيصل لكل الأجهزة (الحذف النهائي لا يصل،
+  /// ونسخة السحابة كانت تعود). وتُفكّ الصفوف عن الفاتورة حتى لا يُقرأ إلغاؤها
+  /// كإبطال لدين الفاتورة بحذف العميل. يُعاد رصيد كل عميل معنيّ من مجموع
+  /// معاملاته الفعّالة، وتُرفع نسخة جديدة من كل فاتورة معنيّة [bumpInvoices]
+  /// (الصف في حزمتها على السحابة وإلا يبقى، ويستلمه جهاز جديد نشطاً).
+  /// تُرجع معرّفات العملاء المتأثرين.
+  static Future<Set<int>> voidLiveDebtRows(
+    DatabaseExecutor db, {
+    int? invoiceId,
+    bool suspendedOnly = false,
+    bool bumpInvoices = true,
+  }) async {
+    final where = StringBuffer(
+        "transaction_type = 'invoice_live_update' "
+        'AND (is_deleted IS NULL OR is_deleted = 0) '
+        'AND (is_created_by_me = 1 OR is_created_by_me IS NULL)');
+    final args = <Object?>[];
+    if (invoiceId != null) {
+      where.write(' AND invoice_id = ?');
+      args.add(invoiceId);
+    }
+    if (suspendedOnly) {
+      where.write(" AND invoice_id IN (SELECT id FROM invoices WHERE status = 'معلقة')");
+    }
+    final rows = await db.query('transactions',
+        columns: ['id', 'customer_id', 'invoice_id'],
+        where: where.toString(),
+        whereArgs: args);
+    if (rows.isEmpty) return <int>{};
+
+    final customers = <int>{};
+    final invoices = <int>{};
+    for (final r in rows) {
+      final inv = r['invoice_id'] as int?;
+      if (inv != null) invoices.add(inv);
+      await db.update(
         'transactions',
-        columns: ['id', 'amount_changed', 'customer_id'],
-        where: 'invoice_id = ? AND transaction_type = ?',
-        whereArgs: [invoiceId, 'invoice_live_update'],
+        {
+          'is_deleted': 1,
+          'is_uploaded': 0,
+          'restored_mark': 0,
+          'invoice_id': null,
+          'invoice_sync_uuid': null,
+        },
+        where: 'id = ?',
+        whereArgs: [r['id']],
       );
-
-      if (rows.isEmpty) return; // لا يوجد شيء لتنظيفه
-
-      // 2. تجميع المبالغ حسب العميل
-      final Map<int, double> amountsToRevert = {};
-      final List<int> transactionIds = [];
-
-      for (final row in rows) {
-        final txId = row['id'] as int;
-        final amountChanged = (row['amount_changed'] as num).toDouble();
-        final customerId = row['customer_id'] as int;
-
-        transactionIds.add(txId);
-        amountsToRevert[customerId] = (amountsToRevert[customerId] ?? 0.0) + amountChanged;
-      }
-
-      // 3. إرجاع رصيد العميل لما كان عليه
-      for (final entry in amountsToRevert.entries) {
-        final customerId = entry.key;
-        final sumRevert = entry.value;
-
-        if (sumRevert != 0) {
-          final customerRows = await txn.query(
-            'customers',
-            columns: ['current_total_debt'],
-            where: 'id = ?',
-            whereArgs: [customerId],
-          );
-
-          if (customerRows.isNotEmpty) {
-            final currentDebt = (customerRows.first['current_total_debt'] as num).toDouble();
-            final correctedDebt = currentDebt - sumRevert;
-
-            await txn.update(
-              'customers',
-              {
-                'current_total_debt': correctedDebt,
-                'last_modified_at': DateTime.now().toIso8601String(),
-              },
-              where: 'id = ?',
-              whereArgs: [customerId],
-            );
-          }
-        }
-      }
-
-      // 4. حذف هذه المعاملات المؤقتة
-      for (final txId in transactionIds) {
-        await txn.delete(
-          'transactions',
-          where: 'id = ?',
-          whereArgs: [txId],
+      final c = r['customer_id'] as int?;
+      if (c != null) customers.add(c);
+    }
+    final now = DateTime.now().toIso8601String();
+    for (final c in customers) {
+      await db.rawUpdate(
+        'UPDATE customers SET current_total_debt = ('
+        'SELECT COALESCE(SUM(amount_changed), 0) FROM transactions '
+        'WHERE customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)), '
+        'last_modified_at = ? WHERE id = ?',
+        [c, now, c],
+      );
+      await CustomerVisibility.apply(db, c);
+    }
+    if (bumpInvoices) {
+      for (final i in invoices) {
+        // صف مستعاد من نسخة احتياطية: تُرفع نسخته عند انتهاء الاستعادة
+        await db.rawUpdate(
+          'UPDATE invoices SET version = CASE WHEN restored_mark = 1 THEN version '
+          'ELSE COALESCE(version, 1) + 1 END, is_synced = 0 '
+          'WHERE id = ? AND (is_created_by_me = 1 OR is_created_by_me IS NULL)',
+          [i],
         );
       }
-      
-      print('🧹 تم تنظيف ${transactionIds.length} معاملة مؤقتة (live update) للفاتورة $invoiceId');
-    });
+    }
+    print('🧹 أُلغيت ${rows.length} معاملة «تعديل حي» قديمة'
+        '${invoiceId != null ? ' للفاتورة $invoiceId' : ' لفواتير معلّقة'}');
+    return customers;
+  }
+
+  /// مساهمة الفاتورة المسجّلة فعلاً في دفتر هذا العميل (صفوفها الفعّالة عدا
+  /// التسديدات والتسويات الخارجية). الفاتورة المعلّقة: صفر.
+  Future<double> recordedInvoiceContribution(int invoiceId, int customerId) async {
+    final db = await database;
+    final ph = List<String>.filled(kNonContributionTxTypes.length, '?').join(',');
+    final res = await db.rawQuery(
+      'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions '
+      'WHERE invoice_id = ? AND customer_id = ? '
+      'AND (is_deleted IS NULL OR is_deleted = 0) '
+      'AND (transaction_type IS NULL OR transaction_type NOT IN ($ph))',
+      <Object?>[invoiceId, customerId, ...kNonContributionTxTypes],
+    );
+    return (res.first['total'] as num?)?.toDouble() ?? 0.0;
+  }
+
+  /// تنظيف صفوف «التعديل الحي» لهذه الفاتورة قبل حفظها النهائي
+  /// (صفوف من الإصدارات السابقة؛ لم تعد تُنشأ).
+  Future<void> deleteLiveDebtTransactions(int invoiceId) async {
+    final db = await database;
+    final affected =
+        await db.transaction((txn) => voidLiveDebtRows(txn, invoiceId: invoiceId));
+    if (affected.isNotEmpty) invalidateCustomersCache();
   }
 
   // Method to get the initial debt transaction for an invoice

@@ -623,6 +623,19 @@ class ArmoredReconciliationService {
             whereArgs: [tu, tu],
             limit: 1);
         if (existing.isNotEmpty) continue;
+        // bebet: صف مساهمة فاتورة حذفها مالكها (حذف نهائي + شاهد حذف) لا يُضاف
+        // من كشف. التسديدات والتسويات تبقى بعد حذف الفاتورة كما عند المالك.
+        final txInv = tx['invoice_sync_uuid'] as String?;
+        if (txInv != null &&
+            txInv.isNotEmpty &&
+            !DatabaseService.kNonContributionTxTypes.contains(tx['transaction_type'])) {
+          final tomb = await txn.query('deleted_invoices',
+              columns: ['invoice_uuid'],
+              where: 'invoice_uuid = ?',
+              whereArgs: [txInv],
+              limit: 1);
+          if (tomb.isNotEmpty) continue;
+        }
 
         final row = <String, dynamic>{};
         tx.forEach((k, v) {

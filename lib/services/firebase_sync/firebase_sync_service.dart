@@ -1960,6 +1960,19 @@ class FirebaseSyncService {
       final inv = await db.query('invoices',
           columns: ['id'], where: 'invoice_uuid = ?', whereArgs: [incomingInvUuid], limit: 1);
       if (inv.isNotEmpty) return;
+      // bebet: الفاتورة المحذوفة لا يبقى صفّها (حذف نهائي)، فشاهد حذفها هو
+      // المرجع لصفوف مساهمتها. نسخة قديمة من صفّها في مجموعة transactions
+      // («بياناتي صحيحة» قبل الحذف) كانت تُدرج نشطة على جهاز انضم بعد الحذف
+      // (اختبار الفوضى). التسديدات والتسويات تبقى بعد حذف الفاتورة كالمالك.
+      final incomingType = (data['transactionType'] ?? data['transaction_type'])?.toString();
+      if (!DatabaseService.kNonContributionTxTypes.contains(incomingType)) {
+        final tomb = await db.query('deleted_invoices',
+            columns: ['invoice_uuid'],
+            where: 'invoice_uuid = ?',
+            whereArgs: [incomingInvUuid],
+            limit: 1);
+        if (tomb.isNotEmpty) return;
+      }
     }
 
     // 🛡️ إصدار المستند = وقت الخادم عند آخر كتابة. لقطة سحب كامل أو تدقيق

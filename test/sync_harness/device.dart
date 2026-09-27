@@ -294,12 +294,16 @@ Future<Object?> _exec(DeviceCommand c, FakeConnectivity connectivity, List<Strin
         if (ir.isEmpty) throw StateError('invoice not on device');
         final existing = Invoice.fromMap(ir.first);
         invoiceId = existing.id!;
+        // كما في invoice_actions: تنظيف صفوف «التعديل الحي» القديمة قبل الحفظ،
+        // والحفظ يجعل الفاتورة المعلّقة محفوظة.
+        await dbs.deleteLiveDebtTransactions(invoiceId);
         await db.delete('invoice_items', where: 'invoice_id = ?', whereArgs: [invoiceId]);
         await dbs.insertInvoiceItem(itemFor(invoiceId));
         await dbs.updateInvoice(existing.copyWith(
           totalAmount: total,
           amountPaidOnInvoice: paid,
           paymentType: ptype,
+          status: 'محفوظة',
           lastModifiedAt: now,
         ));
       }
@@ -360,8 +364,133 @@ Future<Object?> _exec(DeviceCommand c, FakeConnectivity connectivity, List<Strin
           [cid]);
       return {'invoices': invs, 'txs': txs};
 
+    case 'liveSuspended':
+      // فاتورة معلّقة مفتوحة في الشاشة (دين) + «التعديل الحي» الذي تستدعيه
+      // الشاشة عند كل تغيير (_syncLiveDebt → setInvoiceDebtContribution).
+      final dbs = DatabaseService();
+      final db = await dbs.database;
+      final cr = await db.query('customers',
+          where: 'sync_uuid = ?', whereArgs: [a['cust']], limit: 1);
+      if (cr.isEmpty) throw StateError('customer not on device');
+      final cust = cr.first;
+      final total = (a['total'] as num).toDouble();
+      final now = DateTime.now();
+      final invoiceId = await dbs.insertInvoice(Invoice(
+        customerName: cust['name'] as String,
+        customerPhone: (cust['phone'] as String?) ?? '',
+        customerAddress: (cust['address'] as String?) ?? '',
+        installerName: '',
+        invoiceDate: now,
+        paymentType: 'دين',
+        totalAmount: total,
+        amountPaidOnInvoice: 0,
+        createdAt: now,
+        lastModifiedAt: now,
+        customerId: cust['id'] as int,
+        status: 'معلقة',
+      ));
+      await dbs.insertInvoiceItem(InvoiceItem(
+        invoiceId: invoiceId,
+        productName: 'صنف اختبار',
+        unit: 'قطعة',
+        unitPrice: total,
+        quantityIndividual: 1,
+        appliedPrice: total,
+        itemTotal: total,
+        saleType: 'قطعة',
+      ));
+      await dbs.setInvoiceDebtContribution(
+        invoiceId: invoiceId,
+        customerId: cust['id'] as int,
+        newContribution: total,
+        note: 'تعديل حي لمساهمة فاتورة #$invoiceId',
+      );
+      if (a['legacy'] == true) {
+        // صف «تعديل حي» كما كتبه الإصدار السابق (قبل التحديث)
+        final u = 'tx_legacy_live_${cust['id']}_$invoiceId';
+        await db.insert('transactions', {
+          'customer_id': cust['id'],
+          'transaction_date': now.toIso8601String(),
+          'amount_changed': total,
+          'transaction_note': 'تعديل حي لمساهمة فاتورة #$invoiceId',
+          'transaction_type': 'invoice_live_update',
+          'description': 'Live delta applied to match invoice contribution',
+          'invoice_id': invoiceId,
+          'created_at': now.toIso8601String(),
+          'transaction_uuid': u,
+          'sync_uuid': u,
+        });
+        await db.rawUpdate(
+            'UPDATE customers SET current_total_debt = current_total_debt + ? WHERE id = ?',
+            [total, cust['id']]);
+      }
+      return invoiceId;
+
+    case 'finalizeSuspended':
+      // الحفظ النهائي كما في invoice_actions: تنظيف صفوف التعديل الحي ثم الحفظ
+      // بحالة «محفوظة» فيكتب الحارس دين الفاتورة، ثم رفع الحزمة.
+      final dbs = DatabaseService();
+      final db = await dbs.database;
+      final id = a['id'] as int;
+      await dbs.deleteLiveDebtTransactions(id);
+      final ir = await db.query('invoices', where: 'id = ?', whereArgs: [id], limit: 1);
+      final existing = Invoice.fromMap(ir.first);
+      await dbs.updateInvoice(existing.copyWith(
+        status: 'محفوظة',
+        lastModifiedAt: DateTime.now(),
+      ));
+      await dbs.reconcileInvoiceDebt(id, reason: 'حفظ فاتورة معلّقة (اختبار)');
+      final saved = await db.query('invoices',
+          columns: ['invoice_uuid'], where: 'id = ?', whereArgs: [id], limit: 1);
+      final uuid = saved.first['invoice_uuid'] as String;
+      await InvoiceSyncService().syncInvoiceBundleNow(uuid).catchError((e) => false);
+      return uuid;
+
     case 'suspendInvoice':
-      throw UnsupportedError('bebet harness: suspendInvoice غير مدعوم');
+      // InvoiceSuspendService.suspendInvoice (بلا التحقق من نموذج الواجهة)،
+      // ثم «التعديل الحي» الذي تستدعيه الشاشة (لم يعد يكتب شيئاً).
+      final dbs = DatabaseService();
+      final db = await dbs.database;
+      final cr = await db.query('customers',
+          where: 'sync_uuid = ?', whereArgs: [a['cust']], limit: 1);
+      if (cr.isEmpty) throw StateError('customer not on device');
+      final cust = cr.first;
+      final total = (a['total'] as num).toDouble();
+      final now = DateTime.now();
+      final invoiceId = await dbs.insertInvoice(Invoice(
+        customerName: cust['name'] as String,
+        customerPhone: (cust['phone'] as String?) ?? '',
+        customerAddress: (cust['address'] as String?) ?? '',
+        installerName: '',
+        invoiceDate: now,
+        paymentType: a['ptype'] as String,
+        totalAmount: total,
+        amountPaidOnInvoice: (a['paid'] as num).toDouble(),
+        createdAt: now,
+        lastModifiedAt: now,
+        customerId: cust['id'] as int,
+        status: 'معلقة',
+      ));
+      await dbs.insertInvoiceItem(InvoiceItem(
+        invoiceId: invoiceId,
+        productName: 'صنف اختبار',
+        unit: 'قطعة',
+        unitPrice: total,
+        quantityIndividual: 1,
+        appliedPrice: total,
+        itemTotal: total,
+        saleType: 'قطعة',
+      ));
+      await dbs.setInvoiceDebtContribution(
+        invoiceId: invoiceId,
+        customerId: cust['id'] as int,
+        newContribution: total,
+      );
+      final ir = await db.rawQuery(
+          'SELECT i.invoice_uuid AS u, c.sync_uuid AS cs FROM invoices i '
+          'LEFT JOIN customers c ON c.id = i.customer_id WHERE i.id = ?',
+          [invoiceId]);
+      return {'uuid': ir.first['u'], 'cust': ir.first['cs']};
 
     case 'pendingOwnWork':
       final db = await DatabaseService().database;

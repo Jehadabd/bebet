@@ -1104,6 +1104,29 @@ class InvoiceSyncService {
           await CustomerVisibility.apply(txn, cid);
         }
         print('🗑️ حُذفت الفاتورة $uuid تنفيذاً لشاهد حذف من مالكها');
+      } else {
+        // 🛡️ الفاتورة لم تصل هذا الجهاز، لكن صفوف مساهمتها وصلت كمستندات مستقلة
+        // (نسخة قديمة في مجموعة transactions، أو كشف «بياناتي صحيحة» قبل
+        // الحذف) فبقيت ديناً يتيماً على جهاز انضم بعد الحذف (اختبار الفوضى).
+        const orphan = 'invoice_sync_uuid = ? '
+            'AND (invoice_id IS NULL OR invoice_id NOT IN (SELECT id FROM invoices))';
+        final orphanCustomers = await txn.rawQuery(
+            'SELECT DISTINCT customer_id AS c FROM transactions WHERE $orphan '
+            'AND (transaction_type IS NULL OR transaction_type NOT IN ($ph))',
+            <Object?>[uuid, ...nonContribution]);
+        if (orphanCustomers.isNotEmpty) {
+          await txn.rawDelete(
+              'DELETE FROM transactions WHERE $orphan '
+              'AND (transaction_type IS NULL OR transaction_type NOT IN ($ph))',
+              <Object?>[uuid, ...nonContribution]);
+          for (final r in orphanCustomers) {
+            final cid = r['c'] as int?;
+            if (cid == null) continue;
+            await _recalculateCustomerBalanceInsideTxn(txn, cid);
+            await CustomerVisibility.apply(txn, cid);
+          }
+          print('🗑️ حُذفت صفوف يتيمة للفاتورة المحذوفة $uuid');
+        }
       }
 
       await txn.insert(

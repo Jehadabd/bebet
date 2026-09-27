@@ -257,8 +257,11 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
     
     final currentCustomerDebt = oldCustomer.currentTotalDebt;
     
-    // حساب الدين القديم
-    final oldRemaining = oldInvoice.totalAmount - oldInvoice.amountPaidOnInvoice;
+    // 🛡️ الدين القديم = المسجّل فعلاً في الدفتر لهذه الفاتورة وهذا العميل، لا ما
+    // تفترضه الفاتورة (كما في المرجع). الفاتورة المعلّقة لا دين لها في الدفتر،
+    // فتحويلها لنقد كان يُرفض بحجة رصيد سالب.
+    final oldRemaining =
+        await dbService.recordedInvoiceContribution(oldInvoice.id!, oldCustomerId);
     
     // حساب الإجمالي الجديد
     final completeItems = invoiceItems.where(_isInvoiceItemComplete).toList();

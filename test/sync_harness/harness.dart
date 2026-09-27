@@ -390,8 +390,8 @@ class Harness {
   /// لا دفتر مخزون مشترك في bebet.
   bool stock = false;
 
-  /// الفواتير المعلّقة في bebet تساهم بدينها حيّاً (سياسة المشروع)، فلا تُجرَّب هنا.
-  bool suspendedInvoices = false;
+  /// الفاتورة المعلّقة لا تساهم في الدين حتى تُحفظ (كما في المرجع).
+  bool suspendedInvoices = true;
 
   /// نقل الفاتورة لعميل آخر يمرّ في bebet بمسار الشاشة وحده.
   bool moveInvoices = false;
