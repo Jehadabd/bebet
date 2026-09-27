@@ -625,6 +625,14 @@ class InvoiceSyncService {
             columns: ['id', 'version', 'last_modified_at'],
             where: 'invoice_uuid = ?', whereArgs: [uuid], limit: 1);
 
+        // 🗑️ شاهد حذف سُجّل أثناء معالجة هذه النسخة (مسار آخر بالتوازي): لا إحياء
+        final tombNow = await txn.query('deleted_invoices',
+            columns: ['version'], where: 'invoice_uuid = ?', whereArgs: [uuid], limit: 1);
+        if (tombNow.isNotEmpty &&
+            incomingVersion <= ((tombNow.first['version'] as num?)?.toInt() ?? 0)) {
+          return;
+        }
+
         int invoiceId;
         // 🛡️ تأمين حقول السنتات للفاتورة
         final totalAmount = (invoiceData['total_amount'] as num?)?.toDouble() ?? 0.0;
@@ -1045,29 +1053,31 @@ class InvoiceSyncService {
     final owner = (data['ownerDeviceId'] ?? data['uploaderDeviceId'] ??
             data['creator_device_id'])
         ?.toString();
+    final nonContribution = DatabaseService.kNonContributionTxTypes;
+    final ph = List<String>.filled(nonContribution.length, '?').join(',');
 
-    final tomb = await db.query('deleted_invoices',
-        columns: ['version'], where: 'invoice_uuid = ?', whereArgs: [uuid], limit: 1);
-    if (tomb.isNotEmpty && ((tomb.first['version'] as num?)?.toInt() ?? 0) >= version) {
-      return; // طُبّق من قبل
-    }
+    // الحذف وتسجيل الشاهد في معاملة واحدة: معالجة نسخة أقدم بالتوازي إما
+    // تُكمل قبلها (فتحذفها هذه) أو بعدها (فترى الشاهد وتتوقف).
+    final applied = await db.transaction<bool>((txn) async {
+      final tomb = await txn.query('deleted_invoices',
+          columns: ['version'], where: 'invoice_uuid = ?', whereArgs: [uuid], limit: 1);
+      if (tomb.isNotEmpty && ((tomb.first['version'] as num?)?.toInt() ?? 0) >= version) {
+        return false; // طُبّق من قبل
+      }
 
-    final inv = await db.query('invoices',
-        columns: ['id', 'version', 'is_created_by_me', 'customer_id'],
-        where: 'invoice_uuid = ?', whereArgs: [uuid], limit: 1);
-    if (inv.isNotEmpty) {
-      final localVer = (inv.first['version'] as num?)?.toInt() ?? 1;
-      final localIsMine = (inv.first['is_created_by_me'] as int?) != 0;
-      // فاتورتي لا يحذفها غيري. وحذفي أنا (بعد استعادة نسخة أقدم) يُطبَّق.
-      if (localIsMine && owner != myDeviceId) return;
-      // نسخة محلية أحدث من الشاهد: المالك أعادها بعد الحذف
-      if (localVer > version) return;
+      final inv = await txn.query('invoices',
+          columns: ['id', 'version', 'is_created_by_me', 'customer_id'],
+          where: 'invoice_uuid = ?', whereArgs: [uuid], limit: 1);
+      if (inv.isNotEmpty) {
+        final localVer = (inv.first['version'] as num?)?.toInt() ?? 1;
+        final localIsMine = (inv.first['is_created_by_me'] as int?) != 0;
+        // فاتورتي لا يحذفها غيري. وحذفي أنا (بعد استعادة نسخة أقدم) يُطبَّق.
+        if (localIsMine && owner != myDeviceId) return false;
+        // نسخة محلية أحدث من الشاهد: المالك أعادها بعد الحذف
+        if (localVer > version) return false;
 
-      final invoiceId = inv.first['id'] as int;
-      final nonContribution = DatabaseService.kNonContributionTxTypes;
-      final ph = List<String>.filled(nonContribution.length, '?').join(',');
-      final affected = <int>{};
-      await db.transaction((txn) async {
+        final invoiceId = inv.first['id'] as int;
+        final affected = <int>{};
         final c = inv.first['customer_id'] as int?;
         if (c != null) affected.add(c);
         final txCustomers = await txn.rawQuery(
@@ -1093,20 +1103,22 @@ class InvoiceSyncService {
           await _recalculateCustomerBalanceInsideTxn(txn, cid);
           await CustomerVisibility.apply(txn, cid);
         }
-      });
-      print('🗑️ حُذفت الفاتورة $uuid تنفيذاً لشاهد حذف من مالكها');
-    }
+        print('🗑️ حُذفت الفاتورة $uuid تنفيذاً لشاهد حذف من مالكها');
+      }
 
-    await db.insert(
-      'deleted_invoices',
-      {
-        'invoice_uuid': uuid,
-        'version': version,
-        'deleted_at': data['last_modified_at']?.toString() ?? DateTime.now().toIso8601String(),
-        'is_synced': 1,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+      await txn.insert(
+        'deleted_invoices',
+        {
+          'invoice_uuid': uuid,
+          'version': version,
+          'deleted_at': data['last_modified_at']?.toString() ?? DateTime.now().toIso8601String(),
+          'is_synced': 1,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      return true;
+    });
+    if (!applied) return;
 
     try {
       await SmartPipeCleanupService().markInvoiceRead(

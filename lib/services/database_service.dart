@@ -3163,6 +3163,63 @@ class DatabaseService {
       print('⚠️ جدول deleted_invoices: $e');
     }
 
+    // 🛡️ دين فاتورة أبطله حذف العميل نهائي لذلك العميل.
+    // أثر الفاتورة في bebet صفوف متعددة تُضاف مع كل تعديل (دين، تعديل، تسوية
+    // الحارس...)، والجهاز الحاذف يُبطل ما يعرفه منها فقط. صف أُضيف بالتوازي
+    // (تعديل الفاتورة على جهاز آخر قبل وصول الحذف) كان يُفلت فيعود جزء من
+    // الدين على العميل المحذوف (اختبار الأجهزة الوهمية). القاعدة هنا في
+    // المشغّلات حتى تشمل كل مسار كتابة (الشاشة، الحارس، المزامنة):
+    //   إن أُبطل صف مساهمة لفاتورة وعميل ⇒ تُبطل كل صفوف مساهمتها لهذا العميل،
+    //   الموجودة الآن وما يُضاف بعدها، ويُعاد رصيد العميل من مجموع معاملاته.
+    // is_uploaded = 0 يرفع شاهد حذف كل صف أُبطل هنا فتتقارب كل الأجهزة.
+    try {
+      final types = kNonContributionTxTypes.map((t) => "'$t'").join(', ');
+      final contrib = "COALESCE(transaction_type, '') NOT IN ($types)";
+      final newContrib = "COALESCE(NEW.transaction_type, '') NOT IN ($types)";
+      const linked = "NEW.invoice_sync_uuid IS NOT NULL AND NEW.invoice_sync_uuid != ''";
+      const rebalance = '''
+        UPDATE customers SET current_total_debt = (
+          SELECT COALESCE(SUM(amount_changed), 0) FROM transactions
+          WHERE customer_id = NEW.customer_id AND COALESCE(is_deleted, 0) = 0)
+        WHERE id = NEW.customer_id;''';
+      final voidSiblings = '''
+        UPDATE transactions SET is_deleted = 1, is_uploaded = 0
+        WHERE invoice_sync_uuid = NEW.invoice_sync_uuid AND customer_id = NEW.customer_id
+          AND COALESCE(is_deleted, 0) = 0 AND $contrib;''';
+      for (final name in const [
+        'trg_invoice_void_upd',
+        'trg_invoice_void_ins_deleted',
+        'trg_invoice_void_ins_active',
+      ]) {
+        await db.execute('DROP TRIGGER IF EXISTS $name');
+      }
+      await db.execute('''
+        CREATE TRIGGER trg_invoice_void_upd
+        AFTER UPDATE OF is_deleted ON transactions
+        WHEN NEW.is_deleted = 1 AND COALESCE(OLD.is_deleted, 0) = 0 AND $linked AND $newContrib
+        BEGIN $voidSiblings $rebalance END''');
+      await db.execute('''
+        CREATE TRIGGER trg_invoice_void_ins_deleted
+        AFTER INSERT ON transactions
+        WHEN NEW.is_deleted = 1 AND $linked AND $newContrib
+        BEGIN $voidSiblings $rebalance END''');
+      await db.execute('''
+        CREATE TRIGGER trg_invoice_void_ins_active
+        AFTER INSERT ON transactions
+        WHEN COALESCE(NEW.is_deleted, 0) = 0 AND $linked AND $newContrib
+          AND EXISTS (SELECT 1 FROM transactions v
+                      WHERE v.invoice_sync_uuid = NEW.invoice_sync_uuid
+                        AND v.customer_id = NEW.customer_id AND v.is_deleted = 1
+                        AND v.id != NEW.id
+                        AND COALESCE(v.transaction_type, '') NOT IN ($types))
+        BEGIN
+          UPDATE transactions SET is_deleted = 1, is_uploaded = 0 WHERE id = NEW.id;
+          $rebalance
+        END''');
+    } catch (e) {
+      print('⚠️ مشغّلات نهائية إبطال دين الفاتورة: $e');
+    }
+
     // هوية العميل فريدة: دمج أي تكرار لنفس sync_uuid ثم قيد فريد
     await mergeDuplicateCustomerIdentities(db);
 
@@ -4693,6 +4750,7 @@ class DatabaseService {
         throw Exception(
             'هذه المعاملة أُنشئت على جهاز آخر ولا يمكن تعديلها من هنا');
       }
+      await _assertTransactionNotVoided(db, updated.id!);
 
       // جلب العميل
       final customer = await getCustomerById(oldTx.customerId);
@@ -4837,6 +4895,16 @@ class DatabaseService {
     }
   }
 
+  /// 🛡️ معاملة أُبطلت (حذف العميل على هذا الجهاز أو على جهاز آخر) لا تُعدَّل:
+  /// الإبطال نهائي، وتعديلها كان سيُرفع كتعديل على معاملة محذوفة.
+  Future<void> _assertTransactionNotVoided(Database db, int transactionId) async {
+    final r = await db.query('transactions',
+        columns: ['is_deleted'], where: 'id = ?', whereArgs: [transactionId], limit: 1);
+    if (r.isNotEmpty && ((r.first['is_deleted'] as int?) ?? 0) == 1) {
+      throw Exception('هذه المعاملة أُلغيت (حُذف العميل) ولا يمكن تعديلها');
+    }
+  }
+
   /// توافق واجهة: تحديث معاملة (حاليًا للمعاملات اليدوية فقط)
   Future<Customer> updateTransaction(DebtTransaction updated) async {
     return updateManualTransaction(updated);
@@ -4861,6 +4929,7 @@ class DatabaseService {
         throw Exception(
             'هذه المعاملة أُنشئت على جهاز آخر ولا يمكن تحويل نوعها من هنا');
       }
+      await _assertTransactionNotVoided(db, transactionId);
       
       // الحصول على المعاملات مرتبة حسب التاريخ
       final transactions = await getCustomerTransactions(
@@ -4998,26 +5067,23 @@ class DatabaseService {
     
     try {
       final db = await database;
-      // احسب مجموع amount_changed للعميل
+      // 🛡️ الرصيد = مجموع المعاملات الفعّالة، في جملة واحدة ذرية.
+      // كانت تقرأ المجموع، ثم تكتب صف العميل كاملاً من لقطة قديمة، ثم تتحقق
+      // وترمي خطأ «أمنياً» إن اختلف: معاملة وصلت من المزامنة بين الخطوتين
+      // تُفشل تعديل المستخدم (رغم نجاحه)، وكتابة الصف كاملاً قد تعيد حقولاً
+      // عدّلتها المزامنة للتو (اختبار الأجهزة الوهمية).
+      const sumSql =
+          'SELECT COALESCE(SUM(amount_changed), 0) FROM transactions '
+          'WHERE customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)';
+      await db.rawUpdate(
+        'UPDATE customers SET current_total_debt = ($sumSql), last_modified_at = ? WHERE id = ?',
+        [customerId, DateTime.now().toIso8601String(), customerId],
+      );
+      invalidateCustomersCache();
       final res = await db.rawQuery(
-          'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0);',
-          [customerId]);
-      final double total = ((res.first['total'] as num?) ?? 0).toDouble();
-
-      final customer = await getCustomerById(customerId);
-      if (customer != null) {
-        final updated = customer.copyWith(
-          currentTotalDebt: total,
-          lastModifiedAt: DateTime.now(),
-        );
-        await updateCustomer(updated, updateBalance: true);
-        
-        // 🔒 التحقق بعد التحديث
-        final verifyCustomer = await getCustomerById(customerId);
-        if (verifyCustomer != null && !MoneyCalculator.areEqual(verifyCustomer.currentTotalDebt, total)) {
-          throw Exception('خطأ أمني: فشل التحقق بعد إعادة حساب رصيد العميل');
-        }
-      }
+          'SELECT current_total_debt AS total FROM customers WHERE id = ?', [customerId]);
+      final double total =
+          res.isEmpty ? 0.0 : ((res.first['total'] as num?) ?? 0).toDouble();
       return total;
     } finally {
       // 🔒 تحرير القفل دائماً
