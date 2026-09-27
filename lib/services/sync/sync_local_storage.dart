@@ -79,18 +79,36 @@ class SyncLocalStorage {
       print('✅ تم تعيين sync_uuid لـ ${customersWithoutUuid.length} عميل');
     }
     
-    // تعيين sync_uuid للمعاملات (استخدام transaction_uuid إذا كان موجوداً)
+    // تعيين sync_uuid و transaction_uuid للمعاملات (استخدام transaction_uuid إذا كان موجوداً)
     final transactionsWithoutUuid = await db.query(
       'transactions',
-      where: 'sync_uuid IS NULL',
+      where: 'sync_uuid IS NULL OR transaction_uuid IS NULL',
     );
     
     for (final tx in transactionsWithoutUuid) {
       final existingUuid = tx['transaction_uuid'] as String?;
-      final uuid = existingUuid ?? SyncSecurity.generateUuid();
+      String uuid;
+      if (existingUuid != null && existingUuid.isNotEmpty) {
+        uuid = existingUuid;
+      } else {
+        // Need to fetch customer name
+        final customerId = tx['customer_id'] as int?;
+        String customerName = 'unknown';
+        if (customerId != null) {
+          final custResult = await db.query('customers', columns: ['name'], where: 'id = ?', whereArgs: [customerId]);
+          if (custResult.isNotEmpty) {
+            customerName = custResult.first['name'] as String;
+          }
+        }
+        final amount = (tx['amount_changed'] as num?)?.toDouble() ?? 0.0;
+        final dateStr = tx['transaction_date'] as String?;
+        final date = dateStr != null ? DateTime.tryParse(dateStr) ?? DateTime.now() : DateTime.now();
+        uuid = SyncSecurity.generateTransactionUuid(customerName, amount, date);
+      }
+      
       await db.update(
         'transactions',
-        {'sync_uuid': uuid},
+        {'sync_uuid': uuid, 'transaction_uuid': uuid},
         where: 'id = ?',
         whereArgs: [tx['id']],
       );

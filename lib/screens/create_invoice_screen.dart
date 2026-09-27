@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
+import '../services/personal_pricing_service.dart'; // 👤 محرك التسعير الشخصي المستقل
 import '../models/invoice_item.dart';
 import '../models/invoice.dart';
 
@@ -1222,6 +1223,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
         
         // 💡 تطبيق التسعير التلقائي
         double finalAppliedPrice = _selectedPriceLevel!;
+        double? itemSuggestedPrice;
         final mode = (await SettingsManager.getAppSettings()).autoPriceMode;
         
         if (mode == 99 && _selectedProduct!.id != null) {
@@ -1246,6 +1248,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
           
           if (smartResult != null) {
             finalAppliedPrice = smartResult.price;
+            itemSuggestedPrice = smartResult.price;
             print('💰 Smart Price Applied: ${smartResult.price} for ${_selectedProduct!.name} - $selectedUnitForItem (ثقة: ${smartResult.confidence}%, مصدر: ${smartResult.source})');
             
             if (mounted) {
@@ -1259,6 +1262,27 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
               );
             }
           }
+        } else if (mode == 101 || mode == 102 || mode == 103) {
+          // 👤 وضع التسعير الشخصي (101: بالتكلفة / 102: بالنسبة / 103: هايبرد)
+          // ⚡ استخدام الاستعلام المباشر السريع بدل تحميل كل العملاء
+          final name = customerNameController.text.trim();
+          final phone = customerPhoneController.text.trim();
+          int? customerId = name.isNotEmpty
+              ? await db.findCustomerIdByNameAndPhone(name, phone.isNotEmpty ? phone : null)
+              : null;
+          final personalizedPrice = await PersonalPricingService().getPersonalizedPriceForProduct(
+            _selectedProduct!.name,
+            selectedUnitForItem,
+            customerId,
+            mode: mode,
+            paymentType: paymentType,
+            preloadedProduct: _selectedProduct, // ⚡ تمرير المنتج من الذاكرة مباشرة
+          );
+          if (personalizedPrice != null && personalizedPrice > 0) {
+            finalAppliedPrice = personalizedPrice;
+            itemSuggestedPrice = personalizedPrice;
+            print('👤 Personalized Price Applied: $personalizedPrice for ${_selectedProduct!.name} - $selectedUnitForItem ($paymentType, mode=$mode)');
+          }
         } else if (mode > 0) {
           final historicalPrice = await db.getHistoricalPriceForProduct(
             _selectedProduct!.name,
@@ -1268,6 +1292,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
           
           if (historicalPrice != null && historicalPrice > 0) {
             finalAppliedPrice = historicalPrice;
+            itemSuggestedPrice = historicalPrice;
             print('💰 Auto Price Applied: $historicalPrice for ${_selectedProduct!.name} - $selectedUnitForItem');
           }
         }
@@ -1369,6 +1394,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
           quantityIndividual: quantityIndividual,
           quantityLargeUnit: quantityLargeUnit,
           appliedPrice: finalAppliedPrice,
+          suggestedPrice: itemSuggestedPrice, // ⚡ حفظ السعر المقترح
           itemTotal: finalItemTotal,
           saleType: selectedUnitForItem,
           unitsInLargeUnit:
@@ -1626,13 +1652,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
       }
       // على أندرويد/منصات أخرى: مشاركة/فتح الملف ليطبعه المستخدم
       final fileName = p.basename(filePath);
-      await Share.shareXFiles([
-        XFile(
-          filePath,
-          mimeType: 'application/pdf',
-          name: fileName,
-        )
-      ], text: 'قائمة تجهيز ${customerNameController.text}');
+      // 📎 subject بدل text: النص يجعل واتساب يرسل رسالة نصية ويتجاهل
+      // المرفق، و subject يضبط عنوان نافذة ويندوز الإلزامي بلا إضافة نص.
+      // (المكتبة على ويندوز تحتفظ بآخر نصّ أُرسل ولا تمسحه، فنصّ واحد
+      //  هنا كان يُفسد كل مشاركات التطبيق بعده.)
+      await Share.shareXFiles(
+        [XFile(filePath, mimeType: 'application/pdf', name: fileName)],
+        subject: 'قائمة تجهيز ${customerNameController.text}',
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1694,6 +1721,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
 
   // دالة تفعيل وضع التعديل
   void _enableEditMode() {
+    if (invoiceToManage?.isLocked == true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('هذه الفاتورة مستوردة من المزامنة ولا يمكن تعديلها (للقراءة فقط)'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    
     setState(() {
       isViewOnly = false;
     });
@@ -2957,14 +2994,24 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
   Future<void> _persistPaymentTypeLightweight() async {
     try {
       if (invoiceToManage == null || invoiceToManage!.id == null) return;
-      final paid = double.tryParse(paidAmountController.text.replaceAll(',', '')) ?? 0.0;
-      // لا نعدّل البنود هنا؛ فقط نحفظ نوع الدفع والمبلغ المسدد والتاريخ
-      final updated = invoiceToManage!.copyWith(
-        paymentType: paymentType,
-        amountPaidOnInvoice: paid,
-        lastModifiedAt: DateTime.now(),
-      );
-      await db.updateInvoice(updated);
+      
+      // 🔒 الفاتورة المحفوظة لا تُمسّ إلا عبر «حفظ».
+      // كتابة نوع الدفع أو المبلغ المسدد هنا كانت تغيّر صفّ الفاتورة بلا
+      // معاملة مقابِلة في الدفتر، فينشأ الفرق بين شاشة الفاتورة وسجل الديون.
+      // كما أنها كانت تُبقي التغيير في قاعدة البيانات حتى لو ضغط المستخدم
+      // «إلغاء التعديل». التغيير يبقى في الشاشة فقط حتى الحفظ الفعلي.
+      if (invoiceToManage!.status == 'محفوظة') {
+        return;
+      } else {
+        // للفواتير المعلقة: آمن لأنها لا تملك معاملات دين بعد
+        final paid = double.tryParse(paidAmountController.text.replaceAll(',', '')) ?? 0.0;
+        final updated = invoiceToManage!.copyWith(
+          paymentType: paymentType,
+          amountPaidOnInvoice: paid,
+          lastModifiedAt: DateTime.now(),
+        );
+        await db.updateInvoice(updated);
+      }
     } catch (e) {
       print('light persist payment type error: $e');
     }
@@ -3539,11 +3586,12 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                 },
               ),
             if (invoiceToManage != null && isViewOnly) ...[
-              IconButton(
-                icon: const Icon(Icons.edit),
-                tooltip: 'تعديل الفاتورة',
-                onPressed: isSaving ? null : _enableEditMode,
-              ),
+              if (invoiceToManage?.isLocked != true)
+                IconButton(
+                  icon: const Icon(Icons.edit),
+                  tooltip: 'تعديل الفاتورة',
+                  onPressed: isSaving ? null : _enableEditMode,
+                ),
               IconButton(
                 icon: const Icon(Icons.playlist_add),
                 tooltip: 'تسوية الفاتورة - تحت التطوير',
@@ -4376,6 +4424,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                       detailsFocusNode: focusNodesList[index].details, // تمرير FocusNode للتفاصيل
                       quantityFocusNode: focusNodesList[index].quantity, // تمرير FocusNode للعدد
                       priceFocusNode: focusNodesList[index].price, // تمرير FocusNode للسعر
+                      paymentType: paymentType, // 💳 نوع الفاتورة نقد أو دين
                       // عند الضغط على Enter في حقل السعر، انتقل إلى حقل التفاصيل في الصف التالي
                       onPriceSubmitted: () {
                         // استخدم البيانات المحدثة من invoiceItems بدلاً من item الأصلي
@@ -5692,6 +5741,7 @@ class EditableInvoiceItemRow extends StatefulWidget {
   final bool showCostPrice; // 🔐 إظهار عمود التكلفة
   final String selectedListType; // نوع القائمة (مفرد، جملة، إلخ)
   final List<InvoiceItem> currentInvoiceItems; // جديد: سياق الفاتورة
+  final String paymentType; // 💳 نوع الفاتورة: 'نقد' أو 'دين'
 
   const EditableInvoiceItemRow({
     Key? key,
@@ -5712,6 +5762,7 @@ class EditableInvoiceItemRow extends StatefulWidget {
     this.showCostPrice = false, // 🔐 افتراضياً مخفي
     this.selectedListType = 'مفرد', // نوع القائمة
     required this.currentInvoiceItems,
+    this.paymentType = 'نقد', // 💳 نوع الفاتورة الافتراضي نقد
   }) : super(key: key);
 
   @override
@@ -6139,31 +6190,37 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
       }
 
       // 2. البحث في السجل التاريخي إذا كان الخيار مُفعلاً
-      if (mode == 99 && product.id != null) {
-        // 🔮 وضع التسعير الذكي
-        int? customerId;
-        if (widget.currentCustomerName.isNotEmpty) {
-          try {
-            final customers = await widget.databaseService!.getAllCustomers();
-            final name = widget.currentCustomerName;
-            final phone = widget.currentCustomerPhone ?? '';
-            if (phone.isNotEmpty) {
-              for (var c in customers) {
-                if (c.name == name && c.phone == phone) { customerId = c.id; break; }
-              }
-              if (customerId == null) {
-                for (var c in customers) {
-                  if (c.name == name) { customerId = c.id; break; }
-                }
-              }
-            } else {
-              for (var c in customers) {
-                if (c.name == name) { customerId = c.id; break; }
-              }
-            }
-          } catch (_) {}
+      // ⚡ استعلام مباشر على قاعدة البيانات بدل تحميل جميع العملاء في الذاكرة
+      int? customerId;
+      if (widget.currentCustomerName.isNotEmpty) {
+        try {
+          customerId = await widget.databaseService!.findCustomerIdByNameAndPhone(
+            widget.currentCustomerName,
+            (widget.currentCustomerPhone?.trim().isNotEmpty ?? false) ? widget.currentCustomerPhone : null,
+          );
+        } catch (_) {}
+      }
+
+      if (mode == 101 || mode == 102 || mode == 103) {
+        // 👤 وضع التسعير الشخصي (101: بالتكلفة / 102: بالنسبة / 103: هايبرد)
+        final personalizedPrice = await PersonalPricingService().getPersonalizedPriceForProduct(
+          productName,
+          saleType,
+          customerId,
+          mode: mode,
+          paymentType: widget.paymentType,
+          preloadedProduct: product.id != null ? product : null, // ⚡ تمرير المنتج من الذاكرة
+        );
+        if (personalizedPrice != null && personalizedPrice > 0) {
+          finalPrice = personalizedPrice;
+          widget.item.suggestedPrice = personalizedPrice;
+          print('👤 Personalized Price: $finalPrice for "$productName" - $saleType (${widget.paymentType}, mode=$mode)');
+        } else {
+          print('⚠️ No personalized price found for "$productName" - $saleType, using default: $defaultPrice');
+          if (defaultPrice > 0) finalPrice = defaultPrice;
         }
-        
+      } else if (mode == 99 && product.id != null) {
+        // 🔮 وضع التسعير الذكي
         // تجميع سياق الفاتورة الحالي
         List<Map<String, dynamic>> currentContext = [];
         for (var item in widget.currentInvoiceItems.where((i) => i.productId != null)) {

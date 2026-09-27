@@ -2,6 +2,7 @@
 // شاشة التقرير الشهري المفصل - مدمجة مع الجرد
 import 'package:flutter/material.dart';
 import '../services/reports_service.dart';
+import '../widgets/report_source_filter_button.dart';
 import '../services/database_service.dart';
 import '../models/monthly_overview.dart';
 import 'week_drilldown_screen.dart';
@@ -57,6 +58,8 @@ class _MonthlyReportScreenState extends State<MonthlyReportScreen>
   }
 
   Future<void> _loadAllData() async {
+    // 🔎 فلتر مصدر البيانات (الكل/هذا الجهاز/المزامنة) — يُحمل مرة واحدة.
+    await ReportsService.loadSavedFilter();
     setState(() => _isLoading = true);
     try {
       // تحميل بيانات التقرير الشهري
@@ -112,6 +115,8 @@ class _MonthlyReportScreenState extends State<MonthlyReportScreen>
         backgroundColor: const Color(0xFF673AB7),
         elevation: 0,
         actions: [
+          // 🔎 فلتر مصدر البيانات (الكل/هذا الجهاز/من المزامنة)
+          ReportSourceFilterButton(onChanged: _loadAllData),
           IconButton(icon: const Icon(Icons.refresh), onPressed: _loadAllData),
         ],
         bottom: TabBar(

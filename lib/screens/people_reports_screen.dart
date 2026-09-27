@@ -10,6 +10,8 @@ enum PeopleSortOption {
   mostProfitable,
   mostSalesByAmount,
   mostInvoices,
+  mostManualDebt,
+  mostManualPayment,
 }
 
 class PeopleReportsScreen extends StatefulWidget {
@@ -25,6 +27,12 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
   List<PersonReportData> _filteredPeople = [];
   bool _isLoading = true;
   final TextEditingController _searchController = TextEditingController();
+
+  // 📄 عرض تدريجي: أول 50 شخصاً ثم +50 عند النزول
+  static const int _pageSize = 50;
+  int _displayCount = _pageSize;
+  final ScrollController _scrollController = ScrollController();
+
   late final NumberFormat _nf = NumberFormat('#,##0', 'en_US');
   String _fmt(num v) => _nf.format(v);
 
@@ -40,10 +48,20 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
     super.initState();
     _loadPeopleReports();
     _searchController.addListener(_filterPeople);
+    // 📄 عند اقتراب المستخدم من نهاية المعروض نضيف 50 شخصاً إضافياً
+    _scrollController.addListener(() {
+      if (!_scrollController.hasClients) return;
+      if (_scrollController.position.extentAfter < 400 && mounted) {
+        setState(() {
+          _displayCount += _pageSize;
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
+    _scrollController.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -72,9 +90,17 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
       case PeopleSortOption.mostInvoices:
         list.sort((a, b) => b.totalInvoices.compareTo(a.totalInvoices));
         break;
+      case PeopleSortOption.mostManualDebt:
+        list.sort((a, b) => b.manualDebt.compareTo(a.manualDebt));
+        break;
+      case PeopleSortOption.mostManualPayment:
+        list.sort((a, b) => b.manualPayment.compareTo(a.manualPayment));
+        break;
     }
     setState(() {
       _filteredPeople = list;
+      // 📄 بحث/ترتيب جديد → نعيد العدّاد إلى أول 50 نتيجة
+      _displayCount = _pageSize;
     });
   }
 
@@ -85,14 +111,21 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
       try { await _databaseService.updateOldInvoicesWithCustomerIds(); } catch (_) {}
 
       final customers = await _databaseService.getAllCustomers();
+
+      // ⚡ استعلام واحد مجمّع لكل العملاء بدل ٥ استعلامات لكل عميل.
+      // نفس دالة الحساب تماماً (_computeCustomerProfitData) فالأرقام لا تتغيّر.
+      final profitByCustomer = await _databaseService.getCustomerProfitDataForAll(
+        fromDate: _fromDate,
+        toDate: _toDate,
+      );
+
       final List<PersonReportData> peopleReports = [];
 
       for (final customer in customers) {
-        final profitData = await _databaseService.getCustomerProfitData(
-          customer.id!,
-          fromDate: _fromDate,
-          toDate: _toDate,
-        );
+        final profitData = profitByCustomer[customer.id];
+        // لا فواتير محفوظة لهذا العميل في الفترة ⇒ كل قيمه أصفار، وكان
+        // يُحذف بعد قليل بشرط (totalInvoices > 0 || totalSales > 0).
+        if (profitData == null) continue;
 
         peopleReports.add(PersonReportData(
           customer: customer,
@@ -100,11 +133,20 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
           totalSales: profitData['totalSales'] ?? 0.0,
           totalInvoices: profitData['totalInvoices'] ?? 0,
           totalTransactions: profitData['totalTransactions'] ?? 0,
+          manualDebt: (profitData['manualDebt'] as num?)?.toDouble() ?? 0.0,
+          manualPayment:
+              (profitData['manualPayment'] as num?)?.toDouble() ?? 0.0,
         ));
       }
 
       final visiblePeople = peopleReports
-          .where((p) => p.totalInvoices > 0 || p.totalSales > 0)
+          // 🔎 يظهر الشخص إذا كان له نشاط في الفترة: فواتير **أو** معاملات
+          // يدوية (قبل الإضافة كانت الفواتير وحدها تُظهره).
+          .where((p) =>
+              p.totalInvoices > 0 ||
+              p.totalSales > 0 ||
+              p.manualDebt > 0 ||
+              p.manualPayment > 0)
           .toList();
 
       setState(() {
@@ -264,6 +306,10 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
             _sortChip('الأكثر ربحاً', PeopleSortOption.mostProfitable, Icons.trending_up_rounded),
             const SizedBox(width: 8),
             _sortChip('الأكثر فواتير', PeopleSortOption.mostInvoices, Icons.receipt_long_rounded),
+            const SizedBox(width: 8),
+            _sortChip('الأعلى ديناً يدوياً', PeopleSortOption.mostManualDebt, Icons.add_card_rounded),
+            const SizedBox(width: 8),
+            _sortChip('الأعلى تسديداً يدوياً', PeopleSortOption.mostManualPayment, Icons.payments_rounded),
           ],
         ),
       ),
@@ -327,12 +373,35 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
         ),
       );
     }
+    // 📄 عرض تدريجي: أول 50 فقط ويزيد العدد عند النزول — البحث/الترتيب يبقى على الكامل
+    final shownCount = _displayCount < _filteredPeople.length
+        ? _displayCount
+        : _filteredPeople.length;
+    final hasMore = shownCount < _filteredPeople.length;
+
     return RefreshIndicator(
       onRefresh: _loadPeopleReports,
       child: ListView.builder(
+        controller: _scrollController,
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-        itemCount: _filteredPeople.length,
-        itemBuilder: (context, index) => _buildPersonCard(_filteredPeople[index], index + 1),
+        itemCount: shownCount + (hasMore ? 1 : 0),
+        itemBuilder: (context, index) {
+          // عنصر تحميل أسفل القائمة عند وجود المزيد
+          if (index >= shownCount) {
+            return const Padding(
+              padding: EdgeInsets.symmetric(vertical: 20.0),
+              child: Center(
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2.5),
+                ),
+              ),
+            );
+          }
+          return _buildPersonCard(_filteredPeople[index], index + 1);
+        },
       ),
     );
   }
@@ -415,6 +484,33 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
                   ),
                 ],
               ),
+              // 💰 صف المعاملات اليدوية داخل نفس الفترة — منفصل عن المبيعات
+              // والربح عمداً: الدين اليدوي ليس بيعاً وليس له تكلفة، فخلطه
+              // بالمبيعات يُفسد نسبة الربح.
+              if (person.manualDebt > 0 || person.manualPayment > 0) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _buildInfoItem(
+                        icon: Icons.add_card_rounded,
+                        title: 'دين يدوي',
+                        value: '${_fmt(person.manualDebt)} د.ع',
+                        color: const Color(0xFFEF6C00),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _buildInfoItem(
+                        icon: Icons.payments_rounded,
+                        title: 'تسديد يدوي',
+                        value: '${_fmt(person.manualPayment)} د.ع',
+                        color: const Color(0xFF2E7D32),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ],
           ),
         ),
@@ -456,6 +552,10 @@ class _PeopleReportsScreenState extends State<PeopleReportsScreen> {
 
 class PersonReportData {
   final Customer customer;
+  /// 💰 مجموع الديون المضافة يدوياً في الفترة (يشمل الرصيد الافتتاحي)
+  final double manualDebt;
+  /// 💰 مجموع التسديدات اليدوية في الفترة
+  final double manualPayment;
   final double totalProfit;
   final double totalSales;
   final int totalInvoices;
@@ -467,5 +567,7 @@ class PersonReportData {
     required this.totalSales,
     required this.totalInvoices,
     required this.totalTransactions,
+    this.manualDebt = 0.0,
+    this.manualPayment = 0.0,
   });
 }

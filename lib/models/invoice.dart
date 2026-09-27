@@ -1,4 +1,6 @@
-// models/invoice.dart
+import '../services/settings_manager.dart';
+import '../services/invoice_settings_service.dart';
+
 class Invoice {
   int? id;
   String customerName;
@@ -21,12 +23,41 @@ class Invoice {
   double pointsRate; // معدل النقاط لكل 100,000
   String? notes; // ملاحظة اختيارية للفاتورة
   int? monthlySequenceNumber; // رقم الفاتورة التسلسلي ضمن الشهر
+  String? invoiceNumber; // 🧾 رقم الفاتورة الكامل كما خُزّن (فريد وثابت لا يُعاد تركيبه)
+  String? invoiceUuid; // 🔑 هوية الفاتورة عبر الأجهزة (مفتاح الوثيقة في Firestore)
+  String? creatorDeviceId; // الجهاز الذي أنشأ الفاتورة؛ غيره لا يملك تعديلها
+  int version; // يرتفع مع كل تعديل ليفوز الأحدث عند التعارض
 
   String get formattedInvoiceNumber {
+    // 🧾 الأولوية المطلقة للرقم المخزّن — هوية ثابتة تُعيَّن مرة واحدة عند
+    // الحفظ ولا تُركَّب من جديد، فلا تتغير ولا تتكرر مهما تغيرت الإعدادات.
+    if (invoiceNumber != null && invoiceNumber!.isNotEmpty) {
+      return invoiceNumber!;
+    }
+
     final yearStr = invoiceDate.year.toString();
     final monthStr = invoiceDate.month.toString().padLeft(2, '0');
-    final seq = monthlySequenceNumber ?? id ?? 0;
-    return '$yearStr$monthStr$seq';
+
+    // 🔒 مصدر موحّد لرقم الجهاز: من إعدادات الفواتير (InvoiceSettingsService)
+    // لا من SettingsManager.cachedDeviceSerialNumber الذي كان منفصلاً ومربكاً.
+    final deviceIdStr = InvoiceSettingsService.cachedDeviceId.toString();
+
+    // 🧾 الأولوية للتركيب الكامل: [رقم الجهاز][السنة][الشهر][التسلسل الشهري].
+    // بعض الفواتير خُزّن معرّفها المركّب بدون التسلسل (نسخة سابقة)، لكن
+    // التسلسل محفوظ في عمود monthly_sequence_number — نركّبه منه دائماً
+    // حتى لا يضيع من الرقم المعروض.
+    if (monthlySequenceNumber != null) {
+      return '$deviceIdStr$yearStr$monthStr${monthlySequenceNumber.toString()}';
+    }
+
+    // فاتورة مركّبة بلا عمود تسلسل: المعرّف نفسه هو الرقم الكامل.
+    if (id != null && id! > 1000000) {
+      return id.toString();
+    }
+
+    // 🔒 العرض الاحتياطي: إن لم يوجد تسلسل شهري، نعرض ثلاث شرطات '---'
+    // (مرئية في كل الخطوط بخلاف '—') بدل رقم id العام الذي يوحي بترقيم متصل.
+    return '$deviceIdStr$yearStr$monthStr---';
   }
   
   String get formattedInvoiceDate {
@@ -63,6 +94,10 @@ class Invoice {
     this.pointsRate = 1.0,
     this.notes,
     this.monthlySequenceNumber,
+    this.invoiceNumber,
+    this.invoiceUuid,
+    this.creatorDeviceId,
+    this.version = 1,
   });
 
   // Convert an Invoice object into a Map object
@@ -88,8 +123,21 @@ class Invoice {
       'points_rate': pointsRate,
       'notes': notes,
       'monthly_sequence_number': monthlySequenceNumber,
+      'invoice_year': invoiceDate.year,
+      'invoice_month': invoiceDate.month,
+      if (invoiceNumber != null && invoiceNumber!.isNotEmpty)
+        'invoice_number': invoiceNumber,
+      if (invoiceUuid != null) 'invoice_uuid': invoiceUuid,
+      if (creatorDeviceId != null) 'creator_device_id': creatorDeviceId,
+      'version': version,
     };
   }
+
+  /// هل هذه الفاتورة مملوكة لجهاز آخر؟ عندها تكون للقراءة فقط على هذا الجهاز.
+  bool isForeignTo(String myDeviceId) =>
+      creatorDeviceId != null &&
+      creatorDeviceId!.isNotEmpty &&
+      creatorDeviceId != myDeviceId;
 
   // Extract an Invoice object from a Map object
   factory Invoice.fromMap(Map<String, dynamic> map) {
@@ -101,19 +149,23 @@ class Invoice {
       installerName: map['installer_name'] as String?,
       invoiceDate: DateTime.parse(map['invoice_date']),
       paymentType: map['payment_type'] ?? 'نقد',
-      totalAmount: map['total_amount'] as double,
-      discount: map['discount'] as double? ?? 0.0,
-      amountPaidOnInvoice: map['amount_paid_on_invoice'] as double? ?? 0.0,
+      totalAmount: (map['total_amount'] as num).toDouble(),
+      discount: (map['discount'] as num?)?.toDouble() ?? 0.0,
+      amountPaidOnInvoice: (map['amount_paid_on_invoice'] as num?)?.toDouble() ?? 0.0,
       loadingFee: (map['loading_fee'] as num?)?.toDouble() ?? 0.0,
       createdAt: DateTime.parse(map['created_at']),
       lastModifiedAt: DateTime.parse(map['last_modified_at']),
       customerId: map['customer_id'] as int?,
       status: map['status'] as String? ?? 'محفوظة',
-      returnAmount: map['return_amount'] as double? ?? 0.0,
+      returnAmount: (map['return_amount'] as num?)?.toDouble() ?? 0.0,
       isLocked: (map['is_locked'] ?? 0) == 1,
       pointsRate: (map['points_rate'] as num?)?.toDouble() ?? 1.0,
       notes: map['notes'] as String?,
       monthlySequenceNumber: map['monthly_sequence_number'] as int?,
+      invoiceNumber: map['invoice_number'] as String?,
+      invoiceUuid: map['invoice_uuid'] as String?,
+      creatorDeviceId: map['creator_device_id']?.toString(),
+      version: (map['version'] as num?)?.toInt() ?? 1,
     );
   }
 
@@ -139,6 +191,10 @@ class Invoice {
     double? pointsRate,
     String? notes,
     int? monthlySequenceNumber,
+    String? invoiceNumber,
+    String? invoiceUuid,
+    String? creatorDeviceId,
+    int? version,
   }) {
     return Invoice(
       id: id ?? this.id,
@@ -161,6 +217,10 @@ class Invoice {
       pointsRate: pointsRate ?? this.pointsRate,
       notes: notes ?? this.notes,
       monthlySequenceNumber: monthlySequenceNumber ?? this.monthlySequenceNumber,
+      invoiceNumber: invoiceNumber ?? this.invoiceNumber,
+      invoiceUuid: invoiceUuid ?? this.invoiceUuid,
+      creatorDeviceId: creatorDeviceId ?? this.creatorDeviceId,
+      version: version ?? this.version,
     );
   }
 }

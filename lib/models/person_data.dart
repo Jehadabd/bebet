@@ -49,6 +49,10 @@ class PersonMonthData {
   final int totalInvoices;
   final int totalTransactions;
   final List<InvoiceWithProductData> invoices;
+  /// 💰 مجموع الديون المضافة يدوياً في الشهر (يشمل الرصيد الافتتاحي)
+  final double manualDebt;
+  /// 💰 مجموع التسديدات اليدوية في الشهر
+  final double manualPayment;
 
   PersonMonthData({
     required this.totalProfit,
@@ -56,7 +60,20 @@ class PersonMonthData {
     required this.totalInvoices,
     required this.totalTransactions,
     required this.invoices,
+    this.manualDebt = 0.0,
+    this.manualPayment = 0.0,
   });
+
+  /// نسخة بنفس الأرقام مع تعبئة المعاملات اليدوية
+  PersonMonthData withManual(double debt, double payment) => PersonMonthData(
+        totalProfit: totalProfit,
+        totalSales: totalSales,
+        totalInvoices: totalInvoices,
+        totalTransactions: totalTransactions,
+        invoices: invoices,
+        manualDebt: debt,
+        manualPayment: payment,
+      );
 
   factory PersonMonthData.fromMap(Map<String, dynamic> map) {
     return PersonMonthData(

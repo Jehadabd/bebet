@@ -54,6 +54,9 @@ class InvoicePdfService {
       pdf.addPage(
         pw.Page(
           pageFormat: PdfPageFormat.a4,
+          // 🛡️ شبكة أمان: أي نصّ لا يحدّد خطه صراحةً يرث Amiri بدل
+          // Helvetica الذي لا يدعم العربية (فتظهر مربعات فارغة).
+          theme: pw.ThemeData.withFont(base: font, bold: font),
           margin: pw.EdgeInsets.only(top: 0, bottom: 2, left: 25, right: 10),
           build: (pw.Context context) {
             return pw.Directionality(
@@ -293,6 +296,9 @@ class InvoicePdfService {
       pdf.addPage(
         pw.Page(
           pageFormat: PdfPageFormat.a4,
+          // 🛡️ شبكة أمان: أي نصّ لا يحدّد خطه صراحةً يرث Amiri بدل
+          // Helvetica الذي لا يدعم العربية (فتظهر مربعات فارغة).
+          theme: pw.ThemeData.withFont(base: font, bold: font),
           margin: pw.EdgeInsets.only(top: 0, bottom: 2, left: 25, right: 10),
           build: (pw.Context context) {
             return pw.Directionality(
@@ -476,27 +482,37 @@ class InvoicePdfService {
   }
 
   static pw.Widget summaryRow(String label, num value, pw.Font font, {PdfColor? color, FontElementSettings? fontSettings}) {
-    // تطبيق إعدادات الخط إذا كانت متوفرة
-    pw.Font? customFont;
+    // 🛡️ استخدام الخط العربي الأساسي (Amiri) دائماً — نفس قاعدة headerCell
+    // و dataCell أعلاه، وتطبيق الوزن فقط من الإعدادات.
+    //
+    // سبب هذا التصحيح: كانت الدالة تستبدل الخط بـ
+    // FontManager.getPdfFont(...)، وهذه ترجع Helvetica إذا لم تُحمَّل
+    // الخطوط العربية داخل FontManager — وهي لا تُحمَّل إلا عند فتح شاشة
+    // «إعدادات الخطوط» (loadArabicFonts تُستدعى هناك فقط). فكانت أسطر
+    // المجاميع (الاجمالي قبل الخصم، الخصم، المدفوع، المتبقي، الدين
+    // السابق، المطلوب الحالي) تُطبع مربعات فارغة، ولا يُعرف أي رقم لأي
+    // بند. التيرمينال كان يقول ذلك صراحةً:
+    //   "Helvetica has no Unicode support"
+    //   "Unable to find a font to draw ..."
     pw.FontWeight? customWeight;
-    
+
     if (fontSettings != null) {
-      customFont = FontManager.getPdfFont(fontSettings.fontFamily);
       customWeight = FontManager.getPdfFontWeight(fontSettings.fontWeight);
     }
-    
+
     return pw.Padding(
       padding: const pw.EdgeInsets.symmetric(vertical: 1),
       child: pw.Row(
         mainAxisSize: pw.MainAxisSize.min,
         children: [
-          pw.Text(label, style: pw.TextStyle(font: customFont ?? font, fontSize: 11, color: color)),
+          pw.Text(label,
+              style: pw.TextStyle(font: font, fontSize: 11, color: color)),
           pw.SizedBox(width: 5),
           pw.Text(formatNumber(value, forceDecimal: true),
               style: pw.TextStyle(
-                  font: customFont ?? font, 
-                  fontSize: 13, 
-                  fontWeight: customWeight ?? pw.FontWeight.bold, 
+                  font: font,
+                  fontSize: 13,
+                  fontWeight: customWeight ?? pw.FontWeight.bold,
                   color: color)),
         ],
       ),

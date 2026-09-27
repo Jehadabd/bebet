@@ -78,7 +78,7 @@ class CrossDeviceVerifier {
     // 3. حساب ما تم استلامه محلياً (Local Receipts)
     // نجمع المعاملات التي:
     // - ليست من إنشائي (is_created_by_me = 0)
-    // - ولها sync_uuid (جاءت من المزامنة)
+    // - ولها transaction_uuid (جاءت من المزامنة)
     final db = await _db.database;
     final localReceiptsQuery = await db.rawQuery('''
       SELECT 
@@ -88,7 +88,7 @@ class CrossDeviceVerifier {
       FROM transactions t
       INNER JOIN customers c ON t.customer_id = c.id
       WHERE t.is_created_by_me = 0
-      AND t.sync_uuid IS NOT NULL
+      AND t.transaction_uuid IS NOT NULL
       AND c.sync_uuid IS NOT NULL
       GROUP BY c.sync_uuid
     ''');

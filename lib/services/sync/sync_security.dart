@@ -305,6 +305,39 @@ class SyncSecurity {
     return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
   }
   
+  /// هل النص صالح كمعرّف مستند في Firestore؟
+  /// القيود: لا يحتوي على فاصل مسار، وليس "." أو ".."، وليس على النمط __x__
+  static bool isValidDocumentId(String id) {
+    if (id.isEmpty) return false;
+    if (id.contains('/') || id.contains('\\')) return false;
+    if (id == '.' || id == '..') return false;
+    if (RegExp(r'^__.*__$').hasMatch(id)) return false;
+    return true;
+  }
+
+  /// تنقية نص ليصلح كمعرّف مستند في Firestore.
+  /// Firestore يفسّر "/" كفاصل مسار، فاسم عميل مثل "أحمد / خالد" يُنتج مرجعاً
+  /// بعدد مقاطع فردي، وهو ما تعتبره المكتبة الأصلية خطأً قاتلاً فتُنهي العملية.
+  /// نستبدل الفاصل بـ "_" ولا نحذفه حتى لا تلتصق الكلمات، ولأن هذا الاستبدال
+  /// حتمي ومطابق على جميع الأجهزة فيبقى المعرّف موحداً بينها.
+  static String sanitizeDocumentId(String input) {
+    final s = input.replaceAll('/', '_').replaceAll('\\', '_');
+
+    if (s.isEmpty || s == '.' || s == '..') return 'unknown';
+    if (RegExp(r'^__.*__$').hasMatch(s)) return 'id_$s';
+
+    return s;
+  }
+
+  /// توليد UUID خاص بالمعاملات (العميل_المبلغ_التاريخ_الوقت) لمنع التكرار نهائياً
+  static String generateTransactionUuid(String customerName, double amount, DateTime date) {
+    final name = sanitizeDocumentId(customerName.replaceAll(' ', '_'));
+    final amountStr = amount.toStringAsFixed(2);
+    final dateStr = '${date.year}${date.month.toString().padLeft(2, '0')}${date.day.toString().padLeft(2, '0')}';
+    final timeStr = '${date.hour.toString().padLeft(2, '0')}${date.minute.toString().padLeft(2, '0')}${date.second.toString().padLeft(2, '0')}';
+    return '${name}_${amountStr}_${dateStr}_$timeStr';
+  }
+  
   /// توليد معرف عملية فريد
   static String generateOperationId(String deviceId) {
     final timestamp = DateTime.now().toUtc().millisecondsSinceEpoch;

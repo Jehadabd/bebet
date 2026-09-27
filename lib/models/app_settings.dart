@@ -43,7 +43,7 @@ class AppSettings {
   final String branchName; // 'الفرع الرئيسي' أو 'الفرع الثاني' أو 'الفرع الثالث'
   
   // 💰 إعدادات التسعير التلقائي في الفاتورة
-  final int autoPriceMode; // 0=مطفأ, 1=آخر سعر, 3=متوسط آخر 3, 5=متوسط آخر 5, 11=متوسط شهر, 12=متوسط شهرين, 13=متوسط 3 أشهر, 21=أكثر تكراراً شهر, 22=أكثر تكراراً شهرين, 23=أكثر تكراراً 3 أشهر, 99=🔮 تسعير ذكي (AI)
+  final int autoPriceMode; // 0=مطفأ, 1=آخر سعر, 3=متوسط آخر 3, 5=متوسط آخر 5, 11=متوسط شهر, 12=متوسط شهرين, 13=متوسط 3 أشهر, 21=أكثر تكراراً شهر, 22=أكثر تكراراً شهرين, 23=أكثر تكراراً 3 أشهر, 99=🔮 تسعير ذكي (AI), 101=تسعير شخصي (بالاعتماد على التكلفة), 102=تسعير شخصي (بالاعتماد على النسبة), 103=⚡ تسعير شخصي هايبرد (نظام التشخيص)
   final double wholesaleCustomerLimit; // الحد المالي لاعتبار العميل جملة
   
   // ⚡ إعدادات الأداء
@@ -53,10 +53,16 @@ class AppSettings {
   final bool telegramSyncEnabled;
   final DateTime? telegramTurnOffDate;
 
+  // 🔎 تقارير التليجرام: المحلية فقط — كل جهاز يرسل مبيعاته هو فقط
+  // (is_created_by_me = 1) دون الفواتير الواردة من المزامنة، لمنع التقارير
+  // المزدوجة عندما يرسل عدة أجهزة لنفس جروب التليجرام.
+  final bool telegramOnlyLocalInvoices;
+
   // 🏷️ إعدادات الختم
   final String stampType; // 'barcode', 'colored', 'ink', 'custom'
   final String? customCashStampPath;
   final String? customCreditStampPath;
+  final String? deviceSerialNumber;
 
   AppSettings({
     this.phoneNumbers = const [],
@@ -91,9 +97,11 @@ class AppSettings {
     int? autoPriceMode,
     bool? telegramSyncEnabled,
     DateTime? telegramTurnOffDate,
+    bool? telegramOnlyLocalInvoices,
     String? stampType,
     this.customCashStampPath,
     this.customCreditStampPath,
+    this.deviceSerialNumber,
     double? wholesaleCustomerLimit,
     bool? enableSmartSearchRamCache,
   }) : remainingAmountColor = remainingAmountColor ?? Colors.black.value,
@@ -127,6 +135,7 @@ class AppSettings {
        autoPriceMode = autoPriceMode ?? 0,
        telegramSyncEnabled = telegramSyncEnabled ?? true,
        telegramTurnOffDate = telegramTurnOffDate,
+       telegramOnlyLocalInvoices = telegramOnlyLocalInvoices ?? false,
        stampType = stampType ?? 'barcode',
        wholesaleCustomerLimit = wholesaleCustomerLimit ?? 5000000.0,
        enableSmartSearchRamCache = enableSmartSearchRamCache ?? true;
@@ -164,9 +173,11 @@ class AppSettings {
         'autoPriceMode': autoPriceMode,
         'telegramSyncEnabled': telegramSyncEnabled,
         'telegramTurnOffDate': telegramTurnOffDate?.toIso8601String(),
+        'telegramOnlyLocalInvoices': telegramOnlyLocalInvoices,
         'stampType': stampType,
         'customCashStampPath': customCashStampPath,
         'customCreditStampPath': customCreditStampPath,
+        'deviceSerialNumber': deviceSerialNumber,
         'wholesaleCustomerLimit': wholesaleCustomerLimit,
         'enableSmartSearchRamCache': enableSmartSearchRamCache,
       };
@@ -203,10 +214,12 @@ class AppSettings {
         branchName: json['branchName'] ?? 'الفرع الرئيسي',
         autoPriceMode: json['autoPriceMode'] ?? 0,
         telegramSyncEnabled: json['telegramSyncEnabled'] ?? true,
+        telegramOnlyLocalInvoices: json['telegramOnlyLocalInvoices'] ?? false,
         telegramTurnOffDate: json['telegramTurnOffDate'] != null ? DateTime.tryParse(json['telegramTurnOffDate']) : null,
         stampType: json['stampType'] ?? 'barcode',
         customCashStampPath: json['customCashStampPath'],
         customCreditStampPath: json['customCreditStampPath'],
+        deviceSerialNumber: json['deviceSerialNumber'],
         wholesaleCustomerLimit: (json['wholesaleCustomerLimit'] as num?)?.toDouble() ?? 5000000.0,
         enableSmartSearchRamCache: json['enableSmartSearchRamCache'] ?? true,
       );
@@ -244,9 +257,11 @@ class AppSettings {
     int? autoPriceMode,
     bool? telegramSyncEnabled,
     DateTime? telegramTurnOffDate,
+    bool? telegramOnlyLocalInvoices,
     String? stampType,
     String? customCashStampPath,
     String? customCreditStampPath,
+    String? deviceSerialNumber,
     double? wholesaleCustomerLimit,
     bool? enableSmartSearchRamCache,
   }) {
@@ -283,9 +298,11 @@ class AppSettings {
       autoPriceMode: autoPriceMode ?? this.autoPriceMode,
       telegramSyncEnabled: telegramSyncEnabled ?? this.telegramSyncEnabled,
       telegramTurnOffDate: telegramTurnOffDate ?? this.telegramTurnOffDate,
+      telegramOnlyLocalInvoices: telegramOnlyLocalInvoices ?? this.telegramOnlyLocalInvoices,
       stampType: stampType ?? this.stampType,
       customCashStampPath: customCashStampPath ?? this.customCashStampPath,
       customCreditStampPath: customCreditStampPath ?? this.customCreditStampPath,
+      deviceSerialNumber: deviceSerialNumber ?? this.deviceSerialNumber,
       wholesaleCustomerLimit: wholesaleCustomerLimit ?? this.wholesaleCustomerLimit,
       enableSmartSearchRamCache: enableSmartSearchRamCache ?? this.enableSmartSearchRamCache,
     );

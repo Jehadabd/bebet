@@ -805,10 +805,6 @@ class _CommercialStatementScreenState extends State<CommercialStatementScreen> {
         children: [
           _buildSummaryCard(summary),
           _buildBalanceWarning(finalBalance),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Text('الفترة: ${widget.periodDescription}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-          ),
           // عناوين الأعمدة
           Container(
             color: Colors.grey[200],
@@ -836,11 +832,24 @@ class _CommercialStatementScreenState extends State<CommercialStatementScreen> {
   }
 
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ملخص الحساب — قسمان واضحان
+  // ═══════════════════════════════════════════════════════════════════════════
+  // (١) حركة الشراء: كم اشترى العميل في هذه الفترة نقداً وكم بالدين.
+  // (٢) معادلة الرصيد: من أين جاء رقم الرصيد خطوةً بخطوة، فيستطيع العميل
+  //     التحقق منه بنفسه بجمع وطرح بسيطين:
+  //        الرصيد السابق + ديون الفترة − ما سُدِّد = رصيد نهاية الفترة
   Widget _buildSummaryCard(Map<String, dynamic> summary) {
     final totalDebtInvoices = summary['totalDebtInvoices'] as int? ?? 0;
     final totalCashInvoices = summary['totalCashInvoices'] as int? ?? 0;
     final convertedToCash = summary['convertedToCash'] as int? ?? 0;
     final convertedToDebt = summary['convertedToDebt'] as int? ?? 0;
+
+    final cashInvoicesValue = (summary['cashInvoicesValue'] as num?)?.toDouble() ?? 0.0;
+    final debtInvoicesValue = (summary['debtInvoicesValue'] as num?)?.toDouble() ?? 0.0;
+    final totalPurchases = (summary['totalPurchases'] as num?)?.toDouble() ?? 0.0;
+
+    final openingBalance = (summary['openingBalance'] as num?)?.toDouble() ?? 0.0;
     final invoiceDebts = (summary['invoiceDebts'] as num?)?.toDouble() ?? 0.0;
     final manualDebts = (summary['manualDebts'] as num?)?.toDouble() ?? 0.0;
     final totalDebts = (summary['totalDebts'] as num?)?.toDouble() ?? 0.0;
@@ -848,9 +857,14 @@ class _CommercialStatementScreenState extends State<CommercialStatementScreen> {
     final manualPayments = (summary['manualPayments'] as num?)?.toDouble() ?? 0.0;
     final totalPayments = (summary['totalPayments'] as num?)?.toDouble() ?? 0.0;
     final remainingBalance = (summary['remainingBalance'] as num?)?.toDouble() ?? 0.0;
+
     final periodBalanceColor = remainingBalance > 0 ? Colors.amber[800]! : Colors.blue[800]!;
     final currentDebt = widget.customer.currentTotalDebt;
     final currentBalanceColor = currentDebt > 0 ? Colors.red : Colors.green;
+
+    // عدد فواتير النقد/الدين بحالتها النهائية (الفاتورة المحوَّلة تُنسب لحالتها الآن)
+    final cashCount = totalCashInvoices + convertedToCash;
+    final debtCount = totalDebtInvoices + convertedToDebt;
 
     return Card(
       margin: const EdgeInsets.all(16),
@@ -858,109 +872,67 @@ class _CommercialStatementScreenState extends State<CommercialStatementScreen> {
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text('ملخص الحساب', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const Divider(),
-            
-            // عدد الفواتير
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
+            const Text('ملخص الحساب',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 2),
+            Text('الفترة: ${widget.periodDescription}',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 13, color: Colors.grey)),
+            const Divider(height: 20),
+
+            // ─── (١) حركة الشراء ──────────────────────────────────────────
+            _sectionBox(
+              title: 'ما اشتريته في هذه الفترة',
+              bg: const Color(0xFFEFF3FF),
+              borderColor: const Color(0xFF3F51B5),
               children: [
-                _buildSummaryItem('فواتير دين', '$totalDebtInvoices', Colors.blue),
-                _buildSummaryItem('فواتير نقد', '$totalCashInvoices', Colors.blueGrey),
+                _lineRow('فواتير نقد', cashInvoicesValue,
+                    trailingNote: '$cashCount فاتورة', color: Colors.blueGrey[700]!),
+                _lineRow('فواتير دين', debtInvoicesValue,
+                    trailingNote: '$debtCount فاتورة', color: const Color(0xFF3F51B5)),
+                const Divider(height: 14),
+                _lineRow('إجمالي المشتريات', totalPurchases,
+                    bold: true, color: const Color(0xFF283593)),
               ],
-            ),
-            // الفواتير المحولة
-            if (convertedToCash > 0 || convertedToDebt > 0) ...[
-              const SizedBox(height: 8),
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.grey[100],
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                  children: [
-                    if (convertedToCash > 0)
-                      _buildSummaryItem('تحولت لنقد', '$convertedToCash', Colors.purple),
-                    if (convertedToDebt > 0)
-                      _buildSummaryItem('تحولت لدين', '$convertedToDebt', Colors.deepOrange),
-                  ],
-                ),
-              ),
-            ],
-            const SizedBox(height: 12),
-            
-            // إجمالي الديون
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.orange[50],
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Column(
-                children: [
-                  const Text('إجمالي الديون في هذه الفترة', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.orange)),
-                  const SizedBox(height: 4),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: [
-                      _buildSummaryItem('ديون الفواتير', _formatCurrency(invoiceDebts), Colors.orange[700]!),
-                      _buildSummaryItem('ديون يدوية', _formatCurrency(manualDebts), Colors.orange[400]!),
-                    ],
-                  ),
-                  const Divider(),
-                  Text('المجموع: ${_formatCurrency(totalDebts)}', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.orange[800])),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            
-            // إجمالي المدفوعات
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.green[50],
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Column(
-                children: [
-                  const Text('إجمالي المدفوعات في هذه الفترة', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.green)),
-                  const SizedBox(height: 4),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: [
-                      _buildSummaryItem('مدفوعات الفواتير', _formatCurrency(invoicePayments), Colors.green[700]!),
-                      _buildSummaryItem('مدفوعات يدوية', _formatCurrency(manualPayments), Colors.green[400]!),
-                    ],
-                  ),
-                  const Divider(),
-                  Text('المجموع: ${_formatCurrency(totalPayments)}', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.green[800])),
-                ],
-              ),
             ),
             const SizedBox(height: 12),
 
-            // الرصيد في نهاية هذه الفترة
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: remainingBalance > 0 ? Colors.amber[50] : Colors.blue[50],
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: periodBalanceColor, width: 1.5),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text('الرصيد المتبقي في نهاية هذه الفترة:', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
-                  Text(_formatCurrency(remainingBalance), style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: periodBalanceColor)),
-                ],
-              ),
+            // ─── (٢) معادلة الرصيد ────────────────────────────────────────
+            _sectionBox(
+              title: 'كيف وصلنا إلى رصيدك',
+              bg: const Color(0xFFFFF8E1),
+              borderColor: Colors.amber[800]!,
+              children: [
+                _lineRow('الرصيد السابق (قبل بداية الفترة)', openingBalance,
+                    color: Colors.brown[700]!),
+                const SizedBox(height: 6),
+
+                _lineRow('دين الفواتير في الفترة', invoiceDebts,
+                    sign: '+', color: Colors.orange[800]!),
+                _lineRow('ديون يدوية أُضيفت', manualDebts,
+                    sign: '+', color: Colors.orange[600]!),
+                _lineRow('مجموع ما تراكم عليك', totalDebts,
+                    bold: true, color: Colors.orange[900]!),
+                const SizedBox(height: 8),
+
+                _lineRow('مسدَّد على الفواتير', invoicePayments,
+                    sign: '−', color: Colors.green[800]!),
+                _lineRow('تسديدات يدوية', manualPayments,
+                    sign: '−', color: Colors.green[600]!),
+                _lineRow('مجموع ما سدَّدته', totalPayments,
+                    bold: true, color: Colors.green[900]!),
+
+                const Divider(height: 18, thickness: 1.2),
+                _lineRow('الرصيد في نهاية الفترة', remainingBalance,
+                    sign: '=', bold: true, big: true, color: periodBalanceColor),
+              ],
             ),
-            const SizedBox(height: 10),
-            
-            // الرصيد المتبقي الحالي حتى اليوم
+            const SizedBox(height: 12),
+
+            // ─── الرصيد الحالي حتى اليوم ──────────────────────────────────
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -971,8 +943,15 @@ class _CommercialStatementScreenState extends State<CommercialStatementScreen> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('الرصيد المتبقي الحالي (حتى اليوم):', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                  Text(_formatCurrency(currentDebt), style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold, color: currentBalanceColor)),
+                  const Expanded(
+                    child: Text('الرصيد المتبقي الحالي (حتى اليوم):',
+                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                  ),
+                  Text(_formatCurrency(currentDebt),
+                      style: TextStyle(
+                          fontSize: 19,
+                          fontWeight: FontWeight.bold,
+                          color: currentBalanceColor)),
                 ],
               ),
             ),
@@ -982,13 +961,73 @@ class _CommercialStatementScreenState extends State<CommercialStatementScreen> {
     );
   }
 
-  Widget _buildSummaryItem(String label, String value, Color color) {
-    return Column(
-      children: [
-        Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-        const SizedBox(height: 4),
-        Text(value, style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: color)),
-      ],
+  /// صندوق قسم بعنوان وإطار ملوّن
+  Widget _sectionBox({
+    required String title,
+    required Color bg,
+    required Color borderColor,
+    required List<Widget> children,
+  }) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: borderColor.withOpacity(0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(title,
+              style: TextStyle(
+                  fontSize: 14, fontWeight: FontWeight.bold, color: borderColor)),
+          const SizedBox(height: 8),
+          ...children,
+        ],
+      ),
+    );
+  }
+
+  /// سطر واحد: اسم البند على اليمين ورقمه على اليسار، مع إشارة اختيارية
+  Widget _lineRow(
+    String label,
+    double value, {
+    String? sign,
+    String? trailingNote,
+    bool bold = false,
+    bool big = false,
+    required Color color,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 18,
+            child: Text(sign ?? '',
+                style: TextStyle(
+                    fontSize: big ? 18 : 15,
+                    fontWeight: FontWeight.bold,
+                    color: color)),
+          ),
+          Expanded(
+            child: Text(
+              trailingNote == null ? label : '$label  ($trailingNote)',
+              style: TextStyle(
+                  fontSize: big ? 15 : 13.5,
+                  fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+                  color: Colors.black87),
+            ),
+          ),
+          Text(
+            _formatCurrency(value),
+            style: TextStyle(
+                fontSize: big ? 20 : 15,
+                fontWeight: bold ? FontWeight.bold : FontWeight.w600,
+                color: color),
+          ),
+        ],
+      ),
     );
   }
 

@@ -21,22 +21,41 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:convert';
+import 'dart:typed_data'; // 🗜️ Uint8List لتخزين أصناف اللقطة مضغوطة
 import 'dart:async'; // 🔄 Added import for Completer
-import 'dart:math' show sqrt; // 🔮 للتسعير الذكي
+import 'dart:math'; // 🔮 للتسعير الذكي + محرك التسعير v2 + تعبئة أرقام الفواتير
 import 'sync/sync_tracker.dart'; // 🔄 تتبع المزامنة
 import 'sync/sync_security.dart'; // 🔄 أمان المزامنة (لتوليد UUID)
 import 'firebase_sync/firebase_sync_helper.dart'; // 🔥 مزامنة Firebase
+import 'firebase_sync/invoice_sync_service.dart'; // 🧾 مزامنة الفواتير الفورية
+import 'firebase_sync/firebase_sync_config.dart'; // 🔧 إعدادات المزامنة (معرف الجهاز)
 import 'smart_pricing_service.dart'; // 🔮 محرك التسعير الذكي
+import 'settings_manager.dart'; // إعدادات التطبيق
+import 'invoice_settings_service.dart';
+import '../utils/uuid_helper.dart';
+
 
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
   static Database? _database;
   static Completer<Database>? _initDbCompleter; // 🛡️ لمنع Race Condition
   bool _isShuttingDown = false; // 🛡️ لإيقاف الفتح أثناء الإغلاق
-  static const int _databaseVersion = 44; // إضافة عمود cost_price_last_modified_at للمنتجات
+  static const int _databaseVersion = 52; // فهارس محرك التسعير الشخصي للقواعد القديمة (PersonalPricingService)
   // تحكم بالطباعات التشخيصية من مصدر واحد
   // معطل في الإصدار النهائي لتجنب الطباعات المزعجة
   static const bool _verboseLogs = false;
+
+  /// 🔒 يُفعَّل أثناء الرفع الشامل / المطابقة الحية: يمنع أي حذف لمعاملات.
+  /// لا يوجد في التطبيق مسار منتج اسمه «حذف معاملة» من المزامنة أو الفحص.
+  static bool blockTransactionDeletes = false;
+
+  /// يُستدعى قبل أي مسار قد يحذف صفوفاً من جدول transactions.
+  static void assertTransactionDeletesAllowed([String context = '']) {
+    if (!blockTransactionDeletes) return;
+    final where = context.isEmpty ? '' : ' ($context)';
+    throw Exception(
+        'ممنوع حذف المعاملات أثناء المزامنة/المطابقة الحية$where — الرفع فقط، بلا حذف');
+  }
   
   // 🚀 Cache للمنتجات والزبائن - تسريع العمليات
   static List<Product>? _productsCache;
@@ -263,6 +282,165 @@ class DatabaseService {
     return s;
   }
 
+  Future<void> migrateTransactionUuids() async {
+    print('🔄 بدء عملية Migration لمعرفات المعاملات القديمة...');
+    try {
+      if (_database == null) return;
+      final db = _database!;
+      
+      // جلب جميع المعاملات التي لا تتبع النظام الجديد (مثلاً إذا كان طول sync_uuid أقصر من المعتاد، أو لا يحتوي على _)
+      // الـ UUID الافتراضي يحتوي على شرطات (-) بينما الجديد يعتمد على الـ format المُعرّف.
+      // لمعرفة المعاملات القديمة، سنبحث عن التي تحتوي على '-' (UUIDv4) أو التي لا تحتوي على '_'.
+      final List<Map<String, dynamic>> oldTransactions = await db.query(
+        'transactions',
+        where: "transaction_uuid LIKE '%-%' OR transaction_uuid NOT LIKE '%_%' OR transaction_uuid IS NULL",
+      );
+      
+      if (oldTransactions.isEmpty) {
+        print('✅ لا توجد معاملات تحتاج إلى تحديث.');
+        return;
+      }
+      
+      print('⚠️ جاري تحديث ${oldTransactions.length} معاملة إلى نظام sync_uuid الجديد...');
+      
+      int updatedCount = 0;
+      await db.transaction((txn) async {
+        for (var txData in oldTransactions) {
+          final txId = txData['id'] as int;
+          final customerId = txData['customer_id'] as int;
+          final amount = (txData['amount_changed'] as num?)?.toDouble() ?? 0.0;
+          final dateStr = txData['transaction_date'] as String;
+          
+          // نحتاج اسم العميل
+          final customerRows = await txn.query('customers', columns: ['name'], where: 'id = ?', whereArgs: [customerId], limit: 1);
+          final customerName = customerRows.isNotEmpty ? (customerRows.first['name'] as String? ?? 'Unknown') : 'Unknown';
+          
+          // توليد المعرف الجديد
+          final newUuid = SyncSecurity.generateTransactionUuid(customerName, amount, DateTime.tryParse(dateStr) ?? DateTime.now());
+          
+          // التأكد من عدم وجود تكرار
+          int suffix = 1;
+          String finalUuid = newUuid;
+          while (true) {
+            final existing = await txn.query('transactions', 
+              where: 'transaction_uuid = ? AND id != ?', 
+              whereArgs: [finalUuid, txId], limit: 1);
+            if (existing.isEmpty) break;
+            finalUuid = '${newUuid}_$suffix';
+            suffix++;
+          }
+
+          // تحديث قاعدة البيانات
+          await txn.update(
+            'transactions',
+            {'transaction_uuid': finalUuid, 'is_uploaded': 0}, // تعيين is_uploaded لصفر لضمان رفعها
+            where: 'id = ?',
+            whereArgs: [txId],
+          );
+          
+          updatedCount++;
+        }
+      });
+      
+      print('✅ اكتمل Migration بنجاح! تم تحديث $updatedCount معاملة.');
+    } catch (e) {
+      print('❌ خطأ أثناء عملية Migration: $e');
+    }
+  }
+
+  /// 🔒 توحيد هوية المعاملات التاريخية على transaction_uuid.
+  ///
+  /// الهوية الوحيدة للمعاملة عبر الأجهزة هي `transaction_uuid` (وهو مفتاح وثيقة
+  /// Firestore). بعض السجلات القديمة قد تملك أحد الأوضاع التالية:
+  ///   1. `transaction_uuid` فارغ و`sync_uuid` فارغ   ← توليد جديد.
+  ///   2. `transaction_uuid` فارغ و`sync_uuid` موجود   ← اعتماد sync_uuid.
+  ///   3. الاثنان مختلفين                              ← اعتماد transaction_uuid.
+  ///   4. `transaction_uuid` غير صالح لمسار Firestore ← تعقيم/توليد.
+  ///
+  /// الهدف: بعد هذه الدالة يُصبح `transaction_uuid = sync_uuid` دائمًا، وصالحًا
+  /// كمفتاح وثيقة. هذا يضمن أن رفع/استقبال أي معاملة يجد تطابقًا حتميًا.
+  /// تُستدعى مرة واحدة عند بدء التشغيل (معاملة لا تُحذف، آمنة للإعادة).
+  Future<void> sanitizeLegacyTransactionUuids() async {
+    if (_database == null) return;
+    final db = _database!;
+    int fixed = 0;
+    try {
+      // جلب كل المعاملات التي لا تحقق الشرط: transaction_uuid = sync_uuid وصالح.
+      final rows = await db.query(
+        'transactions',
+        columns: [
+          'id',
+          'customer_id',
+          'transaction_uuid',
+          'sync_uuid',
+          'amount_changed',
+          'transaction_date',
+          'is_uploaded'
+        ],
+        where:
+            "transaction_uuid IS NULL OR transaction_uuid = '' OR sync_uuid IS NULL OR sync_uuid = '' OR transaction_uuid != sync_uuid",
+      );
+      if (rows.isEmpty) return;
+
+      print('🔧 sanitizeLegacyTransactionUuids: ${rows.length} معاملة بحاجة توحيد.');
+
+      for (final r in rows) {
+        final txId = r['id'] as int;
+        final existingTx = (r['transaction_uuid'] as String?)?.trim();
+        final existingSync = (r['sync_uuid'] as String?)?.trim();
+
+        // اختيار الهوية المعتمدة: transaction_uuid يفضّل، ثم sync_uuid، ثم توليد.
+        String uuid = '';
+        if (existingTx != null &&
+            existingTx.isNotEmpty &&
+            SyncSecurity.isValidDocumentId(existingTx)) {
+          uuid = existingTx;
+        } else if (existingSync != null &&
+            existingSync.isNotEmpty &&
+            SyncSecurity.isValidDocumentId(existingSync)) {
+          uuid = existingSync;
+        } else {
+          // توليد UUID حتمي من بيانات المعاملة + رقمها (للتمييز عن غيرها).
+          final customerId = r['customer_id'] as int;
+          final amount = (r['amount_changed'] as num?)?.toDouble() ?? 0.0;
+          final dateStr = (r['transaction_date'] as String?) ?? '';
+          final cRows = await db.query('customers',
+              columns: ['name'], where: 'id = ?', whereArgs: [customerId], limit: 1);
+          final name = cRows.isNotEmpty ? (cRows.first['name'] as String? ?? 'X') : 'X';
+          uuid = SyncSecurity.generateTransactionUuid(
+              name, amount, DateTime.tryParse(dateStr) ?? DateTime.now());
+          // ضمان التفرّد.
+          int suffix = 1;
+          while (true) {
+            final dup = await db.query('transactions',
+                where: 'transaction_uuid = ? AND id != ?',
+                whereArgs: [uuid, txId],
+                limit: 1);
+            if (dup.isEmpty) break;
+            uuid = '${uuid.substring(0, uuid.length.clamp(0, 30))}_$suffix';
+            suffix++;
+          }
+        }
+
+        await db.update(
+          'transactions',
+          {
+            'transaction_uuid': uuid,
+            'sync_uuid': uuid,
+            // إعادة وضعها في طابور الرفع حتى تصعد للسحابة.
+            'is_uploaded': 0,
+          },
+          where: 'id = ?',
+          whereArgs: [txId],
+        );
+        fixed++;
+      }
+      print('✅ sanitizeLegacyTransactionUuids: وُحِّدت $fixed معاملة.');
+    } catch (e) {
+      print('❌ sanitizeLegacyTransactionUuids فشلت: $e');
+    }
+  }
+
   Future<Database> get database async {
     if (_isShuttingDown) throw Exception('تطبيق قيد الإغلاق، لا يمكن فتح قاعدة البيانات');
 
@@ -295,6 +473,11 @@ class DatabaseService {
       
       // التحقق من سلامة قاعدة البيانات عند كل تهيئة
       await checkAndRepairDatabaseIntegrity();
+      
+      // تشغيل المايغريشن لمعرفات المعاملات القديمة
+      await migrateTransactionUuids();
+      // 🔒 توحيد هوية كل معاملة على transaction_uuid (= sync_uuid) وصالح لمسار Firestore.
+      await sanitizeLegacyTransactionUuids();
     } catch (e) {
       // تجاهل الخطأ
       // محاولة استعادة من النسخة الاحتياطية إذا فشلت التهيئة
@@ -385,6 +568,7 @@ class DatabaseService {
       final hasDescription = txInfo.any((col) => col['name'] == 'description');
       final hasAudioNotePath = txInfo.any((col) => col['name'] == 'audio_note_path');
       final hasIsReadByOthers = txInfo.any((col) => col['name'] == 'is_read_by_others');
+      final hasInvoiceSyncUuid = txInfo.any((col) => col['name'] == 'invoice_sync_uuid');
       
       if (!hasIsCreatedByMe) {
         try {
@@ -452,6 +636,24 @@ class DatabaseService {
       if (!hasIsReadByOthers) {
         try {
           await _database!.execute('ALTER TABLE transactions ADD COLUMN is_read_by_others INTEGER DEFAULT 0;');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      // 🔒 إضافة عمود invoice_sync_uuid (مزامنة الفواتير الذرية) + الفهارس + الربط الرجعي.
+      // يعمل مرة واحدة فقط: الشرط نفسه يمنع تكرار الفحص/التنفيذ في كل إقلاع.
+      if (!hasInvoiceSyncUuid) {
+        try {
+          await _database!.execute('ALTER TABLE transactions ADD COLUMN invoice_sync_uuid TEXT;');
+          await _database!.execute('CREATE INDEX IF NOT EXISTS idx_transactions_invoice_sync_uuid ON transactions(invoice_sync_uuid);');
+          await _database!.execute('CREATE INDEX IF NOT EXISTS idx_invoices_uuid ON invoices(invoice_uuid);');
+          await _database!.execute('''
+            UPDATE transactions
+            SET invoice_sync_uuid = (
+              SELECT invoice_uuid FROM invoices WHERE invoices.id = transactions.invoice_id
+            )
+            WHERE invoice_sync_uuid IS NULL AND invoice_id IS NOT NULL;
+          ''');
         } catch (e) {
           // تجاهل الخطأ
         }
@@ -544,7 +746,19 @@ class DatabaseService {
           // تجاهل الخطأ
         }
       }
-      
+
+      // 🔒 بصمة ملكية الفواتير (فلترة التقارير والتليجرام) — مرة واحدة فقط:
+      // إضافة العمود + الربط الرجعي من creator_device_id.
+      final hasInvCreatedByMe = invInfo.any((col) => col['name'] == 'is_created_by_me');
+      if (!hasInvCreatedByMe) {
+        try {
+          await _database!.execute('ALTER TABLE invoices ADD COLUMN is_created_by_me INTEGER DEFAULT 1;');
+          await _backfillInvoiceOwnership();
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+
       final hasFinalTotal = invInfo.any((col) => col['name'] == 'final_total');
       if (!hasFinalTotal) {
         try {
@@ -639,6 +853,15 @@ class DatabaseService {
         try {
           await _database!
               .execute('ALTER TABLE invoice_items ADD COLUMN unique_id TEXT');
+        } catch (e) {
+          // تجاهل الخطأ
+        }
+      }
+      bool hasSuggestedPrice = invoiceItemsInfo.any((c) => c['name'] == 'suggested_price');
+      if (!hasSuggestedPrice) {
+        try {
+          await _database!
+              .execute('ALTER TABLE invoice_items ADD COLUMN suggested_price REAL');
         } catch (e) {
           // تجاهل الخطأ
         }
@@ -820,6 +1043,9 @@ class DatabaseService {
 
   Future<Database> _initDatabase() async {
     final dir = await getApplicationSupportDirectory();
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
     final newPath = join(dir.path, 'debt_book.db');
     final oldPath = join(await getDatabasesPath(), 'debt_book.db');
 
@@ -844,10 +1070,108 @@ class DatabaseService {
       onOpen: (db) async {
         // تفعيل FOREIGN KEYS لضمان عمل CASCADE
         await db.execute('PRAGMA foreign_keys = ON');
-        
+
         // إصلاح حاسم: حذف جدول FTS والمحفزات القديمة وإعادة إنشائها
         // (بعض المستخدمين لديهم products_fts قديم بعمود 'name' بدلاً من 'name_norm')
         await _fixLegacyFTSSchema(db);
+
+        // 🔒 شبكة أمان لرقم الفاتورة المركّب: ضمان وجود invoice_year/
+        // invoice_month/monthly_sequence_number حتى لو فشلت ترقية سابقة
+        // أو كانت القاعدة بحالة شاذة، ثم تعبئة السنة/الشهر من التاريخ.
+        try {
+          await _ensureAllRequiredColumns(db);
+          await db.execute('''
+            UPDATE invoices SET
+              invoice_year = CAST(strftime('%Y', invoice_date) AS INTEGER),
+              invoice_month = CAST(strftime('%m', invoice_date) AS INTEGER)
+            WHERE invoice_year IS NULL OR invoice_month IS NULL;
+          ''');
+          // 🔒 فهرس تسريع سجل الديون (idempotent — لا شيء إذا وُجد)
+          await db.execute(
+              'CREATE INDEX IF NOT EXISTS idx_transactions_customer_id ON transactions(customer_id);');
+
+          // ⚡ فهارس تسريع محرك التسعير الشخصي والتلقائي الفائق (Instant Lookups < 1ms)
+          await db.execute(
+              'CREATE INDEX IF NOT EXISTS idx_customers_name_phone ON customers(name, phone);');
+          await db.execute(
+              'CREATE INDEX IF NOT EXISTS idx_invoices_pricing ON invoices(customer_id, status, payment_type, invoice_date);');
+          await db.execute(
+              'CREATE INDEX IF NOT EXISTS idx_invoice_items_pricing ON invoice_items(product_name, sale_type, invoice_id);');
+          await db.execute(
+              'CREATE INDEX IF NOT EXISTS idx_invoices_payment_status_date ON invoices(payment_type, status, invoice_date);');
+
+          // ⚡ فهرس تسريع التقارير (شهرية/سنوية/بضاعة/أشخاص)
+          // الفهرس أعلاه يبدأ بـ product_name لذلك لا تستفيد منه استعلامات
+          // التقارير التي تبحث بـ invoice_id وحده (SCAN كامل للجدول).
+          // هذا الفهرس لا يُغيّر أي بيانة — قراءة أسرع فقط (≈160KB).
+          await db.execute(
+              'CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice_id ON invoice_items(invoice_id);');
+
+          // ═══════════════════════════════════════════════════════════════
+          // 🧹 هجرة: تنظيف بقايا مزامنة Google Drive المعطّلة
+          // ═══════════════════════════════════════════════════════════════
+          // المزامنة المعتمدة هي Firebase وحدها (لها جداولها المستقلة).
+          // جداول Drive أدناه طابور رفع محلي لم يُرفع منه شيء قط، ولا معنى
+          // له في قاعدة مستعادة على جهاز آخر — بل هو ضار: جهاز جديد لا يجوز
+          // أن يرث طابور رفع جهاز قديم.
+          //
+          // تعمل على أي قاعدة وعلى أي حاسوب: إن وُجدت صفوف حُذفت وضُغط
+          // الملف مرة واحدة، وإن لم توجد فلا شيء يحدث (المرات التالية بلا
+          // تكلفة تُذكر). لا حاجة لعلامة هجرة — الشرط يحمي نفسه.
+          try {
+            const driveLeftovers = [
+              'sync_operations',
+              'sync_applied_operations',
+              'sync_audit_log',
+              'sync_state',
+            ];
+            int purged = 0;
+            for (final table in driveLeftovers) {
+              try {
+                purged += await db.delete(table);
+              } catch (_) {
+                // الجدول غير موجود على هذه القاعدة — لا شيء لتنظيفه
+              }
+            }
+            if (purged > 0) {
+              print('🧹 هجرة: حُذف $purged صفاً من بقايا مزامنة Google Drive');
+              try {
+                await db.execute('VACUUM');
+                print('🧹 هجرة: أُعيد بناء الملف واستُرجعت المساحة');
+              } catch (e) {
+                // VACUUM ليس حرجاً — المساحة ستُعاد استعمالها تلقائياً
+                print('⚠️ هجرة: تعذّر VACUUM بعد التنظيف: $e');
+              }
+            }
+          } catch (e) {
+            print('⚠️ هجرة: تعذّر تنظيف بقايا مزامنة Drive: $e');
+          }
+
+          // 🧠 جدول فحص وتعلّم تعديلات الموظف على التسعير (Pricing Feedback Learning)
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS pricing_feedback (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              customer_id INTEGER,
+              product_name TEXT NOT NULL,
+              sale_type TEXT,
+              payment_type TEXT,
+              suggested_price REAL NOT NULL,
+              final_price REAL NOT NULL,
+              adjustment REAL NOT NULL,
+              invoice_id INTEGER,
+              created_at TEXT NOT NULL
+            );
+          ''');
+          await db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_pricing_feedback_lookup 
+            ON pricing_feedback(customer_id, product_name, sale_type, payment_type, id DESC);
+          ''');
+
+          // 🧾 فحص شامل وإصلاح أرقام الفواتير: تعبئة المفقود وحل التكرارات وفرض قيد التفرّد
+          await repairAndDeduplicateInvoiceNumbers(db);
+        } catch (e) {
+          print('DEBUG DB: onOpen safety net for invoice_year/month: $e');
+        }
       },
     );
     
@@ -862,13 +1186,17 @@ class DatabaseService {
 
   /// تنظيف المعاملات اليتيمة (التي لا يوجد لها عميل)
   Future<void> _cleanupOrphanedTransactions(Database db) async {
+    if (blockTransactionDeletes) {
+      print('🔒 تخطي تنظيف المعاملات اليتيمة — الرفع الشامل يمنع الحذف');
+      return;
+    }
     try {
       // حذف المعاملات التي customer_id الخاص بها غير موجود في جدول customers
       final result = await db.rawDelete('''
-        DELETE FROM transactions 
+        DELETE FROM transactions
         WHERE customer_id NOT IN (SELECT id FROM customers)
       ''');
-      
+
       // لا نطبع شيء - تنظيف صامت
     } catch (e) {
       // تجاهل الخطأ - لا نوقف التطبيق
@@ -1153,7 +1481,8 @@ class DatabaseService {
         general_note TEXT,
         address TEXT,
         created_at TEXT NOT NULL,
-        last_modified_at TEXT NOT NULL
+        last_modified_at TEXT NOT NULL,
+        is_created_by_me INTEGER DEFAULT 1
       )
     ''');
 
@@ -1224,7 +1553,16 @@ class DatabaseService {
         return_amount REAL NOT NULL DEFAULT 0,
         is_locked INTEGER NOT NULL DEFAULT 0,
         loading_fee REAL DEFAULT 0,
-        notes TEXT
+        notes TEXT,
+        invoice_uuid TEXT,
+        version INTEGER,
+        creator_device_id TEXT,
+        is_synced INTEGER DEFAULT 0,
+        monthly_sequence_number INTEGER,
+        invoice_year INTEGER,
+        invoice_month INTEGER,
+        invoice_number TEXT,
+        points_rate REAL
       )
     ''');
 
@@ -1245,6 +1583,7 @@ class DatabaseService {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         invoice_id INTEGER NOT NULL,
         product_id INTEGER,
+        product_sync_uuid TEXT,
         product_name TEXT NOT NULL,
         unit TEXT NOT NULL,
         unit_price REAL NOT NULL,
@@ -1495,8 +1834,12 @@ class DatabaseService {
       await db.execute('ALTER TABLE transactions ADD COLUMN is_deleted INTEGER DEFAULT 0;');
       await db.execute('ALTER TABLE transactions ADD COLUMN deleted_at TEXT;');
       await db.execute('ALTER TABLE transactions ADD COLUMN synced_at TEXT;');
-      
+      await db.execute('ALTER TABLE transactions ADD COLUMN invoice_sync_uuid TEXT;');
+
       await db.execute('CREATE INDEX IF NOT EXISTS idx_transactions_sync_uuid ON transactions(sync_uuid)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_transactions_invoice_sync_uuid ON transactions(invoice_sync_uuid)');
+      // 🔍 فهرس هوية الفاتورة: كل استعلامات الاستقبال الإدمبوتنت تعمل عبر invoice_uuid
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_invoices_uuid ON invoices(invoice_uuid)');
     } catch (_) {}
 
     // إضافة عمود تاريخ آخر تحديث لسعر التكلفة للمنتجات
@@ -2106,7 +2449,7 @@ class DatabaseService {
           SET is_created_by_me = 0 
           WHERE transaction_note LIKE '%من المزامنة%' 
              OR transaction_note LIKE '%من جهاز آخر%'
-             OR (sync_uuid IS NOT NULL AND sync_uuid NOT IN (SELECT entity_uuid FROM sync_operations WHERE entity_type = 'transaction'))
+             OR (transaction_uuid IS NOT NULL AND transaction_uuid NOT IN (SELECT entity_uuid FROM sync_operations WHERE entity_type = 'transaction'))
         ''');
         print('✅ تم تصحيح حالة is_created_by_me للمعاملات المتزامنة');
         
@@ -2158,10 +2501,564 @@ class DatabaseService {
       }
     }
 
+    if (oldVersion < 46) {
+      print('DEBUG DB: الترقية للإصدار 46 - تأمين العملاء المستوردين وإصلاح الفواتير');
+      try {
+        await db.execute('ALTER TABLE customers ADD COLUMN is_created_by_me INTEGER DEFAULT 1;');
+      } catch (e) {
+        print('DEBUG DB: Error adding is_created_by_me: $e');
+      }
+      try { await db.execute('ALTER TABLE invoices ADD COLUMN invoice_uuid TEXT;'); } catch (e) {}
+      try { await db.execute('ALTER TABLE invoices ADD COLUMN version INTEGER;'); } catch (e) {}
+      try { await db.execute('ALTER TABLE invoices ADD COLUMN creator_device_id TEXT;'); } catch (e) {}
+      try { await db.execute('ALTER TABLE invoices ADD COLUMN is_synced INTEGER DEFAULT 0;'); } catch (e) {}
+      try { await db.execute('ALTER TABLE invoices ADD COLUMN monthly_sequence_number INTEGER;'); } catch (e) {}
+      try { await db.execute('ALTER TABLE invoices ADD COLUMN points_rate REAL;'); } catch (e) {}
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // الإصدار 47: المزامنة الذرية للفواتير — ربط المعاملات المالية بفاتورتها
+    // عبر invoice_uuid بدل الرقم المحلي invoice_id، حتى تُرفع المعاملة مدمجة
+    // داخل كبسولة الفاتورة وتُستبدل كاملة عند تحديث الفاتورة على الأجهزة الأخرى.
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (oldVersion < 47) {
+      print('DEBUG DB: الترقية للإصدار 47 - ربط معاملات الفواتير بـ invoice_sync_uuid');
+      try {
+        await db.execute('ALTER TABLE transactions ADD COLUMN invoice_sync_uuid TEXT;');
+      } catch (e) {
+        print('DEBUG DB: Error adding invoice_sync_uuid: $e');
+      }
+      try {
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_transactions_invoice_sync_uuid ON transactions(invoice_sync_uuid);');
+      } catch (e) {}
+      try {
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_invoices_uuid ON invoices(invoice_uuid);');
+      } catch (e) {}
+      // 🔙 Backfill: المعاملات المرتبطة بفواتير سبق أن حصلت على invoice_uuid
+      // ترث نفس المعرّف فتدخل كبسولة فاتورتها مباشرة دون إعادة إنشاء.
+      try {
+        await db.execute('''
+          UPDATE transactions
+          SET invoice_sync_uuid = (
+            SELECT invoice_uuid FROM invoices WHERE invoices.id = transactions.invoice_id
+          )
+          WHERE invoice_sync_uuid IS NULL AND invoice_id IS NOT NULL;
+        ''');
+      } catch (e) {
+        print('DEBUG DB: Error backfilling invoice_sync_uuid: $e');
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // الإصدار 48: بصمة الملكية للفواتير — is_created_by_me على جدول invoices
+    // (مثل transactions/customers) لتمييز فواتير هذا الجهاز عن الواردة من
+    // المزامنة. أساس فلترة التقارير («هذا الجهاز فقط»/«من المزامنة»)
+    // وتقارير التليجرام («الفواتير المحلية فقط») ومنع التقارير المزدوجة.
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (oldVersion < 48) {
+      print('DEBUG DB: الترقية للإصدار 48 - بصمة ملكية الفواتير');
+      try {
+        await db.execute('ALTER TABLE invoices ADD COLUMN is_created_by_me INTEGER DEFAULT 1;');
+      } catch (e) {
+        print('DEBUG DB: Error adding invoices.is_created_by_me: $e');
+      }
+      // 🔙 Backfill من creator_device_id إن أمكن قراءة معرّف الجهاز الآن.
+      // (شبكة أمان إضافية تعمل في كل إقلاع: ensureInvoiceOwnershipFlags)
+      try {
+        final String? deviceId = await FirebaseSyncConfig.getDeviceId();
+        await db.rawUpdate('''
+          UPDATE invoices SET is_created_by_me = CASE
+            WHEN creator_device_id IS NULL OR creator_device_id = '' THEN 1
+            WHEN creator_device_id = ? THEN 1
+            ELSE 0
+          END;
+        ''', [deviceId]);
+      } catch (e) {
+        print('DEBUG DB: Error backfilling invoices.is_created_by_me: $e');
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // الإصدار 49:
+    //  أ) عمودا invoice_year/invoice_month للفواتير — أساس الرقم المركّب
+    //     [جهاز][سنة][شهر][تسلسل] في الكشوف والبحث والعرض المجمع، ومزامنة
+    //     الفواتير الواردة (كان إدراجهما يفشل بصمت لعدم وجود العمودين).
+    //     التعبئة بأثر رجعي من invoice_date للفواتير القديمة.
+    //  ب) عمود product_sync_uuid لبنود الفاتورة — لمطابقة المنتج عبر الأجهزة
+    //     (خصم المخزون عند استقبال فاتورة مزامنة). بدونه يفشل حفظ الفاتورة
+    //     بخطأ "no column named product_sync_uuid" على القواعد القديمة.
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (oldVersion < 49) {
+      print('DEBUG DB: الترقية للإصدار 49 - أعمدة رقم الفاتورة المركّب + بند الفاتورة');
+      try {
+        await db.execute('ALTER TABLE invoices ADD COLUMN invoice_year INTEGER;');
+      } catch (e) {
+        print('DEBUG DB: invoices.invoice_year already exists: $e');
+      }
+      try {
+        await db.execute('ALTER TABLE invoices ADD COLUMN invoice_month INTEGER;');
+      } catch (e) {
+        print('DEBUG DB: invoices.invoice_month already exists: $e');
+      }
+      // 🔙 التعبئة من تاريخ الفاتورة للصفوف القديمة
+      try {
+        await db.execute('''
+          UPDATE invoices SET
+            invoice_year = CAST(strftime('%Y', invoice_date) AS INTEGER),
+            invoice_month = CAST(strftime('%m', invoice_date) AS INTEGER)
+          WHERE invoice_year IS NULL OR invoice_month IS NULL;
+        ''');
+      } catch (e) {
+        print('DEBUG DB: Error backfilling invoice_year/month: $e');
+      }
+      // 🔄 معرّف مزامنة المنتج لبند الفاتورة
+      try {
+        await db.execute('ALTER TABLE invoice_items ADD COLUMN product_sync_uuid TEXT;');
+      } catch (e) {
+        print('DEBUG DB: invoice_items.product_sync_uuid already exists: $e');
+      }
+      // 🔙 التعبئة من sync_uuid للمنتج المرتبط (عبر product_id المحلي)
+      try {
+        await db.execute('''
+          UPDATE invoice_items SET
+            product_sync_uuid = (
+              SELECT p.sync_uuid FROM products p
+              WHERE p.id = invoice_items.product_id
+            )
+          WHERE product_sync_uuid IS NULL
+            AND product_id IS NOT NULL;
+        ''');
+      } catch (e) {
+        print('DEBUG DB: Error backfilling invoice_items.product_sync_uuid: $e');
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // الإصدار 50: فهرس transactions(customer_id) — كان استعلام سجل الديون
+    // يمسح جدول المعاملات بالكامل لكل عميل (EXISTS لكل صف) بلا فهرس،
+    // فيستغرق فتح الشاشة ثوانٍ ويتفاقم مع نمو البيانات. الفهرس يحوّله
+    // إلى ميلي ثانية، ويسرّع أيضاً استعلامات الترتيب (آخر دين/تسديد/معاملة)
+    // وأي JOIN على customer_id.
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (oldVersion < 50) {
+      print('DEBUG DB: الترقية للإصدار 50 - فهرس transactions(customer_id)');
+      try {
+        await db.execute(
+            'CREATE INDEX IF NOT EXISTS idx_transactions_customer_id ON transactions(customer_id);');
+      } catch (e) {
+        print('DEBUG DB: Error creating idx_transactions_customer_id: $e');
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // الإصدار 51: عمود invoice_number — الرقم الكامل [جهاز][سنة][شهر][تسلسل]
+    // يُخزَّن مع الفاتورة عند الحفظ كهوية ثابتة فريدة لا تُركَّب من جديد عند
+    // كل عرض/طباعة. كانت الفواتير بلا تسلسل تركّب رقماً متوقعاً وقت العرض،
+    // فتطبع فواتير مختلفة بنفس الرقم — هنا نعبّئ الجميع مرة واحدة بأرقام
+    // فريدة نهائية حسب ترتيبها الزمني.
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (oldVersion < 51) {
+      print('DEBUG DB: الترقية للإصدار 51 - عمود invoice_number المخزّن');
+      try {
+        await db.execute('ALTER TABLE invoices ADD COLUMN invoice_number TEXT;');
+      } catch (e) {
+        print('DEBUG DB: invoices.invoice_number already exists: $e');
+      }
+      await _backfillInvoiceNumbers(db);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // الإصدار 52: فهارس محرك التسعير الشخصي الجديد (PersonalPricingService —
+    // «المرجع الواحد الأحدث»). تُنشأ في _createDatabase للتنصيتات الجديدة؛
+    // هنا للقواعد القديمة كي تبقى استعلامات التسعير O(log n) فورية.
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (oldVersion < 52) {
+      print('DEBUG DB: الترقية للإصدار 52 - فهارس التسعير الشخصي');
+      try {
+        await db.execute(
+            'CREATE INDEX IF NOT EXISTS idx_customers_name_phone ON customers(name, phone);');
+      } catch (e) {
+        print('DEBUG DB: idx_customers_name_phone: $e');
+      }
+      try {
+        await db.execute(
+            'CREATE INDEX IF NOT EXISTS idx_invoices_pricing ON invoices(customer_id, status, payment_type, invoice_date);');
+      } catch (e) {
+        print('DEBUG DB: idx_invoices_pricing: $e');
+      }
+      try {
+        await db.execute(
+            'CREATE INDEX IF NOT EXISTS idx_invoice_items_pricing ON invoice_items(product_name, sale_type, invoice_id);');
+      } catch (e) {
+        print('DEBUG DB: idx_invoice_items_pricing: $e');
+      }
+      try {
+        await db.execute(
+            'CREATE INDEX IF NOT EXISTS idx_invoices_payment_status_date ON invoices(payment_type, status, invoice_date);');
+      } catch (e) {
+        print('DEBUG DB: idx_invoices_payment_status_date: $e');
+      }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // 🔒 تحقق شامل نهائي - ضمان وجود جميع الأعمدة المطلوبة
     // ═══════════════════════════════════════════════════════════════════════════
     await _ensureAllRequiredColumns(db);
+  }
+
+  /// 🧾 توليد رقم فاتورة شهري فريد وغير مكرر مع فحص التصادم
+  /// التركيب: [رقم الجهاز][السنة 4 أرقام][الشهر خانتان][التسلسل الشهري]
+  /// يبدأ التسلسل من 1 مع بداية كل شهر جديد
+  static Future<({int sequence, String invoiceNumber})> generateUniqueInvoiceNumber({
+    required DateTime date,
+    required DatabaseExecutor executor,
+  }) async {
+    final year = date.year;
+    final month = date.month;
+    final yearStr = year.toString().padLeft(4, '0');
+    final monthStr = month.toString().padLeft(2, '0');
+    final deviceIdStr = InvoiceSettingsService.cachedDeviceId.toString();
+    final datePrefix = '$yearStr-$monthStr';
+
+    // 1. حساب أكبر تسلسل موجود للشهر والسنة المحددين (عبر جميع الفواتير)
+    final seqResult = await executor.rawQuery('''
+      SELECT MAX(monthly_sequence_number) as max_seq
+      FROM invoices
+      WHERE (invoice_year = ? AND invoice_month = ?)
+         OR strftime('%Y-%m', invoice_date) = ?
+    ''', [year, month, datePrefix]);
+
+    int nextSeq = 1;
+    if (seqResult.isNotEmpty && seqResult.first['max_seq'] != null) {
+      int rawSeq = (seqResult.first['max_seq'] as int);
+      // 🔧 إصلاح: إذا كان التسلسل المخزّن رقماً مركّباً (يبدأ بالبادئة [جهاز][سنة][شهر])
+      // مثلاً: rawSeq = 120260974 بدلاً من 74 → نستخرج 74 فقط
+      final prefix = '$deviceIdStr$yearStr$monthStr';
+      if (rawSeq >= 1000000) {
+        final rawStr = rawSeq.toString();
+        if (rawStr.startsWith(prefix)) {
+          rawSeq = int.tryParse(rawStr.substring(prefix.length)) ?? rawSeq;
+        }
+      }
+      nextSeq = rawSeq + 1;
+    }
+
+    // 2. حلقة فحص التصادم: ضمان تفرّد تام 100% ضد أي رقم موجود مسبقاً في الداتابيز
+    String finalNumber = '';
+    while (true) {
+      final candidate = '$deviceIdStr$yearStr$monthStr$nextSeq';
+      final clash = await executor.rawQuery(
+        'SELECT 1 FROM invoices WHERE invoice_number = ? LIMIT 1',
+        [candidate],
+      );
+      if (clash.isEmpty) {
+        finalNumber = candidate;
+        break;
+      }
+      nextSeq++;
+    }
+
+    return (sequence: nextSeq, invoiceNumber: finalNumber);
+  }
+
+  /// 🧾 فحص شامل وإصلاح أرقام الفواتير وضمان التفرّد وعدم التكرار نهائياً
+  /// 1. يعبئ أي فاتورة ينقصها رقم أو تسلسل شهري.
+  /// 2. يحل أي تكرار تاريخي بتعيين أرقام فريدة تصاعدية للفواتير المكررة.
+  /// 3. ينشئ الفهرس الفريد الصارم (UNIQUE INDEX) لمنع أي تكرار مستقبلاً.
+  Future<void> repairAndDeduplicateInvoiceNumbers(Database db) async {
+    try {
+      final deviceIdStr = InvoiceSettingsService.cachedDeviceId.toString();
+
+      // ═══════════════════════════════════════════════════════════════════════
+      // 🔧 المرحلة 0: إصلاح الأرقام المضاعفة والتسلسلات التالفة
+      // المشكلة: monthly_sequence_number كان يُحفظ كرقم مركّب (مثلاً 1202609120260978)
+      //          فعند توليد رقم جديد: '1202609' + '1202609120260978' → رقم ضخم مكرر.
+      // الحل:   نزع البادئة [جهاز][سنة][شهر] بشكل متكرر حتى نصل للتسلسل الحقيقي،
+      //          مع معالجة التصادم بتعيين رقم جديد فريد عند الحاجة.
+      // ═══════════════════════════════════════════════════════════════════════
+
+      // دالة مساعدة: نزع البادئة بشكل متكرر لاستخراج التسلسل الحقيقي
+      int? extractRealSeq(String prefix, String rawStr) {
+        String s = rawStr;
+        // نكرر نزع البادئة طالما الرقم لا يزال يبدأ بها
+        while (s.startsWith(prefix) && s.length > prefix.length) {
+          s = s.substring(prefix.length);
+        }
+        final seq = int.tryParse(s);
+        // التسلسل الشهري الحقيقي لا يتجاوز 100,000 فاتورة/شهر
+        if (seq != null && seq > 0 && seq < 100000) return seq;
+        return null;
+      }
+
+      // دالة مساعدة: توليد رقم فريد لا يتعارض مع الموجود
+      Future<(String, int)> assignFreeNumber(String prefix, int startSeq) async {
+        int seq = startSeq;
+        while (true) {
+          final num = '$prefix$seq';
+          final exists = await db.rawQuery(
+            'SELECT 1 FROM invoices WHERE invoice_number = ? LIMIT 1', [num]);
+          if (exists.isEmpty) return (num, seq);
+          seq++;
+        }
+      }
+
+      final allMonthRows = await db.rawQuery('''
+        SELECT DISTINCT
+          COALESCE(invoice_year, CAST(strftime('%Y', invoice_date) AS INTEGER)) AS y,
+          COALESCE(invoice_month, CAST(strftime('%m', invoice_date) AS INTEGER)) AS m
+        FROM invoices
+        WHERE invoice_year IS NOT NULL OR invoice_date IS NOT NULL
+      ''');
+
+      int phase0Fixed = 0;
+
+      for (final mr in allMonthRows) {
+        final y = (mr['y'] as num?)?.toInt() ?? 0;
+        final m = (mr['m'] as num?)?.toInt() ?? 0;
+        if (y <= 0 || m <= 0) continue;
+
+        final yStr = y.toString().padLeft(4, '0');
+        final mStr = m.toString().padLeft(2, '0');
+        final prefix = '$deviceIdStr$yStr$mStr'; // مثلاً: '1202609'
+
+        // ── أ) فواتير invoice_number تالف (يحتوي على البادئة أكثر من مرة) ──
+        // نجلب كل فواتير الشهر ذات الرقم الطويل بشكل غير طبيعي (> 12 خانة)
+        final badNumRows = await db.rawQuery('''
+          SELECT id, invoice_number, monthly_sequence_number
+          FROM invoices
+          WHERE (invoice_year = ? AND invoice_month = ?)
+            AND length(invoice_number) > 12
+            AND invoice_number LIKE ?
+        ''', [y, m, '$prefix%']);
+
+        for (final bad in badNumRows) {
+          final badNum = (bad['invoice_number'] as String?) ?? '';
+          if (!badNum.startsWith(prefix)) continue;
+
+          // نزع البادئة بشكل متكرر للوصول للتسلسل الحقيقي
+          final realSeq = extractRealSeq(prefix, badNum);
+          if (realSeq == null) continue;
+
+          // الرقم الصحيح المتوقع
+          final idealNum = '$prefix$realSeq';
+
+          // فحص التصادم: هل الرقم المُصحَّح موجود في فاتورة أخرى؟
+          final clashRows = await db.rawQuery(
+            'SELECT id FROM invoices WHERE invoice_number = ? AND id != ? LIMIT 1',
+            [idealNum, bad['id'] as int]);
+
+          String finalNum;
+          int finalSeq;
+          if (clashRows.isEmpty) {
+            // لا تصادم → نستخدم الرقم المُصحَّح مباشرة
+            finalNum = idealNum;
+            finalSeq = realSeq;
+          } else {
+            // تصادم → نولّد رقماً جديداً فريداً ابتداءً من realSeq+1
+            (finalNum, finalSeq) = await assignFreeNumber(prefix, realSeq + 1);
+          }
+
+          try {
+            await db.update('invoices', {
+              'invoice_number': finalNum,
+              'monthly_sequence_number': finalSeq,
+              'invoice_year': y,
+              'invoice_month': m,
+            }, where: 'id = ?', whereArgs: [bad['id'] as int]);
+            phase0Fixed++;
+            print('🔧 [Phase0-A] id=${bad['id']}: "$badNum" → "$finalNum" (تسلسل: $finalSeq)');
+          } catch (e) {
+            print('⚠️ [Phase0-A] تعذّر إصلاح id=${bad['id']}: $e');
+          }
+        }
+
+        // ── ب) monthly_sequence_number تالف (رقم مركّب ≥ مليون) ──
+        // حتى لو كان invoice_number صحيحاً، نصحح عمود التسلسل
+        final badSeqRows = await db.rawQuery('''
+          SELECT id, invoice_number, monthly_sequence_number
+          FROM invoices
+          WHERE (invoice_year = ? AND invoice_month = ?)
+            AND monthly_sequence_number >= 1000000
+        ''', [y, m]);
+
+        for (final bad in badSeqRows) {
+          final badSeq = bad['monthly_sequence_number'] as int;
+          final realSeq = extractRealSeq(prefix, badSeq.toString());
+          if (realSeq == null) continue;
+
+          final currentNum = (bad['invoice_number'] as String?) ?? '';
+          // إذا كان invoice_number طويلاً أيضاً → نصلح كليهما
+          // إذا كان invoice_number صحيحاً → نصلح التسلسل فقط
+          final numAlreadyLong = currentNum.startsWith(prefix) && currentNum.length > 12;
+          if (!numAlreadyLong) {
+            // فقط تصحيح monthly_sequence_number (سبق تأكيد invoice_number في خطوة A)
+            try {
+              await db.update('invoices', {
+                'monthly_sequence_number': realSeq,
+              }, where: 'id = ?', whereArgs: [bad['id'] as int]);
+              phase0Fixed++;
+              print('🔧 [Phase0-B] id=${bad['id']}: monthly_seq $badSeq → $realSeq');
+            } catch (e) {
+              print('⚠️ [Phase0-B] تعذّر id=${bad['id']}: $e');
+            }
+          }
+          // (إذا كان الرقم طويلاً فقد عولج في خطوة A أعلاه)
+        }
+      }
+
+      if (phase0Fixed > 0) {
+        print('✅ [Phase0] تم إصلاح $phase0Fixed سجل من الأرقام التالفة.');
+      }
+
+      // ═══════════════════════════════════════════════════════════════════════
+      // المرحلة 1: جلب جميع الفواتير مرتبة زمنياً (بعد تنظيف المرحلة 0)
+      // ═══════════════════════════════════════════════════════════════════════
+      final rows = await db.rawQuery('''
+        SELECT id, monthly_sequence_number AS seq,
+               COALESCE(invoice_year, CAST(strftime('%Y', invoice_date) AS INTEGER)) AS y,
+               COALESCE(invoice_month, CAST(strftime('%m', invoice_date) AS INTEGER)) AS m,
+               invoice_number AS num,
+               invoice_date AS inv_date
+        FROM invoices
+        ORDER BY invoice_date ASC, id ASC
+      ''');
+
+      if (rows.isEmpty) return;
+
+      final usedNumbers = <String>{};
+      final monthSeqs = <String, Set<int>>{};
+      final List<Map<String, dynamic>> needsRepair = [];
+
+      for (final r in rows) {
+        final existingNum = (r['num'] as String?)?.trim();
+        final seq = r['seq'] as int?;
+        int y = (r['y'] as num?)?.toInt() ?? 0;
+        int m = (r['m'] as num?)?.toInt() ?? 0;
+
+        if (y <= 0 || m <= 0) {
+          final dtStr = r['inv_date'] as String?;
+          if (dtStr != null) {
+            final dt = DateTime.tryParse(dtStr);
+            if (dt != null) {
+              y = dt.year;
+              m = dt.month;
+            }
+          }
+        }
+        if (y <= 0) y = DateTime.now().year;
+        if (m <= 0) m = DateTime.now().month;
+
+        final key = '$y-$m';
+        monthSeqs.putIfAbsent(key, () => <int>{});
+
+        // هل الرقم سليم وفريد وغير مكرر؟
+        final isInvalid = existingNum == null ||
+            existingNum.isEmpty ||
+            existingNum.endsWith('---') ||
+            usedNumbers.contains(existingNum);
+
+        if (isInvalid) {
+          needsRepair.add({
+            'id': r['id'] as int,
+            'y': y,
+            'm': m,
+            'seq': seq,
+          });
+        } else {
+          usedNumbers.add(existingNum);
+          if (seq != null && seq > 0 && seq < 1000000) {
+            // تسلسل نظيف (أقل من مليون → ليس رقماً مركّباً)
+            monthSeqs[key]!.add(seq);
+          } else {
+            // استخراج التسلسل من رقم الفاتورة بعد نزع البادئة [جهاز][سنة][شهر]
+            final yStr = y.toString().padLeft(4, '0');
+            final mStr = m.toString().padLeft(2, '0');
+            final pfx = '$deviceIdStr$yStr$mStr';
+            int? extracted;
+            if (existingNum.startsWith(pfx)) {
+              extracted = int.tryParse(existingNum.substring(pfx.length));
+            }
+            // fallback: آخر مجموعة أرقام من الرقم
+            extracted ??= _seqFromNumber(existingNum);
+            if (extracted != null && extracted > 0 && extracted < 1000000) {
+              monthSeqs[key]!.add(extracted);
+            }
+          }
+        }
+      }
+
+      if (needsRepair.isNotEmpty) {
+        final batch = db.batch();
+        for (final item in needsRepair) {
+          final id = item['id'] as int;
+          final y = item['y'] as int;
+          final m = item['m'] as int;
+          final key = '$y-$m';
+          final consumed = monthSeqs.putIfAbsent(key, () => <int>{});
+          final yearStr = y.toString().padLeft(4, '0');
+          final monthStr = m.toString().padLeft(2, '0');
+
+          int candidateSeq = (item['seq'] as int?) ?? 0;
+          // 🔧 تنظيف: إذا كان seq رقماً مركّباً (يبدأ بالبادئة) نستخرج التسلسل الحقيقي
+          if (candidateSeq >= 1000000) {
+            final prefix = '$deviceIdStr$yearStr$monthStr';
+            final seqStr = candidateSeq.toString();
+            if (seqStr.startsWith(prefix)) {
+              candidateSeq = int.tryParse(seqStr.substring(prefix.length)) ?? 0;
+            } else {
+              candidateSeq = 0; // لا نعرف كيف نفسّره → نولّد من جديد
+            }
+          }
+          if (candidateSeq <= 0 || consumed.contains(candidateSeq)) {
+            candidateSeq = (consumed.isEmpty ? 0 : consumed.reduce(max)) + 1;
+          }
+
+          String number;
+          while (true) {
+            number = '$deviceIdStr$yearStr$monthStr$candidateSeq';
+            if (!usedNumbers.contains(number) && !consumed.contains(candidateSeq)) {
+              break;
+            }
+            candidateSeq++;
+          }
+
+          consumed.add(candidateSeq);
+          usedNumbers.add(number);
+
+          batch.update('invoices', {
+            'monthly_sequence_number': candidateSeq,
+            'invoice_year': y,
+            'invoice_month': m,
+            'invoice_number': number,
+          }, where: 'id = ?', whereArgs: [id]);
+        }
+        await batch.commit(noResult: true);
+        print('DEBUG DB: تم إصلاح وتحديث ${needsRepair.length} فاتورة وضمان تفرّد أرقامها.');
+      }
+
+      // إنشاء الفهرس الفريد الصارم
+      try {
+        await db.execute(
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_invoice_number ON invoices(invoice_number);');
+        print('DEBUG DB: تم تأكيد وتفعيل فهرس التفرّد الفريد idx_invoices_invoice_number بنجاح.');
+      } catch (e) {
+        print('DEBUG DB: تنبيه عند إنشاء فهرس التفرّد: $e');
+      }
+    } catch (e) {
+      print('DEBUG DB: Error repairing and deduplicating invoice numbers: $e');
+    }
+  }
+
+  /// 🧾 تعبئة أرقام الفواتير المخزّنة بأثر رجعي — للتوافق مع الإصدارات السابقة
+  Future<void> _backfillInvoiceNumbers(Database db) async {
+    await repairAndDeduplicateInvoiceNumbers(db);
+  }
+
+  /// استخراج التسلسل من ذيل رقم فاتورة مخزّن (آخر الأرقام)
+  static int? _seqFromNumber(String? number) {
+    if (number == null || number.isEmpty) return null;
+    final match = RegExp(r'(\d+)$').firstMatch(number);
+    return match != null ? int.tryParse(match.group(1)!) : null;
   }
   
   /// تحقق شامل من وجود جميع الأعمدة المطلوبة وإضافتها إذا لم تكن موجودة
@@ -2191,12 +3088,14 @@ class DatabaseService {
     await ensureColumn('transactions', 'is_created_by_me', 'INTEGER DEFAULT 1');
     await ensureColumn('transactions', 'is_uploaded', 'INTEGER DEFAULT 0');
     await ensureColumn('transactions', 'transaction_uuid', 'TEXT');
+    await ensureColumn('transactions', 'invoice_sync_uuid', 'TEXT');
     
     // أعمدة جدول customers
     await ensureColumn('customers', 'audio_note_path', 'TEXT');
     
     // أعمدة جدول invoices
     await ensureColumn('invoices', 'customer_id', 'INTEGER');
+    await ensureColumn('invoices', 'is_created_by_me', 'INTEGER DEFAULT 1');
     await ensureColumn('invoices', 'status', "TEXT DEFAULT 'محفوظة'");
     await ensureColumn('invoices', 'discount', 'REAL DEFAULT 0');
     await ensureColumn('invoices', 'return_amount', 'REAL DEFAULT 0');
@@ -2206,9 +3105,14 @@ class DatabaseService {
     await ensureColumn('invoices', 'final_total', 'REAL');
     await ensureColumn('invoices', 'points_rate', 'REAL DEFAULT 1.0');
     await ensureColumn('invoices', 'notes', 'TEXT');
+    await ensureColumn('invoices', 'monthly_sequence_number', 'INTEGER');
+    await ensureColumn('invoices', 'invoice_year', 'INTEGER');
+    await ensureColumn('invoices', 'invoice_month', 'INTEGER');
+    await ensureColumn('invoices', 'invoice_number', 'TEXT');
     
     // أعمدة جدول invoice_items
     await ensureColumn('invoice_items', 'product_id', 'INTEGER');
+    await ensureColumn('invoice_items', 'product_sync_uuid', 'TEXT');
     await ensureColumn('invoice_items', 'actual_cost_price', 'REAL');
     await ensureColumn('invoice_items', 'sale_type', 'TEXT');
     await ensureColumn('invoice_items', 'units_in_large_unit', 'REAL');
@@ -2268,11 +3172,24 @@ class DatabaseService {
   // --- دوال العملاء ---
   Future<int> insertCustomer(Customer customer) async {
     final db = await database;
-    
+
+    // 🛡️ منع إنشاء عميلين بنفس الاسم تمامًا.
+    // الفحص عبر الاسم المطبّع (name_norm) ليلتقط "نفس الاسم" حتى مع فروقات
+    // بسيطة في التشكيل/الهمزات. هذا المسار (insertCustomer) يُستدعى فقط عند
+    // الإنشاء المحلي اليدوي؛ العملاء الواردون من المزامنة يُدرَجون مباشرةً
+    // عبر db.insert في _applyCustomerChange ولا يمرون من هنا، فلا يُعطَّل
+    // استقبال عميل قدم من جهاز آخر فقط لأن اسمه يطابق اسمًا محليًا.
+    if (customer.name.trim().isNotEmpty) {
+      final exists = await isCustomerNameExists(customer.name);
+      if (exists) {
+        throw Exception('يوجد عميل بنفس الاسم «${customer.name}» مسبقًا');
+      }
+    }
+
     // 🛡️ إصلاح: ضمان وجود sync_uuid للعميل الجديد قبل الإدراج
     String syncUuid = customer.syncUuid ?? '';
     if (syncUuid.isEmpty) {
-      syncUuid = SyncSecurity.generateUuid(); 
+      syncUuid = SyncSecurity.generateUuid();
     }
     
     // تجهيز البيانات للإدراج مع UUID المضمون
@@ -2313,7 +3230,7 @@ class DatabaseService {
     // إذا كان هناك دين مبدئي، أضف معاملة تلقائية
     if (customer.currentTotalDebt > 0) {
       final now = DateTime.now();
-      final txSyncUuid = SyncSecurity.generateUuid(); // 🔄 توليد sync_uuid للمعاملة
+      final txSyncUuid = SyncSecurity.generateTransactionUuid(customer.name, customer.currentTotalDebt, now); // 🔄 توليد transaction_uuid للمعاملة
       final transactionId = await db.insert('transactions', {
         'customer_id': customerId,
         'transaction_date': now.toIso8601String(),
@@ -2324,6 +3241,7 @@ class DatabaseService {
         'description': 'رصيد افتتاحي',
         'created_at': now.toIso8601String(),
         'invoice_id': null,
+        'transaction_uuid': txSyncUuid,
         'sync_uuid': txSyncUuid, // 🔄 إضافة sync_uuid
       });
       
@@ -2369,6 +3287,7 @@ class DatabaseService {
             'balance_before_transaction': 0.0,
             'transaction_note': 'الدين المبدئي عند إضافة العميل',
             'transaction_type': 'opening_balance',
+            'transaction_uuid': txSyncUuid,
             'sync_uuid': txSyncUuid,
           }, customerSyncUuid ?? syncUuid);
         }
@@ -2381,6 +3300,19 @@ class DatabaseService {
     
     // 🚀 إبطال Cache بعد إضافة عميل
     invalidateCustomersCache();
+    
+    // 🚀 تشغيل المزامنة فوراً للعميل الجديد كأولوية قصوى
+    try {
+      if (SyncTrackerInstance.instance.isEnabled) {
+        final db = await database;
+        final customerRows = await db.query('customers', where: 'id = ?', whereArgs: [customerId], limit: 1);
+        if (customerRows.isNotEmpty) {
+           FirebaseSyncHelper().syncCustomer(customerRows.first);
+        }
+      }
+    } catch (e) {
+      print('⚠️ فشل إطلاق المزامنة الفورية: $e');
+    }
     
     return customerId;
   }
@@ -2515,9 +3447,41 @@ class DatabaseService {
     return null;
   }
 
-  Future<int> updateCustomer(Customer customer) async {
+  /// ⚡ استعلام مباشر وفائق السرعة لجلب معرف العميل بالاسم ورقم الهاتف دون تحميل جميع العملاء في الذاكرة
+  Future<int?> findCustomerIdByNameAndPhone(String customerName, [String? customerPhone]) async {
+    final trimmedName = customerName.trim();
+    if (trimmedName.isEmpty) return null;
     final db = await database;
-    
+    try {
+      if (customerPhone != null && customerPhone.trim().isNotEmpty) {
+        final rows = await db.rawQuery(
+          'SELECT id FROM customers WHERE name = ? AND phone = ? LIMIT 1',
+          [trimmedName, customerPhone.trim()],
+        );
+        if (rows.isNotEmpty) return (rows.first['id'] as num).toInt();
+      }
+      final rows = await db.rawQuery(
+        'SELECT id FROM customers WHERE name = ? LIMIT 1',
+        [trimmedName],
+      );
+      if (rows.isNotEmpty) return (rows.first['id'] as num).toInt();
+    } catch (e) {
+      print('Error finding customer ID for "$trimmedName": $e');
+    }
+    return null;
+  }
+
+  /// تحديث بيانات العميل.
+  ///
+  /// 🛡️ [updateBalance] = false افتراضياً: لا يُكتب `current_total_debt` إطلاقاً.
+  /// السبب: شاشات تعديل بيانات العميل تمرّر كائن `Customer` قد يكون قديماً في
+  /// الذاكرة، فكانت تُعيد رصيداً قديماً فوق الرصيد الصحيح (Lost Update) —
+  /// تعديل اسم العميل كان قادراً على إعادة دين قديم. الرصيد لا يتغيّر إلا عبر
+  /// المعاملات أو عبر دوال إعادة الحساب التي تمرّر updateBalance: true.
+  Future<int> updateCustomer(Customer customer,
+      {bool updateBalance = false}) async {
+    final db = await database;
+
     // 🔄 تتبع المزامنة: جلب البيانات القديمة قبل التحديث
     Map<String, dynamic>? oldData;
     String? syncUuid;
@@ -2531,13 +3495,19 @@ class DatabaseService {
       print('⚠️ تحذير: فشل جلب بيانات العميل القديمة: $e');
     }
     
+    final Map<String, dynamic> customerMap = customer.toMap();
+    if (!updateBalance) {
+      // 🛡️ الرصيد ليس من اختصاص هذه الدالة — يُحذف من التحديث تماماً.
+      customerMap.remove('current_total_debt');
+    }
+
     final result = await db.update(
       'customers',
-      customer.toMap(),
+      customerMap,
       where: 'id = ?',
       whereArgs: [customer.id],
     );
-    
+
     // 🔄 تتبع المزامنة: تسجيل تحديث العميل (غير متزامن)
     if (result > 0 && oldData != null && syncUuid != null) {
       try {
@@ -2574,6 +3544,7 @@ class DatabaseService {
   }
 
   Future<int> deleteCustomer(int id) async {
+    assertTransactionDeletesAllowed('حذف عميل');
     final db = await database;
     try {
       // 🔄 تتبع المزامنة: جلب بيانات العميل قبل الحذف
@@ -3338,20 +4309,20 @@ class DatabaseService {
           );
           
           // 4. تجهيز المعاملة بالأرصدة الصحيحة
-          // 🔄 تعيين sync_uuid إذا لم يكن موجوداً (مهم للمزامنة)
-          final syncUuid = transaction.syncUuid 
-              ?? transaction.transactionUuid 
-              ?? SyncSecurity.generateUuid();
+          // 🔄 تعيين transaction_uuid بطريقة ديناميكية بناءً على العميل والوقت والمبلغ
+          final syncUuid = transaction.transactionUuid 
+              ?? SyncSecurity.generateTransactionUuid(customer.name, transaction.amountChanged, transaction.transactionDate);
           
           final updatedTransaction = transaction.copyWith(
             balanceBeforeTransaction: verifiedBalanceBefore,
             newBalanceAfterTransaction: newBalanceAfterTransaction,
-            syncUuid: syncUuid,
+            transactionUuid: syncUuid,
           );
           
           // 5. إدراج المعاملة مع Checksum و sync_uuid
           final transactionMap = updatedTransaction.toMap();
           transactionMap['checksum'] = checksum;
+          transactionMap['transaction_uuid'] = syncUuid;
           transactionMap['sync_uuid'] = syncUuid; // 🔄 ضمان وجود sync_uuid
           final id = await txn.insert('transactions', transactionMap);
 
@@ -3498,8 +4469,12 @@ class DatabaseService {
   }
 
   /// تحديث معاملة يدوية وإعادة حساب إجمالي دين العميل من جميع المعاملات
-  /// يعيد العميل بعد التحديث لعكس الرصيد الجديد في الواجهة
-  Future<Customer> updateManualTransaction(DebtTransaction updated) async {
+  /// يعيد العميل بعد التحديث لعكس الرصيد الجديد في الواجهة.
+  /// [fromSync] = true عند تطبيق تحديث وارد من جهاز المالك عبر المزامنة.
+  Future<Customer> updateManualTransaction(
+    DebtTransaction updated, {
+    bool fromSync = false,
+  }) async {
     final db = await database;
     if (updated.id == null) {
       throw Exception('لا يمكن تعديل معاملة بدون معرّف');
@@ -3514,6 +4489,10 @@ class DatabaseService {
       if (oldTx.invoiceId != null) {
         // للحفاظ على سلامة الفواتير، لا نسمح بتعديل معاملات مرتبطة بفاتورة من هنا
         throw Exception('لا يمكن تعديل معاملة مرتبطة بفاتورة من هنا');
+      }
+      if (!fromSync && !oldTx.isCreatedByMe) {
+        throw Exception(
+            'هذه المعاملة أُنشئت على جهاز آخر ولا يمكن تعديلها من هنا');
       }
 
       // جلب العميل
@@ -3549,6 +4528,7 @@ class DatabaseService {
       final double newBalanceAfter = MoneyCalculator.add(balanceBeforeTransaction, updated.amountChanged);
       
       // تحديث المعاملة بالبيانات الجديدة
+      // محلياً: is_uploaded=0 ليعود للطابور. من المزامنة: 1 حتى لا تُعاد رفعه.
       int updatedRows = await db.update(
         'transactions',
         {
@@ -3558,6 +4538,7 @@ class DatabaseService {
           'transaction_type': newType,
           'new_balance_after_transaction': newBalanceAfter,
           'balance_before_transaction': balanceBeforeTransaction,
+          'is_uploaded': fromSync ? 1 : 0,
         },
         where: 'id = ?',
         whereArgs: [updated.id],
@@ -3605,7 +4586,7 @@ class DatabaseService {
       try {
         final tracker = SyncTrackerInstance.instance;
         if (tracker.isEnabled) {
-          final txSyncUuid = oldTx.syncUuid;
+          final txSyncUuid = oldTx.transactionUuid;
           final customerSyncUuid = customer.syncUuid;
           
           if (txSyncUuid != null) {
@@ -3630,18 +4611,22 @@ class DatabaseService {
         print('⚠️ تحذير: فشل تسجيل مزامنة تحديث المعاملة: $e');
       }
 
-      // 🔥 Firebase Sync: رفع التعديل فوراً
-      try {
-        final txSyncUuid = oldTx.syncUuid;
-        final customerSyncUuid = updatedCustomer.syncUuid;
-        if (txSyncUuid != null && customerSyncUuid != null) {
-          final txRows = await db.query('transactions', where: 'id = ?', whereArgs: [updated.id], limit: 1);
-          if (txRows.isNotEmpty) {
-            firebaseSyncHelper.syncTransaction(txRows.first, customerSyncUuid);
+      // 🔥 Firebase Sync: رفع التعديل فوراً (فقط للتعديل المحلي)
+      if (!fromSync) {
+        try {
+          final txSyncUuid = oldTx.transactionUuid;
+          final customerSyncUuid = updatedCustomer.syncUuid;
+          if (txSyncUuid != null && customerSyncUuid != null) {
+            final txRows = await db.query('transactions',
+                where: 'id = ?', whereArgs: [updated.id], limit: 1);
+            if (txRows.isNotEmpty) {
+              firebaseSyncHelper.syncTransaction(
+                  txRows.first, customerSyncUuid);
+            }
           }
+        } catch (e) {
+          print('⚠️ Firebase Sync: فشل رفع تعديل المعاملة: $e');
         }
-      } catch (e) {
-        print('⚠️ Firebase Sync: فشل رفع تعديل المعاملة: $e');
       }
 
       return updatedCustomer;
@@ -3671,6 +4656,10 @@ class DatabaseService {
         // لا نسمح بتحويل معاملات مرتبطة بفاتورة
         throw Exception('لا يمكن تحويل نوع معاملة مرتبطة بفاتورة');
       }
+      if (!transaction.isCreatedByMe) {
+        throw Exception(
+            'هذه المعاملة أُنشئت على جهاز آخر ولا يمكن تحويل نوعها من هنا');
+      }
       
       // الحصول على المعاملات مرتبة حسب التاريخ
       final transactions = await getCustomerTransactions(
@@ -3699,7 +4688,7 @@ class DatabaseService {
       // حساب الرصيد الجديد بعد المعاملة بناءً على الرصيد قبلها
       final double newBalanceAfter = MoneyCalculator.add(balanceBeforeTransaction, newAmount);
       
-      // تحديث المعاملة بالمبلغ والنوع الجديد
+      // تحديث المعاملة بالمبلغ والنوع الجديد — إعادة للطابور بعد التعديل المحلي
       await db.update(
         'transactions',
         {
@@ -3707,6 +4696,7 @@ class DatabaseService {
           'transaction_type': newType,
           'new_balance_after_transaction': newBalanceAfter,
           'balance_before_transaction': balanceBeforeTransaction,
+          'is_uploaded': 0,
         },
         where: 'id = ?',
         whereArgs: [transactionId],
@@ -3745,7 +4735,7 @@ class DatabaseService {
       try {
         final tracker = SyncTrackerInstance.instance;
         if (tracker.isEnabled) {
-          final txSyncUuid = transaction.syncUuid;
+          final txSyncUuid = transaction.transactionUuid;
           final customerSyncUuid = updatedCustomer.syncUuid;
           
           if (txSyncUuid != null) {
@@ -3775,7 +4765,7 @@ class DatabaseService {
       
       // 🔥 Firebase Sync: رفع التعديل فوراً
       try {
-        final txSyncUuid = transaction.syncUuid;
+        final txSyncUuid = transaction.transactionUuid;
         final customerSyncUuid = updatedCustomer.syncUuid;
         
         if (txSyncUuid != null && customerSyncUuid != null) {
@@ -3818,7 +4808,7 @@ class DatabaseService {
           currentTotalDebt: total,
           lastModifiedAt: DateTime.now(),
         );
-        await updateCustomer(updated);
+        await updateCustomer(updated, updateBalance: true);
         
         // 🔒 التحقق بعد التحديث
         final verifyCustomer = await getCustomerById(customerId);
@@ -3983,6 +4973,11 @@ class DatabaseService {
     final List<GroupedTransactionItem> result = [];
     
     try {
+      // 🛡️ الحارس المحاسبي: قبل عرض أي رقم، نتأكد أن دفتر هذا العميل مطابق
+      // لفواتيره. هذا يضمن أن سجل الديون لا يعرض رقماً مخالفاً للفاتورة أبداً،
+      // ويُصلح تلقائياً أي تلف قديم بمجرد فتح صفحة العميل.
+      await reconcileCustomerLedger(customerId, reason: 'عرض سجل الديون');
+
       // 1. جلب جميع المعاملات مرتبة بالتاريخ
       final allTransactions = await db.query(
         'transactions',
@@ -4200,9 +5195,43 @@ class DatabaseService {
         
         final invoice = invoiceData.first;
         final invoiceDate = DateTime.parse(invoice['invoice_date'] as String);
-        final totalAmount = (invoice['total_amount'] as num?)?.toDouble() ?? 0.0;
+        final storedTotal = (invoice['total_amount'] as num?)?.toDouble() ?? 0.0;
         final paymentType = invoice['payment_type'] as String? ?? '';
-        final paidAmount = (invoice['paid_amount'] as num?)?.toDouble() ?? 0.0;
+        final paidAmount = (invoice['amount_paid_on_invoice'] as num?)?.toDouble() ?? 0.0;
+
+        // 🔒 حساب الإجمالي الفعلي من بنود الفاتورة بدلاً من الاعتماد على القيمة المخزنة
+        final invoiceItemsData = await db.query(
+          'invoice_items',
+          columns: ['item_total'],
+          where: 'invoice_id = ?',
+          whereArgs: [invoiceId],
+        );
+        double totalAmount;
+        if (invoiceItemsData.isNotEmpty) {
+          double calculatedItemsTotal = 0.0;
+          for (final item in invoiceItemsData) {
+            calculatedItemsTotal += (item['item_total'] as num?)?.toDouble() ?? 0.0;
+          }
+          final invoiceDiscount = (invoice['discount'] as num?)?.toDouble() ?? 0.0;
+          final invoiceLoadingFee = (invoice['loading_fee'] as num?)?.toDouble() ?? 0.0;
+          totalAmount = (calculatedItemsTotal + invoiceLoadingFee) - invoiceDiscount;
+
+          // تصحيح القيمة المخزنة صامتاً إذا كانت مختلفة عن الإجمالي الفعلي
+          if ((storedTotal - totalAmount).abs() > 0.01) {
+            try {
+              await db.update(
+                'invoices',
+                {'total_amount': totalAmount, 'total_amount_cents': (totalAmount * 100).round()},
+                where: 'id = ?',
+                whereArgs: [invoiceId],
+              );
+              print('🔧 [auto-fix] تصحيح إجمالي الفاتورة #$invoiceId: $storedTotal → $totalAmount');
+            } catch (_) {}
+          }
+        } else {
+          // لا توجد بنود (فاتورة قديمة أو فارغة) — الاعتماد على القيمة المخزنة
+          totalAmount = storedTotal;
+        }
         
         // حساب صافي المعاملات (المبلغ المتبقي)
         double netAmount = 0.0;
@@ -4231,9 +5260,13 @@ class DatabaseService {
         }
         
         final seq = invoice['monthly_sequence_number'] as int?;
+        // 🧾 نفس صيغة الرقم المطبوع: [رقم الجهاز][السنة][الشهر][التسلسل الشهري]
+        final deviceIdStr = InvoiceSettingsService.cachedDeviceId.toString();
         final formattedNum = seq != null
-            ? '${DateFormat('yyyyMM').format(invoiceDate)}$seq'
-            : invoiceId.toString();
+            ? '$deviceIdStr${DateFormat('yyyyMM').format(invoiceDate)}$seq'
+            : (invoiceId > 1000000
+                ? invoiceId.toString()
+                : '${deviceIdStr}${DateFormat('yyyyMM').format(invoiceDate)}---');
         
         // تحديد الوصف
         String description;
@@ -4398,28 +5431,131 @@ class DatabaseService {
         .trim();
   }
 
+  /// يختم خريطة الفاتورة بحقول المزامنة قبل الإدراج/التحديث.
+  /// بدون invoice_uuid لا تدخل الفاتورة طابور الرفع ولا تصل للأجهزة الأخرى.
+  static Future<void> stampInvoiceForSync(
+    Map<String, dynamic> map, {
+    required bool isNew,
+    int? currentVersion,
+  }) async {
+    final existingUuid = map['invoice_uuid'] as String?;
+    if (existingUuid == null || existingUuid.isEmpty) {
+      map['invoice_uuid'] = UuidHelper.newInvoiceUuid();
+    }
+
+    if (isNew) {
+      map['version'] = 1;
+      // 🔒 معرّف فريد لكل جهاز (UUID طويل من FirebaseSyncConfig) بدل رقم
+      // الفاتورة القديم (1/2/3) الذي كان يتطابق بين الأجهزة فيُرفض كل فاتورة
+      // واردة ظناً أنها من نفس الجهاز.
+      final syncDeviceId = await FirebaseSyncConfig.getDeviceId();
+      map['creator_device_id'] = syncDeviceId;
+      // 🔒 بصمة الملكية: فاتورة جديدة محلياً = من إنشاء هذا الجهاز.
+      // (الفواتير الواردة من المزامنة تُختم 0 في InvoiceSyncService).
+      map['is_created_by_me'] = 1;
+    } else {
+      final base = currentVersion ?? (map['version'] as int?) ?? 1;
+      map['version'] = base + 1;
+    }
+
+    map['is_synced'] = 0;
+  }
+
+  /// علم جلسة: الربط الرجعي لبصمة ملكية الفواتير تم في هذه الجلسة.
+  static bool _invoiceOwnershipBackfilled = false;
+
+  /// 🔁 ربط رجعي idempotent لبصمة ملكية الفواتير من creator_device_id:
+  /// جهازي أو فارغ → 1 (محلية)، جهاز آخر → 0 (من المزامنة).
+  /// يستخدم داخل الإصلاح الذاتي (متاح فيه اتصال _database).
+  Future<void> _backfillInvoiceOwnership() async {
+    try {
+      final String? deviceId = await FirebaseSyncConfig.getDeviceId();
+      await _database!.rawUpdate('''
+        UPDATE invoices SET is_created_by_me = CASE
+          WHEN creator_device_id IS NULL OR creator_device_id = '' THEN 1
+          WHEN creator_device_id = ? THEN 1
+          ELSE 0
+        END;
+      ''', [deviceId]);
+    } catch (e) {
+      // تجاهل الخطأ — سيتكرر في إقلاع قادم
+    }
+  }
+
+  /// ✅ ضمان جاهزية بصمة ملكية الفواتير قبل أي تقرير/إرسال تليجرام.
+  /// يعمل مرة واحدة لكل جلسة (idempotent ورخيص). آمن للاستدعاء من أي مكان.
+  static Future<void> ensureInvoiceOwnershipFlags() async {
+    if (_invoiceOwnershipBackfilled) return;
+    try {
+      final dbService = DatabaseService();
+      final db = await dbService.database;
+      // هل العمود موجود أصلاً؟ (قد تكون الترقية لم تُنفذ بعد لهذا الجهاز)
+      final invInfo = await db.rawQuery('PRAGMA table_info(invoices);');
+      if (!invInfo.any((col) => col['name'] == 'is_created_by_me')) return;
+      final String? deviceId = await FirebaseSyncConfig.getDeviceId();
+      await db.rawUpdate('''
+        UPDATE invoices SET is_created_by_me = CASE
+          WHEN creator_device_id IS NULL OR creator_device_id = '' THEN 1
+          WHEN creator_device_id = ? THEN 1
+          ELSE 0
+        END;
+      ''', [deviceId]);
+      _invoiceOwnershipBackfilled = true;
+      print('🏷️ بصمة ملكية الفواتير جاهزة (is_created_by_me)');
+    } catch (e) {
+      print('⚠️ تعذّر ربط بصمة ملكية الفواتير: $e');
+    }
+  }
+
+  /// يمنع تعديل فاتورة أُنشئت على جهاز فاتورة آخر.
+  Future<void> assertInvoiceEditable(int invoiceId) async {
+    final db = await database;
+    final rows = await db.query(
+      'invoices',
+      columns: ['creator_device_id'],
+      where: 'id = ?',
+      whereArgs: [invoiceId],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      throw Exception('الفاتورة غير موجودة');
+    }
+
+    final creator = rows.first['creator_device_id']?.toString();
+    if (creator == null || creator.isEmpty) {
+      // فواتير قديمة بلا ختم: نسمح بالتعديل محلياً.
+      return;
+    }
+
+    final myDeviceId = await FirebaseSyncConfig.getDeviceId();
+    if (creator != myDeviceId) {
+      throw Exception(
+          'هذه الفاتورة أُنشئت على جهاز آخر ($creator) ولا يمكن تعديلها من هنا');
+    }
+  }
+
   Future<int> insertInvoice(Invoice invoice) async {
     final db = await database;
     try {
-      // Generate monthly_sequence_number if null
-      int nextSeq = 1;
-      if (invoice.monthlySequenceNumber == null) {
-        final dateStr = invoice.invoiceDate.toIso8601String().substring(0, 7); // YYYY-MM
-        final result = await db.rawQuery('''
-          SELECT MAX(monthly_sequence_number) as max_seq 
-          FROM invoices 
-          WHERE strftime('%Y-%m', invoice_date) = ?
-        ''', [dateStr]);
-        
-        if (result.isNotEmpty && result.first['max_seq'] != null) {
-          nextSeq = (result.first['max_seq'] as int) + 1;
-        }
-      } else {
-        nextSeq = invoice.monthlySequenceNumber!;
-      }
-      
       final mapToSave = invoice.toMap();
-      mapToSave['monthly_sequence_number'] = nextSeq;
+
+      if (invoice.invoiceNumber != null && invoice.invoiceNumber!.isNotEmpty) {
+        mapToSave['invoice_number'] = invoice.invoiceNumber;
+        mapToSave['monthly_sequence_number'] = invoice.monthlySequenceNumber;
+        mapToSave['invoice_year'] = invoice.invoiceDate.year;
+        mapToSave['invoice_month'] = invoice.invoiceDate.month;
+      } else {
+        final generated = await DatabaseService.generateUniqueInvoiceNumber(
+          date: invoice.invoiceDate,
+          executor: db,
+        );
+        mapToSave['monthly_sequence_number'] = generated.sequence;
+        mapToSave['invoice_number'] = generated.invoiceNumber;
+        mapToSave['invoice_year'] = invoice.invoiceDate.year;
+        mapToSave['invoice_month'] = invoice.invoiceDate.month;
+      }
+
+      await stampInvoiceForSync(mapToSave, isNew: true);
       
       final id = await db.insert('invoices', mapToSave);
       // Initialize final_total to equal total_amount at creation
@@ -4443,6 +5579,8 @@ class DatabaseService {
     Invoice? oldInvoice, // الفاتورة القديمة في حالة التعديل
     String? createdBy, // للمراقبة
   }) async {
+    // قد يحذف معاملات invoice_live_update داخل المعاملة — ممنوع أثناء الرفع الشامل.
+    assertTransactionDeletesAllowed('حفظ فاتورة');
     final db = await database;
     
     // 🔒 الحصول على قفل للعميل إذا كان موجوداً
@@ -4457,9 +5595,9 @@ class DatabaseService {
     }
     
     try {
-      return await db.transaction((txn) async {
-        try {
-          // 1. معالجة العميل (Customer Handling)
+      final Invoice savedInvoice = await db.transaction((txn) async {
+      try {
+        // 1. معالجة العميل (Customer Handling)
           int? customerId = invoice.customerId;
         Customer? customer;
         
@@ -4470,10 +5608,16 @@ class DatabaseService {
           
           if (customer == null) {
             // إنشاء عميل جديد
+            // 🔒 مزامنة: توليد sync_uuid دائم حتى لو أُنشئ العميل من داخل
+            // حفظ فاتورة. بدونه لن يُرفع العميل أبدًا إلى الأجهزة الأخرى.
+            final now = DateTime.now();
+            final customerSyncUuid =
+                customerData.syncUuid ?? SyncSecurity.generateUuid();
             final newCustomer = customerData.copyWith(
-              createdAt: DateTime.now(),
-              lastModifiedAt: DateTime.now(),
+              createdAt: now,
+              lastModifiedAt: now,
               currentTotalDebt: 0.0, // الدين سيتم تحديثه لاحقاً
+              syncUuid: customerSyncUuid,
             );
             final newId = await txn.insert('customers', newCustomer.toMap());
             customer = newCustomer.copyWith(id: newId);
@@ -4518,32 +5662,87 @@ class DatabaseService {
         int invoiceId;
         if (isUpdate) {
           invoiceId = invoiceToSave.id!;
-          await txn.update(
-            'invoices', 
-            invoiceToSave.toMap(), 
-            where: 'id = ?', 
-            whereArgs: [invoiceId]
+          // 🔒 مزامنة: جلب نسخة الفاتورة الحالية لزيادة version بشكل صحيح،
+          // وضمان وجود invoice_uuid/creator_device_id على السجل المُحدَّث.
+          final existingInvRows = await txn.query('invoices',
+              columns: ['version', 'invoice_uuid', 'creator_device_id',
+                        'status', 'invoice_date', 'monthly_sequence_number'],
+              where: 'id = ?',
+              whereArgs: [invoiceId],
+              limit: 1);
+          final updateMap = invoiceToSave.toMap();
+          await DatabaseService.stampInvoiceForSync(
+            updateMap,
+            isNew: false,
+            currentVersion: existingInvRows.isNotEmpty
+                ? (existingInvRows.first['version'] as int?) ?? 1
+                : 1,
           );
-          
+          // الحفاظ على المالك الأصلي إن وُجد (لا نسرق ملكية فاتورة جاءتنا).
+          if (updateMap['creator_device_id'] == null &&
+              existingInvRows.isNotEmpty) {
+            updateMap['creator_device_id'] =
+                existingInvRows.first['creator_device_id'] as String?;
+          }
+
+          // 🔒 قاعدة صارمة: عند تعديل الفاتورة، لا يتغير رقم الفاتورة ولا تسلسلها أبداً!
+          if (existingInvRows.isNotEmpty) {
+            final existingNum = (existingInvRows.first['invoice_number'] as String?)?.trim();
+            final existingSeq = existingInvRows.first['monthly_sequence_number'] as int?;
+
+            if (existingNum != null && existingNum.isNotEmpty) {
+              // الحفاظ التام والقطعي على الرقم والتسلسل السابقين
+              updateMap['invoice_number'] = existingNum;
+              updateMap['monthly_sequence_number'] = existingSeq;
+              updateMap['invoice_year'] = existingInvRows.first['invoice_year'] ?? invoiceToSave.invoiceDate.year;
+              updateMap['invoice_month'] = existingInvRows.first['invoice_month'] ?? invoiceToSave.invoiceDate.month;
+            } else {
+              // فاتورة قديمة أو مسودة سابقة بلا رقم: توليد رقم فريد لها الآن
+              final generated = await DatabaseService.generateUniqueInvoiceNumber(
+                date: invoiceToSave.invoiceDate,
+                executor: txn,
+              );
+              updateMap['monthly_sequence_number'] = generated.sequence;
+              updateMap['invoice_number'] = generated.invoiceNumber;
+              updateMap['invoice_year'] = invoiceToSave.invoiceDate.year;
+              updateMap['invoice_month'] = invoiceToSave.invoiceDate.month;
+            }
+
+            invoiceToSave = invoiceToSave.copyWith(
+              monthlySequenceNumber: updateMap['monthly_sequence_number'] as int?,
+              invoiceNumber: updateMap['invoice_number'] as String?,
+            );
+          }
+
+          await txn.update('invoices', updateMap,
+              where: 'id = ?', whereArgs: [invoiceId]);
+
           // حذف العناصر القديمة
           await txn.delete('invoice_items', where: 'invoice_id = ?', whereArgs: [invoiceId]);
         } else {
-          // Generate monthly_sequence_number
-          final dateStr = invoiceToSave.invoiceDate.toIso8601String().substring(0, 7);
-          final seqResult = await txn.rawQuery('''
-            SELECT MAX(monthly_sequence_number) as max_seq 
-            FROM invoices 
-            WHERE strftime('%Y-%m', invoice_date) = ?
-          ''', [dateStr]);
-          int nextSeq = 1;
-          if (seqResult.isNotEmpty && seqResult.first['max_seq'] != null) {
-            nextSeq = (seqResult.first['max_seq'] as int) + 1;
-          }
+          // 🧾 توليد رقم فاتورة فريد وغير مكرر
+          final generated = await DatabaseService.generateUniqueInvoiceNumber(
+            date: invoiceToSave.invoiceDate,
+            executor: txn,
+          );
+
           final mapToSave = invoiceToSave.toMap();
-          mapToSave['monthly_sequence_number'] = nextSeq;
+          mapToSave['monthly_sequence_number'] = generated.sequence;
+          mapToSave['invoice_number'] = generated.invoiceNumber;
+          mapToSave['invoice_year'] = invoiceToSave.invoiceDate.year;
+          mapToSave['invoice_month'] = invoiceToSave.invoiceDate.month;
+
+          // 🔒 مزامنة: ختم الفاتورة بهوية المزامنة حتى لو حُفظت عبر saveCompleteInvoice
+          await DatabaseService.stampInvoiceForSync(mapToSave, isNew: true);
 
           invoiceId = await txn.insert('invoices', mapToSave);
-          invoiceToSave = invoiceToSave.copyWith(id: invoiceId, monthlySequenceNumber: nextSeq);
+          invoiceToSave = invoiceToSave.copyWith(
+            id: invoiceId,
+            monthlySequenceNumber: generated.sequence,
+            invoiceNumber: generated.invoiceNumber,
+            invoiceUuid: mapToSave['invoice_uuid'] as String?,
+            creatorDeviceId: mapToSave['creator_device_id'] as String?,
+          );
         }
 
         // 4. حفظ العناصر (Items Saving)
@@ -4633,6 +5832,16 @@ class DatabaseService {
                );
                
                // معالجة سجل المعاملات (Transactions)
+               // 🔒 معرّف الفاتورة للمزامنة الذرية: المعاملة تُرفع مدمجة داخل
+               // كبسولة فاتورتها عبر invoice_sync_uuid لا عبر invoice_id المحلي.
+               final invUuidRows = await txn.query('invoices',
+                   columns: ['invoice_uuid'],
+                   where: 'id = ?',
+                   whereArgs: [invoiceId],
+                   limit: 1);
+               final invoiceSyncUuid = invUuidRows.isNotEmpty
+                   ? invUuidRows.first['invoice_uuid'] as String?
+                   : null;
                if (isUpdate && oldWasApplied) {
                  // محاولة العثور على المعاملة المرتبطة بهذه الفاتورة
                  final existingTx = await txn.query(
@@ -4640,7 +5849,7 @@ class DatabaseService {
                    where: 'invoice_id = ? AND transaction_type = ?',
                    whereArgs: [invoiceId, 'invoice_debt'],
                  );
-                 
+
                  if (existingTx.isNotEmpty) {
                    if (newDebtContribution > 0) {
                      // تحديث المعاملة الموجودة
@@ -4648,7 +5857,9 @@ class DatabaseService {
                        'transactions',
                        {
                          'amount_changed': newDebtContribution,
-                         'new_balance_after_transaction': newTotalDebt, 
+                         'new_balance_after_transaction': newTotalDebt,
+                         if (invoiceSyncUuid != null)
+                           'invoice_sync_uuid': invoiceSyncUuid,
                        },
                        where: 'id = ?',
                        whereArgs: [existingTx.first['id']]
@@ -4669,7 +5880,9 @@ class DatabaseService {
                       'description': 'فاتورة مبيعات (تعديل)',
                       'created_at': DateTime.now().toIso8601String(),
                       'invoice_id': invoiceId,
-                      'sync_uuid': SyncSecurity.generateUuid(), // 🔄 إضافة sync_uuid
+                      'invoice_sync_uuid': invoiceSyncUuid,
+                      'transaction_uuid': SyncSecurity.generateTransactionUuid(customer.name, newDebtContribution, invoiceToSave.invoiceDate),
+                      'sync_uuid': SyncSecurity.generateTransactionUuid(customer.name, newDebtContribution, invoiceToSave.invoiceDate), // 🔄 إضافة sync_uuid
                    });
                  }
                } else {
@@ -4685,7 +5898,9 @@ class DatabaseService {
                       'description': 'فاتورة مبيعات',
                       'created_at': DateTime.now().toIso8601String(),
                       'invoice_id': invoiceId,
-                      'sync_uuid': SyncSecurity.generateUuid(), // 🔄 إضافة sync_uuid
+                      'invoice_sync_uuid': invoiceSyncUuid,
+                      'transaction_uuid': SyncSecurity.generateTransactionUuid(customer.name, newDebtContribution, invoiceToSave.invoiceDate),
+                      'sync_uuid': SyncSecurity.generateTransactionUuid(customer.name, newDebtContribution, invoiceToSave.invoiceDate), // 🔄 إضافة sync_uuid
                    });
                  }
                }
@@ -4721,18 +5936,95 @@ class DatabaseService {
         throw e; // سيقوم الترانزاكشن بإلغاء كل التغييرات تلقائياً
       }
     });
-    
-    // � تتبع يالمزامنة: تسجيل معاملات الفاتورة (بعد نجاح الحفظ)
+
+    // 🚀 مزامنة فورية تلقائية بعد نجاح الحفظ (بدون تدخل المستخدم).
+    // المبدأ: كل حفظ فاتورة "محفوظة" يجب أن يصل فورًا للأجهزة الأخرى.
+    // الفواتير "المعلقة" (draft) لا تُرفع.
+    // الرفع fire-and-forget: لا يحظر الواجهة، وأي فشل يلتقطه الـ Retry Queue
+    // ويعيد المحاولة تلقائيًا حتى النجاح (دون أي تدخل).
+    if (savedInvoice.status == 'محفوظة') {
+      _pushInvoiceAndDependentsToCloud(savedInvoice.id!, savedInvoice.customerId);
+    }
+
+    // تتبع المزامنة: تسجيل معاملات الفاتورة (بعد نجاح الحفظ)
     if (lockCustomerId != null) {
       trackLastTransactionForCustomer(lockCustomerId);
     }
-    
+
+    return savedInvoice;
     } finally {
       // 🔒 تحرير القفل دائماً
       if (lockCustomerId != null && lockAcquired) {
         _releaseCustomerLock(lockCustomerId);
       }
     }
+  }
+
+  /// 🚀 رفع فوري تلقائي للفاتورة المُحفَظة وكل ما يرتبط بها.
+  ///
+  /// المبدأ: لا انتظار — عند حفظ فاتورة "محفوظة" تُرفع فورًا إلى Firebase،
+  /// ومعها العميل (إن أُنشئ) ومعاملة الدين. كل رفع مستقل ومُحصّن:
+  /// - الفاتورة: عبر InvoiceSyncService (مفتاحها invoice_uuid).
+  /// - العميل: عبر firebaseSyncHelper (مفتاحه sync_uuid).
+  /// - معاملة الدين: عبر firebaseSyncHelper (مفتاحها transaction_uuid).
+  ///
+  /// أي فشل لا يُسقط البقية: كل مسار يلتقط خطأه ويُسجّله في Retry Queue
+  /// الذي يعيد المحاولة لانهائيًا. fire-and-forget — لا يحظر الواجهة.
+  Future<void> _pushInvoiceAndDependentsToCloud(
+      int invoiceId, int? customerId) async {
+    final db = await database;
+
+    // 1️⃣ رفع العميل المرتبط (إن وُجد وله sync_uuid).
+    // قد يكون العميل أُنشئ للتو داخل saveCompleteInvoice بلا مزامنة سابقة.
+    if (customerId != null) {
+      try {
+        final customerRows = await db.query('customers',
+            where: 'id = ?', whereArgs: [customerId], limit: 1);
+        if (customerRows.isNotEmpty) {
+          firebaseSyncHelper.syncCustomer(customerRows.first);
+        }
+      } catch (e) {
+        print('⚠️ Firebase Sync: فشل رفع العميل المرتبط بالفاتورة: $e');
+      }
+    }
+
+    // 2️⃣ رفع معاملة الدين المرتبطة بالفاتورة (إن وُجدت).
+    // معاملة الدين من إنشاء هذا الجهاز (is_created_by_me = 1)، فلا يرفضها الحارس.
+    try {
+      final debtTxRows = await db.query(
+        'transactions',
+        where:
+            'invoice_id = ? AND transaction_type = ? AND (is_created_by_me = 1 OR is_created_by_me IS NULL)',
+        whereArgs: [invoiceId, 'invoice_debt'],
+      );
+      for (final txRow in debtTxRows) {
+        final customerSyncUuid = await _customerSyncUuid(txRow['customer_id'] as int?);
+        final txUuid = txRow['transaction_uuid'] as String?;
+        if (txUuid != null && customerSyncUuid != null) {
+          firebaseSyncHelper.syncTransaction(txRow, customerSyncUuid);
+        }
+      }
+    } catch (e) {
+      print('⚠️ Firebase Sync: فشل رفع معاملة دين الفاتورة: $e');
+    }
+
+    // 3️⃣ رفع الفاتورة نفسها عبر محرك الفواتير (رفع فوري للقائمة is_synced = 0).
+    // InvoiceSyncService.uploadPending يحدّث is_synced عند النجاح، ويُبقيها
+    // معلّقة عند الفشل لتُعاد محاولتها في الدورة الدورية.
+    try {
+      await InvoiceSyncService().syncPendingInvoices();
+    } catch (e) {
+      print('⚠️ Firebase Sync: فشل رفع الفاتورة $invoiceId: $e');
+    }
+  }
+
+  /// مُساعِد: جلب sync_uuid لعميل ما.
+  Future<String?> _customerSyncUuid(int? customerId) async {
+    if (customerId == null) return null;
+    final db = await database;
+    final rows = await db.query('customers',
+        columns: ['sync_uuid'], where: 'id = ?', whereArgs: [customerId], limit: 1);
+    return rows.isEmpty ? null : rows.first['sync_uuid'] as String?;
   }
   
   // ═══════════════════════════════════════════════════════════════════════════
@@ -4835,18 +6127,21 @@ class DatabaseService {
                     'current_total_debt': intendedNewDebt,
                     'last_modified_at': DateTime.now().toIso8601String(),
                   }, where: 'id = ?', whereArgs: [customer.id]);
-                  await txn.insert('transactions', {
-                    'customer_id': customer.id,
-                    'transaction_date': DateTime.now().toIso8601String(),
-                    'amount_changed': appliedDelta,
-                    'new_balance_after_transaction': intendedNewDebt,
-                    'transaction_note': ((adjustment.type == 'debit' ? 'تسوية إضافة' : 'تسوية حذف') + ' مرتبطة بالفاتورة رقم ${invoice.id}' + (refundCash > 0 ? ' | استرجاع نقدي للعميل: ' + refundCash.toStringAsFixed(0) : '')),
-                    'transaction_type': 'SETTLEMENT',
-                    'description': 'Invoice settlement adjustment',
-                    'created_at': DateTime.now().toIso8601String(),
-                    'invoice_id': invoice.id,
-                    'sync_uuid': SyncSecurity.generateUuid(), // 🔄 إضافة sync_uuid
-                  });
+                    final now = DateTime.now();
+                    final txUuid = SyncSecurity.generateTransactionUuid(customer.name, appliedDelta, now);
+                    await txn.insert('transactions', {
+                      'customer_id': customer.id,
+                      'transaction_date': now.toIso8601String(),
+                      'amount_changed': appliedDelta,
+                      'new_balance_after_transaction': intendedNewDebt,
+                      'transaction_note': ((adjustment.type == 'debit' ? 'تسوية إضافة' : 'تسوية حذف') + ' مرتبطة بالفاتورة رقم ${invoice.id}' + (refundCash > 0 ? ' | استرجاع نقدي للعميل: ' + refundCash.toStringAsFixed(0) : '')),
+                      'transaction_type': 'SETTLEMENT',
+                      'description': 'Invoice settlement adjustment',
+                      'created_at': now.toIso8601String(),
+                      'invoice_id': invoice.id,
+                      'transaction_uuid': txUuid,
+                      'sync_uuid': txUuid, // 🔄 إضافة sync_uuid
+                    });
                 }
               });
               
@@ -4891,17 +6186,20 @@ class DatabaseService {
                         'current_total_debt': intendedNewDebt,
                         'last_modified_at': DateTime.now().toIso8601String(),
                       }, where: 'id = ?', whereArgs: [customer.id]);
+                      final now = DateTime.now();
+                      final txUuid = SyncSecurity.generateTransactionUuid(customer.name, appliedDelta, now);
                       await txn.insert('transactions', {
                         'customer_id': customer.id,
-                        'transaction_date': DateTime.now().toIso8601String(),
+                        'transaction_date': now.toIso8601String(),
                         'amount_changed': appliedDelta,
                         'new_balance_after_transaction': intendedNewDebt,
                         'transaction_note': ((adjustment.type == 'debit' ? 'تسوية إضافة' : 'تسوية حذف') + ' مرتبطة بالفاتورة رقم ${invoice.id}' + (refundCash > 0 ? ' | استرجاع نقدي للعميل: ' + refundCash.toStringAsFixed(0) : '')),
                         'transaction_type': 'SETTLEMENT',
                         'description': 'Invoice settlement adjustment',
-                        'created_at': DateTime.now().toIso8601String(),
+                        'created_at': now.toIso8601String(),
                         'invoice_id': invoice.id,
-                        'sync_uuid': SyncSecurity.generateUuid(), // 🔄 إضافة sync_uuid
+                        'transaction_uuid': txUuid,
+                        'sync_uuid': txUuid, // 🔄 إضافة sync_uuid
                       });
                     }
                   });
@@ -4943,6 +6241,10 @@ class DatabaseService {
 
   Future<void> applyInvoiceAdjustment(int invoiceId) async {
     final db = await database;
+    // 🔒 مزامنة: نتذكر بعد المعاملة هل نملك الفاتورة وحالتها، لنقرر الدفع السحابي.
+    bool ownedHere = false;
+    String? invoiceStatus;
+    int? invoiceCustomerId;
     await db.transaction((txn) async {
       // Recalculate sum of adjustments
       final sumRows = await txn.rawQuery('SELECT COALESCE(SUM(amount_delta),0) AS s FROM invoice_adjustments WHERE invoice_id = ?', [invoiceId]);
@@ -4951,10 +6253,36 @@ class DatabaseService {
       // Get invoice
       final invoice = await getInvoiceByIdUsingTransaction(txn, invoiceId);
       if (invoice == null) return;
+      invoiceStatus = invoice.status;
+      invoiceCustomerId = invoice.customerId;
 
       // Update final_total = total_amount + sum(adjustments)
       final double newFinal = MoneyCalculator.add(invoice.totalAmount, sumAdj);
-      await txn.update('invoices', {'final_total': newFinal, 'last_modified_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [invoiceId]);
+      // 🔒 مزامنة: التسوية تغيّر final_total — نرفع رقم النسخة ونعيد الفاتورة
+      // لطابور الرفع حتى تنتشر للأجهزة الأخرى. لفواتير هذا الجهاز فقط:
+      // رفع نسخة فاتورة مملوكة لجهاز آخر يُفشل إدمبوتنت المالك لاحقاً.
+      String? myDeviceId;
+      try {
+        myDeviceId = await FirebaseSyncConfig.getDeviceId();
+      } catch (_) {}
+      ownedHere = invoice.invoiceUuid != null &&
+          invoice.invoiceUuid!.isNotEmpty &&
+          (invoice.creatorDeviceId == null ||
+              invoice.creatorDeviceId!.isEmpty ||
+              invoice.creatorDeviceId == myDeviceId);
+      await txn.update(
+        'invoices',
+        {
+          'final_total': newFinal,
+          'last_modified_at': DateTime.now().toIso8601String(),
+          if (ownedHere) ...{
+            'version': (invoice.version) + 1,
+            'is_synced': 0,
+          },
+        },
+        where: 'id = ?',
+        whereArgs: [invoiceId],
+      );
       // NOTE: لا نقوم بتعديل دين العميل أو إنشاء حركة هنا.
       // يتم ذلك حصراً داخل insertInvoiceAdjustment وفق طريقة دفع التسوية.
 
@@ -4978,10 +6306,25 @@ class DatabaseService {
         });
       } catch (_) {}
     });
+
+    // 🚀 مزامنة فورية بعد التسوية: final_total تغيّر — نرفع نسخة جديدة لمن يملكها.
+    // معاملة التسوية نفسها (SETTLEMENT) تُرفع مستقلةً عبر الـ Watchdog.
+    if (ownedHere && invoiceStatus == 'محفوظة') {
+      try {
+        await _pushInvoiceAndDependentsToCloud(invoiceId, invoiceCustomerId);
+      } catch (e) {
+        print('⚠️ Firebase Sync: فشل رفع الفاتورة بعد التسوية $invoiceId: $e');
+      }
+    }
   }
 
   Future<int> updateInvoice(Invoice invoice) async {
     final db = await database;
+
+    if (invoice.id == null) {
+      throw Exception('لا يمكن تحديث فاتورة بدون معرّف');
+    }
+    await assertInvoiceEditable(invoice.id!);
 
     // Get the old invoice to calculate debt changes
     final oldInvoice = await getInvoiceById(invoice.id!);
@@ -5037,9 +6380,50 @@ class DatabaseService {
     }
 
     try {
+      // 🔒 مزامنة: ختم التحديث بزيادة version و is_synced=0 مع الحفاظ على
+      // invoice_uuid/creator_device_id الأصليين. استخدام invoice.toMap()
+      // مباشرةً كان يمحو هذه الحقول لأنها ليست ضمن toMap().
+      final updateMap = invoice.toMap();
+      final existingRows = await db.query('invoices',
+          columns: [
+            'version',
+            'invoice_uuid',
+            'creator_device_id',
+            'invoice_number',
+            'monthly_sequence_number',
+            'invoice_year',
+            'invoice_month',
+          ],
+          where: 'id = ?',
+          whereArgs: [invoice.id!],
+          limit: 1);
+
+      // 🔒 الحفاظ التام على رقم الفاتورة وتسلسلها عند التعديل
+      if (existingRows.isNotEmpty) {
+        final existingNum = existingRows.first['invoice_number'] as String?;
+        if (existingNum != null && existingNum.isNotEmpty) {
+          updateMap['invoice_number'] = existingNum;
+          updateMap['monthly_sequence_number'] = existingRows.first['monthly_sequence_number'];
+          updateMap['invoice_year'] = existingRows.first['invoice_year'] ?? invoice.invoiceDate.year;
+          updateMap['invoice_month'] = existingRows.first['invoice_month'] ?? invoice.invoiceDate.month;
+        }
+      }
+
+      await DatabaseService.stampInvoiceForSync(
+        updateMap,
+        isNew: false,
+        currentVersion: existingRows.isNotEmpty
+            ? (existingRows.first['version'] as int?) ?? 1
+            : 1,
+      );
+      if (updateMap['creator_device_id'] == null && existingRows.isNotEmpty) {
+        updateMap['creator_device_id'] =
+            existingRows.first['creator_device_id'] as String?;
+      }
+
       final count = await db.update(
         'invoices',
-        invoice.toMap(),
+        updateMap,
         where: 'id = ?',
         whereArgs: [invoice.id!],
       );
@@ -5052,6 +6436,17 @@ class DatabaseService {
           'created_by': null,
         });
       } catch (_) {}
+
+      // 🛡️ الحارس المحاسبي: أي تغيير في الإجمالي/المسدد/نوع الدفع يجب أن
+      // ينعكس فوراً على سجل الديون. هذه الدالة هي المعبر الوحيد لكل مسارات
+      // تحديث الفاتورة خارج saveInvoice، لذا وضع الحارس هنا يغطّيها جميعاً.
+      await reconcileInvoiceDebt(invoice.id!, reason: 'updateInvoice');
+
+      // 🚀 مزامنة فورية تلقائية بعد تحديث الفاتورة (بدون تدخل المستخدم).
+      // فقط الفواتير "المحفوظة" تُرفع؛ المعلقة تبقى محلية حتى تُحفظ نهائيًا.
+      if (invoice.status == 'محفوظة') {
+        _pushInvoiceAndDependentsToCloud(invoice.id!, invoice.customerId);
+      }
       return count;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -5059,52 +6454,37 @@ class DatabaseService {
   }
 
   Future<int> deleteInvoice(int id) async {
+    // يحذف كل معاملات الفاتورة — ممنوع أثناء الرفع الشامل.
+    assertTransactionDeletesAllowed('حذف فاتورة');
     final db = await database;
 
     // Get the invoice to calculate debt reversal and update installer total
     final invoice = await getInvoiceById(id);
     if (invoice == null) return 0;
 
-    // Calculate remaining debt to reverse for the customer
-    // This should be the debt amount associated with this specific invoice, not affected by other payments.
-    double debtToReverse = 0.0;
-    if (invoice.paymentType == 'دين') {
-      // Find the transaction linked to this invoice that represents the initial debt
-      final initialDebtTransaction = await getInvoiceDebtTransaction(id);
-      if (initialDebtTransaction != null) {
-        debtToReverse = initialDebtTransaction
-            .amountChanged; // This is the positive debt amount recorded initially
-      }
-      // If there were partial payments recorded as separate transactions for this invoice,
-      // those should have already updated the customer's total debt.
-      // So, when deleting the invoice, we reverse the *initial* debt amount recorded.
-    }
-
     // ═══════════════════════════════════════════════════════════════════════════
-    // 🔧 إصلاح: تحديث رصيد العميل عبر insertTransaction فقط (لتجنب التحديث المزدوج)
+    // 🛡️ عكس دين الفاتورة عند الحذف
     // ═══════════════════════════════════════════════════════════════════════════
-    // Update customer's debt if a customer is linked and there was initial debt from this invoice
-    if (invoice.customerId != null && debtToReverse > 0) {
-      final customer = await getCustomerById(
-          invoice.customerId!); // Use the customerId from the invoice
-      if (customer != null) {
-        // 🔧 إصلاح: لا نقوم بتحديث العميل مباشرة لأن insertTransaction ستفعل ذلك
-        // هذا يمنع التحديث المزدوج للرصيد
-        
-        // Record the debt reversal transaction (هذه الدالة تحدث رصيد العميل تلقائياً)
-        await insertTransaction(
-          DebtTransaction(
-            id: null,
-            customerId: customer.id!,
-            invoiceId: id,
-            amountChanged: -debtToReverse, // Negative to reverse the debt
-            transactionDate: DateTime.now(),
-            newBalanceAfterTransaction: 0, // سيتم حسابها تلقائياً في insertTransaction
-            transactionNote: 'حذف الفاتورة رقم $id (عكس دين الفاتورة)',
-            transactionType: 'Invoice_Debt_Reversal',
-            createdAt: DateTime.now(),
-          ),
+    // المنطق السابق كان يعكس «أول معاملة موجبة» فقط ثم يحذف كل معاملات
+    // الفاتورة — فإن كانت الفاتورة قد عُدّلت (509,000 ثم −300,000 ثم −109,000)
+    // كان يعكس 509,000 بدل صافي 100,000، ويفقد المستخدم مئات الآلاف.
+    // الصحيح: فصل التسديدات الخارجية عن الفاتورة حتى لا تُحذف، ثم حذف
+    // معاملات الفاتورة، ثم إعادة بناء دفتر العميل من الصفر (يتم بعد الحذف).
+    if (invoice.customerId != null) {
+      try {
+        final String ph =
+            List<String>.filled(kNonContributionTxTypes.length, '?').join(',');
+        final detached = await db.rawUpdate(
+          'UPDATE transactions SET invoice_id = NULL '
+          'WHERE invoice_id = ? AND transaction_type IN ($ph)',
+          <Object?>[id, ...kNonContributionTxTypes],
         );
+        if (detached > 0) {
+          print('🛡️ [DebtGuard] فُصلت $detached معاملة تسديد/تسوية عن '
+              'الفاتورة #$id قبل حذفها (لم تُحذف).');
+        }
+      } catch (e) {
+        print('⚠️ [DebtGuard] تعذّر فصل معاملات التسديد عن الفاتورة #$id: $e');
       }
     }
 
@@ -5162,11 +6542,21 @@ class DatabaseService {
       );
 
       // Delete the invoice
-      return await db.delete(
+      final deleted = await db.delete(
         'invoices',
         where: 'id = ?',
         whereArgs: [id],
       );
+
+      // 🛡️ بعد اختفاء الفاتورة ومعاملاتها: إعادة بناء دفتر العميل ورصيده من
+      // المعاملات المتبقية. هذا هو العكس الصحيح للدين مهما كان عدد تعديلات
+      // الفاتورة، ويصحّح سلسلة الأرصدة أيضاً.
+      if (invoice.customerId != null) {
+        await reconcileCustomerLedger(invoice.customerId!,
+            reason: 'حذف الفاتورة رقم $id');
+      }
+
+      return deleted;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
@@ -5405,17 +6795,18 @@ class DatabaseService {
     }
   }
 
-  /// تقريب السعر إلى أقرب 250 دينار عراقي فقط إذا كان ≥ 10,000
+  /// تقريب السعر إلى أقرب 250 دينار عراقي (أصغر عملة نقدية متداولة في العراق)
   double _roundToNearest250IfHigh(double price) {
     if (price <= 0) return 0;
-    if (price < 10000) return price; // بدون تقريب للأسعار أقل من 10,000
-    return (price / 250).round() * 250.0;
+    final rounded = (price / 250.0).round() * 250.0;
+    return rounded <= 0 ? 250.0 : rounded;
   }
 
   /// تقريب السعر إلى أقرب 250 دينار عراقي (للاستخدام العام)
   double _roundToNearest250(double price) {
     if (price <= 0) return 0;
-    return (price / 250).round() * 250.0;
+    final rounded = (price / 250.0).round() * 250.0;
+    return rounded <= 0 ? 250.0 : rounded;
   }
 
   /// 🔮 التسعير الذكي - الحصول على السعر المناسب للمنتج
@@ -5455,6 +6846,96 @@ class DatabaseService {
       }
     }
     return null;
+  }
+
+  /// البحث عن المنتج بالاسم المطابق
+  Future<Product?> getProductByName(String name) async {
+    final db = await database;
+    try {
+      final maps = await db.query('products', where: 'name = ?', whereArgs: [name], limit: 1);
+      if (maps.isEmpty) return null;
+      return Product.fromMap(maps.first);
+    } catch (e) {
+      print('Error getting product by name $name: $e');
+      return null;
+    }
+  }
+
+  /// 👤 التسعير الشخصي انتقل إلى محركه المستقل: PersonalPricingService
+  /// (lib/services/personal_pricing_service.dart) — «المرجع الواحد الأحدث».
+
+
+  /// 🧠 حفظ تقييم الموظف للسعر (Feedback Learning): تخزين الفرق بين السعر المقترح والسعر النهائي المعتمد
+  Future<void> savePricingFeedback({
+    int? customerId,
+    required String productName,
+    String? saleType,
+    required String paymentType,
+    required double suggestedPrice,
+    required double finalPrice,
+    int? invoiceId,
+  }) async {
+    if (suggestedPrice <= 0 || finalPrice <= 0) return;
+    final adjustment = finalPrice - suggestedPrice;
+    if (adjustment.abs() < 1.0) return; // لا نسجل إذا لم يغير الموظف السعر
+    final db = await database;
+    try {
+      await db.insert('pricing_feedback', {
+        'customer_id': customerId,
+        'product_name': productName,
+        'sale_type': saleType ?? '',
+        'payment_type': paymentType,
+        'suggested_price': suggestedPrice,
+        'final_price': finalPrice,
+        'adjustment': adjustment,
+        'invoice_id': invoiceId,
+        'created_at': DateTime.now().toIso8601String(),
+      });
+    } catch (e) {
+      print('Error saving pricing feedback: $e');
+    }
+  }
+
+  /// 🧠 حساب متوسط تعديلات الموظف السابقة المرجحة زمنياً مع تحديد أقصى (Clamp)
+  /// سرعة ثابتة O(1) مضمونة للأبد بواسطة الفهرس المركب و LIMIT 10
+  Future<double> getHistoricalAdjustment({
+    int? customerId,
+    required String productName,
+    String? saleType,
+    required String paymentType,
+  }) async {
+    if (customerId == null || customerId <= 0) return 0.0;
+    final db = await database;
+    try {
+      final rows = await db.rawQuery(
+        '''SELECT adjustment FROM pricing_feedback
+           WHERE customer_id = ? AND product_name = ? AND sale_type = ? AND payment_type = ?
+           ORDER BY id DESC
+           LIMIT 10''',
+        [customerId, productName, saleType ?? '', paymentType],
+      );
+
+      if (rows.isEmpty) return 0.0;
+
+      double totalWeightedAdj = 0.0;
+      double totalWeight = 0.0;
+      for (int i = 0; i < rows.length; i++) {
+        final adj = (rows[i]['adjustment'] as num).toDouble();
+        // إعطاء تعديل الموظف الأخير وزناً عالياً جداً
+        final weight = exp(-i * 0.5); // i=0: 1.0, i=1: 0.60, i=2: 0.36...
+        totalWeightedAdj += adj * weight;
+        totalWeight += weight;
+      }
+
+      if (totalWeight <= 0) return 0.0;
+      final avgAdj = totalWeightedAdj / totalWeight;
+
+      // تقريب تعديل الموظف لأقرب 250 دينار مع حد أمان واسع
+      final roundedAdj = (avgAdj / 250.0).round() * 250.0;
+      return roundedAdj.clamp(-100000.0, 100000.0);
+    } catch (e) {
+      return 0.0;
+    }
   }
 
   /// حساب نسبة الثقة للأسعار
@@ -5642,6 +7123,361 @@ class DatabaseService {
     await smartPricing.rebuildAllStats();
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🛡️ الحارس المحاسبي (Debt Reconciliation Guard)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // القاعدة الوحيدة التي يفرضها هذا الحارس:
+  //
+  //     مساهمة الفاتورة في الدين  ==  total_amount − amount_paid_on_invoice
+  //
+  // أي تعديل على الفاتورة (المبلغ المسدد، الإجمالي، نوع الدفع) يجب أن ينعكس
+  // فوراً على سجل الديون. إن لم ينعكس لأي سبب — مسار حفظ لم يُنشئ معاملة،
+  // كتابة مباشرة على صفّ الفاتورة، مزامنة وصلت ناقصة — يكتشف هذا الحارس
+  // الفارق ويكتب معاملة تصحيحية واحدة تُعيد التطابق.
+  //
+  // الدالة إدمبوتنت (idempotent): تشغيلها مرتين متتاليتين لا يغيّر شيئاً في
+  // المرة الثانية، لأن الفارق يصبح صفراً بعد أول تشغيل.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// أنواع المعاملات التي **لا** تُحتسب ضمن «مساهمة الفاتورة في الدين».
+  /// هذه تسديدات وتسويات خارجية لها كيانها المستقل في الدفتر، وخصمها من
+  /// المساهمة سيجعل الحارس يُلغي أثرها عن طريق الخطأ.
+  static const List<String> kNonContributionTxTypes = <String>[
+    'manual_payment',
+    'manual_debt',
+    'invoice_payment',
+    'return_payment',
+    'SETTLEMENT',
+    'opening_balance',
+    'correction',
+  ];
+
+  /// عتبة الفارق المقبول (أقل من فلس واحد).
+  static const double kReconcileEpsilon = 0.009;
+
+  /// مطابقة دين فاتورة واحدة داخل معاملة قاعدة بيانات قائمة.
+  ///
+  /// تُرجع قيمة الفارق الذي صُحّح (0.0 إذا كان كل شيء سليماً).
+  /// لا ترمي استثناءً أبداً — الحارس لا يجوز أن يُفشل عملية حفظ ناجحة.
+  /// [isLocalOrigin] = false عند الاستدعاء من مسار المزامنة: المعاملة
+  /// التصحيحية تُوسم كواردة ولا تُرفع، لأن الفاتورة مملوكة لجهاز آخر.
+  Future<double> reconcileInvoiceDebtInTxn(
+    DatabaseExecutor txn,
+    int invoiceId, {
+    String? reason,
+    bool isLocalOrigin = true,
+  }) async {
+    try {
+      final invRows = await txn.query(
+        'invoices',
+        columns: [
+          'customer_id',
+          'payment_type',
+          'status',
+          'total_amount',
+          'amount_paid_on_invoice',
+          'invoice_uuid',
+        ],
+        where: 'id = ?',
+        whereArgs: [invoiceId],
+        limit: 1,
+      );
+      if (invRows.isEmpty) return 0.0;
+      final inv = invRows.first;
+
+      final int? customerId = inv['customer_id'] as int?;
+      if (customerId == null) return 0.0;
+
+      // الفواتير المعلّقة لها منطق «التحديث الحي» الخاص بها
+      // (setInvoiceDebtContribution) — لا يتدخّل الحارس فيها إطلاقاً.
+      if ((inv['status'] as String?) != 'محفوظة') return 0.0;
+
+      final String paymentType = (inv['payment_type'] as String?) ?? '';
+      double total = (inv['total_amount'] as num?)?.toDouble() ?? 0.0;
+      final double paid =
+          (inv['amount_paid_on_invoice'] as num?)?.toDouble() ?? 0.0;
+
+      // 0) تأكيد أن الإجمالي المخزّن يطابق بنود الفاتورة فعلاً.
+      //    هذا التصحيح كان يجري سابقاً وقت العرض فقط وبلا أثر على الدين،
+      //    فكان ينتج فرقاً جديداً. الآن يجري هنا قبل حساب الدين مباشرة.
+      final itemRows = await txn.query(
+        'invoice_items',
+        columns: ['item_total'],
+        where: 'invoice_id = ?',
+        whereArgs: [invoiceId],
+      );
+      if (itemRows.isNotEmpty) {
+        double itemsTotal = 0.0;
+        for (final it in itemRows) {
+          itemsTotal += (it['item_total'] as num?)?.toDouble() ?? 0.0;
+        }
+        final extraRows = await txn.query(
+          'invoices',
+          columns: ['discount', 'loading_fee'],
+          where: 'id = ?',
+          whereArgs: [invoiceId],
+          limit: 1,
+        );
+        final double disc =
+            (extraRows.first['discount'] as num?)?.toDouble() ?? 0.0;
+        final double fee =
+            (extraRows.first['loading_fee'] as num?)?.toDouble() ?? 0.0;
+        final double realTotal = (itemsTotal + fee) - disc;
+        if ((total - realTotal).abs() > kReconcileEpsilon) {
+          await txn.update(
+            'invoices',
+            {
+              'total_amount': realTotal,
+              'total_amount_cents': (realTotal * 100).round(),
+            },
+            where: 'id = ?',
+            whereArgs: [invoiceId],
+          );
+          print('🛡️ [DebtGuard] تصحيح إجمالي الفاتورة #$invoiceId: '
+              '$total → $realTotal');
+          total = realTotal;
+        }
+      }
+
+      // 1) ما يجب أن تكون عليه مساهمة الفاتورة (صفّ الفاتورة هو المرجع)
+      final double expected =
+          paymentType == 'دين' ? MoneyCalculator.subtract(total, paid) : 0.0;
+
+      // 2) ما هو مسجّل فعلاً في الدفتر لهذه الفاتورة
+      final String placeholders =
+          List<String>.filled(kNonContributionTxTypes.length, '?').join(',');
+      final sumRows = await txn.rawQuery(
+        'SELECT COALESCE(SUM(amount_changed), 0) AS s FROM transactions '
+        'WHERE invoice_id = ? '
+        'AND (is_deleted IS NULL OR is_deleted = 0) '
+        'AND (transaction_type IS NULL OR transaction_type NOT IN ($placeholders))',
+        <Object?>[invoiceId, ...kNonContributionTxTypes],
+      );
+      final double actual = ((sumRows.first['s'] as num?) ?? 0).toDouble();
+
+      // 3) الفارق
+      final double delta = MoneyCalculator.subtract(expected, actual);
+      if (delta.abs() < kReconcileEpsilon) return 0.0;
+
+      final customer = await getCustomerByIdUsingTransaction(txn, customerId);
+      if (customer == null) return 0.0;
+
+      final double balanceBefore = customer.currentTotalDebt;
+      final double balanceAfter = MoneyCalculator.add(balanceBefore, delta);
+      final DateTime now = DateTime.now();
+
+      await txn.update(
+        'customers',
+        {
+          'current_total_debt': balanceAfter,
+          'last_modified_at': now.toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [customerId],
+      );
+
+      final String reasonText = reason ?? 'guard';
+      final String txUuid =
+          SyncSecurity.generateTransactionUuid(customer.name, delta, now);
+      await txn.insert('transactions', {
+        'customer_id': customerId,
+        'transaction_date': now.toIso8601String(),
+        'amount_changed': delta,
+        'balance_before_transaction': balanceBefore,
+        'new_balance_after_transaction': balanceAfter,
+        'transaction_type': 'invoice_reconcile',
+        'transaction_note':
+            'مطابقة تلقائية لدين الفاتورة رقم $invoiceId (المتوقع ${expected.toStringAsFixed(0)} / المسجّل ${actual.toStringAsFixed(0)})',
+        'description': 'auto reconcile invoice debt',
+        'invoice_id': invoiceId,
+        'invoice_sync_uuid': inv['invoice_uuid'],
+        'transaction_uuid': txUuid,
+        'sync_uuid': txUuid,
+        'is_uploaded': isLocalOrigin ? 0 : 1,
+        'is_created_by_me': isLocalOrigin ? 1 : 0,
+        'created_at': now.toIso8601String(),
+      });
+
+      try {
+        await txn.insert('invoice_logs', {
+          'invoice_id': invoiceId,
+          'action': 'debt_auto_reconcile',
+          'details':
+              '{"expected": $expected, "actual": $actual, "delta": $delta, "reason": "$reasonText"}',
+          'created_at': now.toIso8601String(),
+          'created_by': 'DebtGuard',
+        });
+      } catch (_) {}
+
+      print('🛡️ [DebtGuard] فاتورة #$invoiceId — المتوقع: $expected | '
+          'المسجّل: $actual | التصحيح: $delta ($reasonText)');
+      return delta;
+    } catch (e) {
+      // الحارس لا يُفشل عملية ناجحة أبداً؛ يسجّل فقط.
+      print('⚠️ [DebtGuard] تعذّرت مطابقة دين الفاتورة #$invoiceId: $e');
+      return 0.0;
+    }
+  }
+
+  /// مطابقة دين فاتورة واحدة (تفتح معاملة قاعدة بيانات خاصة بها).
+  /// لا تُستدعَ من داخل معاملة قائمة — استخدم [reconcileInvoiceDebtInTxn] هناك.
+  Future<double> reconcileInvoiceDebt(int invoiceId, {String? reason}) async {
+    try {
+      final db = await database;
+      return await db.transaction<double>(
+        (txn) => reconcileInvoiceDebtInTxn(txn, invoiceId, reason: reason),
+      );
+    } catch (e) {
+      print('⚠️ [DebtGuard] فشل فتح معاملة المطابقة للفاتورة #$invoiceId: $e');
+      return 0.0;
+    }
+  }
+
+  /// مطابقة كل فواتير عميل + إعادة ضبط رصيده على مجموع دفتره.
+  ///
+  /// تُستدعى قبل عرض سجل الديون، فتضمن أن ما يراه المستخدم مطابق دائماً
+  /// لما تقوله الفواتير — بما في ذلك البيانات القديمة التالفة.
+  /// خفيفة: استعلام واحد يكشف الفواتير غير المتطابقة، ولا تفتح معاملة
+  /// كتابة إلا إذا وُجد فارق فعلي.
+  Future<int> reconcileCustomerLedger(int customerId, {String? reason}) async {
+    try {
+      final db = await database;
+      final String placeholders =
+          List<String>.filled(kNonContributionTxTypes.length, '?').join(',');
+
+      // كشف الفواتير المحفوظة التي لا يطابق دفترها صفَّها
+      final List<Map<String, Object?>> broken = await db.rawQuery(
+        '''
+        SELECT i.id AS id
+        FROM invoices i
+        WHERE i.customer_id = ?
+          AND i.status = 'محفوظة'
+          AND ABS(
+          (CASE WHEN i.payment_type = 'دين'
+                THEN (
+                  (CASE WHEN (SELECT COUNT(*) FROM invoice_items ii
+                              WHERE ii.invoice_id = i.id) > 0
+                        THEN COALESCE((SELECT SUM(ii.item_total) FROM invoice_items ii
+                                       WHERE ii.invoice_id = i.id), 0)
+                             + COALESCE(i.loading_fee, 0)
+                             - COALESCE(i.discount, 0)
+                        ELSE i.total_amount END)
+                  - i.amount_paid_on_invoice
+                )
+                ELSE 0 END)
+          - COALESCE((
+              SELECT SUM(t.amount_changed) FROM transactions t
+              WHERE t.invoice_id = i.id
+                AND (t.is_deleted IS NULL OR t.is_deleted = 0)
+                AND (t.transaction_type IS NULL
+                     OR t.transaction_type NOT IN ($placeholders))
+            ), 0)
+        ) > ?
+        ''',
+        <Object?>[customerId, ...kNonContributionTxTypes, kReconcileEpsilon],
+      );
+
+      // التحقق من انحراف رصيد العميل عن مجموع دفتره
+      final ledgerRows = await db.rawQuery(
+        'SELECT COALESCE(SUM(amount_changed), 0) AS s FROM transactions '
+        'WHERE customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)',
+        [customerId],
+      );
+      final double ledger = ((ledgerRows.first['s'] as num?) ?? 0).toDouble();
+      final custRows = await db.query('customers',
+          columns: ['current_total_debt'],
+          where: 'id = ?',
+          whereArgs: [customerId],
+          limit: 1);
+      final double recorded = custRows.isEmpty
+          ? ledger
+          : ((custRows.first['current_total_debt'] as num?) ?? 0).toDouble();
+      final bool balanceDrifted = (recorded - ledger).abs() > kReconcileEpsilon;
+
+      if (broken.isEmpty && !balanceDrifted) return 0;
+
+      int fixed = 0;
+      await db.transaction((txn) async {
+        for (final row in broken) {
+          final int invoiceId = (row['id'] as num).toInt();
+          final double delta = await reconcileInvoiceDebtInTxn(
+            txn,
+            invoiceId,
+            reason: reason ?? 'فحص سجل الديون',
+          );
+          if (delta.abs() >= kReconcileEpsilon) fixed++;
+        }
+
+        // 🔒 الثابت الأخير: إعادة بناء سلسلة الأرصدة كاملة.
+        //    رصيد كل معاملة = رصيد ما قبلها + مبلغها، ورصيد العميل = آخر رصيد.
+        //    هذا ضروري لأن insertTransaction ترفض أي معاملة جديدة إذا اختلف
+        //    رصيد العميل عن رصيد آخر معاملة بأكثر من دينار — فلو تركنا
+        //    السلسلة قديمة لَما استطاع المستخدم تسجيل أي تسديد بعد التصحيح.
+        final chain = await txn.query(
+          'transactions',
+          columns: [
+            'id',
+            'amount_changed',
+            'balance_before_transaction',
+            'new_balance_after_transaction',
+          ],
+          where: 'customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)',
+          whereArgs: [customerId],
+          orderBy: 'transaction_date ASC, id ASC',
+        );
+
+        double running = 0.0;
+        for (final row in chain) {
+          final double amount =
+              (row['amount_changed'] as num?)?.toDouble() ?? 0.0;
+          final double before = running;
+          running = MoneyCalculator.add(running, amount);
+
+          final double storedBefore =
+              (row['balance_before_transaction'] as num?)?.toDouble() ??
+                  double.nan;
+          final double storedAfter =
+              (row['new_balance_after_transaction'] as num?)?.toDouble() ??
+                  double.nan;
+          final bool beforeOk =
+              !storedBefore.isNaN && (storedBefore - before).abs() < 0.0001;
+          final bool afterOk =
+              !storedAfter.isNaN && (storedAfter - running).abs() < 0.0001;
+          if (beforeOk && afterOk) continue;
+
+          await txn.update(
+            'transactions',
+            {
+              'balance_before_transaction': before,
+              'new_balance_after_transaction': running,
+            },
+            where: 'id = ?',
+            whereArgs: [row['id']],
+          );
+        }
+
+        await txn.update(
+          'customers',
+          {
+            'current_total_debt': running,
+            'last_modified_at': DateTime.now().toIso8601String(),
+          },
+          where: 'id = ?',
+          whereArgs: [customerId],
+        );
+      });
+
+      if (fixed > 0 || balanceDrifted) {
+        print('🛡️ [DebtGuard] العميل #$customerId — '
+            'صُحّحت $fixed فاتورة، إعادة ضبط الرصيد: $balanceDrifted');
+      }
+      return fixed;
+    } catch (e) {
+      print('⚠️ [DebtGuard] تعذّرت مطابقة دفتر العميل #$customerId: $e');
+      return 0;
+    }
+  }
+
   /// ضبط المساهمة الحالية لهذه الفاتورة في دين العميل بشكل مباشر (تعديل حي)
   /// newContribution هي قيمة الدين التي يجب أن تمثلها هذه الفاتورة حالياً.
   /// الدالة تحسب الفرق مع المساهمة الحالية (من جميع معاملات هذه الفاتورة ما عدا المدفوعات اليدوية)
@@ -5689,18 +7525,21 @@ class DatabaseService {
       );
 
       // اكتب معاملة تمثل الفارق فقط
+      final now = DateTime.now();
+      final txUuid = SyncSecurity.generateTransactionUuid(customer.name, delta, now);
       await txn.insert('transactions', {
         'customer_id': customerId,
-        'transaction_date': DateTime.now().toIso8601String(),
+        'transaction_date': now.toIso8601String(),
         'amount_changed': delta,
         'new_balance_after_transaction': newBalance,
         'transaction_note': note ?? 'تعديل حي لمساهمة الفاتورة',
         'transaction_type': 'invoice_live_update',
         'description': 'Live delta applied to match invoice contribution',
         'invoice_id': invoiceId,
-        'created_at': DateTime.now().toIso8601String(),
+        'created_at': now.toIso8601String(),
         'audio_note_path': null,
-        'sync_uuid': SyncSecurity.generateUuid(), // 🔄 إضافة sync_uuid
+        'transaction_uuid': txUuid,
+        'sync_uuid': txUuid, // 🔄 إضافة sync_uuid
       });
     });
   }
@@ -5888,10 +7727,24 @@ class DatabaseService {
         whereArgs.add('%$searchName%');
       }
       if (searchId.isNotEmpty) {
-        final id = int.tryParse(searchId);
-        if (id != null) {
-          whereClause += " AND id = ?";
-          whereArgs.add(id);
+        // 🧾 تطبيع المدخلات: الأرقام العربية/الفارسية → لاتينية، وحذف أي
+        // مسافات أو رموز — بدونها يُتجاهل الفلتر بصمت فيبدو البحث معطلاً.
+        const arabicDigits = '٠١٢٣٤٥٦٧٨٩';
+        const persianDigits = '۰۱۲۳۴۵۶۷۸۹';
+        final normalized =
+            searchId.replaceAllMapped(RegExp('[$arabicDigits$persianDigits]'), (m) {
+          final ch = m.group(0)!;
+          final idx =
+              arabicDigits.contains(ch) ? arabicDigits.indexOf(ch) : persianDigits.indexOf(ch);
+          return idx.toString();
+        }).replaceAll(RegExp(r'[^0-9]'), '');
+
+        if (normalized.isNotEmpty) {
+          // 🧾 البحث برقم الفاتورة المطبوع حصراً — الـ ID داخلي لا يُبحث به.
+          // مطابقة جزئية: أي جزء من الرقم (بدايته أو آخره كما يكتبه المستخدم)
+          // يجد الفاتورة.
+          whereClause += " AND (invoice_number = ? OR invoice_number LIKE ?)";
+          whereArgs.addAll([normalized, '%$normalized%']);
         }
       }
 
@@ -7178,7 +9031,13 @@ class DatabaseService {
     final transactionMap = transaction.toMap();
     // 🔄 تعيين sync_uuid إذا لم يكن موجوداً
     if (transactionMap['sync_uuid'] == null) {
-      transactionMap['sync_uuid'] = transaction.transactionUuid ?? SyncSecurity.generateUuid();
+      if (transaction.transactionUuid != null) {
+         transactionMap['sync_uuid'] = transaction.transactionUuid;
+      } else {
+         final customerRows = await db.query('customers', columns: ['name'], where: 'id = ?', whereArgs: [transaction.customerId], limit: 1);
+         final customerName = customerRows.isNotEmpty ? customerRows.first['name'] as String : 'غير_معروف';
+         transactionMap['sync_uuid'] = SyncSecurity.generateTransactionUuid(customerName, transaction.amountChanged, transaction.transactionDate);
+      }
     }
     final id = await db.insert('transactions', transactionMap,
         conflictAlgorithm: ConflictAlgorithm.replace);
@@ -7477,8 +9336,8 @@ class DatabaseService {
         'audio_note_path': null,
         'is_created_by_me': 0,
         'is_uploaded': 0,
-        'transaction_uuid': transactionUuid,
-        'sync_uuid': transactionUuid ?? SyncSecurity.generateUuid(), // 🔄 إضافة sync_uuid
+        'transaction_uuid': transactionUuid ?? SyncSecurity.generateTransactionUuid(customer.name, amount, occurredAt ?? DateTime.now()),
+        'sync_uuid': transactionUuid ?? SyncSecurity.generateTransactionUuid(customer.name, amount, occurredAt ?? DateTime.now()), // 🔄 إضافة sync_uuid
       });
       
       print('✅ SYNC: تم إدراج معاملة خارجية للعميل $customerId، المبلغ: $amount، الرصيد الجديد: $newBalance');
@@ -7530,6 +9389,7 @@ class DatabaseService {
   }
 
   Future<int> deleteDebtTransaction(int id) async {
+    assertTransactionDeletesAllowed('حذف معاملة');
     final db = await database;
     
     // 🔄 تتبع المزامنة: جلب بيانات المعاملة قبل الحذف
@@ -7701,7 +9561,48 @@ class DatabaseService {
         JOIN products p ON ii.product_name = p.name
         WHERE p.id = ? AND i.status = 'محفوظة'$dateCondition
       ''', baseArgs);
- 
+
+      // ⚡ بيانات التسويات — نفس السلوك السابق: أي فشل هنا يُهمَل ويُتخطّى الدمج
+      bool mergeAdjustments = true;
+      List<Map<String, dynamic>> prodRows = const <Map<String, dynamic>>[];
+      List<Map<String, dynamic>> adjRows = const <Map<String, dynamic>>[];
+      try {
+        prodRows = await db.rawQuery(
+            'SELECT unit, cost_price, length_per_unit FROM products WHERE id = ?',
+            [productId]);
+        adjRows = await db.rawQuery('''
+          SELECT type, quantity, price, sale_type, units_in_large_unit
+          FROM invoice_adjustments
+          WHERE product_id = ?
+        ''', [productId]);
+      } catch (_) {
+        mergeAdjustments = false;
+      }
+
+      return _computeProductSalesData(
+        itemMaps: itemMaps,
+        mergeAdjustments: mergeAdjustments,
+        prodRows: prodRows,
+        adjRows: adjRows,
+      );
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🧮 حساب أرقام تقرير البضاعة لمنتج واحد — بلا أي وصول لقاعدة البيانات
+  // ═══════════════════════════════════════════════════════════════════════════
+  // هذا هو نفس كود getProductSalesData السابق حرفاً بحرف، أُخرِج إلى دالة
+  // مستقلة كي تستعمله نسختان: المفردة (شاشة تفاصيل المنتج) والمجمّعة
+  // (شاشة تقارير البضاعة). وجود الرياضيات في مكان واحد يمنع أي اختلاف
+  // بين الشاشتين مهما تغيّر الكود لاحقاً.
+  Map<String, dynamic> _computeProductSalesData({
+    required List<Map<String, dynamic>> itemMaps,
+    required bool mergeAdjustments,
+    required List<Map<String, dynamic>> prodRows,
+    required List<Map<String, dynamic>> adjRows,
+  }) {
       double totalQuantity = 0.0; // بوحدة الأساس (قطعة/متر)
       double totalSoldUnits = 0.0; // بوحدة البيع (للحساب الصحيح لمتوسط سعر البيع)
       double totalProfit = 0.0;
@@ -7811,78 +9712,73 @@ class DatabaseService {
  
       // دمج تسويات البنود (debit/credit) لهذا المنتج عبر جدول invoice_adjustments مع احترام الهرمية
       try {
-        final prodRows = await db.rawQuery('SELECT unit, cost_price, length_per_unit FROM products WHERE id = ?', [productId]);
-        String productUnit = 'piece';
-        double baseCost = 0.0;
-        double? lengthPerUnit;
-        if (prodRows.isNotEmpty) {
-          productUnit = (prodRows.first['unit'] as String?) ?? 'piece';
-          baseCost = ((prodRows.first['cost_price'] as num?)?.toDouble() ?? 0.0);
-          lengthPerUnit = (prodRows.first['length_per_unit'] as num?)?.toDouble();
-        }
-
-        final rows = await db.rawQuery('''
-          SELECT type, quantity, price, sale_type, units_in_large_unit
-          FROM invoice_adjustments
-          WHERE product_id = ?
-        ''', [productId]);
-
-        for (final r in rows) {
-          final String type = (r['type'] as String?) ?? 'debit';
-          final double qtySaleUnits = ((r['quantity'] as num?) ?? 0).toDouble();
-          final double pricePerSaleUnit = ((r['price'] as num?) ?? 0).toDouble();
-          final String saleType = (r['sale_type'] as String?) ?? (productUnit == 'meter' ? 'متر' : 'قطعة');
-          final double unitsInLargeUnit = ((r['units_in_large_unit'] as num?)?.toDouble()) ?? 1.0;
-
-          if (qtySaleUnits == 0) continue;
-
-          // المبيعات لهذا السطر (إشارة حسب النوع)
-          final double salesContribution = (type == 'debit' ? 1 : -1) * qtySaleUnits * pricePerSaleUnit;
-
-          // تحويل الكمية إلى وحدة الأساس
-          double baseQty;
-          if (productUnit == 'meter' && saleType == 'لفة') {
-            final double factor = (unitsInLargeUnit > 0)
-                ? unitsInLargeUnit
-                : (lengthPerUnit ?? 1.0);
-            baseQty = qtySaleUnits * factor;
-          } else if (saleType == 'قطعة' || saleType == 'متر') {
-            baseQty = qtySaleUnits;
-          } else {
-            baseQty = qtySaleUnits * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+        if (mergeAdjustments) {
+          String productUnit = 'piece';
+          double baseCost = 0.0;
+          double? lengthPerUnit;
+          if (prodRows.isNotEmpty) {
+            productUnit = (prodRows.first['unit'] as String?) ?? 'piece';
+            baseCost = ((prodRows.first['cost_price'] as num?)?.toDouble() ?? 0.0);
+            lengthPerUnit = (prodRows.first['length_per_unit'] as num?)?.toDouble();
           }
-          final double signedBaseQty = (type == 'debit' ? 1 : -1) * baseQty;
 
-          // 🔧 إصلاح: حساب تكلفة الوحدة المباعة بنفس منطق getProductYearlyProfit
-          double costPerSaleUnit;
-          if (saleType == 'قطعة' || saleType == 'متر') {
-            costPerSaleUnit = baseCost;
-          } else if (productUnit == 'meter' && saleType == 'لفة') {
-            final double factor = (unitsInLargeUnit > 0) ? unitsInLargeUnit : (lengthPerUnit ?? 1.0);
-            costPerSaleUnit = baseCost * factor;
-          } else {
-            costPerSaleUnit = baseCost * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+          for (final r in adjRows) {
+            final String type = (r['type'] as String?) ?? 'debit';
+            final double qtySaleUnits = ((r['quantity'] as num?) ?? 0).toDouble();
+            final double pricePerSaleUnit = ((r['price'] as num?) ?? 0).toDouble();
+            final String saleType = (r['sale_type'] as String?) ?? (productUnit == 'meter' ? 'متر' : 'قطعة');
+            final double unitsInLargeUnit = ((r['units_in_large_unit'] as num?)?.toDouble()) ?? 1.0;
+
+            if (qtySaleUnits == 0) continue;
+
+            // المبيعات لهذا السطر (إشارة حسب النوع)
+            final double salesContribution = (type == 'debit' ? 1 : -1) * qtySaleUnits * pricePerSaleUnit;
+
+            // تحويل الكمية إلى وحدة الأساس
+            double baseQty;
+            if (productUnit == 'meter' && saleType == 'لفة') {
+              final double factor = (unitsInLargeUnit > 0)
+                  ? unitsInLargeUnit
+                  : (lengthPerUnit ?? 1.0);
+              baseQty = qtySaleUnits * factor;
+            } else if (saleType == 'قطعة' || saleType == 'متر') {
+              baseQty = qtySaleUnits;
+            } else {
+              baseQty = qtySaleUnits * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+            }
+            final double signedBaseQty = (type == 'debit' ? 1 : -1) * baseQty;
+
+            // 🔧 إصلاح: حساب تكلفة الوحدة المباعة بنفس منطق getProductYearlyProfit
+            double costPerSaleUnit;
+            if (saleType == 'قطعة' || saleType == 'متر') {
+              costPerSaleUnit = baseCost;
+            } else if (productUnit == 'meter' && saleType == 'لفة') {
+              final double factor = (unitsInLargeUnit > 0) ? unitsInLargeUnit : (lengthPerUnit ?? 1.0);
+              costPerSaleUnit = baseCost * factor;
+            } else {
+              costPerSaleUnit = baseCost * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+            }
+          
+            // 🔧 إصلاح: حساب الربح بنفس منطق getProductYearlyProfit
+            // الربح = (سعر البيع - التكلفة) × عدد الوحدات المباعة
+            final double adjustmentProfit = (type == 'debit' ? 1 : -1) * (pricePerSaleUnit - costPerSaleUnit) * qtySaleUnits;
+            final double costContribution = costPerSaleUnit * qtySaleUnits;
+
+            totalSales += salesContribution;
+            totalQuantity += signedBaseQty;
+            totalCost += costContribution;
+            totalProfit += adjustmentProfit;
+          
+            // 🔧 إصلاح: تحديث متوسط سعر البيع بشكل صحيح
+            final double signedSoldUnits = (type == 'debit' ? 1 : -1) * qtySaleUnits;
+            weightedSellingPriceSum += pricePerSaleUnit * signedSoldUnits.abs();
+            totalSoldUnits += signedSoldUnits.abs();
           }
-          
-          // 🔧 إصلاح: حساب الربح بنفس منطق getProductYearlyProfit
-          // الربح = (سعر البيع - التكلفة) × عدد الوحدات المباعة
-          final double adjustmentProfit = (type == 'debit' ? 1 : -1) * (pricePerSaleUnit - costPerSaleUnit) * qtySaleUnits;
-          final double costContribution = costPerSaleUnit * qtySaleUnits;
 
-          totalSales += salesContribution;
-          totalQuantity += signedBaseQty;
-          totalCost += costContribution;
-          totalProfit += adjustmentProfit;
-          
-          // 🔧 إصلاح: تحديث متوسط سعر البيع بشكل صحيح
-          final double signedSoldUnits = (type == 'debit' ? 1 : -1) * qtySaleUnits;
-          weightedSellingPriceSum += pricePerSaleUnit * signedSoldUnits.abs();
-          totalSoldUnits += signedSoldUnits.abs();
-        }
-
-        // إعادة حساب متوسط سعر البيع بعد إضافة التسويات
-        if (totalSoldUnits > 0) {
-          averageSellingPrice = weightedSellingPriceSum / totalSoldUnits;
+          // إعادة حساب متوسط سعر البيع بعد إضافة التسويات
+          if (totalSoldUnits > 0) {
+            averageSellingPrice = weightedSellingPriceSum / totalSoldUnits;
+          }
         }
       } catch (_) {}
 
@@ -7894,10 +9790,117 @@ class DatabaseService {
         'totalCost': totalCost,
         'profitMargin': totalSales > 0 ? (totalProfit / totalSales) * 100 : 0.0,
       };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ⚡ نسخة مجمّعة من getProductSalesData لكل المنتجات دفعة واحدة
+  // ═══════════════════════════════════════════════════════════════════════════
+  // شاشة تقارير البضاعة كانت تنفّذ ٣ استعلامات لكل منتج (596 منتجاً = 1788
+  // نداءً متتابعاً إلى القاعدة). هنا ٣ استعلامات فقط للكل، ثم يُستدعى
+  // _computeProductSalesData نفسه لكل منتج — أي نفس الرياضيات حرفياً.
+  //
+  // ترتيب الأصناف داخل كل منتج مطابق للنسخة المفردة:
+  // ORDER BY product_name, sale_type, invoice_id, id هو نفس ترتيب الفهرس
+  // idx_invoice_items_pricing الذي كانت تستعمله النسخة المفردة، لكنه هنا
+  // مكتوب صراحةً فلا يتغيّر مهما تغيّرت خطة SQLite. تحقّقنا منه على كل
+  // منتجات قاعدتك: صفر اختلاف في صفّ واحد.
+  //
+  // تُرجَع فقط المنتجات التي لها أصناف مباعة أو تسويات؛ الباقي كانت نتيجته
+  // أصفاراً تُحذف أصلاً في الشاشة بشرط (totalSales > 0 || totalQuantity > 0).
+  Future<Map<int, Map<String, dynamic>>> getProductSalesDataForAll({
+    DateTime? fromDate,
+    DateTime? toDate,
+  }) async {
+    final db = await database;
+    try {
+      String dateCondition = '';
+      if (fromDate != null) {
+        dateCondition += " AND i.invoice_date >= '${fromDate.toIso8601String().substring(0, 10)}'";
+      }
+      if (toDate != null) {
+        final endOfDay = DateTime(toDate.year, toDate.month, toDate.day, 23, 59, 59);
+        dateCondition += " AND i.invoice_date <= '${endOfDay.toIso8601String()}'";
+      }
+
+      // (1) كل الأصناف المباعة لكل المنتجات
+      final List<Map<String, dynamic>> allItems = await db.rawQuery('''
+        SELECT 
+          p.id AS _pid,
+          ii.quantity_individual,
+          ii.quantity_large_unit,
+          ii.units_in_large_unit,
+          ii.applied_price,
+          ii.cost_price,
+          ii.actual_cost_price,
+          ii.item_total,
+          ii.sale_type,
+          p.cost_price as product_cost_price,
+          p.unit_hierarchy,
+          p.unit_costs,
+          p.unit,
+          p.length_per_unit
+        FROM invoice_items ii
+        JOIN invoices i ON ii.invoice_id = i.id
+        JOIN products p ON ii.product_name = p.name
+        WHERE i.status = 'محفوظة'$dateCondition
+        ORDER BY ii.product_name, ii.sale_type, ii.invoice_id, ii.id
+      ''');
+
+      final Map<int, List<Map<String, dynamic>>> itemsByProduct =
+          <int, List<Map<String, dynamic>>>{};
+      for (final row in allItems) {
+        final pid = (row['_pid'] as num?)?.toInt();
+        if (pid == null) continue;
+        (itemsByProduct[pid] ??= <Map<String, dynamic>>[]).add(row);
+      }
+
+      // (2) و(3) بيانات المنتجات والتسويات — كما في النسخة المفردة، أي فشل
+      // هنا يعني تخطّي دمج التسويات فقط دون أن يُفشل التقرير كله.
+      bool mergeAdjustments = true;
+      final Map<int, List<Map<String, dynamic>>> prodById =
+          <int, List<Map<String, dynamic>>>{};
+      final Map<int, List<Map<String, dynamic>>> adjByProduct =
+          <int, List<Map<String, dynamic>>>{};
+      try {
+        final prodAll = await db.rawQuery(
+            'SELECT id, unit, cost_price, length_per_unit FROM products');
+        for (final row in prodAll) {
+          final pid = (row['id'] as num?)?.toInt();
+          if (pid == null) continue;
+          prodById[pid] = <Map<String, dynamic>>[row];
+        }
+        final adjAll = await db.rawQuery('''
+          SELECT product_id, type, quantity, price, sale_type, units_in_large_unit
+          FROM invoice_adjustments
+          WHERE product_id IS NOT NULL
+          ORDER BY product_id, id
+        ''');
+        for (final row in adjAll) {
+          final pid = (row['product_id'] as num?)?.toInt();
+          if (pid == null) continue;
+          (adjByProduct[pid] ??= <Map<String, dynamic>>[]).add(row);
+        }
+      } catch (_) {
+        mergeAdjustments = false;
+      }
+
+      final Set<int> ids = <int>{...itemsByProduct.keys, ...adjByProduct.keys};
+      final Map<int, Map<String, dynamic>> result = <int, Map<String, dynamic>>{};
+      for (final pid in ids) {
+        result[pid] = _computeProductSalesData(
+          itemMaps: itemsByProduct[pid] ?? const <Map<String, dynamic>>[],
+          mergeAdjustments: mergeAdjustments,
+          prodRows: prodById[pid] ?? const <Map<String, dynamic>>[],
+          adjRows: adjByProduct[pid] ?? const <Map<String, dynamic>>[],
+        );
+      }
+      return result;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
   }
+
+
 
   Future<Map<int, double>> getProductYearlySales(int productId) async {
     final db = await database;
@@ -8192,6 +10195,15 @@ class DatabaseService {
         final endOfDay = DateTime(toDate.year, toDate.month, toDate.day, 23, 59, 59);
         dateConditionAlias += " AND i.invoice_date <= '${endOfDay.toIso8601String()}'";
       }
+      // 🗓️ شرط الفترة للمعاملات اليدوية (كان عدّ المعاملات بلا فترة إطلاقاً)
+      String dateConditionTx = '';
+      if (fromDate != null) {
+        dateConditionTx += " AND transaction_date >= '${fromDate.toIso8601String().substring(0, 10)}'";
+      }
+      if (toDate != null) {
+        final endOfDay = DateTime(toDate.year, toDate.month, toDate.day, 23, 59, 59);
+        dateConditionTx += " AND transaction_date <= '${endOfDay.toIso8601String()}'";
+      }
 
       // جلب بيانات الفواتير (المحفوظة فقط) - تشمل الفواتير القديمة والجديدة
       final List<Map<String, dynamic>> invoiceMaps = await db.rawQuery('''
@@ -8204,12 +10216,18 @@ class DatabaseService {
         ))) AND status = 'محفوظة'$dateCondition
       ''', [customerId, customerId]);
  
-      // جلب بيانات المعاملات المالية
+      // 💰 المعاملات اليدوية داخل الفترة (invoice_id IS NULL) — نفس تعريف
+      // كشف الحساب التجاري حرفياً كي تتطابق أرقام الشاشتين للعميل نفسه:
+      //   • المبلغ الموجب = دين أُضيف يدوياً (يشمل الرصيد الافتتاحي)
+      //   • المبلغ السالب = تسديد يدوي
+      // (سابقاً: كان العدّ يشمل كل تاريخ العميل وكل أنواع المعاملات.)
       final List<Map<String, dynamic>> transactionMaps = await db.rawQuery('''
         SELECT 
-          COUNT(*) as total_transactions
+          COUNT(*) as total_transactions,
+          COALESCE(SUM(CASE WHEN amount_changed > 0 THEN amount_changed ELSE 0 END), 0) as manual_debt_total,
+          COALESCE(SUM(CASE WHEN amount_changed < 0 THEN -amount_changed ELSE 0 END), 0) as manual_payment_total
         FROM transactions
-        WHERE customer_id = ?
+        WHERE customer_id = ? AND invoice_id IS NULL$dateConditionTx
       ''', [customerId]);
  
       // جلب جميع البنود مع بيانات المنتج (مع unit_costs و unit_hierarchy)
@@ -8235,6 +10253,61 @@ class DatabaseService {
           SELECT name FROM customers WHERE id = ?
         ))) AND i.status = 'محفوظة'$dateConditionAlias
       ''', [customerId, customerId]);
+
+      // ⚡ بيانات التسويات — نفس السلوك السابق: أي فشل هنا يُهمَل ويُتخطّى الدمج
+      bool mergeAdjustments = true;
+      bool hasInvoicesInPeriod = false;
+      List<Map<String, dynamic>> adjRows = const <Map<String, dynamic>>[];
+      try {
+        final List<Map<String, dynamic>> invIds = await db.rawQuery('''
+          SELECT id FROM invoices 
+          WHERE (customer_id = ? OR (customer_id IS NULL AND customer_name = (
+            SELECT name FROM customers WHERE id = ?
+          ))) AND status = 'محفوظة'$dateCondition
+        ''', [customerId, customerId]);
+        hasInvoicesInPeriod = invIds.isNotEmpty;
+        if (hasInvoicesInPeriod) {
+          final ids = invIds.map((e) => (e['id'] as int)).toList();
+          final placeholders = List.filled(ids.length, '?').join(',');
+          adjRows = await db.rawQuery('''
+            SELECT ia.type, ia.quantity, ia.price, ia.sale_type, ia.units_in_large_unit,
+                   p.unit AS product_unit, p.cost_price AS product_cost, p.length_per_unit AS length_per_unit
+            FROM invoice_adjustments ia
+            JOIN invoices i ON i.id = ia.invoice_id
+            LEFT JOIN products p ON p.id = ia.product_id
+            WHERE ia.product_id IS NOT NULL AND ia.invoice_id IN ($placeholders)
+          ''', ids);
+        }
+      } catch (_) {
+        mergeAdjustments = false;
+      }
+
+      return _computeCustomerProfitData(
+        itemMaps: itemMaps,
+        invoiceMaps: invoiceMaps,
+        transactionMaps: transactionMaps,
+        mergeAdjustments: mergeAdjustments,
+        hasInvoicesInPeriod: hasInvoicesInPeriod,
+        adjRows: adjRows,
+      );
+    } catch (e) {
+      throw Exception(_handleDatabaseError(e));
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🧮 حساب أرقام تقرير الأشخاص لعميل واحد — بلا أي وصول لقاعدة البيانات
+  // ═══════════════════════════════════════════════════════════════════════════
+  // نفس كود getCustomerProfitData السابق حرفاً بحرف، أُخرِج إلى دالة مستقلة
+  // كي تستعمله النسخة المفردة والنسخة المجمّعة معاً، فلا تفترق أرقامهما أبداً.
+  Map<String, dynamic> _computeCustomerProfitData({
+    required List<Map<String, dynamic>> itemMaps,
+    required List<Map<String, dynamic>> invoiceMaps,
+    required List<Map<String, dynamic>> transactionMaps,
+    required bool mergeAdjustments,
+    required bool hasInvoicesInPeriod,
+    required List<Map<String, dynamic>> adjRows,
+  }) {
       
       double totalProfit = 0.0;
       double totalSellingPrice = 0.0;
@@ -8308,6 +10381,11 @@ class DatabaseService {
       final totalInvoices = (invoiceMaps.first['total_invoices'] ?? 0) as int;
       final totalTransactions =
           (transactionMaps.first['total_transactions'] ?? 0) as int;
+      final manualDebtTotal =
+          (transactionMaps.first['manual_debt_total'] as num?)?.toDouble() ?? 0.0;
+      final manualPaymentTotal =
+          (transactionMaps.first['manual_payment_total'] as num?)?.toDouble() ??
+              0.0;
       
       // حساب متوسط سعر البيع
       double averageSellingPrice = 0.0;
@@ -8324,58 +10402,42 @@ class DatabaseService {
       // دمج تسويات البنود الخاصة بهذا العميل في إجمالياته (اعتماداً على الفواتير المرتبطة به)
       // 🔧 إصلاح: تضمين الفواتير القديمة التي ليس لها customer_id (بالاسم)
       try {
-        final List<Map<String, dynamic>> invIds = await db.rawQuery('''
-          SELECT id FROM invoices 
-          WHERE (customer_id = ? OR (customer_id IS NULL AND customer_name = (
-            SELECT name FROM customers WHERE id = ?
-          ))) AND status = 'محفوظة'$dateCondition
-        ''', [customerId, customerId]);
-        if (invIds.isNotEmpty) {
-          final ids = invIds.map((e) => (e['id'] as int)).toList();
-          final placeholders = List.filled(ids.length, '?').join(',');
-          final List<Map<String, Object?>> rows = await db.rawQuery('''
-            SELECT ia.type, ia.quantity, ia.price, ia.sale_type, ia.units_in_large_unit,
-                   p.unit AS product_unit, p.cost_price AS product_cost, p.length_per_unit AS length_per_unit
-            FROM invoice_adjustments ia
-            JOIN invoices i ON i.id = ia.invoice_id
-            LEFT JOIN products p ON p.id = ia.product_id
-            WHERE ia.product_id IS NOT NULL AND ia.invoice_id IN ($placeholders)
-          ''', ids);
-          double addSales = 0.0;
-          double addProfit = 0.0;
-          double addBaseQty = 0.0;
-          for (final r in rows) {
-            final String type = (r['type'] as String?) ?? 'debit';
-            final double qtySaleUnits = ((r['quantity'] as num?) ?? 0).toDouble();
-            final double pricePerSaleUnit = ((r['price'] as num?) ?? 0).toDouble();
-            final String saleType = (r['sale_type'] as String?) ?? ((r['product_unit'] as String?) == 'meter' ? 'متر' : 'قطعة');
-            final double unitsInLargeUnit = ((r['units_in_large_unit'] as num?)?.toDouble()) ?? 1.0;
-            final String productUnit = (r['product_unit'] as String?) ?? 'piece';
-            final double baseCost = ((r['product_cost'] as num?)?.toDouble()) ?? 0.0;
-            final double? lengthPerUnit = (r['length_per_unit'] as num?)?.toDouble();
-            if (qtySaleUnits == 0) continue;
-            final double salesContribution = (type == 'debit' ? 1 : -1) * qtySaleUnits * pricePerSaleUnit;
-            double baseQty;
-            if (productUnit == 'meter' && saleType == 'لفة') {
-              final double factor = (unitsInLargeUnit > 0) ? unitsInLargeUnit : (lengthPerUnit ?? 1.0);
-              baseQty = qtySaleUnits * factor;
-            } else if (saleType == 'قطعة' || saleType == 'متر') {
-              baseQty = qtySaleUnits;
-            } else {
-              baseQty = qtySaleUnits * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+        if (mergeAdjustments && hasInvoicesInPeriod) {
+            double addSales = 0.0;
+            double addProfit = 0.0;
+            double addBaseQty = 0.0;
+            for (final r in adjRows) {
+              final String type = (r['type'] as String?) ?? 'debit';
+              final double qtySaleUnits = ((r['quantity'] as num?) ?? 0).toDouble();
+              final double pricePerSaleUnit = ((r['price'] as num?) ?? 0).toDouble();
+              final String saleType = (r['sale_type'] as String?) ?? ((r['product_unit'] as String?) == 'meter' ? 'متر' : 'قطعة');
+              final double unitsInLargeUnit = ((r['units_in_large_unit'] as num?)?.toDouble()) ?? 1.0;
+              final String productUnit = (r['product_unit'] as String?) ?? 'piece';
+              final double baseCost = ((r['product_cost'] as num?)?.toDouble()) ?? 0.0;
+              final double? lengthPerUnit = (r['length_per_unit'] as num?)?.toDouble();
+              if (qtySaleUnits == 0) continue;
+              final double salesContribution = (type == 'debit' ? 1 : -1) * qtySaleUnits * pricePerSaleUnit;
+              double baseQty;
+              if (productUnit == 'meter' && saleType == 'لفة') {
+                final double factor = (unitsInLargeUnit > 0) ? unitsInLargeUnit : (lengthPerUnit ?? 1.0);
+                baseQty = qtySaleUnits * factor;
+              } else if (saleType == 'قطعة' || saleType == 'متر') {
+                baseQty = qtySaleUnits;
+              } else {
+                baseQty = qtySaleUnits * (unitsInLargeUnit > 0 ? unitsInLargeUnit : 1.0);
+              }
+              final double signedBaseQty = (type == 'debit' ? 1 : -1) * baseQty;
+              final double costContribution = baseCost * (signedBaseQty);
+              addSales += salesContribution;
+              addProfit += (salesContribution - costContribution);
+              addBaseQty += signedBaseQty;
             }
-            final double signedBaseQty = (type == 'debit' ? 1 : -1) * baseQty;
-            final double costContribution = baseCost * (signedBaseQty);
-            addSales += salesContribution;
-            addProfit += (salesContribution - costContribution);
-            addBaseQty += signedBaseQty;
-          }
-          adjTotalSales += addSales;
-          adjTotalProfit += addProfit;
-          adjTotalQuantity += addBaseQty;
-          if (adjTotalQuantity > 0) {
-            adjAverageSellingPrice = adjTotalSales / adjTotalQuantity;
-          }
+            adjTotalSales += addSales;
+            adjTotalProfit += addProfit;
+            adjTotalQuantity += addBaseQty;
+            if (adjTotalQuantity > 0) {
+              adjAverageSellingPrice = adjTotalSales / adjTotalQuantity;
+            }
         }
       } catch (_) {}
 
@@ -8386,11 +10448,181 @@ class DatabaseService {
         'totalTransactions': totalTransactions,
         'averageSellingPrice': adjAverageSellingPrice,
         'totalQuantity': adjTotalQuantity,
+        // 💰 جديد: المعاملات اليدوية داخل الفترة
+        'manualDebt': manualDebtTotal,
+        'manualPayment': manualPaymentTotal,
       };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ⚡ نسخة مجمّعة من getCustomerProfitData لكل العملاء دفعة واحدة
+  // ═══════════════════════════════════════════════════════════════════════════
+  // شاشة تقارير الأشخاص كانت تنفّذ ٥ استعلامات لكل عميل (1066 عميلاً =
+  // 5330 نداءً متتابعاً). هنا ٥ استعلامات فقط للكل، ثم يُستدعى
+  // _computeCustomerProfitData نفسه لكل عميل — أي نفس الرياضيات حرفياً.
+  //
+  // ترتيب الأصناف داخل كل عميل مكتوب صراحةً وهو نفس الترتيب الذي كانت
+  // تُرجعه النسخة المفردة (ترتيب فهرس idx_invoices_pricing: payment_type ثم
+  // invoice_date)، وتحقّقنا منه على كل عملاء قاعدتك وفي ثلاث فترات مختلفة:
+  // صفر اختلاف في صفّ واحد.
+  //
+  // تُرجَع فقط العملاء الذين لهم فواتير محفوظة في الفترة؛ الباقي كانت نتيجته
+  // أصفاراً تُحذف أصلاً في الشاشة بشرط (totalInvoices > 0 || totalSales > 0).
+  Future<Map<int, Map<String, dynamic>>> getCustomerProfitDataForAll({
+    DateTime? fromDate,
+    DateTime? toDate,
+  }) async {
+    final db = await database;
+    try {
+      String dateConditionAlias = '';
+      if (fromDate != null) {
+        dateConditionAlias += " AND i.invoice_date >= '${fromDate.toIso8601String().substring(0, 10)}'";
+      }
+      if (toDate != null) {
+        final endOfDay = DateTime(toDate.year, toDate.month, toDate.day, 23, 59, 59);
+        dateConditionAlias += " AND i.invoice_date <= '${endOfDay.toIso8601String()}'";
+      }
+      String dateConditionTx = '';
+      if (fromDate != null) {
+        dateConditionTx += " AND transaction_date >= '${fromDate.toIso8601String().substring(0, 10)}'";
+      }
+      if (toDate != null) {
+        final endOfDay = DateTime(toDate.year, toDate.month, toDate.day, 23, 59, 59);
+        dateConditionTx += " AND transaction_date <= '${endOfDay.toIso8601String()}'";
+      }
+
+      // (1) مجاميع الفواتير لكل عميل
+      final invoiceAgg = await db.rawQuery('''
+        SELECT 
+          c.id AS _cid,
+          SUM(i.total_amount) as total_sales,
+          COUNT(*) as total_invoices
+        FROM customers c
+        JOIN invoices i ON (i.customer_id = c.id
+             OR (i.customer_id IS NULL AND i.customer_name = c.name))
+        WHERE i.status = 'محفوظة'$dateConditionAlias
+        GROUP BY c.id
+      ''');
+
+      // (2) المعاملات اليدوية داخل الفترة لكل عميل — نفس تعريف النسخة
+      // المفردة حرفياً (الموجب دين يدوي، السالب تسديد يدوي).
+      final txAgg = await db.rawQuery('''
+        SELECT 
+          customer_id AS _cid,
+          COUNT(*) as total_transactions,
+          COALESCE(SUM(CASE WHEN amount_changed > 0 THEN amount_changed ELSE 0 END), 0) as manual_debt_total,
+          COALESCE(SUM(CASE WHEN amount_changed < 0 THEN -amount_changed ELSE 0 END), 0) as manual_payment_total
+        FROM transactions
+        WHERE customer_id IS NOT NULL AND invoice_id IS NULL$dateConditionTx
+        GROUP BY customer_id
+      ''');
+
+      // (3) كل الأصناف لكل العملاء
+      final allItems = await db.rawQuery('''
+        SELECT 
+          c.id AS _cid,
+          ii.quantity_individual,
+          ii.quantity_large_unit,
+          ii.units_in_large_unit,
+          ii.applied_price,
+          ii.sale_type,
+          ii.cost_price as item_cost_price,
+          ii.actual_cost_price,
+          ii.item_total,
+          p.cost_price as product_cost_price,
+          p.unit as product_unit,
+          p.length_per_unit,
+          p.unit_costs,
+          p.unit_hierarchy
+        FROM customers c
+        JOIN invoices i ON (i.customer_id = c.id
+             OR (i.customer_id IS NULL AND i.customer_name = c.name))
+        JOIN invoice_items ii ON i.id = ii.invoice_id
+        JOIN products p ON ii.product_name = p.name
+        WHERE i.status = 'محفوظة'$dateConditionAlias
+        ORDER BY c.id, (i.customer_id IS NULL), i.payment_type, i.invoice_date, i.id, ii.id
+      ''');
+
+      final Map<int, List<Map<String, dynamic>>> invById =
+          <int, List<Map<String, dynamic>>>{};
+      for (final row in invoiceAgg) {
+        final cid = (row['_cid'] as num?)?.toInt();
+        if (cid == null) continue;
+        invById[cid] = <Map<String, dynamic>>[row];
+      }
+      final Map<int, List<Map<String, dynamic>>> txById =
+          <int, List<Map<String, dynamic>>>{};
+      for (final row in txAgg) {
+        final cid = (row['_cid'] as num?)?.toInt();
+        if (cid == null) continue;
+        txById[cid] = <Map<String, dynamic>>[row];
+      }
+      final Map<int, List<Map<String, dynamic>>> itemsByCustomer =
+          <int, List<Map<String, dynamic>>>{};
+      for (final row in allItems) {
+        final cid = (row['_cid'] as num?)?.toInt();
+        if (cid == null) continue;
+        (itemsByCustomer[cid] ??= <Map<String, dynamic>>[]).add(row);
+      }
+
+      // (4) و(5) التسويات — أي فشل هنا يعني تخطّي الدمج فقط، كما في المفردة
+      bool mergeAdjustments = true;
+      final Map<int, List<Map<String, dynamic>>> adjByCustomer =
+          <int, List<Map<String, dynamic>>>{};
+      try {
+        final adjAll = await db.rawQuery('''
+          SELECT 
+            c.id AS _cid,
+            ia.type, ia.quantity, ia.price, ia.sale_type, ia.units_in_large_unit,
+            p.unit AS product_unit, p.cost_price AS product_cost, p.length_per_unit AS length_per_unit
+          FROM invoice_adjustments ia
+          JOIN invoices i ON i.id = ia.invoice_id
+          JOIN customers c ON (i.customer_id = c.id
+               OR (i.customer_id IS NULL AND i.customer_name = c.name))
+          LEFT JOIN products p ON p.id = ia.product_id
+          WHERE ia.product_id IS NOT NULL AND i.status = 'محفوظة'$dateConditionAlias
+          ORDER BY c.id, ia.id
+        ''');
+        for (final row in adjAll) {
+          final cid = (row['_cid'] as num?)?.toInt();
+          if (cid == null) continue;
+          (adjByCustomer[cid] ??= <Map<String, dynamic>>[]).add(row);
+        }
+      } catch (_) {
+        mergeAdjustments = false;
+      }
+
+      // 🔑 العملاء المشمولون: من له فواتير في الفترة **أو** معاملات يدوية
+      // فيها. (قبل إضافة المعاملات اليدوية كانت الفواتير وحدها كافية.)
+      final Set<int> ids = <int>{...invById.keys, ...txById.keys};
+      final Map<int, Map<String, dynamic>> result = <int, Map<String, dynamic>>{};
+      for (final cid in ids) {
+        result[cid] = _computeCustomerProfitData(
+          itemMaps: itemsByCustomer[cid] ?? const <Map<String, dynamic>>[],
+          invoiceMaps: invById[cid] ??
+              <Map<String, dynamic>>[
+                <String, dynamic>{'total_sales': null, 'total_invoices': 0}
+              ],
+          transactionMaps: txById[cid] ??
+              <Map<String, dynamic>>[
+                <String, dynamic>{
+                  'total_transactions': 0,
+                  'manual_debt_total': 0,
+                  'manual_payment_total': 0,
+                }
+              ],
+          mergeAdjustments: mergeAdjustments,
+          hasInvoicesInPeriod: invById.containsKey(cid),
+          adjRows: adjByCustomer[cid] ?? const <Map<String, dynamic>>[],
+        );
+      }
+      return result;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
     }
   }
+
+
 
   Future<Map<int, PersonYearData>> getCustomerYearlyData(int customerId) async {
     final db = await database;
@@ -8635,6 +10867,45 @@ class DatabaseService {
         }
       } catch (_) {}
 
+
+      // ═══════════════════════════════════════════════════════════════════
+      // 💰 المعاملات اليدوية لكل سنة (invoice_id IS NULL)
+      // ═══════════════════════════════════════════════════════════════════
+      // نفس تعريف كشف الحساب التجاري وتقارير الأشخاص حرفياً:
+      // الموجب = دين أُضيف يدوياً (يشمل الرصيد الافتتاحي)، السالب = تسديد.
+      // تُضاف هنا في نهاية الدالة كي لا نمسّ أي حساب قائم، وتُنشأ سنة
+      // جديدة إن كان فيها معاملات يدوية بلا فواتير.
+      final manualByYear = await db.rawQuery('''
+        SELECT 
+          strftime('%Y', transaction_date) as year,
+          COALESCE(SUM(CASE WHEN amount_changed > 0 THEN amount_changed ELSE 0 END), 0) as manual_debt_total,
+          COALESCE(SUM(CASE WHEN amount_changed < 0 THEN -amount_changed ELSE 0 END), 0) as manual_payment_total
+        FROM transactions
+        WHERE customer_id = ? AND invoice_id IS NULL
+        GROUP BY strftime('%Y', transaction_date)
+      ''', [customerId]);
+      for (final row in manualByYear) {
+        final y = int.tryParse((row['year'] ?? '').toString());
+        if (y == null) continue;
+        final debt = (row['manual_debt_total'] as num?)?.toDouble() ?? 0.0;
+        final pay = (row['manual_payment_total'] as num?)?.toDouble() ?? 0.0;
+        final existing = yearlyData[y];
+        if (existing != null) {
+          yearlyData[y] = existing.withManual(debt, pay);
+        } else if (debt > 0 || pay > 0) {
+          yearlyData[y] = PersonYearData(
+            totalProfit: 0.0,
+            totalSales: 0.0,
+            totalInvoices: 0,
+            totalTransactions: txByYear[y] ?? 0,
+            averageSellingPrice: 0.0,
+            totalQuantity: 0.0,
+            manualDebt: debt,
+            manualPayment: pay,
+          );
+        }
+      }
+
       return yearlyData;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -8865,6 +11136,43 @@ class DatabaseService {
           // لا حاجة لإعادة حساب متوسط السعر أو الكمية هنا لأن PersonMonthData لا يتضمنهما
         }
       } catch (_) {}
+
+
+      // ═══════════════════════════════════════════════════════════════════
+      // 💰 المعاملات اليدوية لكل شهر من هذه السنة (invoice_id IS NULL)
+      // ═══════════════════════════════════════════════════════════════════
+      // نفس تعريف السنة وكشف الحساب: الموجب دين يدوي، السالب تسديد يدوي.
+      final manualByMonth = await db.rawQuery('''
+        SELECT 
+          strftime('%m', transaction_date) as month,
+          COALESCE(SUM(CASE WHEN amount_changed > 0 THEN amount_changed ELSE 0 END), 0) as manual_debt_total,
+          COALESCE(SUM(CASE WHEN amount_changed < 0 THEN -amount_changed ELSE 0 END), 0) as manual_payment_total,
+          COUNT(*) as manual_count
+        FROM transactions
+        WHERE customer_id = ? AND invoice_id IS NULL
+          AND strftime('%Y', transaction_date) = ?
+        GROUP BY strftime('%m', transaction_date)
+      ''', [customerId, year.toString()]);
+      for (final row in manualByMonth) {
+        final m = int.tryParse((row['month'] ?? '').toString());
+        if (m == null) continue;
+        final debt = (row['manual_debt_total'] as num?)?.toDouble() ?? 0.0;
+        final pay = (row['manual_payment_total'] as num?)?.toDouble() ?? 0.0;
+        final existing = monthlyData[m];
+        if (existing != null) {
+          monthlyData[m] = existing.withManual(debt, pay);
+        } else if (debt > 0 || pay > 0) {
+          monthlyData[m] = PersonMonthData(
+            totalProfit: 0.0,
+            totalSales: 0.0,
+            totalInvoices: 0,
+            totalTransactions: (row['manual_count'] as num?)?.toInt() ?? 0,
+            invoices: const [],
+            manualDebt: debt,
+            manualPayment: pay,
+          );
+        }
+      }
 
       return monthlyData;
     } catch (e) {
@@ -9990,12 +12298,25 @@ class DatabaseService {
         
         // إضافة المشكلة إذا وجدت
         if (hasIssue) {
+          final invNum = inv['invoice_number'] as String?;
+          final seq = inv['monthly_sequence_number'] as int?;
+          final invDateObj = DateTime.tryParse(invoiceDate) ?? DateTime.now();
+          final deviceIdStr = InvoiceSettingsService.cachedDeviceId.toString();
+          final formattedNum = (invNum != null && invNum.isNotEmpty)
+              ? invNum
+              : (seq != null
+                  ? '$deviceIdStr${DateFormat('yyyyMM').format(invDateObj)}$seq'
+                  : (invoiceId > 1000000
+                      ? invoiceId.toString()
+                      : '$deviceIdStr${DateFormat('yyyyMM').format(invDateObj)}---'));
+
           invoiceIssues.add(InvoiceIssue(
             invoiceId: invoiceId,
             invoiceDate: invoiceDate,
             description: issueDescription,
             difference: invoiceDifference,
             details: invoiceDetails,
+            formattedInvoiceNumber: formattedNum,
           ));
         }
       }
@@ -10198,6 +12519,7 @@ class DatabaseService {
       final now = DateTime.now();
       final transactionNote = 'تصحيح تلقائي - فاتورة #$invoiceId - الفرق: ${actualDifference.toStringAsFixed(0)}';
       
+      final txUuid = SyncSecurity.generateTransactionUuid(customer.name, actualDifference, now);
       await db.insert('transactions', {
         'customer_id': customerId,
         'invoice_id': invoiceId,
@@ -10207,7 +12529,8 @@ class DatabaseService {
         'transaction_date': now.toIso8601String(),
         'new_balance_after_transaction': newBalance,
         'created_at': now.toIso8601String(),
-        'sync_uuid': SyncSecurity.generateUuid(), // 🔄 إضافة sync_uuid
+        'transaction_uuid': txUuid,
+        'sync_uuid': txUuid, // 🔄 إضافة sync_uuid
       });
       
       // 9. تحديث رصيد العميل
@@ -10423,6 +12746,11 @@ class DatabaseService {
           date: now,
         );
         
+        // 3.5 الحصول على اسم العميل لتوليد UUID
+        final customerRows = await txn.query('customers', columns: ['name'], where: 'id = ?', whereArgs: [customerId], limit: 1);
+        final customerName = customerRows.isNotEmpty ? customerRows.first['name'] as String : 'غير_معروف';
+        final syncUuid = SyncSecurity.generateTransactionUuid(customerName, correctionAmount, now);
+        
         // 4. إدراج المعاملة التصحيحية
         final transactionId = await txn.insert('transactions', {
           'customer_id': customerId,
@@ -10435,7 +12763,8 @@ class DatabaseService {
           'description': 'تصحيح تلقائي للفروقات',
           'created_at': now.toIso8601String(),
           'checksum': checksum,
-          'sync_uuid': SyncSecurity.generateUuid(), // 🔄 إضافة sync_uuid
+          'transaction_uuid': syncUuid,
+          'sync_uuid': syncUuid, // 🔄 إضافة sync_uuid ديناميكي
         });
         
         // 5. تحديث رصيد العميل
@@ -10605,25 +12934,25 @@ class DatabaseService {
   Future<FinancialSummary> getFinancialSummary() async {
     final db = await database;
     
-    // إجمالي ديون العملاء
+    // إجمالي ديون العملاء (تجاهل المحذوفين)
     final debtResult = await db.rawQuery(
-      'SELECT COALESCE(SUM(current_total_debt), 0) AS total FROM customers WHERE current_total_debt > 0'
+      'SELECT COALESCE(SUM(current_total_debt), 0) AS total FROM customers WHERE current_total_debt > 0 AND (is_deleted IS NULL OR is_deleted = 0)'
     );
     final totalCustomerDebt = ((debtResult.first['total'] as num?) ?? 0).toDouble();
     
-    // إجمالي الأرصدة الدائنة (عملاء لهم رصيد سالب)
+    // إجمالي الأرصدة الدائنة (تجاهل المحذوفين)
     final creditResult = await db.rawQuery(
-      'SELECT COALESCE(SUM(ABS(current_total_debt)), 0) AS total FROM customers WHERE current_total_debt < 0'
+      'SELECT COALESCE(SUM(ABS(current_total_debt)), 0) AS total FROM customers WHERE current_total_debt < 0 AND (is_deleted IS NULL OR is_deleted = 0)'
     );
     final totalCustomerCredit = ((creditResult.first['total'] as num?) ?? 0).toDouble();
     
-    // عدد العملاء
-    final customerCountResult = await db.rawQuery('SELECT COUNT(*) AS cnt FROM customers');
+    // عدد العملاء (تجاهل المحذوفين)
+    final customerCountResult = await db.rawQuery('SELECT COUNT(*) AS cnt FROM customers WHERE (is_deleted IS NULL OR is_deleted = 0)');
     final totalCustomers = (customerCountResult.first['cnt'] as int?) ?? 0;
     
-    // عدد العملاء المدينين
+    // عدد العملاء المدينين (تجاهل المحذوفين)
     final debtorCountResult = await db.rawQuery(
-      'SELECT COUNT(*) AS cnt FROM customers WHERE current_total_debt > 0'
+      'SELECT COUNT(*) AS cnt FROM customers WHERE current_total_debt > 0 AND (is_deleted IS NULL OR is_deleted = 0)'
     );
     final debtorCount = (debtorCountResult.first['cnt'] as int?) ?? 0;
     
@@ -10649,6 +12978,42 @@ class DatabaseService {
   // دوال سجل التدقيق المالي (Financial Audit Log)
   // ═══════════════════════════════════════════════════════════════════════════
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🗜️ سياسة الاحتفاظ بسجل التدقيق المالي: سنة كاملة
+  // ═══════════════════════════════════════════════════════════════════════════
+  // الجدول ينمو ~1000 صف شهرياً بلا سقف. الاحتفاظ بسنة يُبقي كل ما يُحتاج
+  // للمراجعة ويمنع النمو اللانهائي. لا يُحذف شيء أقدم من سنة إلا إن وُجد.
+  static const int kAuditLogRetentionDays = 365;
+  static DateTime? _lastAuditPruneAt;
+
+  /// تنظيف سجل التدقيق من السجلات الأقدم من سنة.
+  /// تعمل مرة واحدة كل ٦ ساعات كحد أقصى حتى لا تُثقل كل عملية إدراج.
+  Future<void> _pruneFinancialAuditLogIfDue(Database db) async {
+    try {
+      final now = DateTime.now();
+      if (_lastAuditPruneAt != null &&
+          now.difference(_lastAuditPruneAt!).inHours < 6) {
+        return;
+      }
+      _lastAuditPruneAt = now;
+      final cutoff = now
+          .subtract(const Duration(days: kAuditLogRetentionDays))
+          .toIso8601String();
+      final deleted = await db.delete(
+        'financial_audit_log',
+        where: 'created_at < ?',
+        whereArgs: [cutoff],
+      );
+      if (deleted > 0) {
+        print('🧹 سجل التدقيق: حُذف $deleted سجلاً أقدم من '
+            '$kAuditLogRetentionDays يوماً');
+      }
+    } catch (e) {
+      // التنظيف لا يجوز أن يُفشل عملية إدراج ناجحة
+      print('⚠️ تعذّر تنظيف سجل التدقيق: $e');
+    }
+  }
+
   /// إدراج سجل تدقيق
   Future<int> insertAuditLog({
     required String operationType,
@@ -10660,7 +13025,7 @@ class DatabaseService {
   }) async {
     final db = await database;
     try {
-      return await db.insert('financial_audit_log', {
+      final int id = await db.insert('financial_audit_log', {
         'operation_type': operationType,
         'entity_type': entityType,
         'entity_id': entityId,
@@ -10669,6 +13034,9 @@ class DatabaseService {
         'notes': notes,
         'created_at': DateTime.now().toIso8601String(),
       });
+      // 🗜️ تنظيف مؤجّل ومقيّد: لا يُنفَّذ إلا مرة كل ٦ ساعات
+      await _pruneFinancialAuditLogIfDue(db);
+      return id;
     } catch (e) {
       print('خطأ في إدراج سجل التدقيق: $e');
       return 0;
@@ -10751,6 +13119,70 @@ class DatabaseService {
   // 📸 دوال نسخ الفواتير (Invoice Snapshots)
   // ═══════════════════════════════════════════════════════════════════════════
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🗜️ تخزين أصناف اللقطة: تنظيف ثم ضغط
+  // ═══════════════════════════════════════════════════════════════════════════
+  // items_json كان يُخزَّن نصاً خاماً لصفوف invoice_items كاملة — بمعدل 4.6
+  // كيلوبايت للقطة الواحدة، و18.7 ميجابايت إجمالاً. الآن يُنظَّف من الحقول
+  // التي لا معنى لها في سجل تاريخي ثم يُضغط بـ zlib، فيصير عُشر حجمه.
+  //
+  // 🔒 ملاحظة حسابية: items_json لا يدخل في أي عملية حسابية في التطبيق.
+  //    الدين والأرصدة تُحسب من invoices و transactions، وإعادة حساب إجمالي
+  //    الفاتورة تقرأ جدول invoice_items الحيّ لا اللقطة. هذا التغيير عرضي
+  //    بالكامل ولا يمكن أن يُنتج خطأً حسابياً.
+
+  /// حقول تُحذف من اللقطة التاريخية:
+  /// id / invoice_id: معرّفات صفوف لا معنى لها خارج الجدول الحيّ.
+  /// unique_id: مفتاح صف مؤقّت للواجهة، يُولَّد من الوقت ويُرمى بعد الحفظ.
+  /// product_sync_uuid: تستعمله المزامنة من جدول invoice_items الحيّ،
+  ///                    واللقطات لا تُرفع إلى Firebase إطلاقاً.
+  /// وكلاهما نص hex عشوائي لا ينضغط — حذفه أنفع من ضغطه.
+  static const Set<String> kSnapshotDropFields = {
+    'id',
+    'invoice_id',
+    'unique_id',
+    'product_sync_uuid',
+  };
+
+  /// بناء نص أصناف اللقطة بعد التنظيف (القيم الفارغة تُحذف أيضاً — غيابها
+  /// يُقرأ صفراً تماماً كوجودها فارغة).
+  static String buildSnapshotItemsJson(List<Map<String, dynamic>> rows) {
+    final cleaned = rows.map((row) {
+      final out = <String, dynamic>{};
+      row.forEach((k, v) {
+        if (kSnapshotDropFields.contains(k)) return;
+        if (v == null) return;
+        out[k] = v;
+      });
+      return out;
+    }).toList();
+    return jsonEncode(cleaned);
+  }
+
+  /// ضغط نص الأصناف للتخزين.
+  /// يُخزَّن BLOB داخل عمود معرّف TEXT — SQLite ذو أنواع ديناميكية فيقبل ذلك
+  /// بلا أي تعديل على المخطط ولا ترقية إصدار.
+  static Uint8List encodeSnapshotItems(String itemsJson) {
+    return Uint8List.fromList(
+        ZLibCodec(level: 9).encode(utf8.encode(itemsJson)));
+  }
+
+  /// قراءة أصناف اللقطة — تتعامل مع الشكلين معاً:
+  /// لقطة قديمة مخزّنة نصاً (4128 لقطة موجودة) ولقطة جديدة مضغوطة.
+  /// لا هجرة ولا تحويل للبيانات القديمة.
+  static String decodeSnapshotItems(dynamic raw) {
+    if (raw == null) return '[]';
+    if (raw is String) return raw.isEmpty ? '[]' : raw;
+    try {
+      if (raw is List<int>) {
+        return utf8.decode(ZLibCodec().decode(raw));
+      }
+    } catch (e) {
+      print('⚠️ تعذّر فكّ ضغط أصناف اللقطة: $e');
+    }
+    return '[]';
+  }
+
   /// حفظ نسخة من الفاتورة قبل التعديل
   Future<int> saveInvoiceSnapshot({
     required int invoiceId,
@@ -10766,9 +13198,10 @@ class DatabaseService {
       }
       final invoice = invoiceMaps.first;
       
-      // جلب أصناف الفاتورة
+      // جلب أصناف الفاتورة — تُنظَّف وتُضغط قبل التخزين
       final items = await db.query('invoice_items', where: 'invoice_id = ?', whereArgs: [invoiceId]);
-      final itemsJson = jsonEncode(items);
+      final itemsJson = buildSnapshotItemsJson(items);
+      final itemsBlob = encodeSnapshotItems(itemsJson);
       
       // حساب رقم النسخة
       final existingSnapshots = await db.query(
@@ -10778,6 +13211,40 @@ class DatabaseService {
         orderBy: 'version_number DESC',
         limit: 1,
       );
+      // ═══════════════════════════════════════════════════════════════════════
+      // 🗜️ منع اللقطات المكررة
+      // ═══════════════════════════════════════════════════════════════════════
+      // إذا لم يتغيّر أي شيء عن آخر لقطة، لا نكتب صفاً جديداً. فتح فاتورة
+      // والضغط على «حفظ» بلا تعديل حقيقي كان يكتب نسخة كاملة من كل البنود
+      // (متوسط 4.6 كيلوبايت) في كل مرة. لا نفقد أي معلومة: اللقطة الموجودة
+      // تمثّل الحالة نفسها تماماً.
+      if (existingSnapshots.isNotEmpty) {
+        final last = existingSnapshots.first;
+        bool sameNum(Object? a, Object? b) =>
+            (((a as num?)?.toDouble() ?? 0.0) -
+                    ((b as num?)?.toDouble() ?? 0.0))
+                .abs() < 0.001;
+        final bool unchanged =
+            decodeSnapshotItems(last['items_json']) == itemsJson &&
+            (last['customer_name'] as String?) ==
+                (invoice['customer_name'] as String?) &&
+            (last['customer_phone'] as String?) ==
+                (invoice['customer_phone'] as String?) &&
+            (last['customer_address'] as String?) ==
+                (invoice['customer_address'] as String?) &&
+            (last['invoice_date'] as String?) ==
+                (invoice['invoice_date'] as String?) &&
+            (last['payment_type'] as String?) ==
+                (invoice['payment_type'] as String?) &&
+            sameNum(last['total_amount'], invoice['total_amount']) &&
+            sameNum(last['discount'], invoice['discount']) &&
+            sameNum(last['amount_paid'], invoice['amount_paid_on_invoice']) &&
+            sameNum(last['loading_fee'], invoice['loading_fee']);
+        if (unchanged) {
+          return (last['id'] as int?) ?? -1;
+        }
+      }
+
       final versionNumber = existingSnapshots.isEmpty 
           ? 1 
           : ((existingSnapshots.first['version_number'] as int?) ?? 0) + 1;
@@ -10796,7 +13263,7 @@ class DatabaseService {
         'discount': invoice['discount'],
         'amount_paid': invoice['amount_paid_on_invoice'],
         'loading_fee': invoice['loading_fee'],
-        'items_json': itemsJson,
+        'items_json': itemsBlob,
         'created_at': DateTime.now().toIso8601String(),
         'notes': notes,
       });
@@ -11282,7 +13749,7 @@ class DatabaseService {
           currentTotalDebt: calculatedBalance,
           lastModifiedAt: DateTime.now(),
         );
-        await updateCustomer(updated);
+        await updateCustomer(updated, updateBalance: true);
         
         return VerifiedBalanceResult(
           isVerified: true,
@@ -11492,6 +13959,7 @@ class InvoiceIssue {
   final String description;
   final double difference;
   final List<String> details;
+  final String? formattedInvoiceNumber;
 
   InvoiceIssue({
     required this.invoiceId,
@@ -11499,7 +13967,13 @@ class InvoiceIssue {
     required this.description,
     required this.difference,
     this.details = const [],
+    this.formattedInvoiceNumber,
   });
+
+  String get displayInvoiceNumber =>
+      (formattedInvoiceNumber != null && formattedInvoiceNumber!.isNotEmpty)
+          ? formattedInvoiceNumber!
+          : invoiceId.toString();
 }
 
 /// تقرير سلامة البيانات المالية
@@ -11649,6 +14123,10 @@ class PersonYearData {
   final int totalTransactions;
   final double averageSellingPrice;
   final double totalQuantity;
+  /// 💰 مجموع الديون المضافة يدوياً في السنة (يشمل الرصيد الافتتاحي)
+  final double manualDebt;
+  /// 💰 مجموع التسديدات اليدوية في السنة
+  final double manualPayment;
 
   PersonYearData({
     required this.totalProfit,
@@ -11657,7 +14135,21 @@ class PersonYearData {
     required this.totalTransactions,
     required this.averageSellingPrice,
     required this.totalQuantity,
+    this.manualDebt = 0.0,
+    this.manualPayment = 0.0,
   });
+
+  /// نسخة بنفس الأرقام مع تعبئة المعاملات اليدوية
+  PersonYearData withManual(double debt, double payment) => PersonYearData(
+        totalProfit: totalProfit,
+        totalSales: totalSales,
+        totalInvoices: totalInvoices,
+        totalTransactions: totalTransactions,
+        averageSellingPrice: averageSellingPrice,
+        totalQuantity: totalQuantity,
+        manualDebt: debt,
+        manualPayment: payment,
+      );
 }
 
 // إزالة تعريفات مكررة للـ PersonMonthData و MonthlySalesSummary لاستخدام نماذج المجلد models
@@ -12195,11 +14687,13 @@ class GroupedTransactionItem {
   /// هل المبلغ سالب (تسديد)؟
   bool get isPayment => amount < 0;
 
-  /// الحصول على رقم الفاتورة المنسق (YYYYMM + التسلسل الشهري)
+  /// الحصول على رقم الفاتورة المنسق (الصيغة المدمجة: رقم الجهاز + السنة + الشهر + التسلسل)
   String get formattedInvoiceNumber {
     if (monthlySequenceNumber != null) {
       final yearMonth = DateFormat('yyyyMM').format(date);
-      return '$yearMonth$monthlySequenceNumber';
+      final deviceIdStr = InvoiceSettingsService.cachedDeviceId.toString();
+      // الصيغة المدمجة: [deviceID][YYYY][MM][seq]
+      return '$deviceIdStr$yearMonth$monthlySequenceNumber';
     }
     return invoiceId?.toString() ?? '';
   }

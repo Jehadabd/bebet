@@ -5,6 +5,7 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../database_service.dart';
+import '../sync/sync_security.dart';
 
 /// حالة تأكيد المعاملة
 enum AckStatus {
@@ -15,7 +16,7 @@ enum AckStatus {
 
 /// نموذج تأكيد استلام معاملة
 class TransactionAck {
-  final String transactionSyncUuid;
+  final String transactionUuid;
   final String senderDeviceId;
   final String receiverDeviceId;
   final String receiverDeviceName;
@@ -24,7 +25,7 @@ class TransactionAck {
   final String? errorMessage;
 
   TransactionAck({
-    required this.transactionSyncUuid,
+    required this.transactionUuid,
     required this.senderDeviceId,
     required this.receiverDeviceId,
     required this.receiverDeviceName,
@@ -34,7 +35,7 @@ class TransactionAck {
   });
 
   Map<String, dynamic> toMap() => {
-    'transactionSyncUuid': transactionSyncUuid,
+    'transactionUuid': transactionUuid,
     'senderDeviceId': senderDeviceId,
     'receiverDeviceId': receiverDeviceId,
     'receiverDeviceName': receiverDeviceName,
@@ -45,7 +46,7 @@ class TransactionAck {
 
   factory TransactionAck.fromMap(Map<String, dynamic> map) {
     return TransactionAck(
-      transactionSyncUuid: map['transactionSyncUuid'] as String,
+      transactionUuid: map['transactionUuid'] ?? map['transactionSyncUuid'] as String,
       senderDeviceId: map['senderDeviceId'] as String,
       receiverDeviceId: map['receiverDeviceId'] as String,
       receiverDeviceName: map['receiverDeviceName'] as String? ?? 'جهاز غير معروف',
@@ -118,7 +119,7 @@ class TransactionAckService {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS transaction_acks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        transaction_sync_uuid TEXT NOT NULL,
+        transaction_uuid TEXT NOT NULL,
         sender_device_id TEXT NOT NULL,
         receiver_device_id TEXT NOT NULL,
         receiver_device_name TEXT,
@@ -126,21 +127,32 @@ class TransactionAckService {
         status TEXT NOT NULL,
         error_message TEXT,
         created_at TEXT NOT NULL,
-        UNIQUE(transaction_sync_uuid, receiver_device_id)
+        UNIQUE(transaction_uuid, receiver_device_id)
       )
     ''');
+    
+    // محاولة ترقية الجدول القديم إذا كان موجوداً
+    try {
+      final tableInfo = await db.rawQuery('PRAGMA table_info(transaction_acks)');
+      final hasOldColumn = tableInfo.any((column) => column['name'] == 'transaction_sync_uuid');
+      if (hasOldColumn) {
+        await db.execute('ALTER TABLE transaction_acks RENAME COLUMN transaction_sync_uuid TO transaction_uuid');
+      }
+    } catch (e) {
+      print('Error migrating transaction_acks table: $e');
+    }
 
     // فهرس للبحث السريع
     await db.execute('''
       CREATE INDEX IF NOT EXISTS idx_acks_transaction 
-      ON transaction_acks(transaction_sync_uuid)
+      ON transaction_acks(transaction_uuid)
     ''');
   }
 
   /// إرسال تأكيد استلام معاملة
   /// يُستدعى عند استقبال معاملة من جهاز آخر بنجاح
   Future<void> sendAck({
-    required String transactionSyncUuid,
+    required String transactionUuid,
     required String senderDeviceId,
     AckStatus status = AckStatus.received,
     String? errorMessage,
@@ -152,26 +164,25 @@ class TransactionAckService {
 
     try {
       final now = DateTime.now().toUtc();
-      final ackId = '${transactionSyncUuid}_$_deviceId';
+      // معرّف الـ ACK مبني على معرّف المعاملة، فأي فاصل مسار فيه ينتقل إليه
+      final ackId = SyncSecurity.sanitizeDocumentId('${transactionUuid}_$_deviceId');
 
       await _firestore!
-          .collection('sync_groups')
-          .doc(_groupId)
           .collection('transaction_acks')
           .doc(ackId)
           .set({
-        'transactionSyncUuid': transactionSyncUuid,
+        'transactionUuid': transactionUuid,
         'senderDeviceId': senderDeviceId,
         'receiverDeviceId': _deviceId,
         'receiverDeviceName': _deviceName,
         'receivedAt': now.toIso8601String(),
         'status': status.name,
         'errorMessage': errorMessage,
-        'createdAt': FieldValue.serverTimestamp(),
+        'createdAt': DateTime.now().toIso8601String(),
       });
 
       print('✅ تم قراءة البيانات في هذا الحاسوب بنجاح! (جاري إعلام المرسل...)');
-      print('📤 تم إرسال تأكيد استلام (ACK) للمعاملة: $transactionSyncUuid');
+      print('📤 تم إرسال تأكيد استلام (ACK) للمعاملة: $transactionUuid');
     } catch (e) {
       print('❌ فشل إرسال ACK: $e');
     }
@@ -179,7 +190,7 @@ class TransactionAckService {
 
   // 🔧 تحديد عدد ACKs المستلمة لتجنب الإغراق
   int _receivedAcksCount = 0;
-  static const int _maxAcksPerSession = 50; // الحد الأقصى للرسائل في الجلسة
+  static const int _maxAcksPerSession = 2000; // الحد الأقصى للرسائل في الجلسة
   bool _isFirstLoad = true; // 🆕 لتجاهل الرسائل القديمة عند التحميل الأول
 
   /// الاستماع لتأكيدات الاستلام للمعاملات المرسلة من هذا الجهاز
@@ -188,11 +199,9 @@ class TransactionAckService {
 
     // 🔧 إزالة orderBy لتجنب الحاجة لفهرس مركب في Firebase
     _ackListener = _firestore!
-        .collection('sync_groups')
-        .doc(_groupId)
         .collection('transaction_acks')
         .where('senderDeviceId', isEqualTo: _deviceId)
-        .limit(50) // 🔧 تحديد عدد الرسائل
+        .limit(2000) // 🔧 تحديد عدد الرسائل
         .snapshots()
         .listen((snapshot) {
       // 🔧 تجاهل التحميل الأول (الرسائل القديمة)
@@ -220,7 +229,7 @@ class TransactionAckService {
             // 🔧 طباعة مختصرة
             if (_receivedAcksCount <= 10) {
               print('📩 الحاسوب الآخر (${ack.receiverDeviceName}) قرأ البيانات بنجاح! ✅');
-              print('   - المعاملة: ${ack.transactionSyncUuid}');
+              print('   - المعاملة: ${ack.transactionUuid}');
             } else if (_receivedAcksCount == 6) {
               print('📬 ... وأكثر (تم إيقاف الطباعة)');
             }
@@ -235,7 +244,7 @@ class TransactionAckService {
     final db = await _db.database;
     try {
       await db.insert('transaction_acks', {
-        'transaction_sync_uuid': ack.transactionSyncUuid,
+        'transaction_uuid': ack.transactionUuid,
         'sender_device_id': ack.senderDeviceId,
         'receiver_device_id': ack.receiverDeviceId,
         'receiver_device_name': ack.receiverDeviceName,
@@ -252,22 +261,20 @@ class TransactionAckService {
           'status': ack.status.name,
           'received_at': ack.receivedAt.toIso8601String(),
         },
-        where: 'transaction_sync_uuid = ? AND receiver_device_id = ?',
-        whereArgs: [ack.transactionSyncUuid, ack.receiverDeviceId],
+        where: 'transaction_uuid = ? AND receiver_device_id = ?',
+        whereArgs: [ack.transactionUuid, ack.receiverDeviceId],
       );
     }
   }
 
   /// جلب حالة تأكيد معاملة معينة
-  Future<List<TransactionAck>> getAcksForTransaction(String transactionSyncUuid) async {
+  Future<List<TransactionAck>> getAcksForTransaction(String transactionUuid) async {
     if (!_isInitialized || _firestore == null || _groupId == null) return [];
 
     try {
       final snapshot = await _firestore!
-          .collection('sync_groups')
-          .doc(_groupId)
           .collection('transaction_acks')
-          .where('transactionSyncUuid', isEqualTo: transactionSyncUuid)
+          .where('transactionUuid', isEqualTo: transactionUuid)
           .get();
 
       return snapshot.docs
@@ -286,16 +293,12 @@ class TransactionAckService {
     try {
       // جلب جميع المعاملات المرسلة من هذا الجهاز
       final txSnapshot = await _firestore!
-          .collection('sync_groups')
-          .doc(_groupId)
           .collection('transactions')
           .where('deviceId', isEqualTo: _deviceId)
           .get();
 
       // جلب جميع الأجهزة المتصلة
       final devicesSnapshot = await _firestore!
-          .collection('sync_groups')
-          .doc(_groupId)
           .collection('devices')
           .where('isOnline', isEqualTo: true)
           .get();
@@ -310,17 +313,17 @@ class TransactionAckService {
       final pendingTxIds = <String>[];
 
       for (final txDoc in txSnapshot.docs) {
-        final txSyncUuid = txDoc.id;
+        final txUuid = txDoc.id;
 
         // جلب ACKs لهذه المعاملة
-        final acks = await getAcksForTransaction(txSyncUuid);
+        final acks = await getAcksForTransaction(txUuid);
         final ackedDevices = acks.map((a) => a.receiverDeviceId).toSet();
 
         // التحقق من أن جميع الأجهزة أكدت الاستلام
         final missingAcks = otherDevices.where((d) => !ackedDevices.contains(d)).toList();
 
         if (missingAcks.isNotEmpty) {
-          pendingTxIds.add(txSyncUuid);
+          pendingTxIds.add(txUuid);
         }
       }
 
@@ -340,8 +343,6 @@ class TransactionAckService {
     try {
       // عدد المعاملات المرسلة
       final sentTxCount = await _firestore!
-          .collection('sync_groups')
-          .doc(_groupId)
           .collection('transactions')
           .where('deviceId', isEqualTo: _deviceId)
           .count()
@@ -349,8 +350,6 @@ class TransactionAckService {
 
       // عدد التأكيدات المستلمة
       final acksCount = await _firestore!
-          .collection('sync_groups')
-          .doc(_groupId)
           .collection('transaction_acks')
           .where('senderDeviceId', isEqualTo: _deviceId)
           .count()
@@ -380,8 +379,6 @@ class TransactionAckService {
 
       // حذف من Firebase
       final oldAcks = await _firestore!
-          .collection('sync_groups')
-          .doc(_groupId)
           .collection('transaction_acks')
           .where('receivedAt', isLessThan: cutoffStr)
           .get();

@@ -11,7 +11,9 @@ class FinancialGuardians {
     if (invoice.paymentType == 'نقد') {
       // قاعدة صارمة: إذا كانت الفاتورة نقداً، يجب أن يكون المبلغ المدفوع يساوي الإجمالي
       // ولا يسمح بوجود ديون
-      if (invoice.amountPaidOnInvoice != invoice.totalAmount) {
+      // 🛡️ مقارنة بهامش فلس واحد بدل != المباشرة: المقارنة الدقيقة بين عددين
+      // عشريين كانت قادرة على رفض فاتورة نقدية سليمة بسبب تقريب لا يُرى.
+      if ((invoice.amountPaidOnInvoice - invoice.totalAmount).abs() > 0.01) {
         throw Exception('🛡️ [حماية] لا يمكن حفظ فاتورة نقدية بمبلغ مدفوع لا يساوي الإجمالي. '
             'الإجمالي: ${invoice.totalAmount}، المدفوع: ${invoice.amountPaidOnInvoice}');
       }

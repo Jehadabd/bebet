@@ -114,13 +114,11 @@ class InvoicePaymentService {
         value > 0) {
       final customer = await db.getCustomerById(updatedInvoice.customerId!);
       if (customer != null) {
+        // 🛡️ كان هنا خصم مزدوج: updateCustomer كانت تخصم المبلغ من الرصيد،
+        // ثم insertTransaction تخصمه مرة أخرى. insertTransaction وحدها هي
+        // المسؤولة عن تحديث رصيد العميل (تقرأ الرصيد الحالي وتضيف المبلغ).
         final newDebt =
             (customer.currentTotalDebt - value).clamp(0.0, double.infinity);
-        final updatedCustomer = customer.copyWith(
-          currentTotalDebt: newDebt,
-          lastModifiedAt: DateTime.now(),
-        );
-        await db.updateCustomer(updatedCustomer);
         final txUuid = await DriveService().generateTransactionUuid();
         await db.insertTransaction(
           DebtTransaction(

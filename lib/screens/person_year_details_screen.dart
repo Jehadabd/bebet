@@ -173,7 +173,10 @@ class _PersonYearDetailsScreenState extends State<PersonYearDetailsScreen> {
   Widget _buildMonthCard(int month, PersonMonthData? monthData) {
     final monthName = getNumericMonthLabel(widget.year, month);
     final hasData = monthData != null &&
-        (monthData.totalProfit > 0 || monthData.totalSales > 0);
+        (monthData.totalProfit > 0 ||
+            monthData.totalSales > 0 ||
+            monthData.manualDebt > 0 ||
+            monthData.manualPayment > 0);
 
     return Card(
       elevation: hasData ? 4 : 1,
@@ -289,6 +292,32 @@ class _PersonYearDetailsScreenState extends State<PersonYearDetailsScreen> {
                     ),
                   ],
                 ),
+                // 💰 المعاملات اليدوية في هذا الشهر — منفصلة عن المبيعات
+                // والربح لأن الدين اليدوي ليس بيعاً وليس له تكلفة.
+                if (monthData.manualDebt > 0 || monthData.manualPayment > 0) ...[
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildInfoItem(
+                          icon: Icons.add_card,
+                          title: 'دين يدوي',
+                          value: '${_fmt(monthData.manualDebt)} د.ع',
+                          color: const Color(0xFFEF6C00),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _buildInfoItem(
+                          icon: Icons.payments,
+                          title: 'تسديد يدوي',
+                          value: '${_fmt(monthData.manualPayment)} د.ع',
+                          color: const Color(0xFF2E7D32),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ],
           ),

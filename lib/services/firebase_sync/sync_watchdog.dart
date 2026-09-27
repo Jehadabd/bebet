@@ -3,10 +3,11 @@
 // يعمل بالتوازي مع النظام الرئيسي لضمان عدم فقدان أي عملية
 
 import 'dart:async';
-import 'package:sqflite/sqflite.dart';
 import '../database_service.dart';
 import 'firebase_sync_helper.dart';
 import 'firebase_sync_coordinator.dart';
+import 'firebase_sync_service.dart'; // 🛡️ للتحقق من حالة الإصلاح
+import 'firebase_cleanup_service.dart';
 
 /// 🛡️ SyncWatchdog - نظام المراقبة الاحتياطي
 /// 
@@ -30,6 +31,7 @@ class SyncWatchdog {
   Timer? _watchdogTimer;
   bool _isRunning = false;
   bool _isProcessing = false;
+  bool _isPaused = false; // 🔒 إيقاف مؤقت أثناء الرفع الشامل
   
   // إحصائيات
   int _customersSynced = 0;
@@ -51,8 +53,14 @@ class SyncWatchdog {
     print('🛡️ SyncWatchdog: تم التهيئة');
   }
   
+  /// 🛡️ التحقق مما إذا كانت عملية الإصلاح جارية
+  bool _isRepairingInProgress() {
+    final syncService = FirebaseSyncService();
+    return syncService.isRepairing;
+  }
+  
   /// بدء المراقبة الدورية
-  void start({Duration interval = const Duration(seconds: 15)}) {
+  void start({Duration interval = const Duration(seconds: 30)}) {
     if (_isRunning) {
       print('🛡️ SyncWatchdog: المراقبة تعمل بالفعل');
       return;
@@ -82,17 +90,38 @@ class SyncWatchdog {
   /// دورة المراقبة الرئيسية
   /// ═══════════════════════════════════════════════════════════════════════
   
+  /// 🔒 إيقاف مؤقت (يُستخدم أثناء الرفع الشامل)
+  void pause() {
+    _isPaused = true;
+    print('🛡️ SyncWatchdog: ⏸️ تم الإيقاف المؤقت');
+  }
+  
+  /// 🔒 استئناف بعد الإيقاف المؤقت
+  void resume() {
+    _isPaused = false;
+    print('🛡️ SyncWatchdog: ▶️ تم الاستئناف');
+  }
+  
   Future<void> _runWatchdogCycle() async {
+    if (_isPaused) {
+      return; // لا نطبع شيء لتجنب السبام أثناء الرفع الشامل
+    }
+
+    // 🛡️ توقف تام أثناء الرفع الشامل/الطوارئ لمنع «عاصفة الرفع»:
+    // نفس المعاملة تُرفع من _syncPendingChanges والـ Watchdog والـ Tracker
+    // دفعة واحدة. القفل يضمن أن Watchdog لا يلمس البيانات أثناء المزامنة الكبيرة.
+    if (FirebaseSyncService().isBulkUploading) {
+      return;
+    }
+
     if (_isProcessing) {
-      print('🛡️ SyncWatchdog: دورة سابقة قيد التنفيذ، تخطي...');
-      return;
+      return; // دورة سابقة قيد التنفيذ
     }
-    
+
     if (_syncHelper == null || _coordinator == null) {
-      print('🛡️ SyncWatchdog: لم يتم التهيئة بعد');
       return;
     }
-    
+
     _isProcessing = true;
     _lastRunErrors = 0;
     
@@ -105,6 +134,9 @@ class SyncWatchdog {
       // 2. مزامنة المعاملات غير المرفوعة
       await _syncPendingTransactions();
       
+      // 3. تشغيل التنظيف التلقائي القديم (سيعمل مرة واحدة يومياً)
+      await FirebaseCleanupService().runDailyCleanup();
+      
       _lastRunTime = DateTime.now();
       
       if (_customersSynced > 0 || _transactionsSynced > 0) {
@@ -116,6 +148,8 @@ class SyncWatchdog {
       _lastRunErrors++;
     } finally {
       _isProcessing = false;
+      _customersSynced = 0;
+      _transactionsSynced = 0;
     }
   }
   
@@ -137,7 +171,7 @@ class SyncWatchdog {
           AND c.sync_uuid != ''
           AND (sc.id IS NULL OR sc.firebase_synced = 0 OR sc.firebase_synced IS NULL)
           AND (c.is_deleted IS NULL OR c.is_deleted = 0)
-        LIMIT 20
+        LIMIT 5
       ''');
       
       if (pendingCustomers.isEmpty) return;
@@ -145,25 +179,16 @@ class SyncWatchdog {
       print('🛡️ SyncWatchdog: وجد ${pendingCustomers.length} عميل غير مرفوع');
       
       for (final customerData in pendingCustomers) {
+        // 🛡️ فحص إذا كانت عملية إصلاح أو رفع شامل جارية
+        if (_isRepairingInProgress() || FirebaseSyncService().isBulkUploading) {
+          return;
+        }
+
         try {
-          final syncUuid = customerData['sync_uuid'] as String;
-          
-          // 🔥 رفع إلى Firebase
-          _syncHelper!.syncCustomer(customerData);
-          
-          // ✅ تسجيل في sync_coordination (فقط!)
-          await _coordinator!.registerOperation(
-            entityType: 'customer',
-            syncUuid: syncUuid,
-            source: SyncSource.local,
-          );
-          await _coordinator!.markFirebaseSynced('customer', syncUuid);
-          
+          // 🔥 رفع إلى Firebase. uploadCustomer يتكفل بالتسجيل في المنسق داخليًا.
+          await _syncHelper!.syncCustomer(customerData);
           _customersSynced++;
-          print('🛡️ ✅ رفع عميل: ${customerData['name']} (UUID: $syncUuid)');
-          
         } catch (e) {
-          print('🛡️ ❌ فشل رفع عميل: $e');
           _lastRunErrors++;
         }
       }
@@ -179,20 +204,34 @@ class SyncWatchdog {
   /// 🔍 البحث عن المعاملات التي لم تُرفع ورفعها
   Future<void> _syncPendingTransactions() async {
     final db = await _db.database;
+
+    // 🚀 أولاً: رفع جماعي بدفعات (يغطي الانقطاعات الطويلة بثوانٍ لا بساعات)
+    try {
+      final n = await FirebaseSyncService().flushPendingTransactionsInBulk();
+      if (n > 0) _transactionsSynced += n;
+    } catch (_) {}
     
     try {
-      // 🔒 قراءة فقط: جلب المعاملات التي لها sync_uuid ولكن ليست في sync_coordination
+      // 🔒 قراءة فقط: جلب المعاملات التي لها sync_uuid ولكن ليست في sync_coordination.
+      // 🔒 إضافة is_uploaded = 0 (لم تُرفع فعليًا) و is_created_by_me = 1 (من هذا الجهاز).
+      // بدون is_uploaded كان Watchdog يعيد رفع معاملات رُفعت بالفعل لأن المنسق قد
+      // يكون متأخرًا. وبدون is_created_by_me كان يحاول رفع معاملات جاءت من أجهزة
+      // أخرى، فيرفضها uploadTransaction داخليًا ويعيدها كنجاح كاذب.
       final pendingTransactions = await db.rawQuery('''
-        SELECT t.*, c.sync_uuid as customer_sync_uuid 
+        SELECT t.*, c.sync_uuid as customer_sync_uuid
         FROM transactions t
         INNER JOIN customers c ON t.customer_id = c.id
-        LEFT JOIN sync_coordination sc 
-          ON sc.entity_type = 'transaction' AND sc.sync_uuid = t.sync_uuid
-        WHERE t.sync_uuid IS NOT NULL 
-          AND t.sync_uuid != ''
+        LEFT JOIN sync_coordination sc
+          ON sc.entity_type = 'transaction' AND sc.sync_uuid = t.transaction_uuid
+        WHERE t.transaction_uuid IS NOT NULL
+          AND t.transaction_uuid != ''
           AND c.sync_uuid IS NOT NULL
-          AND (sc.id IS NULL OR sc.firebase_synced = 0 OR sc.firebase_synced IS NULL)
-        LIMIT 50
+          AND (t.is_uploaded = 0 OR t.is_uploaded IS NULL)
+          AND (t.is_created_by_me = 1 OR t.is_created_by_me IS NULL)
+          -- 🛡️ لا شرط على المنسّق: معاملة عُدّلت بعد رفعها تبقى «مرفوعة» فيه
+          -- بينما is_uploaded = 0 هو الحقيقة. الشرط القديم كان يُسقطها للأبد.
+        ORDER BY t.id ASC
+        LIMIT 100
       ''');
       
       if (pendingTransactions.isEmpty) return;
@@ -201,33 +240,23 @@ class SyncWatchdog {
       
       for (final txData in pendingTransactions) {
         try {
-          final syncUuid = txData['sync_uuid'] as String;
+          final syncUuid = txData['transaction_uuid'] as String;
           final customerSyncUuid = txData['customer_sync_uuid'] as String?;
-          
+
           if (customerSyncUuid == null || customerSyncUuid.isEmpty) {
-            print('🛡️ ⏭️ تخطي معاملة بدون customer_sync_uuid');
             continue;
           }
-          
-          // 🔥 رفع إلى Firebase
-          _syncHelper!.syncTransaction(
+
+          // 🔥 رفع إلى Firebase. uploadTransaction يتكفل داخليًا بكل شيء:
+          // التسجيل في المنسق، تحديث is_uploaded=1، الـ WAL. لذلك لا نكررها هنا
+          // (التكرار كان يسبب تضاربًا وتسجيلات مزدوجة في sync_coordination).
+          await _syncHelper!.syncTransaction(
             Map<String, dynamic>.from(txData),
             customerSyncUuid,
           );
-          
-          // ✅ تسجيل في sync_coordination (فقط!)
-          await _coordinator!.registerOperation(
-            entityType: 'transaction',
-            syncUuid: syncUuid,
-            source: SyncSource.local,
-          );
-          await _coordinator!.markFirebaseSynced('transaction', syncUuid);
-          
+
           _transactionsSynced++;
-          print('🛡️ ✅ رفع معاملة: ${txData['amount_changed']} (UUID: $syncUuid)');
-          
         } catch (e) {
-          print('🛡️ ❌ فشل رفع معاملة: $e');
           _lastRunErrors++;
         }
       }
@@ -292,9 +321,9 @@ class SyncWatchdog {
         SELECT COUNT(*) as count FROM transactions t
         INNER JOIN customers c ON t.customer_id = c.id
         LEFT JOIN sync_coordination sc 
-          ON sc.entity_type = 'transaction' AND sc.sync_uuid = t.sync_uuid
-        WHERE t.sync_uuid IS NOT NULL 
-          AND t.sync_uuid != ''
+          ON sc.entity_type = 'transaction' AND sc.sync_uuid = t.transaction_uuid
+        WHERE t.transaction_uuid IS NOT NULL 
+          AND t.transaction_uuid != ''
           AND c.sync_uuid IS NOT NULL
           AND (sc.id IS NULL OR sc.firebase_synced = 0 OR sc.firebase_synced IS NULL)
       ''');

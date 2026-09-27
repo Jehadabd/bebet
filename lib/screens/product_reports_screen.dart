@@ -27,6 +27,11 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
   bool _isLoading = true;
   final TextEditingController _searchController = TextEditingController();
 
+  // 📄 عرض تدريجي: أول 50 منتجاً ثم +50 عند النزول
+  static const int _pageSize = 50;
+  int _displayCount = _pageSize;
+  final ScrollController _scrollController = ScrollController();
+
   late final NumberFormat _nf = NumberFormat('#,##0', 'en_US');
   String _fmt(num v) => _nf.format(v);
 
@@ -42,10 +47,20 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
     super.initState();
     _loadProductReports();
     _searchController.addListener(_filterProducts);
+    // 📄 عند اقتراب المستخدم من نهاية المعروض نضيف 50 منتجاً إضافياً
+    _scrollController.addListener(() {
+      if (!_scrollController.hasClients) return;
+      if (_scrollController.position.extentAfter < 400 && mounted) {
+        setState(() {
+          _displayCount += _pageSize;
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
+    _scrollController.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -74,21 +89,32 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
         list.sort((a, b) => b.totalQuantitySold.compareTo(a.totalQuantitySold));
         break;
     }
-    setState(() { _filteredProducts = list; });
+    setState(() {
+      _filteredProducts = list;
+      // 📄 بحث/ترتيب جديد → نعيد العدّاد إلى أول 50 نتيجة
+      _displayCount = _pageSize;
+    });
   }
 
   Future<void> _loadProductReports() async {
     setState(() { _isLoading = true; });
     try {
       final products = await _databaseService.getAllProducts();
+
+      // ⚡ استعلام واحد مجمّع لكل المنتجات بدل ٣ استعلامات لكل منتج.
+      // نفس دالة الحساب تماماً (_computeProductSalesData) فالأرقام لا تتغيّر.
+      final salesByProduct = await _databaseService.getProductSalesDataForAll(
+        fromDate: _fromDate,
+        toDate: _toDate,
+      );
+
       final List<ProductReportData> productReports = [];
 
       for (final product in products) {
-        final salesData = await _databaseService.getProductSalesData(
-          product.id!,
-          fromDate: _fromDate,
-          toDate: _toDate,
-        );
+        final salesData = salesByProduct[product.id];
+        // لا أصناف ولا تسويات لهذا المنتج ⇒ كل قيمه أصفار، وكان يُحذف بعد
+        // قليل بشرط (totalSales > 0 || totalQuantitySold > 0) على أي حال.
+        if (salesData == null) continue;
         productReports.add(ProductReportData(
           product: product,
           totalQuantitySold: salesData['totalQuantity'] ?? 0.0,
@@ -318,12 +344,35 @@ class _ProductReportsScreenState extends State<ProductReportsScreen> {
         ),
       );
     }
+    // 📄 عرض تدريجي: أول 50 فقط ويزيد العدد عند النزول — البحث/الترتيب يبقى على الكامل
+    final shownCount = _displayCount < _filteredProducts.length
+        ? _displayCount
+        : _filteredProducts.length;
+    final hasMore = shownCount < _filteredProducts.length;
+
     return RefreshIndicator(
       onRefresh: _loadProductReports,
       child: ListView.builder(
+        controller: _scrollController,
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-        itemCount: _filteredProducts.length,
-        itemBuilder: (context, index) => _buildProductCard(_filteredProducts[index], index + 1),
+        itemCount: shownCount + (hasMore ? 1 : 0),
+        itemBuilder: (context, index) {
+          // عنصر تحميل أسفل القائمة عند وجود المزيد
+          if (index >= shownCount) {
+            return const Padding(
+              padding: EdgeInsets.symmetric(vertical: 20.0),
+              child: Center(
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2.5),
+                ),
+              ),
+            );
+          }
+          return _buildProductCard(_filteredProducts[index], index + 1);
+        },
       ),
     );
   }

@@ -424,7 +424,9 @@ class _InstallerDetailsScreenState extends State<InstallerDetailsScreen> with Si
           child: ListTile(
             leading: const CircleAvatar(child: Icon(Icons.receipt)),
             title: Text(invoice.customerName),
-            subtitle: Text(DateFormat('yyyy/MM/dd').format(invoice.invoiceDate)),
+            // 🧾 عرض رقم الفاتورة المركّب (كما يُطبع) مع التاريخ
+            subtitle: Text(
+                'فاتورة #${invoice.formattedInvoiceNumber} • ${DateFormat('yyyy/MM/dd').format(invoice.invoiceDate)}'),
             trailing: Text(
               '${formatCurrency(invoice.totalAmount)} د.ع',
               style: const TextStyle(fontWeight: FontWeight.bold),

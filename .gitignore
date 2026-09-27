@@ -43,8 +43,16 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/app/build/
+/android/build/
+/build/
+installer_output/
+*.apk
+*.exe
+*.so
 
 # Environment variables
 .env
 .env.local
 .env.*.local
+

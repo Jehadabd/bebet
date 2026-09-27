@@ -40,13 +40,20 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final SyncService _syncService = SyncService();
-  
+
+  // 📄 عرض تدريجي: أول 50 اسماً ثم +50 عند النزول (تسريع فتح سجل الديون)
+  static const int _pageSize = 50;
+  int _displayCount = _pageSize;
+  String? _lastSearchQuery;
+  final ScrollController _scrollController = ScrollController();
+
   // 🔄 الاستماع لإشعارات المزامنة الفورية
   StreamSubscription<Map<String, dynamic>>? _transactionSubscription;
-  
+
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_onScroll);
     // Use Future.microtask or addPostFrameCallback to ensure context is available
     // and to avoid issues with calling methods on providers too early.
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -55,13 +62,27 @@ class _HomeScreenState extends State<HomeScreen> {
       app.setSearchQuery('');
       app.initialize();
     });
-    
+
     // 🔄 الاستماع لإشعارات المعاملات الجديدة من Firebase
     _setupFirebaseSyncListener();
   }
-  
+
+  /// 📄 عند اقتراب المستخدم من نهاية المعروض نضيف 50 اسماً إضافياً
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    if (_scrollController.position.extentAfter < 400) {
+      // الحد الأعلى الحقيقي هو عدد النتائج؛ setState يتكفل بالباقي
+      if (mounted) {
+        setState(() {
+          _displayCount += _pageSize;
+        });
+      }
+    }
+  }
+
   @override
   void dispose() {
+    _scrollController.dispose();
     _transactionSubscription?.cancel();
     super.dispose();
   }
@@ -442,7 +463,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             Text('تم فحص ${verificationResult.customersChecked} عميل'),
                             Text('وُجدت ${verificationResult.customersWithIssues} مشكلة:'),
                             const SizedBox(height: 12),
-                            ...verificationResult.issues.take(10).map((issue) => Padding(
+                            ...verificationResult.issues.map((issue) => Padding(
                               padding: const EdgeInsets.only(bottom: 8),
                               child: Card(
                                 color: Colors.red[50],
@@ -963,6 +984,19 @@ class _HomeScreenState extends State<HomeScreen> {
               ));
             }
 
+            // 📄 عرض تدريجي: نعرض أول 50 فقط ويزيد العدد عند النزول.
+            // البحث يبقى يعمل على القائمة الكاملة — التدريج في العرض فقط.
+            final allCustomers = provider.customers;
+            if (provider.searchQuery != _lastSearchQuery) {
+              // بحث جديد → نعيد العدّاد إلى أول 50 نتيجة
+              _lastSearchQuery = provider.searchQuery;
+              _displayCount = _pageSize;
+            }
+            final shownCount = _displayCount < allCustomers.length
+                ? _displayCount
+                : allCustomers.length;
+            final hasMore = shownCount < allCustomers.length;
+
             return Column(
               children: [
                 Padding(
@@ -997,12 +1031,27 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                         )
                       : ListView.builder(
+                          controller: _scrollController,
                           padding: const EdgeInsets.symmetric(
                               horizontal: 24.0,
                               vertical: 12.0), // Padding for the list itself
-                          itemCount: provider.customers.length,
+                          itemCount: shownCount + (hasMore ? 1 : 0),
                           itemBuilder: (context, index) {
-                            final customer = provider.customers[index];
+                            // عنصر تحميل أسفل القائمة عند وجود المزيد
+                            if (index >= shownCount) {
+                              return const Padding(
+                                padding: EdgeInsets.symmetric(vertical: 20.0),
+                                child: Center(
+                                  child: SizedBox(
+                                    width: 24,
+                                    height: 24,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2.5),
+                                  ),
+                                ),
+                              );
+                            }
+                            final customer = allCustomers[index];
                             return CustomerListTile(customer: customer);
                           },
                         ),

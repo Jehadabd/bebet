@@ -1,6 +1,7 @@
 // main.dart
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui'; // 🛡️ لمعالجة الأخطاء العامة
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -35,7 +36,9 @@ import 'services/sync/sync_tracker.dart'; // 🔄 تتبع المزامنة
 import 'services/firebase_sync/firebase_sync.dart'; // 🔥 مزامنة Firebase
 import 'services/firebase_sync/firebase_auth_service.dart'; // 🔐 مصادقة Firebase
 import 'services/smart_pricing_service.dart'; // 🔮 محرك التسعير الذكي
-
+import 'services/invoice_settings_service.dart'; // 🧾 إعدادات الفواتير (رقم الجهاز)
+import 'services/firebase_sync/firebase_custom_config.dart';
+import 'screens/reconciliation_prompt.dart'; // 🧮 حوار طلب المطابقة
 // 🛡️ ملاحظة: Single Instance يُعالج على مستوى C++ في main.cpp
 // باستخدام Named Mutex + RegisterWindowMessage قبل تشغيل Flutter
 
@@ -43,6 +46,22 @@ import 'services/smart_pricing_service.dart'; // 🔮 محرك التسعير ا
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 🛡️ معالج أخطاء Flutter العامة - يمنع الكراش من أخطاء الواجهة
+  FlutterError.onError = (FlutterErrorDetails details) {
+    print('🛡️ FlutterError (تم التقاطه ومنع الكراش): ${details.exception}');
+    print('   📍 ${details.library}');
+    // تسجيل الخطأ بدلاً من الكراش
+    FlutterError.presentError(details);
+  };
+
+  // 🛡️ معالج أخطاء Platform (أخطاء native threads مثل Firebase Auth)
+  PlatformDispatcher.instance.onError = (error, stack) {
+    print('🛡️ PlatformError (تم التقاطه ومنع الكراش): $error');
+    // ⚡ هذا يلتقط خطأ firebase_auth_plugin/id-token non-platform thread
+    // ويمنع إغلاق التطبيق
+    return true; // true = تم معالجة الخطأ، لا تكرش
+  };
 
   // تهيئة GetStorage
   await GetStorage.init();
@@ -75,28 +94,35 @@ void main(List<String> args) async {
     }
   }
 
-  // تهيئة sqflite_common_ffi على ويندوز فقط
-  sqfliteFfiInit();
-  databaseFactory = databaseFactoryFfi;
+  // تهيئة sqflite_common_ffi على ويندوز وأندرويد لضمان دعم FTS5 المتقدم
+  if (Platform.isWindows || Platform.isAndroid || Platform.isLinux) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
 
   // Check if passwords are set (عملية سريعة محلية)
   final passwordService = PasswordService();
   final bool passwordsSet = await passwordService.arePasswordsSet();
 
   // 🛡️ تهيئة Window Manager أولاً وبسرعة
-  await windowManager.ensureInitialized();
-  WindowOptions windowOptions = const WindowOptions(
-    title: 'دفتر ديوني',
-    center: true,
-  );
-  windowManager.waitUntilReadyToShow(windowOptions, () async {
-    await windowManager.show();
-    await windowManager.focus();
-    // 🛡️ نمنع الإغلاق المباشر لمعالجته بشكل نظيف
-    await windowManager.setPreventClose(true);
-  });
+  if (Platform.isWindows) {
+    await windowManager.ensureInitialized();
+    WindowOptions windowOptions = const WindowOptions(
+      title: 'دفتر ديوني',
+      center: true,
+    );
+    windowManager.waitUntilReadyToShow(windowOptions, () async {
+      await windowManager.show();
+      await windowManager.focus();
+      // 🛡️ نمنع الإغلاق المباشر لمعالجته بشكل نظيف
+      await windowManager.setPreventClose(true);
+    });
+  }
 
   // تشغيل الواجهة للمستخدم فوراً بدون أي تأخير
+  // 🔒 تهيئة cache رقم جهاز الفواتير (سريع جداً، ضروري لرقم الفاتورة المعروض).
+  await InvoiceSettingsService.initDeviceIdCache();
+
   runApp(MyApp(initialRoute: passwordsSet ? '/' : '/password_setup'));
 
   // 🚀 إطلاق الخدمات الخلفية التي تأخذ وقتاً طويلاً كمعالجة متوازية ولا ننتظرها
@@ -106,7 +132,13 @@ void main(List<String> args) async {
 // 🚀 دالة تقوم بتهيئة الخدمات المعتمدة على الشبكة أو الثقيلة بشكل متوازي في الخلفية
 Future<void> _initializeBackgroundServices() async {
   print('🔄 بدء تهيئة الخدمات الخلفية بشكل متوازي...');
-  
+
+  // 🏷️ بصمة ملكية الفواتير (فلترة التقارير/التليجرام «المحلية فقط») — محلية
+  // لا تعتمد على الشبكة، نجهزها مبكراً قبل أن يفتح المستخدم أي تقرير.
+  try {
+    await DatabaseService.ensureInvoiceOwnershipFlags();
+  } catch (_) {}
+
   await Future.wait([
     // المهمة 1: فحص سلامة البيانات المالية (محلي)
     Future(() async {
@@ -134,10 +166,18 @@ Future<void> _initializeBackgroundServices() async {
     // المهمة 3: اتصال Firebase وتسجيل الدخول (يعتمد على الشبكة ويأخذ وقتاً طويلاً)
     Future(() async {
       try {
-        await Firebase.initializeApp(
-          options: DefaultFirebaseOptions.currentPlatform,
-        );
-        print('✅ تم تهيئة Firebase بنجاح');
+        final customOptions = await FirebaseCustomConfig.getCustomOptions();
+        
+        if (customOptions != null) {
+          await Firebase.initializeApp(
+            options: customOptions,
+          );
+          print('✅ تم تهيئة Firebase بنجاح باستخدام إعدادات المستخدم');
+        } else {
+          print('ℹ️ لم يتم إعداد Firebase بعد - التطبيق يعمل بوضع الأوفلاين');
+          // لا نقوم بتهيئة المزامنة إذا لم يكن الفايربيس معداً
+          return;
+        }
         
         final authService = FirebaseAuthService();
         final uid = await authService.signInAnonymously();
@@ -147,10 +187,17 @@ Future<void> _initializeBackgroundServices() async {
           print('⚠️ فشل تسجيل الدخول المجهول - المزامنة قد لا تعمل');
         }
         
+        // 🔒 إضافةหน่วง زمنية قصيرة على الويندوز لمنع اختناق (Deadlock) إضافة firebase_auth
+        // في الـ C++ SDK عند تشغيل عدد كبير من الـ Listeners والرفع فوراً.
+        await Future.delayed(const Duration(seconds: 3));
+        
         final firebaseSync = FirebaseSyncService();
         final success = await firebaseSync.initialize();
         if (success) {
           print('✅ تم تهيئة مزامنة Firebase - الجهاز مرئي للأجهزة الأخرى');
+          // 🔔 طلب المطابقة قد يصل والمستخدم في أي شاشة، فنراقبه على مستوى
+          // التطبيق كله لا على مستوى شاشة الإعدادات.
+          ReconciliationPrompt.start();
         } else {
           print('⚠️ تهيئة المزامنة لم تكتمل بنجاح');
         }
@@ -243,12 +290,16 @@ class _MyAppState extends State<MyApp> with WindowListener {
   @override
   void initState() {
     super.initState();
-    windowManager.addListener(this);
+    if (Platform.isWindows) {
+      windowManager.addListener(this);
+    }
   }
 
   @override
   void dispose() {
-    windowManager.removeListener(this);
+    if (Platform.isWindows) {
+      windowManager.removeListener(this);
+    }
     super.dispose();
   }
 
@@ -279,9 +330,11 @@ class _MyAppState extends State<MyApp> with WindowListener {
     }
 
     // 🛡️ نسمح بالإغلاق أولاً (احتياطاً)
-    try {
-      await windowManager.setPreventClose(false);
-    } catch (_) {}
+    if (Platform.isWindows) {
+      try {
+        await windowManager.setPreventClose(false);
+      } catch (_) {}
+    }
 
     // ⚠️ مهم جداً: لا نستخدم windowManager.destroy() أو close()
     // لأنهما قد يدمران النافذة قبل أن ينفذ exit(0)، فتتعلق العملية في الخلفية.

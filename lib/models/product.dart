@@ -172,33 +172,90 @@ class Product {
 
   // دالة عامة لحساب التكلفة لأي وحدة بيع
   double? getProductCostForUnit(String saleUnit) {
-    final costs = getUnitCostsMap();
-    
+    String baseUnit = unit;
+    if (baseUnit == 'piece') baseUnit = 'قطعة';
+    if (baseUnit == 'meter') baseUnit = 'متر';
+    String normSaleUnit = saleUnit;
+    if (normSaleUnit == 'piece') normSaleUnit = 'قطعة';
+    if (normSaleUnit == 'meter') normSaleUnit = 'متر';
+
     // إذا كان نوع البيع هو الوحدة الأساسية
-    if (saleUnit == unit) {
+    if (saleUnit == unit || normSaleUnit == baseUnit) {
       return costPrice;
     }
-    
+
+    final costs = getUnitCostsMap();
+
     // البحث في تكاليف الوحدات المحفوظة
     if (costs.containsKey(saleUnit)) {
       return costs[saleUnit];
     }
-    
+    if (costs.containsKey(normSaleUnit)) {
+      return costs[normSaleUnit];
+    }
+
     // البحث في التسلسل الهرمي
     final hierarchy = getUnitHierarchyList();
     double? multiplier;
     for (var item in hierarchy) {
-      if (item['unit_name'] == saleUnit) {
+      if (item['unit_name'] == saleUnit || item['unit_name'] == normSaleUnit) {
         multiplier = (item['quantity'] as num?)?.toDouble();
         break;
       }
     }
-    
+
     if (multiplier != null && costPrice != null) {
       return costPrice! * multiplier;
     }
-    
-    return null;
+
+    // إذا كان هناك lengthPerUnit (مثل المتر واللفة أو القطعة والكرتون)
+    if (lengthPerUnit != null && lengthPerUnit! > 0 && costPrice != null) {
+      final unitLower = unit.toLowerCase();
+      String expectedLarge = 'علبة';
+      if (unitLower.contains('متر') || unit == 'meter') expectedLarge = 'لفة';
+      else if (unitLower.contains('قطع') || unit == 'piece') expectedLarge = 'كرتون';
+
+      if (saleUnit == expectedLarge || normSaleUnit == expectedLarge) {
+        return costPrice! * lengthPerUnit!;
+      }
+    }
+
+    return costPrice;
+  }
+
+  /// 📦 الحصول على معامل التحويل لوحدة معينة بالنسبة للوحدة الأساسية (مثلاً: باكية = 10، كرتون = 100)
+  double getConversionFactorForUnit(String saleUnit) {
+    String baseUnit = unit;
+    if (baseUnit == 'piece') baseUnit = 'قطعة';
+    if (baseUnit == 'meter') baseUnit = 'متر';
+    String normSaleUnit = saleUnit;
+    if (normSaleUnit == 'piece') normSaleUnit = 'قطعة';
+    if (normSaleUnit == 'meter') normSaleUnit = 'متر';
+
+    if (saleUnit == unit || normSaleUnit == baseUnit) {
+      return 1.0;
+    }
+
+    final hierarchy = getUnitHierarchyList();
+    for (var item in hierarchy) {
+      if (item['unit_name'] == saleUnit || item['unit_name'] == normSaleUnit) {
+        final qty = (item['quantity'] as num?)?.toDouble();
+        if (qty != null && qty > 0) return qty;
+      }
+    }
+
+    if (lengthPerUnit != null && lengthPerUnit! > 0) {
+      final unitLower = unit.toLowerCase();
+      String expectedLarge = 'علبة';
+      if (unitLower.contains('متر') || unit == 'meter') expectedLarge = 'لفة';
+      else if (unitLower.contains('قطع') || unit == 'piece') expectedLarge = 'كرتون';
+
+      if (saleUnit == expectedLarge || normSaleUnit == expectedLarge) {
+        return lengthPerUnit!;
+      }
+    }
+
+    return 1.0;
   }
 
   // دالة عامة لبناء التسلسل الهرمي التلقائي للوحدات

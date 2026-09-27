@@ -18,9 +18,11 @@ import '../services/receipt_voucher_pdf_service.dart';
 import '../services/printing_service.dart';
 import '../services/database_service.dart';
 import '../services/drive_service.dart';
+import '../utils/uuid_helper.dart'; // للـ UUID الحتمي
 import 'package:pdf/widgets.dart' as pw;
 import 'package:flutter/services.dart' show rootBundle;
 import '../utils/money_calculator.dart'; // 🔒 إضافة MoneyCalculator للأمان المالي
+import '../services/sync/sync_security.dart';
 
 class AddTransactionScreen extends StatefulWidget {
   final Customer customer;
@@ -199,7 +201,13 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
         return;
       }
       
-      final uuid = await DriveService().generateTransactionUuid();
+      final now = DateTime.now();
+      // 🔑 هوية المعاملة تُولّد هنا لحظة إنشائها، وهي فريدة بالبناء.
+      final uuid = SyncSecurity.generateTransactionUuid(
+        widget.customer.name,
+        amountChanged,
+        now,
+      );
       final transaction = DebtTransaction(
         customerId: widget.customer.id!,
         amountChanged: amountChanged,
@@ -209,8 +217,8 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
             _noteController.text.isEmpty ? null : _noteController.text,
         transactionType:
             _isDebt ? 'manual_debt' : 'manual_payment', // Use specific types
-        createdAt: DateTime.now(), // Add createdAt for consistency
-        transactionDate: DateTime.now(), // Add transactionDate for consistency
+        createdAt: now, // Add createdAt for consistency
+        transactionDate: now, // Add transactionDate for consistency
         audioNotePath: _audioNotePath,
         transactionUuid: uuid,
       );
@@ -915,7 +923,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                     children: [
                       Expanded(
                         child: Text(
-                          'فاتورة #${inv.id}',
+                          'فاتورة #${inv.formattedInvoiceNumber}',
                           style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                         ),
                       ),

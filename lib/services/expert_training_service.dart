@@ -26,6 +26,9 @@ class ExpertKnowledgeDatabase {
   Future<Database> _initDatabase() async {
 
     final Directory documentsDirectory = await getApplicationDocumentsDirectory();
+    if (!await documentsDirectory.exists()) {
+      await documentsDirectory.create(recursive: true);
+    }
     final String path = join(documentsDirectory.path, 'expert_knowledge.db');
 
     print('🧠 Expert Knowledge DB path: $path');

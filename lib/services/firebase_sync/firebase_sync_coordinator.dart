@@ -262,8 +262,8 @@ class FirebaseSyncCoordinator {
       SELECT t.*, 'transaction' as entity_type, c.sync_uuid as customer_sync_uuid
       FROM transactions t
       JOIN customers c ON t.customer_id = c.id
-      LEFT JOIN sync_coordination sc ON sc.entity_type = 'transaction' AND sc.sync_uuid = t.sync_uuid
-      WHERE t.sync_uuid IS NOT NULL 
+      LEFT JOIN sync_coordination sc ON sc.entity_type = 'transaction' AND sc.sync_uuid = t.transaction_uuid
+      WHERE t.transaction_uuid IS NOT NULL 
         AND (sc.firebase_synced IS NULL OR sc.firebase_synced = 0)
         AND (t.is_deleted IS NULL OR t.is_deleted = 0)
     ''');
@@ -291,7 +291,12 @@ class FirebaseSyncCoordinator {
   /// التحقق من التكرار
   /// ═══════════════════════════════════════════════════════════════════════
   
-  /// التحقق من وجود معاملة مكررة
+  /// التحقق من وجود معاملة مكررة.
+  ///
+  /// 🔒 التكرار يُحدَّد بالهوية المالية فقط: نفس العميل + نفس التاريخ +
+  /// نفس المبلغ. لا نستخدم `transaction_type` لأنه قد يختلف تسميةً بين
+  /// الأجهزة (مثلًا "manual_debt" مقابل "debt") فيفوّت الفحص تكرارًا حقيقيًا،
+  /// أو يُنسَب خطأً. المبلغ بإشارته (موجب=دين، سالب=تسديد) كافٍ للتمييز.
   Future<bool> isDuplicateTransaction({
     required int customerId,
     required String transactionDate,
@@ -299,17 +304,16 @@ class FirebaseSyncCoordinator {
     required String transactionType,
   }) async {
     final db = await _db.database;
-    
+
     final result = await db.query(
       'transactions',
-      where: '''customer_id = ? AND 
-                transaction_date = ? AND 
+      where: '''customer_id = ? AND
+                transaction_date = ? AND
                 ABS(amount_changed - ?) < 0.01 AND
-                transaction_type = ? AND
                 (is_deleted IS NULL OR is_deleted = 0)''',
-      whereArgs: [customerId, transactionDate, amount, transactionType],
+      whereArgs: [customerId, transactionDate, amount],
     );
-    
+
     return result.isNotEmpty;
   }
   

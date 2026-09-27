@@ -2,10 +2,8 @@
 // 📸 خدمة لقطة الجهاز (Device Snapshot Service)
 // تقوم بحساب وإرسال "ما قام به هذا الجهاز" ليتم التحقق منه في الأجهزة الأخرى
 
-import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../database_service.dart';
-import '../../models/transaction.dart';
 import 'firebase_sync_config.dart';
 
 class DeviceSnapshot {
@@ -46,7 +44,8 @@ class DeviceSnapshotService {
   DeviceSnapshotService._internal();
 
   final DatabaseService _db = DatabaseService();
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  FirebaseFirestore? _firestoreInstance;
+  FirebaseFirestore get _firestore => _firestoreInstance ??= FirebaseFirestore.instance;
 
   /// 📸 إنشاء لقطة شاملة لما قام به هذا الجهاز
   Future<DeviceSnapshot> createSnapshot() async {
@@ -123,8 +122,6 @@ class DeviceSnapshotService {
       // المسار: sync_groups/{groupId}/snapshots/{deviceId}
       // نستخدم set لعمل overwrite دائماً (نريد أحدث حالة)
       await _firestore
-          .collection('sync_groups')
-          .doc(groupId)
           .collection('snapshots')
           .doc(snapshot.deviceId)
           .set(snapshot.toMap());
@@ -145,8 +142,6 @@ class DeviceSnapshotService {
       if (groupId == null) return [];
 
       final query = await _firestore
-          .collection('sync_groups')
-          .doc(groupId)
           .collection('snapshots')
           .get();
 

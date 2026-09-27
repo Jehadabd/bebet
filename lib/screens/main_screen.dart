@@ -37,9 +37,14 @@ class _MainScreenState extends State<MainScreen> {
     _updateCurrentMonthYear();
     // تأكد من تهيئة مزود التطبيق لتفعيل دعم Google Drive
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<AppProvider>().initialize();
-      // ✅ بدء مراقبة API Keys في الخلفية
-      ApiHealthService().startMonitoring();
+      if (!mounted) return; // 🛡️ تجنب الكراش إذا تم dispose
+      try {
+        context.read<AppProvider>().initialize();
+        // ✅ بدء مراقبة API Keys في الخلفية
+        ApiHealthService().startMonitoring();
+      } catch (e) {
+        print('⚠️ خطأ في تهيئة MainScreen: $e');
+      }
     });
   }
 
@@ -112,8 +117,8 @@ class _MainScreenState extends State<MainScreen> {
     required String title,
     required VoidCallback onTap,
     Color color = const Color(0xFF6C63FF),
-    double fontSize = 40,
-    double iconSize = 30,
+    double fontSize = 16,
+    double iconSize = 32,
     double padding = 6,
     double spacing = 4,
   }) {
@@ -121,7 +126,7 @@ class _MainScreenState extends State<MainScreen> {
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
       child: Container(
-        padding: EdgeInsets.all(padding),
+        padding: EdgeInsets.symmetric(horizontal: padding, vertical: padding),
         decoration: BoxDecoration(
           color: color.withOpacity(0.1),
           borderRadius: BorderRadius.circular(12),
@@ -132,13 +137,19 @@ class _MainScreenState extends State<MainScreen> {
           children: [
             Icon(icon, size: iconSize, color: color),
             SizedBox(height: spacing),
-            Text(
-              title,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: fontSize,
-                fontWeight: FontWeight.bold,
-                color: color,
+            Flexible(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  style: TextStyle(
+                    fontSize: fontSize,
+                    fontWeight: FontWeight.bold,
+                    color: color,
+                  ),
+                ),
               ),
             ),
           ],
@@ -150,14 +161,40 @@ class _MainScreenState extends State<MainScreen> {
   @override
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
-    final isLargeScreen = screenWidth > 600;
-    final crossAxisCount = isLargeScreen ? 6 : 5;
-    final childAspectRatio = 0.7;
-    final buttonFontSize = 40.0;
-    final iconSize = 60.0;
-    final buttonPadding = 4.0;
-    final buttonSpacing = 4.0;
-    final gridSpacing = 32.0;
+    
+    int crossAxisCount = 6;
+    double childAspectRatio = 1.1;
+    double buttonFontSize = 18.0;
+    double iconSize = 36.0;
+    double gridSpacing = 12.0;
+    double buttonPadding = 4.0;
+    double buttonSpacing = 4.0;
+
+    if (screenWidth < 600) {
+      crossAxisCount = 3;
+      childAspectRatio = 1.0;
+      buttonFontSize = 14.0;
+      iconSize = 28.0;
+      gridSpacing = 8.0;
+    } else if (screenWidth < 900) {
+      crossAxisCount = 4;
+      childAspectRatio = 1.1;
+      buttonFontSize = 16.0;
+      iconSize = 32.0;
+      gridSpacing = 10.0;
+    } else if (screenWidth < 1200) {
+      crossAxisCount = 6;
+      childAspectRatio = 1.1;
+      buttonFontSize = 18.0;
+      iconSize = 36.0;
+      gridSpacing = 12.0;
+    } else {
+      crossAxisCount = 6;
+      childAspectRatio = 1.25;
+      buttonFontSize = 20.0;
+      iconSize = 42.0;
+      gridSpacing = 16.0;
+    }
 
     return Scaffold(
       backgroundColor: _backgroundColor,
@@ -473,7 +510,11 @@ class _MainScreenState extends State<MainScreen> {
                                       if (await canLaunchUrl(uri)) {
                                         await launchUrl(uri);
                                       } else {
-                                        await Share.shareXFiles([XFile(file.path)]);
+                                        // 📎 subject إلزامي على ويندوز وإلا فشلت النافذة (عنوان فارغ)
+                                        await Share.shareXFiles(
+                                          [XFile(file.path, mimeType: 'application/pdf')],
+                                          subject: 'الديون المتأخرة',
+                                        );
                                       }
                                     }
                                   } catch (e) {
@@ -613,7 +654,7 @@ class _MainScreenState extends State<MainScreen> {
                     errorNotifier.value = 'خطأ: $e';
                     uploadSucceeded = false;
                   } finally {
-                    if (Navigator.of(context, rootNavigator: true).canPop()) {
+                    if (mounted && Navigator.of(context, rootNavigator: true).canPop()) {
                       Navigator.of(context, rootNavigator: true).pop({
                         'success': uploadSucceeded,
                         'error': errorNotifier.value,

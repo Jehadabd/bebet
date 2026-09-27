@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/ai_chat_service.dart';
 import '../services/database_service.dart';
 import '../services/reports_service.dart';
+import '../widgets/report_source_filter_button.dart';
 import '../widgets/date_range_input_dialog.dart';
 import 'package:intl/intl.dart';
 import 'transactions_list_dialog.dart';
@@ -60,6 +61,8 @@ class _WeeklyReportScreenState extends State<WeeklyReportScreen> {
   }
 
   Future<void> _loadReport() async {
+    // 🔎 فلتر مصدر البيانات (الكل/هذا الجهاز/المزامنة) — يُحمل مرة واحدة.
+    await ReportsService.loadSavedFilter();
     setState(() { _isLoading = true; });
     try {
       final startOfWeekDay = _weekStart;
@@ -136,6 +139,8 @@ class _WeeklyReportScreenState extends State<WeeklyReportScreen> {
             tooltip: 'تغيير الفترة',
             onPressed: _pickWeekRange,
           ),
+          // 🔎 فلتر مصدر البيانات (الكل/هذا الجهاز/من المزامنة)
+          ReportSourceFilterButton(onChanged: _loadReport),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _loadReport,

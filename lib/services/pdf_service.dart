@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
 import 'package:intl/intl.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import '../models/customer.dart';
@@ -11,6 +12,8 @@ import '../models/account_statement_item.dart';
 import 'dart:convert';
 import 'settings_manager.dart';
 import 'pdf_header.dart';
+import 'database_service.dart';
+import 'invoice_settings_service.dart';
 
 class PdfService {
   static final PdfService _instance = PdfService._internal();
@@ -179,12 +182,67 @@ class PdfService {
     return file;
   }
 
+  /// 🧾 خريطة آي دي الفاتورة → الرقم المعروض المركّب (كما يُطبع في الفاتورة).
+  /// الأولوية للتركيب: [رقم الجهاز][السنة][الشهر][التسلسل الشهري] — بعض
+  /// الفواتير خُزّن معرّفها المركّب بدون التسلسل (نسخة سابقة) لكن التسلسل
+  /// محفوظ في monthly_sequence_number فنركّبه منه. نفترض فقط فواتير لا تسلسل
+  /// لها ومعرّفها > مليون (الرقم الكامل = المعرّف نفسه).
+  Future<Map<int, String>> _buildInvoiceNumberMap(
+      List<AccountStatementItem> items) async {
+    final ids = items
+        .map((i) => i.transaction?.invoiceId)
+        .whereType<int>()
+        .toSet();
+    final map = <int, String>{};
+    if (ids.isEmpty) return map;
+
+    final db = DatabaseService();
+    final database = await db.database;
+    final placeholders = ids.map((_) => '?').join(',');
+    final rows = await database.rawQuery(
+      'SELECT id, invoice_date, invoice_year, invoice_month, monthly_sequence_number, invoice_number '
+      'FROM invoices WHERE id IN ($placeholders)',
+      ids.toList(),
+    );
+    final deviceIdStr = InvoiceSettingsService.cachedDeviceId.toString();
+    for (final row in rows) {
+      final id = row['id'] as int;
+
+      // 🧾 الأولوية للرقم المخزّن مع الفاتورة — هوية ثابتة لا تُركَّب من جديد
+      final stored = row['invoice_number'] as String?;
+      if (stored != null && stored.isNotEmpty) {
+        map[id] = stored;
+        continue;
+      }
+
+      final date = DateTime.tryParse(row['invoice_date'] as String? ?? '');
+      final year = (row['invoice_year'] as int?) ?? date?.year ?? 0;
+      final month = (row['invoice_month'] as int?) ?? date?.month ?? 0;
+      final monthStr = month.toString().padLeft(2, '0');
+      final seq = row['monthly_sequence_number'] as int?;
+      if (seq != null) {
+        map[id] = '$deviceIdStr$year$monthStr$seq';
+      } else if (id > 1000000) {
+        map[id] = id.toString();
+      } else {
+        map[id] = '$deviceIdStr$year$monthStr---';
+      }
+    }
+    return map;
+  }
+
+  /// 🧾 الرقم المعروض للفاتورة: المركّب إن وُجد في الخريطة، وإلا الآي دي نفسه.
+  static String _invoiceDisplayNumber(
+      int? invoiceId, Map<int, String> invoiceNumbers) {
+    if (invoiceId == null) return '';
+    return invoiceNumbers[invoiceId] ?? invoiceId.toString();
+  }
+
   Future<Uint8List> generateAccountStatement({
     required Customer customer,
     required List<AccountStatementItem> transactions,
     double? finalBalance,
-  }) async {
-    // تحميل الخط العربي Amiri
+  }) async {    // تحميل الخط العربي Amiri
     final fontData = await rootBundle.load('assets/fonts/Amiri-Regular.ttf');
     final ttf = pw.Font.ttf(fontData);
     // تحميل خط الناصر الصحيح (نفس خط الفاتورة)
@@ -201,14 +259,20 @@ class PdfService {
       return NumberFormat('#,##0', 'en_US').format(value);
     }
 
+    // 🧾 خريطة أرقام الفواتير المركّبة (كما تُطبع) لكشوف الحساب
+    final invoiceNumbers = await _buildInvoiceNumberMap(transactions);
+
     String formatDescription(AccountStatementItem item) {
-      final hasInvoice = item.transaction?.invoiceId != null;
-      final invoicePart = hasInvoice ? 'فاتورة #${item.transaction?.invoiceId}' : '';
-      
+      final invoiceId = item.transaction?.invoiceId;
+      final hasInvoice = invoiceId != null;
+      final invoicePart = hasInvoice
+          ? 'فاتورة #${_invoiceDisplayNumber(invoiceId, invoiceNumbers)}'
+          : '';
+
       // جلب الملاحظة النصية إن وجدت
       final note = item.transaction?.transactionNote?.trim() ?? '';
       final hasNote = note.isNotEmpty;
-      
+
       String baseDescription = '';
       if (item.type == 'transaction' && item.transaction != null) {
         if (item.transaction!.amountChanged > 0) {
@@ -221,12 +285,12 @@ class PdfService {
       } else {
         baseDescription = item.description.replaceAll('(', '').replaceAll(')', '');
       }
-      
+
       // بناء النص النهائي: البيان + الملاحظة + رقم الفاتورة
       List<String> parts = [baseDescription];
       if (hasNote) parts.add(note);
       if (hasInvoice) parts.add(invoicePart);
-      
+
       return parts.join(' - ');
     }
 
@@ -587,9 +651,15 @@ class PdfService {
       return NumberFormat('#,##0', 'en_US').format(value);
     }
 
+    // 🧾 خريطة أرقام الفواتير المركّبة — تُملأ تدريجياً لكل عميل في الحلقة
+    final invoiceNumbers = <int, String>{};
+
     String formatDescription(AccountStatementItem item) {
-      final hasInvoice = item.transaction?.invoiceId != null;
-      final invoicePart = hasInvoice ? 'فاتورة #${item.transaction?.invoiceId}' : '';
+      final invoiceId = item.transaction?.invoiceId;
+      final hasInvoice = invoiceId != null;
+      final invoicePart = hasInvoice
+          ? 'فاتورة #${_invoiceDisplayNumber(invoiceId, invoiceNumbers)}'
+          : '';
       
       // جلب الملاحظة النصية إن وجدت
       final note = item.transaction?.transactionNote?.trim() ?? '';
@@ -683,6 +753,9 @@ class PdfService {
 
       // جلب معاملات العميل
       final transactions = await getCustomerTransactions(customer.id!);
+
+      // 🧾 تعبئة خريطة أرقام الفواتير المركّبة لمعاملات هذا العميل
+      invoiceNumbers.addAll(await _buildInvoiceNumberMap(transactions));
       
       // تخطي العملاء الذين رصيدهم صفر وليس لديهم معاملات
       final hasBalance = (customer.currentTotalDebt ?? 0) != 0;
@@ -888,6 +961,63 @@ class PdfService {
     final pdf = pw.Document();
     
     String fmt(num v) => NumberFormat('#,##0', 'en_US').format(v);
+
+    // ── مساعدات الملخص الجديد ──────────────────────────────────────────
+    pw.Widget sumRow(String label, num value,
+        {String sign = '',
+        bool bold = false,
+        PdfColor? color,
+        String? note,
+        double size = 10}) {
+      return pw.Padding(
+        padding: const pw.EdgeInsets.symmetric(vertical: 1.2),
+        child: pw.Row(children: [
+          pw.SizedBox(
+              width: 14,
+              child: pw.Text(sign,
+                  style: pw.TextStyle(
+                      fontSize: size + 1,
+                      fontWeight: pw.FontWeight.bold,
+                      color: color))),
+          pw.Expanded(
+              child: pw.Text(note == null ? label : '$label  ($note)',
+                  style: pw.TextStyle(
+                      fontSize: size,
+                      fontWeight:
+                          bold ? pw.FontWeight.bold : pw.FontWeight.normal))),
+          pw.Text(fmt(value),
+              style: pw.TextStyle(
+                  fontSize: size + 1,
+                  fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal,
+                  color: color)),
+        ]),
+      );
+    }
+
+    pw.Widget sumBox(String title, PdfColor titleColor, PdfColor borderColor,
+        List<pw.Widget> rows) {
+      return pw.Container(
+        width: double.infinity,
+        padding: const pw.EdgeInsets.fromLTRB(8, 6, 8, 8),
+        decoration: pw.BoxDecoration(
+          border: pw.Border.all(color: borderColor, width: 0.8),
+          borderRadius: pw.BorderRadius.circular(4),
+        ),
+        child: pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+          children: [
+            pw.Text(title,
+                style: pw.TextStyle(
+                    fontSize: 11,
+                    fontWeight: pw.FontWeight.bold,
+                    color: titleColor)),
+            pw.SizedBox(height: 4),
+            ...rows,
+          ],
+        ),
+      );
+    }
+
     
     final entries = statementData['entries'] as List<Map<String, dynamic>>;
     final summary = statementData['summary'] as Map<String, dynamic>;
@@ -921,80 +1051,88 @@ class PdfService {
           pw.Text('تاريخ الطباعة: ${DateFormat('yyyy/MM/dd').format(DateTime.now())}', style: const pw.TextStyle(fontSize: 10)),
           pw.SizedBox(height: 15),
           
-          // ملخص الإحصائيات
+          // ═══════════════════════════════════════════════════════════
+          // ملخص الحساب — قسمان: حركة الشراء، ثم معادلة الرصيد
+          // ═══════════════════════════════════════════════════════════
+          sumBox('ما اشتريته في هذه الفترة', PdfColors.indigo800,
+              PdfColors.indigo200, [
+            sumRow('فواتير نقد', (summary['cashInvoicesValue'] as num?) ?? 0,
+                color: PdfColors.blueGrey700,
+                note:
+                    '${((summary['totalCashInvoices'] as int?) ?? 0) + ((summary['convertedToCash'] as int?) ?? 0)} فاتورة'),
+            sumRow('فواتير دين', (summary['debtInvoicesValue'] as num?) ?? 0,
+                color: PdfColors.indigo,
+                note:
+                    '${((summary['totalDebtInvoices'] as int?) ?? 0) + ((summary['convertedToDebt'] as int?) ?? 0)} فاتورة'),
+            pw.Divider(height: 8, thickness: 0.5),
+            sumRow('إجمالي المشتريات', (summary['totalPurchases'] as num?) ?? 0,
+                bold: true, color: PdfColors.indigo900),
+          ]),
+          pw.SizedBox(height: 8),
+
+          sumBox('كيف وصلنا إلى رصيدك', PdfColors.amber900, PdfColors.amber200, [
+            sumRow('الرصيد السابق (قبل بداية الفترة)',
+                (summary['openingBalance'] as num?) ?? 0,
+                color: PdfColors.brown700),
+            pw.SizedBox(height: 3),
+            sumRow('دين الفواتير في الفترة',
+                (summary['invoiceDebts'] as num?) ?? 0,
+                sign: '+', color: PdfColors.orange800),
+            sumRow('ديون يدوية أُضيفت', (summary['manualDebts'] as num?) ?? 0,
+                sign: '+', color: PdfColors.orange600),
+            sumRow('مجموع ما تراكم عليك', (summary['totalDebts'] as num?) ?? 0,
+                bold: true, color: PdfColors.orange900),
+            pw.SizedBox(height: 4),
+            sumRow('مسدَّد على الفواتير',
+                (summary['invoicePayments'] as num?) ?? 0,
+                sign: '−', color: PdfColors.green800),
+            sumRow('تسديدات يدوية', (summary['manualPayments'] as num?) ?? 0,
+                sign: '−', color: PdfColors.green600),
+            sumRow('مجموع ما سدَّدته', (summary['totalPayments'] as num?) ?? 0,
+                bold: true, color: PdfColors.green900),
+            pw.Divider(height: 10, thickness: 0.8),
+            sumRow('الرصيد في نهاية الفترة',
+                (summary['remainingBalance'] as num?) ?? 0,
+                sign: '=',
+                bold: true,
+                size: 12,
+                color: ((summary['remainingBalance'] as num?) ?? 0) > 0
+                    ? PdfColors.amber900
+                    : PdfColors.blue900),
+          ]),
+          pw.SizedBox(height: 8),
+
           pw.Container(
-            padding: const pw.EdgeInsets.all(10),
+            width: double.infinity,
+            padding: const pw.EdgeInsets.all(6),
             decoration: pw.BoxDecoration(
-              border: pw.Border.all(color: PdfColors.grey400),
-              borderRadius: pw.BorderRadius.circular(5),
+              color: customer.currentTotalDebt > 0
+                  ? PdfColors.red50
+                  : PdfColors.green50,
+              border: pw.Border.all(
+                  color: customer.currentTotalDebt > 0
+                      ? PdfColors.red
+                      : PdfColors.green,
+                  width: 1),
+              borderRadius: pw.BorderRadius.circular(4),
             ),
-            child: pw.Column(
+            child: pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
               children: [
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceAround,
-                  children: [
-                    pw.Column(children: [
-                      pw.Text('فواتير دين', style: const pw.TextStyle(fontSize: 9)),
-                      pw.Text('${summary['totalDebtInvoices'] ?? 0}', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
-                    ]),
-                    pw.Column(children: [
-                      pw.Text('فواتير نقد', style: const pw.TextStyle(fontSize: 9)),
-                      pw.Text('${summary['totalCashInvoices'] ?? 0}', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
-                    ]),
-                    if ((summary['convertedToCash'] ?? 0) > 0)
-                      pw.Column(children: [
-                        pw.Text('تحولت لنقد', style: const pw.TextStyle(fontSize: 9)),
-                        pw.Text('${summary['convertedToCash']}', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, color: PdfColors.purple)),
-                      ]),
-                    if ((summary['convertedToDebt'] ?? 0) > 0)
-                      pw.Column(children: [
-                        pw.Text('تحولت لدين', style: const pw.TextStyle(fontSize: 9)),
-                        pw.Text('${summary['convertedToDebt']}', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, color: PdfColors.deepOrange)),
-                      ]),
-                  ],
-                ),
-                pw.SizedBox(height: 8),
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceAround,
-                  children: [
-                    pw.Column(children: [
-                      pw.Text('إجمالي الديون (في تلك الفترة)', style: const pw.TextStyle(fontSize: 8)),
-                      pw.Text(fmt((summary['totalDebts'] as num?) ?? 0), style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold, color: PdfColors.orange800)),
-                    ]),
-                    pw.Column(children: [
-                      pw.Text('إجمالي المدفوعات (في تلك الفترة)', style: const pw.TextStyle(fontSize: 8)),
-                      pw.Text(fmt((summary['totalPayments'] as num?) ?? 0), style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold, color: PdfColors.green700)),
-                    ]),
-                    pw.Column(children: [
-                      pw.Text('الرصيد في نهاية تلك الفترة', style: const pw.TextStyle(fontSize: 8)),
-                      pw.Text(fmt((summary['remainingBalance'] as num?) ?? 0), 
-                        style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold, 
-                          color: ((summary['remainingBalance'] as num?) ?? 0) > 0 ? PdfColors.amber900 : PdfColors.blue900)),
-                    ]),
-                  ],
-                ),
-                pw.SizedBox(height: 6),
-                pw.Container(
-                  padding: const pw.EdgeInsets.all(5),
-                  decoration: pw.BoxDecoration(
-                    color: customer.currentTotalDebt > 0 ? PdfColors.red50 : PdfColors.green50,
-                    border: pw.Border.all(color: customer.currentTotalDebt > 0 ? PdfColors.red : PdfColors.green, width: 1),
-                    borderRadius: pw.BorderRadius.circular(4),
-                  ),
-                  child: pw.Row(
-                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                    children: [
-                      pw.Text('الرصيد المتبقي الحالي (حتى اليوم):', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold)),
-                      pw.Text(fmt(customer.currentTotalDebt), 
-                        style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, 
-                          color: customer.currentTotalDebt > 0 ? PdfColors.red : PdfColors.green700)),
-                    ],
-                  ),
-                ),
+                pw.Text('الرصيد المتبقي الحالي (حتى اليوم):',
+                    style: pw.TextStyle(
+                        fontSize: 10, fontWeight: pw.FontWeight.bold)),
+                pw.Text(fmt(customer.currentTotalDebt),
+                    style: pw.TextStyle(
+                        fontSize: 12,
+                        fontWeight: pw.FontWeight.bold,
+                        color: customer.currentTotalDebt > 0
+                            ? PdfColors.red
+                            : PdfColors.green700)),
               ],
             ),
           ),
-          pw.SizedBox(height: 15),
+                    pw.SizedBox(height: 15),
           
           // جدول السطور - الأعمدة: الدين بعد | الدين قبل | المبلغ | البيان | التاريخ
           pw.Table(
@@ -1165,7 +1303,7 @@ class PdfService {
 
     final output = await getTemporaryDirectory();
     final fileName = 'delayed_debts_${months}_months_${DateFormat('yyyyMMdd').format(DateTime.now())}.pdf';
-    final file = File('${output.path}/$fileName');
+    final file = File(p.join(output.path, fileName));
     await file.writeAsBytes(await pdf.save());
     return file;
   }

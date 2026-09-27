@@ -9,6 +9,7 @@ import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'safe_autocomplete.dart';
 import '../services/database_service.dart';
+import '../services/personal_pricing_service.dart'; // 👤 محرك التسعير الشخصي المستقل
 import '../services/settings_manager.dart';
 
 class EditableInvoiceItemRow extends StatefulWidget {
@@ -26,6 +27,7 @@ class EditableInvoiceItemRow extends StatefulWidget {
   final DatabaseService? databaseService;
   final String? currentCustomerName;
   final String? currentCustomerPhone;
+  final String paymentType; // 💳 نوع الفاتورة: 'نقد' أو 'دين'
 
   const EditableInvoiceItemRow({
     Key? key,
@@ -43,6 +45,7 @@ class EditableInvoiceItemRow extends StatefulWidget {
     this.databaseService,
     this.currentCustomerName,
     this.currentCustomerPhone,
+    this.paymentType = 'نقد', // 💳 نوع الفاتورة الافتراضي نقد
   }) : super(key: key);
 
   @override
@@ -397,12 +400,42 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
 
       // 2. البحث في السجل التاريخي إذا كان الخيار مُفعلاً
       if (mode > 0) {
-        // 🔮 وضع التسعير الذكي
-        if (mode == 99 && product.id != null && (widget.customerId ?? 0) > 0) {
-          print('🔮 Using Smart Pricing for product_id=${product.id}, customer_id=${widget.customerId}');
+        // 🧾 حل معرّف العميل من الاسم/الهاتف (الودجت لا يحمل الـ id مباشرة)
+        int? customerId;
+        final custName = widget.currentCustomerName?.trim() ?? '';
+        if (custName.isNotEmpty && widget.databaseService != null) {
+          try {
+            final custPhone = widget.currentCustomerPhone?.trim() ?? '';
+            customerId = await widget.databaseService!.findCustomerIdByNameAndPhone(
+              custName,
+              custPhone.isNotEmpty ? custPhone : null,
+            );
+          } catch (_) {}
+        }
+        if (mode == 101 || mode == 102 || mode == 103) {
+          // 👤 وضع التسعير الشخصي (101: بالتكلفة / 102: بالنسبة / 103: هايبرد)
+          final personalizedPrice = await PersonalPricingService().getPersonalizedPriceForProduct(
+            productName,
+            saleType,
+            customerId,
+            mode: mode,
+            paymentType: widget.paymentType,
+            preloadedProduct: product.id != null ? product : null, // ⚡ تمرير المنتج من الذاكرة
+          );
+          if (personalizedPrice != null && personalizedPrice > 0) {
+            finalPrice = personalizedPrice;
+            widget.item.suggestedPrice = personalizedPrice;
+            print('👤 Personalized Price: $finalPrice for "$productName" - $saleType (${widget.paymentType}, mode=$mode)');
+          } else {
+            print('⚠️ No personalized price found for "$productName" - $saleType, using default: $defaultPrice');
+            if (defaultPrice > 0) finalPrice = defaultPrice;
+          }
+        } else if (mode == 99 && product.id != null && (customerId ?? 0) > 0) {
+          // 🔮 وضع التسعير الذكي
+          print('🔮 Using Smart Pricing for product_id=${product.id}, customer_id=$customerId');
           final smartResult = await widget.databaseService!.getSmartPriceForProduct(
             productId: product.id!,
-            customerId: widget.customerId ?? 0,
+            customerId: customerId ?? 0,
             saleType: saleType,
           );
           
@@ -415,7 +448,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
           }
         } else if (mode == 99) {
           // التسعير الذكي غير متاح (لا يوجد product.id أو customerId)
-          print('⚠️ Smart Pricing unavailable (product.id=${product.id}, customerId=${widget.customerId}), using default: $defaultPrice');
+          print('⚠️ Smart Pricing unavailable (product.id=${product.id}, customerId=$customerId), using default: $defaultPrice');
           if (defaultPrice > 0) finalPrice = defaultPrice;
         } else {
           // الأوضاع التقليدية
@@ -441,7 +474,7 @@ class _EditableInvoiceItemRowState extends State<EditableInvoiceItemRow> {
           setState(() {
             _currentItem = _currentItem.copyWith(
               appliedPrice: finalPrice,
-              itemTotal: _getCorrectQuantity(_currentItem) * finalPrice,
+              itemTotal: _getCorrectQuantity(_currentItem) * (finalPrice ?? 0),
             );
             _priceController.text = NumberFormat('#,##0.##', 'en_US').format(finalPrice);
             widget.onItemUpdated(_currentItem);

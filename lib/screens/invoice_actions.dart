@@ -22,6 +22,7 @@ import '../models/invoice_item.dart';
 import '../models/printer_device.dart';
 import '../models/product.dart';
 import '../services/database_service.dart';
+import '../services/invoice_settings_service.dart';
 import '../services/stamp_manager.dart';
 import '../services/drive_service.dart';
 import '../services/expert_training_service.dart'; // 🧠 التدريب الخبير التدريجي
@@ -32,6 +33,7 @@ import '../services/settings_manager.dart';
 import '../services/smart_search/smart_search.dart'; // 🧠 البحث الذكي
 import '../services/invoice_prediction_service.dart'; // 🔮 التوقعات الذكية
 import '../services/firebase_sync/firebase_sync_helper.dart'; // 🔥 Firebase Sync
+import '../services/firebase_sync/invoice_sync_service.dart'; // 🧾 رفع الفاتورة فور حفظها
 import '../services/sync/sync_security.dart'; // 🔐 Sync UUID Generation
 import '../services/financial_guardians.dart'; // 🛡️ Financial Guardians
 import '../services/smart_pricing_service.dart'; // 🔮 محرك التسعير الذكي
@@ -430,15 +432,28 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
 
   Future<String> saveInvoicePdfToTemp(
       pw.Document pdf, String customerName, DateTime invoiceDate) async {
-    final safeCustomerName =
-        customerName.replaceAll(RegExp(r'[^\w\u0600-\u06FF]+'), '');
+    // 📎 اسم لاتيني (واتساب يشوّه الأسماء العربية) + مجلد فرعي جديد لكل
+    // مشاركة (ويندوز يُبقي الملف المشارَك مفتوحاً فيمنع استبداله —
+    // errno 1224). انظر الشرح المفصّل في edit_invoices_screen.dart.
     final formattedDate = DateFormat('yyyy-MM-dd').format(invoiceDate);
-    final fileName = '${safeCustomerName}_$formattedDate.pdf';
+    final fileName = 'Invoice-$formattedDate.pdf';
     final dir = await pp.getTemporaryDirectory();
-    final folder = Directory(p.join(dir.path, 'invoices_share_cache'));
-    if (!await folder.exists()) {
-      await folder.create(recursive: true);
-    }
+    final shareRoot = Directory(p.join(dir.path, 'invoices_share_cache'));
+    try {
+      if (await shareRoot.exists()) {
+        final cutoff = DateTime.now().subtract(const Duration(days: 1));
+        for (final entity in shareRoot.listSync()) {
+          try {
+            if (entity.statSync().modified.isBefore(cutoff)) {
+              entity.deleteSync(recursive: true);
+            }
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    final folder = Directory(p.join(
+        shareRoot.path, DateTime.now().millisecondsSinceEpoch.toString()));
+    await folder.create(recursive: true);
     final filePath = p.join(folder.path, fileName);
     final file = File(filePath);
     await file.writeAsBytes(await pdf.save(), flush: true);
@@ -596,6 +611,11 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
       }
 
       final db = DatabaseService();
+
+      // 🔒 الفواتير القادمة من جهاز آخر للقراءة فقط.
+      if (!isNewInvoice) {
+        await db.assertInvoiceEditable(invoiceToManage!.id!);
+      }
       Invoice? savedInvoice;
 
       // 📸 حفظ نسخة من الفاتورة قبل التعديل
@@ -611,7 +631,12 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
               notes: 'النسخة الأصلية قبل أي تعديل',
             );
           }
-          // حفظ نسخة قبل التعديل الحالي
+          // 📸 لقطة ما قبل التعديل — تبقى كما هي.
+          // المحاكاة على البيانات الفعلية أثبتت أنها ليست تكراراً دائماً:
+          // في 180 حالة كان amount_paid مختلفاً وفي 175 حالة payment_type،
+          // لأن صفّ الفاتورة كان يُعدَّل خارج مسار الحفظ. حذفها كان
+          // سيفقد 182 حالة فريدة. منع التكرار يتم الآن داخل
+          // saveInvoiceSnapshot: لا تُكتب إلا إن اختلفت فعلاً.
           await db.saveInvoiceSnapshot(
             invoiceId: invoiceToManage!.id!,
             snapshotType: 'before_edit',
@@ -789,13 +814,92 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
         }
 
         int invoiceId;
+        // 🔑 معرّف الفاتورة للمزامنة الذرية: يُوسم به كل معاملة مالية تنشئها
+        // هذه الفاتورة حتى تُرفع مدمجة داخل كبسولتها وتُستبدل معها عند التحديث.
+        String? invoiceSyncUuid;
         if (isNewInvoice) {
-          invoiceId = await txn.insert('invoices', invoice.toMap());
-          invoice = invoice.copyWith(id: invoiceId);
+          // 🧾 توليد رقم فاتورة شهري فريد وغير مكرر
+          final generated = await DatabaseService.generateUniqueInvoiceNumber(
+            date: invoice.invoiceDate,
+            executor: txn,
+          );
+
+          final newMap = invoice.toMap();
+          newMap['monthly_sequence_number'] = generated.sequence;
+          newMap['invoice_number'] = generated.invoiceNumber;
+          newMap['invoice_year'] = invoice.invoiceDate.year;
+          newMap['invoice_month'] = invoice.invoiceDate.month;
+
+          // 🔑 ختم حقول المزامنة قبل الإدراج
+          await DatabaseService.stampInvoiceForSync(newMap, isNew: true);
+          invoiceSyncUuid = newMap['invoice_uuid'] as String?;
+          invoiceId = await txn.insert('invoices', newMap);
+          invoice = invoice.copyWith(
+            id: invoiceId,
+            invoiceUuid: invoiceSyncUuid,
+            monthlySequenceNumber: generated.sequence,
+            invoiceNumber: generated.invoiceNumber,
+          );
         } else {
           invoiceId = invoiceToManage!.id!;
-          await txn.update('invoices', invoice.toMap(),
+          // جلب بيانات الفاتورة الحالية لضمان الحفاظ على رقمها وهوية المزامنة
+          final existing = await txn.query('invoices',
+              columns: [
+                'invoice_uuid',
+                'version',
+                'creator_device_id',
+                'invoice_number',
+                'monthly_sequence_number',
+                'invoice_year',
+                'invoice_month',
+              ],
+              where: 'id = ?', whereArgs: [invoiceId], limit: 1);
+          final updateMap = invoice.toMap();
+
+          // 🔒 قاعدة جوهرية: عند تعديل الفاتورة، لا يتغير رقم الفاتورة ولا تسلسلها أبداً!
+          if (existing.isNotEmpty &&
+              existing.first['invoice_number'] != null &&
+              (existing.first['invoice_number'] as String).trim().isNotEmpty) {
+            updateMap['invoice_number'] = existing.first['invoice_number'];
+            updateMap['monthly_sequence_number'] = existing.first['monthly_sequence_number'];
+            updateMap['invoice_year'] = existing.first['invoice_year'] ?? invoice.invoiceDate.year;
+            updateMap['invoice_month'] = existing.first['invoice_month'] ?? invoice.invoiceDate.month;
+          } else {
+            // مسودة معلقة سابقة أو فاتورة قديمة بلا رقم: توليد رقم فريد لها الآن
+            final generated = await DatabaseService.generateUniqueInvoiceNumber(
+              date: invoice.invoiceDate,
+              executor: txn,
+            );
+            updateMap['monthly_sequence_number'] = generated.sequence;
+            updateMap['invoice_number'] = generated.invoiceNumber;
+            updateMap['invoice_year'] = invoice.invoiceDate.year;
+            updateMap['invoice_month'] = invoice.invoiceDate.month;
+          }
+
+          if (existing.isNotEmpty) {
+            updateMap['invoice_uuid'] = existing.first['invoice_uuid'];
+            updateMap['creator_device_id'] = existing.first['creator_device_id'];
+            await DatabaseService.stampInvoiceForSync(
+              updateMap,
+              isNew: false,
+              currentVersion: (existing.first['version'] as int?) ?? 1,
+            );
+          } else {
+            await DatabaseService.stampInvoiceForSync(updateMap, isNew: true);
+          }
+          invoiceSyncUuid = (updateMap['invoice_uuid'] as String?) ??
+              (existing.isNotEmpty
+                  ? existing.first['invoice_uuid'] as String?
+                  : null);
+          await txn.update('invoices', updateMap,
               where: 'id = ?', whereArgs: [invoiceId]);
+
+          invoice = invoice.copyWith(
+            id: invoiceId,
+            invoiceUuid: invoiceSyncUuid,
+            monthlySequenceNumber: updateMap['monthly_sequence_number'] as int?,
+            invoiceNumber: updateMap['invoice_number'] as String?,
+          );
         }
 
         // ═══════════════════════════════════════════════════════════════════════════
@@ -868,6 +972,30 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           throw Exception('فشل حفظ أصناف الفاتورة. يرجى المحاولة مرة أخرى.');
         }
 
+        // 🧠 تسجيل تغذية التسعير الراجعة (Pricing Feedback) لتعلم المحرك من قرارات الموظف
+        try {
+          for (var item in invoiceItems) {
+            if (_isInvoiceItemComplete(item) && item.suggestedPrice != null && item.suggestedPrice! > 0) {
+              final double adj = item.appliedPrice - item.suggestedPrice!;
+              if (adj.abs() >= 1.0) {
+                await txn.insert('pricing_feedback', {
+                  'customer_id': customer?.id,
+                  'product_name': item.productName,
+                  'sale_type': item.saleType ?? '',
+                  'payment_type': paymentType,
+                  'suggested_price': item.suggestedPrice!,
+                  'final_price': item.appliedPrice,
+                  'adjustment': adj,
+                  'invoice_id': invoiceId,
+                  'created_at': DateTime.now().toIso8601String(),
+                });
+              }
+            }
+          }
+        } catch (e) {
+          print('تحذير: فشل حفظ سجل feedback للتسعير: $e');
+        }
+
         // ═══════════════════════════════════════════════════════════════════════════
         // ✅ منطق الدين المحسّن - يتعامل مع جميع الحالات
         // ═══════════════════════════════════════════════════════════════════════════
@@ -885,9 +1013,18 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           // ═══════════════════════════════════════════════════════════════════════
           double currentDebtFromTx = 0.0;
           if (oldCustomerId != null) {
+            // 🛡️ نستثني التسديدات والتسويات الخارجية (تسديد يدوي، راجع،
+            // SETTLEMENT). لها كيانها المستقل في الدفتر، وإدخالها ضمن
+            // «مساهمة الفاتورة» كان يجعل كل عملية حفظ تُلغي أثرها.
+            final excludedTxTypes = DatabaseService.kNonContributionTxTypes;
+            final excludedPh =
+                List<String>.filled(excludedTxTypes.length, '?').join(',');
             final txSum = await txn.rawQuery(
-              'SELECT COALESCE(SUM(amount_changed), 0) as total FROM transactions WHERE invoice_id = ?',
-              [invoiceId]
+              'SELECT COALESCE(SUM(amount_changed), 0) as total FROM transactions '
+              'WHERE invoice_id = ? '
+              'AND (is_deleted IS NULL OR is_deleted = 0) '
+              'AND (transaction_type IS NULL OR transaction_type NOT IN ($excludedPh))',
+              <Object?>[invoiceId, ...excludedTxTypes]
             );
             currentDebtFromTx = (txSum.first['total'] as num?)?.toDouble() ?? 0.0;
             
@@ -923,7 +1060,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                 }, where: 'id = ?', whereArgs: [oldCustomerId]);
                 
                 // تسجيل معاملة إلغاء الدين
-                final txUuid = await DriveService().generateTransactionUuid();
+                final txUuid = SyncSecurity.generateTransactionUuid(oldCustomer.name, -currentDebtFromTx, DateTime.now());
                 await txn.insert('transactions', {
                   'customer_id': oldCustomerId,
                   'transaction_date': DateTime.now().toIso8601String(),
@@ -933,7 +1070,10 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                   'transaction_type': 'invoice_payment_type_change',
                   'description': 'إلغاء دين فاتورة رقم $invoiceId (تحويل لنقد)',
                   'invoice_id': invoiceId,
+                  'invoice_sync_uuid': invoiceSyncUuid,
                   'transaction_uuid': txUuid,
+                  'sync_uuid': txUuid,
+                  'is_uploaded': 0,
                   'created_at': DateTime.now().toIso8601String(),
                 });
               }
@@ -962,7 +1102,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
               }, where: 'id = ?', whereArgs: [customer.id]);
               
               // تسجيل معاملة إضافة الدين
-              final txUuid = await DriveService().generateTransactionUuid();
+              final txUuid = SyncSecurity.generateTransactionUuid(freshCustomer.name, newRemaining, DateTime.now());
               await txn.insert('transactions', {
                 'customer_id': customer.id,
                 'transaction_date': DateTime.now().toIso8601String(),
@@ -972,7 +1112,10 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                 'transaction_type': 'invoice_payment_type_change',
                 'description': 'إضافة دين فاتورة رقم $invoiceId (تحويل من نقد)',
                 'invoice_id': invoiceId,
+                'invoice_sync_uuid': invoiceSyncUuid,
                 'transaction_uuid': txUuid,
+                'sync_uuid': txUuid,
+                'is_uploaded': 0,
                 'created_at': DateTime.now().toIso8601String(),
               });
             }
@@ -999,7 +1142,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                   'last_modified_at': DateTime.now().toIso8601String(),
                 }, where: 'id = ?', whereArgs: [oldCustomerId]);
                 
-                final txUuid1 = await DriveService().generateTransactionUuid();
+                final txUuid1 = SyncSecurity.generateTransactionUuid(oldCustomer.name, -currentDebtFromTx, DateTime.now());
                 await txn.insert('transactions', {
                   'customer_id': oldCustomerId,
                   'transaction_date': DateTime.now().toIso8601String(),
@@ -1009,7 +1152,10 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                   'transaction_type': 'invoice_customer_change',
                   'description': 'نقل دين فاتورة رقم $invoiceId إلى عميل آخر',
                   'invoice_id': invoiceId,
+                  'invoice_sync_uuid': invoiceSyncUuid,
                   'transaction_uuid': txUuid1,
+                  'sync_uuid': txUuid1,
+                  'is_uploaded': 0,
                   'created_at': DateTime.now().toIso8601String(),
                 });
               }
@@ -1029,7 +1175,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                   'last_modified_at': DateTime.now().toIso8601String(),
                 }, where: 'id = ?', whereArgs: [newCustomerId]);
                 
-                final txUuid2 = await DriveService().generateTransactionUuid();
+                final txUuid2 = SyncSecurity.generateTransactionUuid(newCustomer.name, newRemaining, DateTime.now());
                 await txn.insert('transactions', {
                   'customer_id': newCustomerId,
                   'transaction_date': DateTime.now().toIso8601String(),
@@ -1039,7 +1185,10 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                   'transaction_type': 'invoice_customer_change',
                   'description': 'استلام دين فاتورة رقم $invoiceId من عميل آخر',
                   'invoice_id': invoiceId,
+                  'invoice_sync_uuid': invoiceSyncUuid,
                   'transaction_uuid': txUuid2,
+                  'sync_uuid': txUuid2,
+                  'is_uploaded': 0,
                   'created_at': DateTime.now().toIso8601String(),
                 });
               }
@@ -1067,7 +1216,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                 'last_modified_at': DateTime.now().toIso8601String(),
               }, where: 'id = ?', whereArgs: [customer.id]);
               
-              final txUuid = await DriveService().generateTransactionUuid();
+              final txUuidEdit = SyncSecurity.generateTransactionUuid(currentCustomer.name, debtChange, DateTime.now());
               await txn.insert('transactions', {
                 'customer_id': customer.id,
                 'transaction_date': DateTime.now().toIso8601String(),
@@ -1077,7 +1226,10 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                 'transaction_type': 'invoice_edit',
                 'description': 'تعديل فاتورة دين رقم $invoiceId',
                 'invoice_id': invoiceId,
-                'transaction_uuid': txUuid,
+                'invoice_sync_uuid': invoiceSyncUuid,
+                'transaction_uuid': txUuidEdit,
+                'sync_uuid': txUuidEdit,
+                'is_uploaded': 0,
                 'created_at': DateTime.now().toIso8601String(),
               });
             }
@@ -1106,8 +1258,8 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
               'last_modified_at': DateTime.now().toIso8601String(),
             }, where: 'id = ?', whereArgs: [customer.id]);
             
-            final txUuid = await DriveService().generateTransactionUuid();
-            final txSyncUuid = SyncSecurity.generateUuid(); // 🔄 sync_uuid للمزامنة
+            final txUuid = SyncSecurity.generateTransactionUuid(freshCustomer.name, newRemaining, DateTime.now());
+            final txSyncUuid = txUuid; // 🔄 sync_uuid للمزامنة
             
             final transactionId = await txn.insert('transactions', {
               'customer_id': customer.id,
@@ -1118,6 +1270,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
               'transaction_type': 'invoice_debt',
               'description': 'دين فاتورة جديدة رقم $invoiceId',
               'invoice_id': invoiceId,
+              'invoice_sync_uuid': invoiceSyncUuid,
               'transaction_uuid': txUuid,
               'sync_uuid': txSyncUuid, // 🔄 إضافة sync_uuid
               'created_at': DateTime.now().toIso8601String(),
@@ -1127,10 +1280,32 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
           }
         }
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // 🛡️ الحارس المحاسبي — الشبكة الأخيرة داخل نفس معاملة قاعدة البيانات.
+        // الحالات 1–5 أعلاه تغطّي السيناريوهات المعروفة؛ هذا السطر يضمن أنه
+        // مهما كان المسار الذي سلكه الحفظ، يخرج دين الفاتورة في الدفتر مطابقاً
+        // تماماً لـ (الإجمالي − المسدد). إن كانت الحالات عملت بشكل صحيح فالفارق
+        // صفر ولا يُكتب شيء.
+        // ═══════════════════════════════════════════════════════════════════════
+        await db.reconcileInvoiceDebtInTxn(txn, invoiceId, reason: 'saveInvoice');
+
         final maps = await txn
             .query('invoices', where: 'id = ?', whereArgs: [invoiceId]);
         savedInvoice = Invoice.fromMap(maps.first);
       });
+
+      // ═══════════════════════════════════════════════════════════════════════════
+      // 🧾 رفع كبسولة الفاتورة فور حفظها حتى تصل للأجهزة الأخرى مباشرة.
+      // الكبسولة ذرية: الفاتورة + بنودها + معاملاتها المالية في وثيقة واحدة.
+      // لا ننتظر النتيجة: لو فشل الرفع تبقى is_synced = 0 فتُعيد الدورة الدورية
+      // في InvoiceSyncService محاولتها تلقائياً.
+      // ═══════════════════════════════════════════════════════════════════════════
+      final savedUuid = savedInvoice?.invoiceUuid;
+      if (savedUuid != null && savedUuid.isNotEmpty) {
+        unawaited(InvoiceSyncService().syncInvoiceBundleNow(savedUuid));
+      } else {
+        unawaited(InvoiceSyncService().syncPendingInvoices());
+      }
 
       // ═══════════════════════════════════════════════════════════════════════════
       // 🔥 Firebase Sync: رفع العميل والمعاملات الجديدة
@@ -1157,18 +1332,30 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
               print('🔥 Firebase: تم رفع/تحديث العميل: ${customerData['name']}');
             }
             
-            // جلب المعاملات المرتبطة بهذه الفاتورة ورفعها
+            // جلب المعاملات المرتبطة بهذه الفاتورة ورفعها (مسار احتياطي مستقل:
+            // لو فشل رفع الكبسولة تبقى is_uploaded = 0 فتُرفع هنا منفصلة).
+            // فلترة: غير المرفوعة فقط + من إنشاء هذا الجهاز فقط.
             final transactionRows = await database.query(
               'transactions',
-              where: 'invoice_id = ? AND sync_uuid IS NOT NULL',
+              where: 'invoice_id = ? AND sync_uuid IS NOT NULL '
+                  'AND (is_uploaded = 0 OR is_uploaded IS NULL) '
+                  'AND (is_created_by_me = 1 OR is_created_by_me IS NULL)',
               whereArgs: [savedInvoice!.id],
             );
             
             for (final txData in transactionRows) {
               final txSyncUuid = txData['sync_uuid'] as String?;
-              if (txSyncUuid != null && customerSyncUuid != null) {
-                syncHelper.syncTransaction(Map<String, dynamic>.from(txData), customerSyncUuid);
-                print('🔥 Firebase: تم رفع معاملة: ${txData['amount_changed']} (Sync UUID: $txSyncUuid)');
+              final txCustomerId = txData['customer_id'] as int?;
+              
+              if (txSyncUuid != null && txCustomerId != null) {
+                // جلب sync_uuid الخاص بالعميل المرتبط بهذه المعاملة تحديداً
+                final txCustomerRows = await database.query('customers', columns: ['sync_uuid'], where: 'id = ?', whereArgs: [txCustomerId]);
+                final actualCustomerSyncUuid = txCustomerRows.isNotEmpty ? txCustomerRows.first['sync_uuid'] as String? : null;
+                
+                if (actualCustomerSyncUuid != null) {
+                  syncHelper.syncTransaction(Map<String, dynamic>.from(txData), actualCustomerSyncUuid);
+                  print('🔥 Firebase: تم رفع معاملة: ${txData['amount_changed']} (Sync UUID: $txSyncUuid) للعميل $actualCustomerSyncUuid');
+                }
               }
             }
           }
@@ -1480,6 +1667,8 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
       final appSettings = await SettingsManager.getAppSettings();
       await StampManager.loadStamps(appSettings);
 
+
+
       final logoBytes = await rootBundle.load('assets/icon/alnasser.jpg');
       final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
       final font =
@@ -1749,25 +1938,34 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
       String? computedFormattedInvoiceNumber;
       if (invoiceToManage != null && invoiceToManage!.id != null) {
         invoiceId = invoiceToManage!.id!;
-        computedFormattedInvoiceNumber = invoiceToManage!.formattedInvoiceNumber;
+        computedFormattedInvoiceNumber =
+            (invoiceToManage!.invoiceNumber != null && invoiceToManage!.invoiceNumber!.isNotEmpty)
+                ? invoiceToManage!.invoiceNumber
+                : invoiceToManage!.formattedInvoiceNumber;
+
+        // في حال كان العرض ينتهي بشرطات (فاتورة لم يُحفظ رقمها بعد):
+        if (computedFormattedInvoiceNumber == null || computedFormattedInvoiceNumber.endsWith('---')) {
+          try {
+            final dbInstance = await db.database;
+            final generated = await DatabaseService.generateUniqueInvoiceNumber(
+              date: invoiceToManage!.invoiceDate,
+              executor: dbInstance,
+            );
+            computedFormattedInvoiceNumber = generated.invoiceNumber;
+          } catch (_) {
+            // نبقي على الفلباك
+          }
+        }
       } else {
         invoiceId = (await db.getLastInvoiceId()) + 1;
-        // حساب الرقم المنسق حتى لو لم تُحفظ الفاتورة بعد
+        // حساب الرقم المتوقع للفاتورة قبل الحفظ
         try {
-          final dateStr = '${selectedDate.year}-${selectedDate.month.toString().padLeft(2, '0')}';
           final dbInstance = await db.database;
-          final result = await dbInstance.rawQuery('''
-            SELECT MAX(monthly_sequence_number) as max_seq 
-            FROM invoices 
-            WHERE strftime('%Y-%m', invoice_date) = ?
-          ''', [dateStr]);
-          int nextSeq = 1;
-          if (result.isNotEmpty && result.first['max_seq'] != null) {
-            nextSeq = (result.first['max_seq'] as int) + 1;
-          }
-          final yearStr = selectedDate.year.toString();
-          final monthStr = selectedDate.month.toString().padLeft(2, '0');
-          computedFormattedInvoiceNumber = '$yearStr$monthStr$nextSeq';
+          final generated = await DatabaseService.generateUniqueInvoiceNumber(
+            date: selectedDate,
+            executor: dbInstance,
+          );
+          computedFormattedInvoiceNumber = generated.invoiceNumber;
         } catch (_) {
           // في حالة الفشل، نستخدم invoiceId
         }
@@ -2307,9 +2505,14 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
       final filePath = await saveInvoicePdfToTemp(
           pdf, customerNameController.text, selectedDate);
       final fileName = p.basename(filePath);
-      await Share.shareXFiles([
-        XFile(filePath, mimeType: 'application/pdf', name: fileName)
-      ], text: 'فاتورة ${customerNameController.text}');
+      // 📎 subject بدل text: النص يجعل واتساب يرسل رسالة نصية ويتجاهل
+      // المرفق، و subject يضبط عنوان نافذة ويندوز الإلزامي بلا إضافة نص.
+      // (المكتبة على ويندوز تحتفظ بآخر نصّ أُرسل ولا تمسحه، فنصّ واحد
+      //  هنا كان يُفسد كل مشاركات التطبيق بعده.)
+      await Share.shareXFiles(
+        [XFile(filePath, mimeType: 'application/pdf', name: fileName)],
+        subject: 'فاتورة ${customerNameController.text}',
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

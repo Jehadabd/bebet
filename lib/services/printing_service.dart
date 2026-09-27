@@ -10,7 +10,6 @@ import 'package:alnaser/models/printer_device.dart';
 import 'package:alnaser/services/settings_manager.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_esc_pos_network/flutter_esc_pos_network.dart'; // New import for Wi-Fi/LAN printing
-import 'package:win32/win32.dart'; // Import for Windows API calls
 
 abstract class PrintingService {
   // Method to get the default printer from settings

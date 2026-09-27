@@ -1,4 +1,5 @@
 // providers/app_provider.dart
+import 'dart:async' show unawaited;
 import 'package:flutter/foundation.dart';
 import '../models/customer.dart';
 import '../models/transaction.dart';
@@ -15,6 +16,7 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:async'; // 🛡️ لـ StreamSubscription
 import 'package:archive/archive_io.dart';
 import '../services/firebase_sync/firebase_sync_helper.dart'; // Import SyncHelper
+import '../services/firebase_sync/firebase_sync_service.dart'; // 🗑️ شاهد حذف العميل
 import '../models/account_statement_item.dart';
 
 // أنواع ترتيب العملاء
@@ -42,6 +44,7 @@ class AppProvider with ChangeNotifier {
   bool _autoCreateCustomerOnSync = true; // إنشاء العميل تلقائياً عند المزامنة إذا لم يكن موجوداً
   CustomerSortType _currentSortType = CustomerSortType.alphabetical; // نوع الترتيب الحالي
   StreamSubscription? _syncSubscription; // 🛡️ لإدارة اشتراك المزامنة
+  bool _isDisposed = false; // 🛡️ لمنع الكراش بعد dispose
 
   // Temporary invoice state for preserving unsaved invoice data
   String _tempCustomerName = '';
@@ -83,21 +86,42 @@ class AppProvider with ChangeNotifier {
   Future<void> initialize() async {
     _setLoading(true);
     try {
-      _isDriveSupported = _drive.isSupported;
-      if (_isDriveSupported) {
-        _isDriveSignedInSync = await _drive.isSignedIn();
-      }
+      // 1️⃣ العملاء أولاً — هذا كل ما تحتاجه شاشة سجل الديون لتُفتح فوراً.
+      // (كان فحص Google Drive يُنتظر قبلهم فيؤخر الفتح ثوانٍ على الجوال).
       await _loadCustomers();
-      await ensureAudioNotesDirectory();
-      
-      // Listen to sync events from Firebase
+
+      // 2️⃣ الباقي في الخلفية: فحص Drive (استدعاء شبكة) ومجلد الصوتيات —
+      // لا يعطّل الفتح، ونحدّث الواجهة عند جهوزية حالة Drive فقط.
+      unawaited(() async {
+        try {
+          _isDriveSupported = _drive.isSupported;
+          if (_isDriveSupported) {
+            _isDriveSignedInSync = await _drive.isSignedIn();
+            if (!_isDisposed) notifyListeners();
+          }
+          await ensureAudioNotesDirectory();
+        } catch (e) {
+          print('⚠️ AppProvider: خطأ خلفي في تهيئة Drive/الصوتيات: $e');
+        }
+      }());
+
+      // 3️⃣ الاستماع لأحداث المزامنة (خفيف — يبقى متزامناً)
       _syncSubscription?.cancel(); // 🛡️ إلغاء الاشتراك القديم لتجنب التكرار
       _syncSubscription = FirebaseSyncHelper().syncEvents.listen((event) {
+        if (_isDisposed) return; // 🛡️ تجنب العمل بعد الإغلاق
         print('🔔 AppProvider: New sync event: $event');
-        _loadCustomers(); // Reload to reflect changes
-        if (_selectedCustomer != null) {
-          loadCustomerTransactions(_selectedCustomer!.id!);
+        // 🛡️ تغليف بـ try-catch لمنع الكراش التلقائي
+        try {
+          _loadCustomers(); // Reload to reflect changes
+          if (_selectedCustomer != null && _selectedCustomer!.id != null) {
+            loadCustomerTransactions(_selectedCustomer!.id!);
+          }
+        } catch (e) {
+          print('⚠️ AppProvider: خطأ أثناء معالجة حدث المزامنة: $e');
         }
+      }, onError: (error) {
+        // 🛡️ التقاط أخطاء الـ Stream لمنع الكراش التلقائي
+        print('⚠️ AppProvider: خطأ في stream المزامنة: $error');
       });
     } finally {
       _setLoading(false);
@@ -105,12 +129,14 @@ class AppProvider with ChangeNotifier {
   }
 
   void _setLoading(bool value) {
+    if (_isDisposed) return; // 🛡️ تجنب الكراش بعد dispose
     _isLoading = value;
     notifyListeners();
   }
 
   @override
   void dispose() {
+    _isDisposed = true; // 🛡️ تعيين العلامة قبل الإلغاء
     _syncSubscription?.cancel();
     super.dispose();
   }
@@ -188,13 +214,22 @@ class AppProvider with ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> updateCustomer(Customer customer) async {
-    await _db.updateCustomer(customer);
+  /// [updateBalance] لا يُمرَّر true إلا عند اعتماد رصيد محسوب عمداً.
+  /// الافتراضي false يمنع إعادة كتابة رصيد قديم من الذاكرة فوق الرصيد الصحيح.
+  Future<void> updateCustomer(Customer customer,
+      {bool updateBalance = false}) async {
+    await _db.updateCustomer(customer, updateBalance: updateBalance);
+    // 🛡️ نقرأ النسخة المحفوظة فعلاً من قاعدة البيانات بدل الاعتماد على الكائن
+    // الممرَّر، حتى لا تعرض الواجهة رصيداً قديماً بعد تعديل الاسم أو العنوان.
+    Customer refreshed = customer;
+    if (customer.id != null) {
+      refreshed = await _db.getCustomerById(customer.id!) ?? customer;
+    }
     final index = _customers.indexWhere((c) => c.id == customer.id);
     if (index != -1) {
-      _customers[index] = customer;
+      _customers[index] = refreshed;
       if (_selectedCustomer?.id == customer.id) {
-        _selectedCustomer = customer;
+        _selectedCustomer = refreshed;
       }
       _applySearchFilter();
       notifyListeners();
@@ -202,7 +237,14 @@ class AppProvider with ChangeNotifier {
   }
 
   Future<void> deleteCustomer(int id) async {
+    // 🗑️ الحذف يُرفع كشاهد (isDeleted) لتحذفه كل الأجهزة، ولا «يُبعث» عند
+    // السحب الكامل التالي. أوفلاين؟ يُحفظ في طابور الإعادة ويُرفع لاحقاً.
+    final existing = await _db.getCustomerById(id);
+    final syncUuid = existing?.syncUuid;
     await _db.deleteCustomer(id);
+    if (syncUuid != null && syncUuid.isNotEmpty) {
+      unawaited(FirebaseSyncService().deleteCustomerFromFirebase(syncUuid));
+    }
     _customers.removeWhere((c) => c.id == id);
     if (_selectedCustomer?.id == id) {
       _selectedCustomer = null;
@@ -215,6 +257,19 @@ class AppProvider with ChangeNotifier {
   // Transaction operations
   Future<void> loadCustomerTransactions(int customerId) async {
     _customerTransactions = await _db.getCustomerTransactions(customerId);
+
+    // 🛡️ تحديث نسخة العميل المختار من قاعدة البيانات مع كل تحميل للمعاملات.
+    // بدون هذا يبقى الرصيد في الذاكرة هو الذي كان وقت فتح الشاشة، فتُعرض
+    // أرقام قديمة وتُرسل رسائل واتساب بدين غير صحيح.
+    if (_selectedCustomer?.id == customerId) {
+      final fresh = await _db.getCustomerById(customerId);
+      if (fresh != null) {
+        _selectedCustomer = fresh;
+        final idx = _customers.indexWhere((c) => c.id == customerId);
+        if (idx != -1) _customers[idx] = fresh;
+      }
+    }
+
     notifyListeners();
   }
 
@@ -307,7 +362,14 @@ class AppProvider with ChangeNotifier {
 
   // Customer selection
   Future<void> selectCustomer(Customer customer) async {
+    // 🛡️ الكائن الممرَّر هنا هو دائماً نسخة من وقت فتح الشاشة (widget.customer)
+    // ولم يكن يُقرأ من قاعدة البيانات إطلاقاً. نقرأ النسخة الحالية أولاً حتى
+    // لا يُبنى أي رقم على رصيد قديم.
     _selectedCustomer = customer;
+    if (customer.id != null) {
+      final fresh = await _db.getCustomerById(customer.id!);
+      if (fresh != null) _selectedCustomer = fresh;
+    }
     await loadCustomerTransactions(customer.id!);
   }
 

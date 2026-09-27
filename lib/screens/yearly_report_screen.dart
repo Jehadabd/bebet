@@ -2,6 +2,7 @@
 // شاشة التقرير السنوي
 import 'package:flutter/material.dart';
 import '../services/reports_service.dart';
+import '../widgets/report_source_filter_button.dart';
 import 'monthly_report_screen.dart';
 import 'package:intl/intl.dart';
 import 'transactions_list_dialog.dart';
@@ -30,6 +31,8 @@ class _YearlyReportScreenState extends State<YearlyReportScreen> {
   }
 
   Future<void> _loadReport() async {
+    // 🔎 فلتر مصدر البيانات (الكل/هذا الجهاز/المزامنة) — يُحمل مرة واحدة.
+    await ReportsService.loadSavedFilter();
     setState(() => _isLoading = true);
     
     try {
@@ -58,6 +61,8 @@ class _YearlyReportScreenState extends State<YearlyReportScreen> {
         backgroundColor: const Color(0xFF3F51B5),
         elevation: 0,
         actions: [
+          // 🔎 فلتر مصدر البيانات (الكل/هذا الجهاز/من المزامنة)
+          ReportSourceFilterButton(onChanged: _loadReport),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _loadReport,

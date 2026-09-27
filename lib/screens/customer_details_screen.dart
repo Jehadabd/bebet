@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../providers/app_provider.dart';
 import '../models/customer.dart';
 import '../models/transaction.dart';
+import '../models/invoice.dart'; // 🧾 لتركيب رقم الفاتورة المركّب
 import 'add_transaction_screen.dart';
 import 'create_invoice_screen.dart';
 import '../services/database_service.dart';
@@ -13,7 +14,9 @@ import '../services/pdf_service.dart'; // Assume PdfService exists
 import '../services/receipt_voucher_pdf_service.dart';
 import '../models/account_statement_item.dart'; // Assume AccountStatementItem exists
 import 'package:printing/printing.dart'; // Assume this is for PDF preview on non-Windows
+import 'package:share_plus/share_plus.dart'; // 📤 مشاركة سند القبض PDF
 import 'dart:io';
+import 'package:path/path.dart' as p;
 // import 'package:path_provider/path_provider.dart'; // Not directly used in final snippet, but for file operations
 // import 'package:share_plus/share_plus.dart'; // Not directly used here
 import 'package:intl/intl.dart';
@@ -51,6 +54,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
   // 📊 المعاملات المجمعة (فواتير مجمعة + معاملات يدوية)
   List<GroupedTransactionItem> _groupedTransactions = [];
   bool _useGroupedView = true; // استخدام العرض المجمع افتراضياً
+  final Map<int, String> _invoiceNumbers = {}; // 🧾 آي دي الفاتورة → الرقم المركّب المعروض
   
   // 🔄 الاستماع لإشعارات المزامنة الفورية
   StreamSubscription<Map<String, dynamic>>? _transactionSubscription;
@@ -115,7 +119,42 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
     if (!mounted) return;
     if (widget.customer.id != null) {
       await context.read<AppProvider>().loadCustomerTransactions(widget.customer.id!);
-      
+
+      // 🧾 تحميل خريطة أرقام الفواتير المركّبة (كما تُطبع) لمعاملات هذا العميل —
+      // لعرضها في العرض التفصيلي بدل آي دي الفاتورة الداخلي.
+      try {
+        final txs = context.read<AppProvider>().customerTransactions;
+        final invoiceIds = txs
+            .map((t) => t.invoiceId)
+            .whereType<int>()
+            .toSet();
+        if (invoiceIds.isNotEmpty) {
+          final db = DatabaseService();
+          final dbConn = await db.database;
+          final placeholders = invoiceIds.map((_) => '?').join(',');
+          final rows = await dbConn.rawQuery(
+            'SELECT * FROM invoices WHERE id IN ($placeholders)',
+            invoiceIds.toList(),
+          );
+          final numbers = <int, String>{};
+          for (final row in rows) {
+            try {
+              numbers[row['id'] as int] =
+                  Invoice.fromMap(row).formattedInvoiceNumber;
+            } catch (_) {}
+          }
+          if (mounted) {
+            setState(() {
+              _invoiceNumbers
+                ..clear()
+                ..addAll(numbers);
+            });
+          }
+        }
+      } catch (e) {
+        debugPrint('خطأ في تحميل أرقام الفواتير للمعاملات: $e');
+      }
+
       // تحميل المعاملات المجمعة
       try {
         final db = DatabaseService();
@@ -124,6 +163,11 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
           setState(() {
             _groupedTransactions = grouped;
           });
+          // 🛡️ الحارس المحاسبي يعمل داخل getGroupedCustomerTransactions وقد
+          // يكون صحّح الرصيد للتو — نعيد قراءة العميل حتى يطابق ما يُعرض.
+          await context
+              .read<AppProvider>()
+              .loadCustomerTransactions(widget.customer.id!);
         }
       } catch (e) {
         debugPrint('خطأ في تحميل المعاملات المجمعة: $e');
@@ -1019,7 +1063,11 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                                           lastModifiedAt: DateTime.now(),
                                         );
                                         
-                                        await provider.updateCustomer(updatedCustomer);
+                                        // 🛡️ اعتماد رصيد محسوب عمداً — الحالة
+                                        // الوحيدة المسموح فيها بكتابة الرصيد.
+                                        await provider.updateCustomer(
+                                            updatedCustomer,
+                                            updateBalance: true);
                                         // Force reload to refresh UI
                                         await _loadTransactions();
 
@@ -1337,6 +1385,9 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                                 final transaction = transactions[index];
                                 return TransactionListTile(
                                   transaction: transaction,
+                                  // 🧾 الرقم المركّب كما يُطبع (fallback للآي دي)
+                                  invoiceNumber:
+                                      _invoiceNumbers[transaction.invoiceId],
                                   isPlaying: _isPlaying,
                                   currentlyPlayingPath: _currentlyPlayingPath,
                                   audioPath: transaction.audioNotePath ?? '',
@@ -1589,12 +1640,10 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                 if (report.warnings.isNotEmpty) ...[
                   const SizedBox(height: 12),
                   const Text('⚠️ تحذيرات:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
-                  ...report.warnings.take(5).map((warning) => Padding(
+                  ...report.warnings.map((warning) => Padding(
                     padding: const EdgeInsets.only(top: 4),
                     child: Text('• $warning', style: TextStyle(color: Colors.orange[800], fontSize: 12)),
                   )),
-                  if (report.warnings.length > 5)
-                    Text('... و ${report.warnings.length - 5} تحذيرات أخرى', style: TextStyle(color: Colors.grey[600], fontSize: 11)),
                 ],
                 
                 // 🔍 مشاكل الفواتير (تفصيلية)
@@ -1637,7 +1686,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                                 children: [
                                   Expanded(
                                     child: Text(
-                                      '📄 فاتورة #${issue.invoiceId} - ${issue.invoiceDate}',
+                                      '📄 فاتورة #${issue.displayInvoiceNumber} - ${issue.invoiceDate}',
                                       style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
                                     ),
                                   ),
@@ -2091,10 +2140,20 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                               ),
                             ],
                           ),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.print, color: Color(0xFF3F51B5)),
-                            tooltip: 'إعادة طباعة السند',
-                            onPressed: () => _reprintReceiptVoucher(receipt),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.share, color: Color(0xFF3F51B5)),
+                                tooltip: 'مشاركة السند',
+                                onPressed: () => _shareReceiptVoucher(receipt),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.print, color: Color(0xFF3F51B5)),
+                                tooltip: 'إعادة طباعة السند',
+                                onPressed: () => _reprintReceiptVoucher(receipt),
+                              ),
+                            ],
                           ),
                         ),
                       );
@@ -2115,6 +2174,92 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('خطأ في تحميل سندات القبض: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // 📤 دالة مشاركة سند القبض (PDF)
+  // تُنشئ نفس ملف السند الذي تُنشئه الطباعة، ثم تفتح قائمة المشاركة
+  // الأصلية في النظام — بنفس طريقة مشاركة الفاتورة في شاشة تعديل القوائم.
+  Future<void> _shareReceiptVoucher(CustomerReceiptVoucher receipt) async {
+    try {
+      final font = pw.Font.ttf(
+          await rootBundle.load('assets/fonts/Amiri-Regular.ttf'));
+      final alnaserFont = pw.Font.ttf(
+          await rootBundle.load('assets/fonts/PTBLDHAD.TTF'));
+      final logoBytes = await rootBundle.load('assets/icon/alnasser.jpg');
+      final logoImage = pw.MemoryImage(logoBytes.buffer.asUint8List());
+
+      final pdf = await ReceiptVoucherPdfService.generateReceiptVoucherPdf(
+        customerName: receipt.customerName,
+        beforePayment: receipt.beforePayment,
+        paidAmount: receipt.paidAmount,
+        afterPayment: receipt.afterPayment,
+        dateTime: receipt.createdAt,
+        font: font,
+        alnaserFont: alnaserFont,
+        logoImage: logoImage,
+        receiptNumber: receipt.receiptNumber,
+      );
+
+      // 📎 اسم لاتيني: واتساب سطح المكتب يقرأ بايتات UTF-8 للاسم العربي
+      // بايتاً بايتاً فتظهر رموز غريبة (ÙØ§ØªÙˆØ±Ø©). الاسم العربي يبقى
+      // داخل الملف نفسه.
+      //
+      // 📁 مجلد فرعي جديد لكل مشاركة: ويندوز يُبقي الملف الذي شاركته
+      // مفتوحاً (user-mapped section) فلا يمكن استبداله، وتفشل المشاركة
+      // التالية بخطأ errno 1224. مجلد جديد = ملف جديد دائماً، مع بقاء
+      // الاسم المعروض نظيفاً بلا أرقام إضافية.
+      final formattedDate = DateFormat('yyyy-MM-dd').format(receipt.createdAt);
+      final fileName = 'Receipt-${receipt.receiptNumber}-$formattedDate.pdf';
+      final tempDir = Directory.systemTemp;
+      final shareRoot = Directory(p.join(tempDir.path, 'receipts_share_cache'));
+      // 🧹 حذف مجلدات المشاركة الأقدم من يوم (تجاهل أي فشل — قد يكون
+      // ويندوز ما زال ممسكاً بملف شاركته للتوّ).
+      try {
+        if (await shareRoot.exists()) {
+          final cutoff = DateTime.now().subtract(const Duration(days: 1));
+          for (final entity in shareRoot.listSync()) {
+            try {
+              if (entity.statSync().modified.isBefore(cutoff)) {
+                entity.deleteSync(recursive: true);
+              }
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+      final directory = Directory(p.join(
+          shareRoot.path, DateTime.now().millisecondsSinceEpoch.toString()));
+      await directory.create(recursive: true);
+      final filePath = p.join(directory.path, fileName);
+      final file = File(filePath);
+      await file.writeAsBytes(await pdf.save(), flush: true);
+
+      // 📎 مشاركة كملف PDF لا كرسالة نصية — ثلاثة أمور إلزامية على ويندوز:
+      //
+      //  1) mimeType و name: بدونهما لا يتعرّف واتساب على المرفق.
+      //
+      //  2) subject: مكتبة share_plus على ويندوز تضع العنوان من title ثم
+      //     subject ثم text، وتعليق الكود فيها صريح: "Setting a title is
+      //     mandatory for Windows". فبلا أيٍّ منها يصير العنوان فارغاً
+      //     وتفشل نافذة ويندوز برسالة «Try that again». subject يضبط
+      //     العنوان فقط ولا يضيف نصاً إلى الرسالة.
+      //
+      //  3) لا نمرّر text إطلاقاً: وجود نصّ مع الملف يجعل واتساب يرسل
+      //     النص ويتجاهل المرفق. (ولا يصحّ تمرير نصّ فارغ — المكتبة
+      //     ترفضه صراحةً: 'text provided, but cannot be empty'.)
+      await Share.shareXFiles(
+        [XFile(filePath, mimeType: 'application/pdf', name: fileName)],
+        subject: 'سند قبض رقم ${receipt.receiptNumber} — ${receipt.customerName}',
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('فشل مشاركة السند: $e'),
             backgroundColor: Colors.red,
           ),
         );
@@ -2397,11 +2542,13 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
 
 class TransactionListTile extends StatelessWidget {
   final DebtTransaction transaction;
+  // 🧾 رقم الفاتورة المركّب (كما يُطبع) لعرضه بدل الآي دي الداخلي
+  final String? invoiceNumber;
   final bool isPlaying;
   final String? currentlyPlayingPath;
   final VoidCallback onPlayStop;
   final String audioPath;
-  
+
   // Callbacks for edit and refresh after change
   final Future<void> Function(DebtTransaction updated)? onEdit;
   // Callback for converting transaction type
@@ -2412,6 +2559,7 @@ class TransactionListTile extends StatelessWidget {
   const TransactionListTile({
     super.key,
     required this.transaction,
+    this.invoiceNumber,
     required this.isPlaying,
     required this.currentlyPlayingPath,
     required this.onPlayStop,
@@ -2477,7 +2625,8 @@ class TransactionListTile extends StatelessWidget {
                       .bodySmall), // Themed text style
             if (isInvoiceRelated)
               Text(
-                'مرتبطة بالفاتورة #${transaction.invoiceId}',
+                // 🧾 عرض رقم الفاتورة المركّب (كما يُطبع) بدل الآي دي الداخلي
+                'مرتبطة بالفاتورة #${invoiceNumber ?? transaction.invoiceId}',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     fontStyle: FontStyle.italic,
                     color: Colors.grey[600]), // Themed text style
@@ -3564,3 +3713,4 @@ class GroupedTransactionListTile extends StatelessWidget {
     }
   }
 }
+

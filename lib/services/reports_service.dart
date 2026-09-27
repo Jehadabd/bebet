@@ -1,13 +1,102 @@
 // services/reports_service.dart
 // خدمة التقارير المتقدمة - منفصلة عن database_service لتخفيف الحمل
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'database_service.dart';
 import '../utils/money_calculator.dart';
 
 class ReportsService {
   final DatabaseService _db = DatabaseService();
-  
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔎 فلتر مصدر البيانات (محلي / مزامنة / الكل)
+  //
+  // في بيئة المزامنة تمتلئ القاعدة بفواتير هذا الجهاز (is_created_by_me = 1)
+  // وفواتير وردت من أجهزة أخرى (= 0). هذا الفلتر يتيح للإدارة رؤية مبيعات
+  // كل جهاز على حدة أو مبيعات المحل كاملاً. المشترك بين كل الشاشات (static)
+  // ومحفوظ بين الجلسات.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// فلتر: عرض التقارير بناءً على مصدر البيانات
+  /// 'all' = الكل, 'this_device' = هذا الجهاز فقط, 'sync' = المزامنة فقط
+  static String reportSourceFilter = 'all';
+
+  static const String _filterPrefsKey = 'report_source_filter';
+  static bool _filterLoaded = false;
+
+  /// تحميل الفلتر المحفوظ (مرة واحدة لكل جلسة).
+  static Future<void> loadSavedFilter() async {
+    if (_filterLoaded) return;
+    _filterLoaded = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      reportSourceFilter = prefs.getString(_filterPrefsKey) ?? 'all';
+    } catch (_) {}
+  }
+
+  /// تغيير الفلتر وحفظه (تستدعيه القائمة المنسدلة في شاشات التقارير).
+  static Future<void> setSourceFilter(String value) async {
+    reportSourceFilter = value;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_filterPrefsKey, value);
+    } catch (_) {}
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ⚡ ذاكرة مؤقتة قصيرة العمر لنتائج getPeriodSummary
+  // ═══════════════════════════════════════════════════════════════════════════
+  // التقرير الشهري يحسب نفس الفترة ٣ مرات، والسنوي يحسب نفس السنة ٣ مرات
+  // زائد ١٢ شهراً. هذه الذاكرة تحذف التكرار داخل *نداء التقرير الواحد فقط*:
+  //
+  //   • خارج التقرير (نداء مباشر من شاشة) الذاكرة معطّلة تماماً — يُحسب
+  //     كل شيء من القاعدة كالسابق، فلا يمكن أن تُعرض أرقام قديمة.
+  //   • داخل التقرير تُملأ عند أول حساب وتُمسح حتماً عند خروج التقرير
+  //     (finally) حتى لو رُمي استثناء.
+  //   • تُرجَع نسخة من الخريطة في كل مرة فلا يستطيع مستدعٍ تعديل نتيجة غيره.
+  //
+  // النتيجة رياضياً مطابقة: نفس الدالة ونفس المدخلات تعطي نفس المخرجات.
+  final Map<String, Map<String, dynamic>> _periodSummaryCache =
+      <String, Map<String, dynamic>>{};
+  int _summaryCacheDepth = 0;
+
+  Future<T> _withSummaryCache<T>(Future<T> Function() body) async {
+    _summaryCacheDepth++;
+    try {
+      return await body();
+    } finally {
+      _summaryCacheDepth--;
+      if (_summaryCacheDepth <= 0) {
+        _summaryCacheDepth = 0;
+        _periodSummaryCache.clear();
+      }
+    }
+  }
+
+  /// شرط SQL يُلحق باستعلامات الفواتير حسب مصدر البيانات.
+  /// [alias] اسم/لقب جدول الفواتير في الاستعلامات المركّبة (مثل 'i') —
+  /// إلزامي هناك لأن customers تحمل عموداً بنفس الاسم فيصبح غير المقيد
+  /// غامضاً ويرفضه SQLite.
+  String _deviceFilter([String? alias]) {
+    final col = (alias == null || alias.isEmpty)
+        ? 'is_created_by_me'
+        : '$alias.is_created_by_me';
+    if (reportSourceFilter == 'this_device') {
+      return " AND $col = 1 ";
+    } else if (reportSourceFilter == 'sync') {
+      return " AND $col = 0 ";
+    }
+    return ""; // 'all' — لا نضيف شيئاً ليجلب كل البيانات
+  }
+
+  // 🧪 فاتح قاعدة بيانات بديل للاختبارات (قاعدة في الذاكرة).
+  @visibleForTesting
+  Future<Database> Function()? databaseOverride;
+
+  Future<Database> _openDb() => databaseOverride?.call() ?? _db.database;
+
   /// 🔍 تشخيص مشكلة التكلفة - طباعة تفاصيل حساب التكلفة لكل بند
   /// يُستخدم لتحديد سبب التكلفة العالية
   double _calculateItemCostWithDebug(Map<String, dynamic> row, {bool enableDebug = false, String? productName}) {
@@ -223,7 +312,7 @@ class ReportsService {
     required DateTime endDate,
     int limit = 5,
   }) async {
-    final db = await _db.database;
+    final db = await _openDb();
     final startStr = startDate.toIso8601String().split('T')[0];
     final endStr = endDate.toIso8601String().split('T')[0];
     
@@ -236,7 +325,7 @@ class ReportsService {
       FROM invoice_items ii
       INNER JOIN invoices i ON ii.invoice_id = i.id
       WHERE DATE(i.invoice_date) >= ? AND DATE(i.invoice_date) <= ?
-        AND i.status = 'محفوظة'
+        AND i.status = 'محفوظة'${_deviceFilter('i')}
       GROUP BY ii.product_name
       ORDER BY total_sales DESC
       LIMIT ?
@@ -252,7 +341,7 @@ class ReportsService {
     required DateTime endDate,
     int limit = 5,
   }) async {
-    final db = await _db.database;
+    final db = await _openDb();
     final startStr = startDate.toIso8601String().split('T')[0];
     final endStr = endDate.toIso8601String().split('T')[0];
     
@@ -276,7 +365,7 @@ class ReportsService {
       INNER JOIN invoices i ON ii.invoice_id = i.id
       LEFT JOIN products p ON p.name = ii.product_name
       WHERE DATE(i.invoice_date) >= ? AND DATE(i.invoice_date) <= ?
-        AND i.status = 'محفوظة'
+        AND i.status = 'محفوظة'${_deviceFilter('i')}
     ''', [startStr, endStr]);
     
     // حساب الربح لكل منتج بنفس منطق getMonthlySalesSummary
@@ -328,7 +417,7 @@ class ReportsService {
     required DateTime endDate,
     int limit = 5,
   }) async {
-    final db = await _db.database;
+    final db = await _openDb();
     final startStr = startDate.toIso8601String().split('T')[0];
     final endStr = endDate.toIso8601String().split('T')[0];
     
@@ -341,7 +430,7 @@ class ReportsService {
       FROM invoices i
       LEFT JOIN customers c ON i.customer_id = c.id
       WHERE DATE(i.invoice_date) >= ? AND DATE(i.invoice_date) <= ?
-        AND i.status = 'محفوظة'
+        AND i.status = 'محفوظة'${_deviceFilter('i')}
       GROUP BY i.customer_name
       ORDER BY total_purchases DESC
       LIMIT ?
@@ -356,11 +445,33 @@ class ReportsService {
   
   /// الحصول على بيانات فترة معينة للمقارنة
   /// يستخدم نفس منطق getMonthlySalesSummary بالضبط
+  ///
+  /// ⚡ غلاف: يعيد استعمال نتيجة نفس الفترة داخل نداء التقرير الواحد فقط.
   Future<Map<String, dynamic>> getPeriodSummary({
     required DateTime startDate,
     required DateTime endDate,
   }) async {
-    final db = await _db.database;
+    // خارج التقرير: لا تخزين إطلاقاً — حساب طازج من القاعدة.
+    if (_summaryCacheDepth <= 0) {
+      return _computePeriodSummary(startDate: startDate, endDate: endDate);
+    }
+    final startKey = startDate.toIso8601String().split('T')[0];
+    final endKey = endDate.toIso8601String().split('T')[0];
+    final key = '$startKey|$endKey|$reportSourceFilter';
+    final cached = _periodSummaryCache[key];
+    if (cached != null) return Map<String, dynamic>.from(cached);
+    final fresh =
+        await _computePeriodSummary(startDate: startDate, endDate: endDate);
+    _periodSummaryCache[key] = fresh;
+    return Map<String, dynamic>.from(fresh);
+  }
+
+  /// الحساب الفعلي (بلا ذاكرة مؤقتة) — المنطق الأصلي كما هو حرفياً.
+  Future<Map<String, dynamic>> _computePeriodSummary({
+    required DateTime startDate,
+    required DateTime endDate,
+  }) async {
+    final db = await _openDb();
     final startStr = startDate.toIso8601String().split('T')[0];
     final endStr = endDate.toIso8601String().split('T')[0];
     
@@ -374,30 +485,30 @@ class ReportsService {
         COALESCE(SUM(CASE WHEN payment_type = 'دين' THEN total_amount ELSE 0 END), 0) as credit_sales
       FROM invoices
       WHERE DATE(invoice_date) >= ? AND DATE(invoice_date) <= ?
-        AND status = 'محفوظة'
+        AND status = 'محفوظة'${_deviceFilter()}
     ''', [startStr, endStr]);
-    
+
     // جلب الفواتير المحفوظة لحساب التكلفة والربح لكل فاتورة
     final invoices = await db.rawQuery('''
       SELECT id, total_amount, return_amount
       FROM invoices
       WHERE DATE(invoice_date) >= ? AND DATE(invoice_date) <= ?
-        AND status = 'محفوظة'
+        AND status = 'محفوظة'${_deviceFilter()}
     ''', [startStr, endStr]);
     
-    // حساب التكلفة والربح لكل فاتورة بنفس منطق getMonthlySalesSummary
-    double totalCostCalculated = 0.0;
-    double totalProfitCalculated = 0.0;
-    
-    for (final invoice in invoices) {
-      final invoiceId = invoice['id'] as int;
-      final totalAmount = (invoice['total_amount'] as num?)?.toDouble() ?? 0.0;
-      final returnAmount = (invoice['return_amount'] as num?)?.toDouble() ?? 0.0;
-      
+    // ⚡ تحسين أداء: استعلام واحد مجمّع لأصناف كل فواتير الفترة بدل
+    // استعلام مستقل لكل فاتورة (نمط N+1 كان يُنفّذ مئات الاستعلامات).
+    // النتيجة رياضياً مطابقة تماماً: نفس الأعمدة، ونفس ترتيب الأصناف
+    // داخل كل فاتورة (ORDER BY invoice_id, id = نفس ترتيب rowid السابق)،
+    // لذلك ترتيب جمع الأرقام العشرية لم يتغيّر ولا تتغيّر أي نتيجة.
+    final Map<int, List<Map<String, dynamic>>> itemsByInvoice =
+        <int, List<Map<String, dynamic>>>{};
+    if (invoices.isNotEmpty) {
       // 🔧 إصلاح: استخدام LEFT JOIN لتشمل المنتجات غير الموجودة في قاعدة البيانات
       // المنتجات غير المسجلة ستستخدم 10% كنسبة ربح افتراضية
-      final items = await db.rawQuery('''
+      final allItems = await db.rawQuery('''
         SELECT 
+          ii.invoice_id AS _inv_id,
           ii.quantity_individual AS qi,
           ii.quantity_large_unit AS ql,
           ii.units_in_large_unit AS uilu,
@@ -412,8 +523,33 @@ class ReportsService {
           p.unit_hierarchy AS unit_hierarchy
         FROM invoice_items ii
         LEFT JOIN products p ON p.name = ii.product_name
-        WHERE ii.invoice_id = ?
-      ''', [invoiceId]);
+        WHERE ii.invoice_id IN (
+          SELECT id
+          FROM invoices
+          WHERE DATE(invoice_date) >= ? AND DATE(invoice_date) <= ?
+            AND status = 'محفوظة'${_deviceFilter()}
+        )
+        ORDER BY ii.invoice_id, ii.id
+      ''', [startStr, endStr]);
+
+      for (final row in allItems) {
+        final invId = (row['_inv_id'] as num?)?.toInt();
+        if (invId == null) continue;
+        (itemsByInvoice[invId] ??= <Map<String, dynamic>>[]).add(row);
+      }
+    }
+
+    // حساب التكلفة والربح لكل فاتورة بنفس منطق getMonthlySalesSummary
+    double totalCostCalculated = 0.0;
+    double totalProfitCalculated = 0.0;
+    
+    for (final invoice in invoices) {
+      final invoiceId = invoice['id'] as int;
+      final totalAmount = (invoice['total_amount'] as num?)?.toDouble() ?? 0.0;
+      final returnAmount = (invoice['return_amount'] as num?)?.toDouble() ?? 0.0;
+      
+      final items =
+          itemsByInvoice[invoiceId] ?? const <Map<String, dynamic>>[];
       
       // حساب تكلفة الفاتورة
       double invoiceCost = 0.0;
@@ -547,7 +683,7 @@ class ReportsService {
     required DateTime startDate,
     required DateTime endDate,
   }) async {
-    final db = await _db.database;
+    final db = await _openDb();
     final startStr = startDate.toIso8601String().split('T')[0];
     final endStr = endDate.toIso8601String().split('T')[0];
     
@@ -560,7 +696,7 @@ class ReportsService {
         COALESCE(SUM(i.total_amount), 0) as total_purchases,
         COUNT(i.id) as invoice_count
       FROM customers c
-      LEFT JOIN invoices i ON c.id = i.customer_id AND i.status = 'محفوظة'
+      LEFT JOIN invoices i ON c.id = i.customer_id AND i.status = 'محفوظة'${_deviceFilter('i')}
       WHERE DATE(c.created_at) >= ? AND DATE(c.created_at) <= ?
       GROUP BY c.id
       ORDER BY c.created_at DESC
@@ -578,7 +714,7 @@ class ReportsService {
     int daysSinceLastPayment = 30,
     double minimumDebt = 0,
   }) async {
-    final db = await _db.database;
+    final db = await _openDb();
     final cutoffDate = DateTime.now().subtract(Duration(days: daysSinceLastPayment));
     final cutoffStr = cutoffDate.toIso8601String().split('T')[0];
     
@@ -628,7 +764,7 @@ class ReportsService {
     required DateTime startDate,
     required DateTime endDate,
   }) async {
-    final db = await _db.database;
+    final db = await _openDb();
     final startStr = startDate.toIso8601String().split('T')[0];
     final endStr = endDate.toIso8601String().split('T')[0];
     
@@ -641,7 +777,7 @@ class ReportsService {
         COALESCE(SUM(CASE WHEN payment_type = 'دين' THEN total_amount ELSE 0 END), 0) as credit_sales
       FROM invoices
       WHERE DATE(invoice_date) >= ? AND DATE(invoice_date) <= ?
-        AND status = 'محفوظة'
+        AND status = 'محفوظة'${_deviceFilter()}
       GROUP BY DATE(invoice_date)
       ORDER BY date ASC
     ''', [startStr, endStr]);
@@ -741,7 +877,18 @@ class ReportsService {
   // ═══════════════════════════════════════════════════════════════════════════
   
   /// تقرير شهري شامل
+  ///
+  /// ⚡ يُشغَّل داخل نطاق ذاكرة مؤقتة: نفس الفترة كانت تُحسب ٣ مرات
+  /// (summary + comparePeriods + getProfitPercentage) فصارت مرة واحدة.
+  /// الذاكرة تُمسح حتماً عند انتهاء هذا النداء.
   Future<Map<String, dynamic>> getMonthlyDetailedReport({
+    required int year,
+    required int month,
+  }) =>
+      _withSummaryCache(
+          () => _getMonthlyDetailedReportInner(year: year, month: month));
+
+  Future<Map<String, dynamic>> _getMonthlyDetailedReportInner({
     required int year,
     required int month,
   }) async {
@@ -788,7 +935,13 @@ class ReportsService {
   // ═══════════════════════════════════════════════════════════════════════════
   
   /// تقرير سنوي شامل
-  Future<Map<String, dynamic>> getYearlyReport({required int year}) async {
+  ///
+  /// ⚡ يُشغَّل داخل نطاق ذاكرة مؤقتة (انظر getMonthlyDetailedReport).
+  Future<Map<String, dynamic>> getYearlyReport({required int year}) =>
+      _withSummaryCache(() => _getYearlyReportInner(year: year));
+
+  Future<Map<String, dynamic>> _getYearlyReportInner(
+      {required int year}) async {
     final startDate = DateTime(year, 1, 1);
     final endDate = DateTime(year, 12, 31);
     
@@ -852,7 +1005,7 @@ class ReportsService {
     required int month,
     int? limitInvoices,
   }) async {
-    final db = await _db.database;
+    final db = await _openDb();
     final startDate = DateTime(year, month, 1);
     final endDate = DateTime(year, month + 1, 0);
     final startStr = startDate.toIso8601String().split('T')[0];
@@ -869,7 +1022,7 @@ class ReportsService {
       SELECT id, total_amount, return_amount, customer_name, invoice_date
       FROM invoices
       WHERE DATE(invoice_date) >= ? AND DATE(invoice_date) <= ?
-        AND status = 'محفوظة'
+        AND status = 'محفوظة'${_deviceFilter()}
       ORDER BY id DESC
       ${limitInvoices != null ? 'LIMIT $limitInvoices' : ''}
     ''', [startStr, endStr]);
@@ -992,7 +1145,7 @@ class ReportsService {
     int? year,
     int? month,
   }) async {
-    final db = await _db.database;
+    final db = await _openDb();
     
     print('');
     print('╔═══════════════════════════════════════════════════════════════════╗');
@@ -1046,7 +1199,7 @@ class ReportsService {
       FROM invoice_items ii
       JOIN invoices i ON ii.invoice_id = i.id
       LEFT JOIN products p ON p.name = ii.product_name
-      WHERE $whereClause AND i.status = 'محفوظة'
+      WHERE $whereClause AND i.status = 'محفوظة'${_deviceFilter('i')}
       ORDER BY i.invoice_date DESC
       LIMIT 20
     ''', whereArgs);
@@ -1070,7 +1223,7 @@ class ReportsService {
     required int year,
     int? month,
   }) async {
-    final db = await _db.database;
+    final db = await _openDb();
     
     // بناء شرط التاريخ
     String dateCondition;
@@ -1106,7 +1259,7 @@ class ReportsService {
       LEFT JOIN products p ON p.name = ii.product_name
       WHERE (i.customer_id = ? OR (i.customer_id IS NULL AND i.customer_name = (
         SELECT name FROM customers WHERE id = ?
-      ))) AND i.status = 'محفوظة' AND $dateCondition
+      ))) AND i.status = 'محفوظة' AND $dateCondition${_deviceFilter('i')}
     ''', [customerId, customerId, ...dateArgs]);
     
     // تجميع البيانات حسب المنتج
@@ -1197,7 +1350,7 @@ class ReportsService {
     required int year,
     int? month,
   }) async {
-    final db = await _db.database;
+    final db = await _openDb();
     
     // جلب بيانات المنتج أولاً
     final productData = await db.query('products', where: 'id = ?', whereArgs: [productId]);
@@ -1244,7 +1397,7 @@ class ReportsService {
       INNER JOIN invoices i ON ii.invoice_id = i.id
       LEFT JOIN customers c ON i.customer_id = c.id
       LEFT JOIN products p ON p.name = ii.product_name
-      WHERE ii.product_name = ? AND i.status = 'محفوظة' AND $dateCondition
+      WHERE ii.product_name = ? AND i.status = 'محفوظة' AND $dateCondition${_deviceFilter('i')}
     ''', [productName, ...dateArgs]);
     
     // تجميع البيانات حسب العميل

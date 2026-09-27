@@ -43,28 +43,6 @@ class FirebaseSyncHelper {
     }
   }
   
-  /// حذف عميل (Soft Delete)
-  Future<void> deleteCustomer(String syncUuid) async {
-    if (!await isEnabled) return;
-    
-    try {
-      await _syncService.deleteCustomer(syncUuid);
-    } catch (e) {
-      print('⚠️ Firebase Sync: فشل حذف العميل: $e');
-    }
-  }
-  
-  /// حذف معاملة (Soft Delete)
-  Future<void> deleteTransaction(String syncUuid) async {
-    if (!await isEnabled) return;
-    
-    try {
-      await _syncService.deleteTransaction(syncUuid);
-    } catch (e) {
-      print('⚠️ Firebase Sync: فشل حذف المعاملة: $e');
-    }
-  }
-
   /// الاستماع لأحداث المزامنة
   Stream<String> get syncEvents => _syncService.syncEvents;
 }

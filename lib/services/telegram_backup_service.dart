@@ -426,12 +426,21 @@ class TelegramBackupService {
     final database = await db.database;
     final nf = NumberFormat('#,##0', 'en_US');
 
+    // 🔎 فلتر «الفواتير المحلية فقط»: عند تفعيله من الإعدادات يرسل كل جهاز
+    // مبيعاته هو فقط (is_created_by_me = 1) دون الواردة من المزامنة —
+    // لمنع التقارير المزدوجة عندما ترسل عدة أجهزة لنفس جروب التليجرام.
+    await DatabaseService.ensureInvoiceOwnershipFlags();
+    final settings0 = await SettingsManager.getAppSettings();
+    final onlyLocal = settings0.telegramOnlyLocalInvoices;
+    final localFilter = onlyLocal ? "AND is_created_by_me = 1" : "";
+
     final invoices = await database.rawQuery('''
-      SELECT 
+      SELECT
         id, total_amount, discount, amount_paid_on_invoice, payment_type
       FROM invoices
       WHERE DATE(invoice_date) >= ? AND DATE(invoice_date) <= ?
         AND status = 'محفوظة'
+        $localFilter
     ''', [startStr, endStr]);
 
     int cashCount = 0;
@@ -498,11 +507,12 @@ class TelegramBackupService {
 
     double returnsTotal = 0.0;
     final invoiceReturnsData = await database.rawQuery('''
-      SELECT 
+      SELECT
         COALESCE(SUM(return_amount), 0) as total
       FROM invoices
       WHERE DATE(invoice_date) >= ? AND DATE(invoice_date) <= ?
         AND status = 'محفوظة'
+        $localFilter
     ''', [startStr, endStr]);
 
     if (invoiceReturnsData.isNotEmpty) {
@@ -586,6 +596,7 @@ class TelegramBackupService {
 📊 <b>ملخص شهر $monthName ${now.year}</b>
 🏪 <b>$branchName</b>
 📅 من ${startOfMonth.day}/${startOfMonth.month}/${startOfMonth.year} إلى ${now.day}/${now.month}/${now.year}
+${onlyLocal ? '📲 مبيعات هذا الجهاز فقط' : '🏬 مبيعات كل الأجهزة (محلي + مزامنة)'}
 
 ═════════════════
 🧾 <b>الفواتير:</b>
@@ -637,6 +648,101 @@ class TelegramBackupService {
   Future<bool> sendMonthlySummary() async {
     final result = await sendMonthlySummaryWithDetails();
     return result.success;
+  }
+
+  /// 📅 بناء نص الإحصائيات اليومية بصيغة Telegram HTML.
+  ///
+  /// يحترم إعداد «الفواتير المحلية فقط»: عند تفعيله يرسل كل جهاز مبيعات
+  /// يومه هو فقط، فتصل الإدارة رسالة مستقلة من كل كاشير بدل تقارير مزدوجة.
+  Future<String> buildDailyStatisticsMessage() async {
+    final now = DateTime.now();
+    final nowStr = now.toIso8601String().split('T')[0];
+
+    final db = DatabaseService();
+    final database = await db.database;
+    final nf = NumberFormat('#,##0', 'en_US');
+
+    // 🔎 نفس فلتر الملخص الشهري (محلية فقط / الكل)
+    await DatabaseService.ensureInvoiceOwnershipFlags();
+    final settings = await SettingsManager.getAppSettings();
+    final onlyLocal = settings.telegramOnlyLocalInvoices;
+    final localFilter = onlyLocal ? "AND is_created_by_me = 1" : "";
+
+    // 🧾 إحصائيات فواتير اليوم
+    final salesResult = await database.rawQuery('''
+      SELECT
+        COUNT(*) as count,
+        COALESCE(SUM(total_amount), 0) as total,
+        COALESCE(SUM(discount), 0) as discount,
+        COALESCE(SUM(CASE WHEN payment_type = 'نقد' THEN total_amount ELSE 0 END), 0) as cash_total,
+        COALESCE(SUM(CASE WHEN payment_type = 'دين' THEN total_amount ELSE 0 END), 0) as debt_total,
+        COALESCE(SUM(amount_paid_on_invoice), 0) as paid_total,
+        COALESCE(SUM(return_amount), 0) as returns_total
+      FROM invoices
+      WHERE DATE(invoice_date) = ?
+        AND status = 'محفوظة'
+        $localFilter
+    ''', [nowStr]);
+
+    final s = salesResult.first;
+    final invoiceCount = (s['count'] as num?)?.toInt() ?? 0;
+    final totalSales = (s['total'] as num?)?.toDouble() ?? 0.0;
+    final totalDiscount = (s['discount'] as num?)?.toDouble() ?? 0.0;
+    final cashSales = (s['cash_total'] as num?)?.toDouble() ?? 0.0;
+    final debtSales = (s['debt_total'] as num?)?.toDouble() ?? 0.0;
+    final paidOnInvoices = (s['paid_total'] as num?)?.toDouble() ?? 0.0;
+    final returnsTotal = (s['returns_total'] as num?)?.toDouble() ?? 0.0;
+
+    // 💵 تسديدات الدين اليدوية اليوم (من هذا الجهاز كما في الملخص الشهري)
+    final manualPaymentData = await database.rawQuery('''
+      SELECT COUNT(*) as count, COALESCE(SUM(ABS(amount_changed)), 0) as total
+      FROM transactions
+      WHERE DATE(transaction_date) = ?
+        AND transaction_type = 'manual_payment'
+        AND is_created_by_me = 1 AND invoice_id IS NULL
+    ''', [nowStr]);
+    final manualPaymentCount =
+        (manualPaymentData.first['count'] as num?)?.toInt() ?? 0;
+    final manualPaymentTotal =
+        (manualPaymentData.first['total'] as num?)?.toDouble() ?? 0.0;
+
+    final branchName = settings.branchName;
+
+    return '''
+📋 <b>إحصائيات اليوم ${now.day}/${now.month}/${now.year}</b>
+🏪 <b>$branchName</b>
+${onlyLocal ? '📲 مبيعات هذا الجهاز فقط' : '🏬 مبيعات كل الأجهزة (محلي + مزامنة)'}
+
+🧾 <b>الفواتير:</b> $invoiceCount فاتورة
+💰 <b>إجمالي المبيعات:</b> ${nf.format(totalSales)} د.ع
+💵 نقدية: ${nf.format(cashSales)} د.ع
+📝 دين: ${nf.format(debtSales)} د.ع
+💳 مدفوع على الفواتير: ${nf.format(paidOnInvoices)} د.ع
+🏷️ خصومات: ${nf.format(totalDiscount)} د.ع
+🔄 مرتجعات الفواتير: ${nf.format(returnsTotal)} د.ع
+─────────────────
+💵 تسديدات دين يدوية: $manualPaymentCount | ${nf.format(manualPaymentTotal)} د.ع
+''';
+  }
+
+  /// 📤 إرسال الإحصائيات اليومية إلى Telegram مع تفاصيل الخطأ.
+  Future<TelegramSendResult> sendDailyStatistics() async {
+    _lastError = null;
+
+    if (!isConfigured) {
+      _lastError = 'إعدادات Telegram غير مكتملة';
+      return TelegramSendResult.error('إعدادات Telegram غير مكتملة');
+    }
+
+    try {
+      final message = await buildDailyStatisticsMessage();
+      return await sendMessageWithDetails(message);
+    } catch (e) {
+      _lastError = 'خطأ في إعداد الإحصائيات اليومية: $e';
+      print('❌ $_lastError');
+      return TelegramSendResult.error('خطأ في إعداد الإحصائيات اليومية',
+          details: e.toString());
+    }
   }
   
   /// إرسال ملخص شهري إلى Telegram مع تفاصيل الخطأ

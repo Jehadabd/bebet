@@ -27,6 +27,9 @@ class SmartSearchDatabase {
   Future<Database> _initDatabase() async {
 
     final Directory documentsDirectory = await getApplicationDocumentsDirectory();
+    if (!await documentsDirectory.exists()) {
+      await documentsDirectory.create(recursive: true);
+    }
     final String path = join(documentsDirectory.path, 'smart_search.db');
 
     print('📂 Smart Search DB path: $path');

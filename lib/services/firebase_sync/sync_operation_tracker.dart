@@ -7,7 +7,6 @@ import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:sqflite/sqflite.dart';
 import '../database_service.dart';
-import 'firebase_sync_config.dart';
 
 /// ═══════════════════════════════════════════════════════════════════════════
 /// نوع العملية
@@ -60,7 +59,7 @@ class TrackedOperation {
     'timestamp': timestamp.toIso8601String(),
     'readBy': readBy.map((k, v) => MapEntry(k, v.toIso8601String())),
     'canDelete': canDelete,
-    'uploadedAt': FieldValue.serverTimestamp(),
+    'uploadedAt': DateTime.now().toIso8601String(),
   };
 
   factory TrackedOperation.fromFirebaseMap(Map<String, dynamic> map) {
@@ -348,8 +347,6 @@ class SyncOperationTracker {
     }
 
     await _firestore!
-        .collection('sync_groups')
-        .doc(_groupId)
         .collection('sync_operations')
         .doc(docId)
         .set(data);
@@ -382,8 +379,6 @@ class SyncOperationTracker {
     if (_firestore == null || _groupId == null || _deviceId == null) return;
 
     _operationsListener = _firestore!
-        .collection('sync_groups')
-        .doc(_groupId)
         .collection('sync_operations')
         .orderBy('timestamp', descending: true)
         .limit(100) // آخر 100 عملية
@@ -464,8 +459,6 @@ class SyncOperationTracker {
 
     try {
       await _firestore!
-          .collection('sync_groups')
-          .doc(_groupId)
           .collection('sync_operations')
           .doc(docId)
           .update({
@@ -494,8 +487,6 @@ class SyncOperationTracker {
     try {
       // جلب الأجهزة المتصلة
       final devicesSnapshot = await _firestore!
-          .collection('sync_groups')
-          .doc(_groupId)
           .collection('devices')
           .get();
 
@@ -524,8 +515,6 @@ class SyncOperationTracker {
 
       // جلب العمليات القابلة للحذف
       final operationsSnapshot = await _firestore!
-          .collection('sync_groups')
-          .doc(_groupId)
           .collection('sync_operations')
           .get();
 
@@ -610,8 +599,6 @@ class SyncOperationTracker {
 
     try {
       final operationsCount = await _firestore!
-          .collection('sync_groups')
-          .doc(_groupId)
           .collection('sync_operations')
           .count()
           .get();

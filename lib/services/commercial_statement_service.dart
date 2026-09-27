@@ -2,9 +2,33 @@
 // خدمة كشف الحساب التجاري - تجميع المعاملات المرتبطة بالفواتير
 // 🔧 تم إصلاح جميع الأخطاء المكتشفة
 import 'database_service.dart';
+import 'invoice_settings_service.dart';
 
 class CommercialStatementService {
   final DatabaseService _db = DatabaseService();
+
+  /// 🧾 رقم الفاتورة كما يُطبع (رقم الجهاز + السنة + الشهر + التسلسل الشهري).
+  /// الأولوية للتركيب من عمود التسلسل — بعض الفواتير خُزّن معرّفها المركّب
+  /// بدون التسلسل (نسخة سابقة) لكن التسلسل محفوظ في العمود المنفصل.
+  static String _formattedInvoiceNumber(Map<String, dynamic> inv) {
+    // 🧾 الأولوية للرقم المخزّن مع الفاتورة — هوية ثابتة لا تُركَّب من جديد
+    final stored = inv['invoice_number'] as String?;
+    if (stored != null && stored.isNotEmpty) return stored;
+
+    final id = inv['id'] as int;
+    final date = DateTime.tryParse(inv['invoice_date'] as String? ?? '');
+    final year = (inv['invoice_year'] as int?) ?? date?.year ?? 0;
+    final month = (inv['invoice_month'] as int?) ?? date?.month ?? 0;
+    final deviceIdStr = InvoiceSettingsService.cachedDeviceId.toString();
+
+    final seq = inv['monthly_sequence_number'] as int?;
+    if (seq != null) {
+      return '$deviceIdStr$year${month.toString().padLeft(2, '0')}$seq';
+    }
+    // فاتورة مركّبة بلا عمود تسلسل: المعرّف نفسه هو الرقم الكامل.
+    if (id > 1000000) return id.toString();
+    return '$deviceIdStr$year${month.toString().padLeft(2, '0')}---';
+  }
 
   /// جلب السنوات المتاحة للعميل (من أقدم فاتورة أو معاملة)
   Future<List<int>> getAvailableYears(int customerId) async {
@@ -201,26 +225,29 @@ class CommercialStatementService {
       final bool convertedFromDebtToCash =
           paymentType == 'نقد' && invoiceTx.isNotEmpty;
 
+      // 🧾 الرقم المعروض = رقم الفاتورة المطبوع (المركّب) لا آي دي القاعدة
+      final invoiceNumber = _formattedInvoiceNumber(inv);
+
       if (isTrueCashInvoice) {
-        description = 'فاتورة رقم #$invoiceId نقد';
+        description = 'فاتورة رقم #$invoiceNumber نقد';
         entryType = 'cash_invoice';
         netDebtAmount = 0;
       } else if (convertedFromDebtToCash) {
-        description = 'فاتورة رقم #$invoiceId (تحولت لنقد)';
+        description = 'فاتورة رقم #$invoiceNumber (تحولت لنقد)';
         entryType = 'converted_to_cash';
         wasConverted = true;
         originalPaymentType = 'دين';
       } else if (convertedFromCashToDebt) {
-        description = 'فاتورة رقم #$invoiceId (تحولت لدين)';
+        description = 'فاتورة رقم #$invoiceNumber (تحولت لدين)';
         entryType = 'converted_to_debt';
         wasConverted = true;
         originalPaymentType = 'نقد';
       } else if (paymentType == 'دين') {
-        description = 'فاتورة رقم #$invoiceId';
+        description = 'فاتورة رقم #$invoiceNumber';
         entryType = 'debt_invoice';
       } else {
         // فاتورة نقد لكن لها معاملات (حالة غير متوقعة)
-        description = 'فاتورة رقم #$invoiceId نقد';
+        description = 'فاتورة رقم #$invoiceNumber نقد';
         entryType = 'cash_invoice';
         netDebtAmount = 0;
       }
@@ -263,6 +290,15 @@ class CommercialStatementService {
         description = note ?? 'معاملة يدوية';
       }
 
+      // 📝 إظهار الملاحظة اليدوية (إن وُجدت) لمعاملات إضافة/تسديد الدين اليدوية
+      final hasManualNote =
+          (txType == 'manual_payment' || txType == 'manual_debt') &&
+          note != null &&
+          note.trim().isNotEmpty;
+      if (hasManualNote) {
+        description = '$description - ${note.trim()}';
+      }
+
       entries.add({
         'date': txDate,
         'description': description,
@@ -281,6 +317,26 @@ class CommercialStatementService {
     }
 
     // إضافة المعاملات المرتبطة بفواتير لم تظهر في قائمة الفواتير
+    // 🧾 نجهّز أولاً خريطة رقم→رقم معروض لفواتيرها (خارج نطاق الفترة غالباً)
+    final Map<int, String> orphanInvoiceNumbers = {};
+    final orphanInvoiceIds = allInvoiceTx
+        .map((tx) => tx['invoice_id'] as int?)
+        .whereType<int>()
+        .where((id) => !fetchedInvoiceIds.contains(id))
+        .toSet();
+    if (orphanInvoiceIds.isNotEmpty) {
+      final placeholders = orphanInvoiceIds.map((_) => '?').join(',');
+      final orphanRows = await db.rawQuery(
+        'SELECT id, invoice_date, invoice_year, invoice_month, monthly_sequence_number '
+        'FROM invoices WHERE id IN ($placeholders)',
+        orphanInvoiceIds.toList(),
+      );
+      for (final row in orphanRows) {
+        orphanInvoiceNumbers[row['id'] as int] =
+            _formattedInvoiceNumber(row);
+      }
+    }
+
     for (final tx in allInvoiceTx) {
       final invoiceId = tx['invoice_id'] as int?;
       // تخطي إذا كانت الفاتورة موجودة في القائمة
@@ -294,7 +350,12 @@ class CommercialStatementService {
       final txId = tx['id'] as int?;
       final createdAt = tx['created_at'] as String?;
 
-      String description = 'فاتورة #$invoiceId';
+      // 🧾 الأولوية للرقم المركّب من صف الفاتورة، وإلا صدى المعرّض المركّب، وإلا الآي دي
+      final displayNumber = orphanInvoiceNumbers[invoiceId] ??
+          ((invoiceId != null && invoiceId > 1000000)
+              ? invoiceId.toString()
+              : '$invoiceId');
+      String description = 'فاتورة #$displayNumber';
       if (note != null && note.isNotEmpty) {
         description += ' - $note';
       }
@@ -398,48 +459,58 @@ class CommercialStatementService {
     double invoicePayments = 0.0;
     double manualPayments = 0.0;
 
+    // 🛒 قيمة المشتريات في الفترة (قيمة الفاتورة كاملةً لا أثرها على الدين).
+    // فاتورة تحوّلت إلى نقد تُحسب مشتريات نقد، وفاتورة تحوّلت إلى دين
+    // تُحسب مشتريات دين — أي حسب حالتها النهائية كما يراها العميل.
+    double cashInvoicesValue = 0.0;
+    double debtInvoicesValue = 0.0;
+
     for (final entry in entries) {
       final type = entry['type'] as String;
       final netAmount = (entry['netAmount'] as num?)?.toDouble() ?? 0.0;
 
-      // حساب عدد الفواتير
+      // حساب عدد الفواتير وقيمتها
+      final invoiceValue = (entry['invoiceAmount'] as num?)?.toDouble() ?? 0.0;
       if (type == 'debt_invoice') {
         totalDebtInvoices++;
+        debtInvoicesValue += invoiceValue;
       } else if (type == 'cash_invoice') {
         totalCashInvoices++;
+        cashInvoicesValue += invoiceValue;
       } else if (type == 'converted_to_cash') {
         convertedToCash++;
+        cashInvoicesValue += invoiceValue;
       } else if (type == 'converted_to_debt') {
         convertedToDebt++;
+        debtInvoicesValue += invoiceValue;
       }
 
-      // حساب الديون والمدفوعات
-      if (type == 'debt_invoice' || type == 'converted_to_debt') {
-        if (netAmount > 0) {
-          invoiceDebts += netAmount;
-        } else if (netAmount < 0) {
-          invoicePayments += netAmount.abs();
-        }
-      } else if (type == 'converted_to_cash') {
-        // فاتورة تحولت لنقد - المعاملات السالبة هي تسديد
-        if (netAmount < 0) {
-          invoicePayments += netAmount.abs();
-        }
-      } else if (type == 'orphan_invoice_transaction') {
-        // 🔧 إصلاح خطأ 4: معاملات الفواتير اليتيمة تُحسب كديون فواتير
-        if (netAmount > 0) {
-          invoiceDebts += netAmount;
-        } else if (netAmount < 0) {
-          invoicePayments += netAmount.abs();
-        }
-      } else if (type == 'manual_transaction') {
+      // 📐 حساب الديون والمدفوعات — بقاعدة واحدة تضمن صحّة المعادلة
+      // المعروضة للعميل:
+      //     الرصيد السابق + مجموع الديون − مجموع المسدَّد = رصيد النهاية
+      //
+      // القاعدة: كل مبلغ يؤثّر على الدين (netAmount ≠ 0) يدخل حتماً في أحد
+      // الطرفين — موجباً في الديون أو سالباً في المدفوعات — ويُصنَّف «يدوي»
+      // إن كان معاملة يدوية و«فواتير» فيما عدا ذلك. وبما أن الرصيد نفسه
+      // يُبنى بجمع نفس الـ netAmount، فالطرفان متطابقان رياضياً دائماً.
+      //
+      // 🛡️ هذا يسدّ ثغرة كانت في الكود السابق: فاتورة «تحوّلت لنقد» لكن
+      // صافي معاملاتها موجب (تسديدها لم يُسجَّل) كان مبلغها يُسقَط من
+      // مجموع الديون بينما يُضاف إلى الرصيد — فتختلّ المعادلة.
+      // فواتير النقد الحقيقية netAmount لها صفر فلا تدخل أي طرف.
+      if (type == 'manual_transaction') {
         if (netAmount > 0) {
           manualDebts += netAmount;
         } else if (netAmount < 0) {
           manualPayments += netAmount.abs();
         }
+      } else {
+        if (netAmount > 0) {
+          invoiceDebts += netAmount;
+        } else if (netAmount < 0) {
+          invoicePayments += netAmount.abs();
+        }
       }
-      // فواتير النقد (cash_invoice) لا تؤثر على الدين
     }
 
     // 🔧 إصلاح خطأ 8: إجمالي الفواتير يشمل جميع الأنواع
@@ -452,6 +523,12 @@ class CommercialStatementService {
           totalCashInvoices +
           convertedToCash +
           convertedToDebt,
+      // 🛒 حركة الشراء في الفترة
+      'cashInvoicesValue': cashInvoicesValue,
+      'debtInvoicesValue': debtInvoicesValue,
+      'totalPurchases': cashInvoicesValue + debtInvoicesValue,
+      // 📐 طرفا معادلة الرصيد: الرصيد قبل الفترة، والرصيد بعدها
+      'openingBalance': debtBeforePeriod,
       'invoiceDebts': invoiceDebts,
       'manualDebts': manualDebts,
       'totalDebts': invoiceDebts + manualDebts,

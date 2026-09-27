@@ -7,34 +7,46 @@ class SettingsManager {
   static const _keyAppSettings = 'app_settings';
   static const _keyDefaultPrinter = 'default_printer';
 
+  static String cachedDeviceSerialNumber = '';
+
   static Future<void> saveSettings(AppSettings settings) async {
     final prefs = await SharedPreferences.getInstance();
     final settingsJson = jsonEncode(settings.toJson());
     await prefs.setString(_keyAppSettings, settingsJson);
+    cachedDeviceSerialNumber = settings.deviceSerialNumber ?? '';
   }
 
   static Future<AppSettings> loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     final settingsJson = prefs.getString(_keyAppSettings);
+    AppSettings settings;
     if (settingsJson != null) {
-      return AppSettings.fromJson(jsonDecode(settingsJson));
+      settings = AppSettings.fromJson(jsonDecode(settingsJson));
+    } else {
+      settings = AppSettings();
     }
-    return AppSettings(); // Return default settings if none are saved
+    cachedDeviceSerialNumber = settings.deviceSerialNumber ?? '';
+    return settings;
   }
 
   static Future<void> saveAppSettings(AppSettings settings) async {
     final prefs = await SharedPreferences.getInstance();
     final settingsJson = jsonEncode(settings.toJson());
     await prefs.setString(_keyAppSettings, settingsJson);
+    cachedDeviceSerialNumber = settings.deviceSerialNumber ?? '';
   }
 
   static Future<AppSettings> getAppSettings() async {
     final prefs = await SharedPreferences.getInstance();
     final settingsJson = prefs.getString(_keyAppSettings);
+    AppSettings settings;
     if (settingsJson != null) {
-      return AppSettings.fromJson(jsonDecode(settingsJson));
+      settings = AppSettings.fromJson(jsonDecode(settingsJson));
+    } else {
+      settings = AppSettings();
     }
-    return AppSettings(); // Return default settings if none are saved
+    cachedDeviceSerialNumber = settings.deviceSerialNumber ?? '';
+    return settings;
   }
 
   static Future<void> saveDefaultPrinter(PrinterDevice printer) async {

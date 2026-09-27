@@ -4,10 +4,8 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart' as path;
 import '../database_service.dart';
 
 /// حالة العملية في Write-Ahead Log
@@ -170,13 +168,14 @@ class SyncCrashRecoveryService {
     final db = await _db.database;
     
     // تفعيل Write-Ahead Logging
-    await db.execute('PRAGMA journal_mode = WAL');
+    await db.rawQuery('PRAGMA journal_mode = WAL');
     
     // تفعيل المزامنة الكاملة للحماية القصوى
-    await db.execute('PRAGMA synchronous = FULL');
+    // استخدام rawQuery بدلاً من execute لتوافق أفضل مع Android
+    await db.rawQuery('PRAGMA synchronous = FULL');
     
     // تفعيل فحص سلامة البيانات
-    await db.execute('PRAGMA integrity_check');
+    await db.rawQuery('PRAGMA integrity_check');
     
     print('✅ تم تفعيل وضع WAL للحماية من الانقطاع');
   }
@@ -439,7 +438,7 @@ class SyncCrashRecoveryService {
     // التحقق من وجود المعاملة
     final existing = await db.query(
       'transactions',
-      where: 'sync_uuid = ?',
+      where: 'transaction_uuid = ?',
       whereArgs: [syncUuid],
     );
 
@@ -447,6 +446,7 @@ class SyncCrashRecoveryService {
       // إنشاء المعاملة
       await db.insert('transactions', {
         ...data,
+        'transaction_uuid': syncUuid,
         'sync_uuid': syncUuid,
       });
       

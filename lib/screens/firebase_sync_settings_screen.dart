@@ -1,12 +1,20 @@
 // lib/screens/firebase_sync_settings_screen.dart
 // شاشة إعدادات المزامنة عبر Firebase مع حماية صارمة
 
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/firebase_sync/firebase_sync_config.dart';
+import '../services/firebase_sync/sync_diagnostics.dart'; // 🩺
+import 'package:firebase_auth/firebase_auth.dart';
 import '../services/firebase_sync/firebase_sync_service.dart';
-import '../services/password_service.dart';
-import 'sync_stats_screen.dart';
+import 'package:sqflite/sqflite.dart';
+import '../services/firebase_sync/firebase_custom_config.dart';
+import '../services/firebase_sync/invoice_sync_service.dart';
+import '../services/firebase_sync/smart_pipe_cleanup_service.dart';
+import '../services/database_service.dart';
+import 'firebase_custom_setup_screen.dart';
+import 'reconciliation_screen.dart';
 
 class FirebaseSyncSettingsScreen extends StatefulWidget {
   const FirebaseSyncSettingsScreen({super.key});
@@ -19,7 +27,7 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
   bool _isLoading = false; // 🔧 تغيير: لا نبدأ بالتحميل
   bool _isLoadingStats = false; // 🆕 تحميل الإحصائيات منفصل
   bool _isEnabled = false;
-  String? _currentGroupId;
+  String? _projectId; // 🆕 معرف المشروع
   Map<String, dynamic>? _syncStats;
   String _loadingMessage = ''; // 🆕 رسالة التحميل
   double _loadingProgress = 0.0; // 🆕 نسبة التقدم (0.0 - 1.0)
@@ -27,17 +35,25 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
   // 🔒 إعدادات الأمان
   bool _rejectOldTransactions = false;
   int _maxTransactionAgeDays = 30;
+  int _autoDeleteDays = 90;
   bool _postSyncVerification = true;
+  CustomerConflictPolicy _customerConflictPolicy = CustomerConflictPolicy.smartReactivate;
   
   // 🔄 حالة تحميل كل زر
   bool _isSyncing = false;
-  bool _isVerifying = false;
   bool _isCleaning = false;
   bool _isRepairing = false;
   bool _isLoadingDevices = false;
   bool _isLoadingTrackingStats = false;
+  bool _isSyncingInvoices = false;
+  bool _isMarkingOldInvoices = false;
   
   final _firebaseSync = FirebaseSyncService();
+
+  // 📊 اشتراكات الـ Streams اللحظية
+  StreamSubscription<FirebaseSyncStatus>? _statusSubscription;
+  StreamSubscription<Map<String, dynamic>>? _statsSubscription;
+  StreamSubscription<List<Map<String, dynamic>>>? _devicesSubscription;
 
   @override
   void initState() {
@@ -45,33 +61,69 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
     _loadSettingsQuick(); // 🔧 تحميل سريع أولاً
   }
 
-  /// 🔧 تحميل سريع للإعدادات الأساسية فقط (بدون Firebase)
+  @override
+  void dispose() {
+    _statusSubscription?.cancel();
+    _statsSubscription?.cancel();
+    _devicesSubscription?.cancel();
+    super.dispose();
+  }
+
+  /// 🔧 تحميل سريع للإعدادات الأساسية + بدء الاستماع للـ Streams
   Future<void> _loadSettingsQuick() async {
     _isEnabled = await FirebaseSyncConfig.isEnabled();
-    _currentGroupId = await FirebaseSyncConfig.getSyncGroupId();
     
     // 🔒 تحميل إعدادات الأمان
     _rejectOldTransactions = await FirebaseSyncSecuritySettings.isRejectOldTransactionsEnabled();
     _maxTransactionAgeDays = await FirebaseSyncSecuritySettings.getMaxTransactionAgeDays();
+    _autoDeleteDays = await FirebaseSyncSecuritySettings.getAutoDeleteDays();
     _postSyncVerification = await FirebaseSyncSecuritySettings.isPostSyncVerificationEnabled();
+    _customerConflictPolicy = await FirebaseSyncSecuritySettings.getCustomerConflictPolicy();
+    
+    // 🆕 تحميل Project ID
+    _projectId = await FirebaseCustomConfig.getProjectId();
     
     if (mounted) {
       setState(() {});
     }
     
-    // تحميل الإحصائيات في الخلفية
-    if (_isEnabled && _currentGroupId != null) {
-      _loadStatsInBackground();
+    // 📊 بدء الاستماع للـ Streams اللحظية
+    if (_isEnabled) {
+      _startStreamListeners();
+      _loadStatsInBackground(); // تحميل أولي
     }
   }
+  
+  /// 📊 بدء الاستماع للتحديثات اللحظية
+  void _startStreamListeners() {
+    // 1. الاستماع لتغيرات حالة المزامنة
+    _statusSubscription?.cancel();
+    _statusSubscription = _firebaseSync.statusStream.listen((status) {
+      if (mounted) {
+        setState(() {}); // تحديث الواجهة عند تغير الحالة
+      }
+    });
+    
+    // 2. الاستماع لتحديثات الإحصائيات اللحظية
+    _statsSubscription?.cancel();
+    _statsSubscription = _firebaseSync.liveStatsStream.listen((stats) {
+      if (mounted) {
+        setState(() {
+          _syncStats ??= {};
+          _syncStats!['customersInCloud'] = stats['customersInCloud'];
+          _syncStats!['transactionsInCloud'] = stats['transactionsInCloud'];
+          _syncStats!['invoicesInCloud'] = stats['invoicesInCloud'];
+          _isLoadingStats = false;
+        });
+      }
+    });
+  }
 
-  /// 🆕 تحميل الإحصائيات في الخلفية مع مؤشر التقدم
+  /// 🆕 تحميل الإحصائيات (مع دعم Fallback للبيانات اللحظية)
   Future<void> _loadStatsInBackground() async {
     if (!mounted) return;
     setState(() {
       _isLoadingStats = true;
-      _loadingProgress = 0.0;
-      _loadingMessage = 'جاري الاتصال بـ Firebase...';
     });
     
     try {
@@ -79,30 +131,28 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
       if (_firebaseSync.status == FirebaseSyncStatus.notConfigured ||
           _firebaseSync.status == FirebaseSyncStatus.idle ||
           _firebaseSync.status == FirebaseSyncStatus.error) {
-        if (mounted) setState(() { _loadingProgress = 0.1; _loadingMessage = 'جاري تهيئة المزامنة...'; });
-        await _firebaseSync.initialize();
+        await _firebaseSync.initialize(
+          onProgress: (progress, message) {
+            if (mounted) {
+              setState(() {
+                _loadingProgress = progress * 0.2; 
+                _loadingMessage = message;
+              });
+            }
+          }
+        );
       }
       
-      // المرحلة 1: الاتصال (20%)
-      await Future.delayed(const Duration(milliseconds: 100));
-      if (mounted) setState(() { _loadingProgress = 0.2; _loadingMessage = 'جاري تحميل بيانات المجموعة...'; });
-      
-      // المرحلة 2: تحميل الإحصائيات (20% -> 80%)
       _syncStats = await _firebaseSync.getSyncStats(
         onProgress: (progress, message) {
           if (mounted) {
             setState(() {
-              // التقدم من 20% إلى 80%
               _loadingProgress = 0.2 + (progress * 0.6);
               _loadingMessage = message;
             });
           }
         },
-      ); // تم إزالة timeout الطويل
-      
-      // المرحلة 3: الانتهاء (100%)
-      if (mounted) setState(() { _loadingProgress = 1.0; _loadingMessage = 'تم التحميل!'; });
-      await Future.delayed(const Duration(milliseconds: 300));
+      );
       
     } catch (e) {
       _syncStats = {'error': e.toString()};
@@ -126,9 +176,7 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
     });
     
     _isEnabled = await FirebaseSyncConfig.isEnabled();
-    _currentGroupId = await FirebaseSyncConfig.getSyncGroupId();
-    
-    if (_isEnabled && _currentGroupId != null) {
+    if (_isEnabled) {
       if (mounted) {
         setState(() {
           _loadingProgress = 0.2;
@@ -196,6 +244,12 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
                       _buildSecuritySettingsCard(),
                     
                     const SizedBox(height: 16),
+
+                    // 🔀 بطاقة سياسة تعارض حذف العملاء
+                    if (_isEnabled)
+                      _buildConflictPolicyCard(),
+                    
+                    const SizedBox(height: 16),
                     
                     // ملاحظات
                     _buildNotesCard(),
@@ -215,97 +269,356 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
     switch (status) {
       case FirebaseSyncStatus.online:
         statusColor = Colors.green;
-        statusText = 'متصل ويستمع للتغييرات';
-        statusIcon = Icons.cloud_done;
+        statusText = 'متصل ويستمع للتغييرات اللحظية';
+        statusIcon = Icons.cloud_done_rounded;
         break;
       case FirebaseSyncStatus.syncing:
         statusColor = Colors.blue;
-        statusText = 'جاري المزامنة...';
-        statusIcon = Icons.sync;
+        statusText = 'جاري المزامنة مع السحابة...';
+        statusIcon = Icons.sync_rounded;
         break;
       case FirebaseSyncStatus.offline:
         statusColor = Colors.orange;
-        statusText = 'غير متصل - يعمل محلياً';
-        statusIcon = Icons.cloud_off;
+        statusText = 'غير متصل - يعمل محلياً فقط';
+        statusIcon = Icons.cloud_off_rounded;
         break;
       case FirebaseSyncStatus.error:
         statusColor = Colors.red;
-        statusText = 'خطأ في المزامنة';
-        statusIcon = Icons.error;
+        statusText = 'خطأ في الاتصال بالمزامنة';
+        statusIcon = Icons.error_rounded;
         break;
       case FirebaseSyncStatus.disabled:
         statusColor = Colors.grey;
-        statusText = 'المزامنة معطلة';
-        statusIcon = Icons.pause_circle;
+        statusText = 'المزامنة السحابية معطلة';
+        statusIcon = Icons.pause_circle_rounded;
         break;
       default:
-        statusColor = Colors.grey;
-        statusText = 'غير مُعد';
-        statusIcon = Icons.settings;
+        statusColor = Colors.blueGrey;
+        statusText = 'غير مُعد بعد';
+        statusIcon = Icons.settings_rounded;
     }
     
-    return Card(
-      child: ListTile(
-        leading: Icon(statusIcon, color: statusColor, size: 32),
-        title: Text(
-          'حالة المزامنة',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        subtitle: Text(statusText),
-        trailing: Container(
-          width: 12,
-          height: 12,
-          decoration: BoxDecoration(
-            color: statusColor,
-            shape: BoxShape.circle,
+    return Container(
+      decoration: BoxDecoration(
+        color: statusColor.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: statusColor.withOpacity(0.2)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: statusColor.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(statusIcon, color: statusColor, size: 26),
           ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'حالة المزامنة السحابية',
+                  style: TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  statusText,
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: statusColor),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: statusColor.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: statusColor,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  _isEnabled ? 'نشط' : 'معطل',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: statusColor),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 🩺 عرض بطاقة تشخيص المزامنة والمصادقة — أخطاء واضحة مترجمة
+  Future<void> _showSyncDiagnostics() async {
+    final snap = SyncDiagnostics.snapshot();
+    final events = (snap['recentEvents'] as List).cast<String>().take(12).toList();
+
+    await showDialog(
+      context: context,
+      builder: (context) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          title: const Row(children: [
+            Icon(Icons.health_and_safety, color: Colors.redAccent),
+            SizedBox(width: 8),
+            Text('🩺 حالة المزامنة والتشخيص'),
+          ]),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                _diagRow('المنصة', snap['platform'] as String),
+                _diagRow(
+                    'المصادقة', snap['authenticated'] == true
+                        ? '✅ نشطة (${snap['authUid']?.toString().substring(0, 12)}...)'
+                        : '❌ غير نشطة'),
+                if (snap['lastAuthError'] != null)
+                  _diagBlock('آخر خطأ مصادقة', snap['lastAuthError'] as String),
+                if (snap['lastListenerError'] != null)
+                  _diagBlock('آخر خطأ مستمعي المزامنة', snap['lastListenerError'] as String),
+                if (events.isNotEmpty) ...[
+                  const Divider(),
+                  const Text('آخر الأحداث:',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 4),
+                  ...events.map((e) => Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Text(e,
+                            style: const TextStyle(fontSize: 12, height: 1.5)),
+                      )),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('إغلاق'),
+            ),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.build, size: 18),
+              label: const Text('🔧 تشخيص وإصلاح فوري'),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
+              onPressed: () => _runInteractiveDiagnosis(context),
+            ),
+          ],
         ),
       ),
     );
   }
 
-  Widget _buildSettingsCard() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
+
+  /// 🔧 تشخيص وإصلاح تفاعلي: خطوات تظهر تباعاً + إنعاش تلقائي
+  Future<void> _runInteractiveDiagnosis(BuildContext ctx) async {
+    Navigator.pop(ctx); // أغلق حوار الحالة السابق
+    if (!mounted) return;
+
+    final steps = <DiagStep>[];
+    StateSetter? dlgSet;
+    // 🔧 لا ننتظر إغلاق الحوار: الحوار يُفتح ثم يبدأ التشخيص فوراً وتظهر
+    // خطواته تباعاً. (انتظار الحوار كان يؤجل التشخيص حتى يُغلق، وسياق
+    // الحوار المغلق لا يصلح لفتح حوار جديد — لذا نستخدم سياق الشاشة.)
+    unawaited(showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          title: const Text('🔧 التشخيص والإصلاح الفوري'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: StatefulBuilder(
+              builder: (dialogCtx, setDlg) {
+                dlgSet = setDlg;
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: steps.isEmpty
+                      ? [const Center(child: CircularProgressIndicator())]
+                      : steps
+                          .map((st) => Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 4),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Icon(
+                                        st.detail.isEmpty
+                                            ? Icons.hourglass_top
+                                            : st.ok
+                                                ? Icons.check_circle
+                                                : Icons.cancel,
+                                        color: st.detail.isEmpty
+                                            ? Colors.grey
+                                            : st.ok
+                                                ? Colors.green
+                                                : Colors.red,
+                                        size: 20),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(st.name,
+                                              style: const TextStyle(
+                                                  fontWeight:
+                                                      FontWeight.bold)),
+                                          if (st.detail.isNotEmpty)
+                                            Text(st.detail,
+                                                style: const TextStyle(
+                                                    fontSize: 12,
+                                                    height: 1.4)),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ))
+                          .toList(),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogCtx),
+              child: const Text('إغلاق'),
+            ),
+          ],
+        ),
+      ),
+    ));
+
+    // التنفيذ التدريجي — لا نحظر الحوار (يُحدَّث عبر setState الداخلي)
+    // ignore: use_build_context_synchronously
+    final results = await runFullDiagnosis(
+      onStep: (st) {
+        steps.add(st);
+        try {
+          dlgSet?.call(() {});
+        } catch (_) {}
+      },
+    );
+    try {
+      dlgSet?.call(() {});
+    } catch (_) {}
+
+    // إنعاش فوري إن كانت المصادقة سليمة
+    final authOk = results.any((st) => st.name == 'مصادقة Firebase' && st.ok);
+    if (authOk) {
+      try {
+        await FirebaseSyncService().recoverNow();
+        steps.add(DiagStep('الإنعاش التلقائي',
+            ok: true, detail: 'مستمعون + سحب كامل أعيد تشغيلهم'));
+      } catch (e) {
+        steps.add(DiagStep('الإنعاش التلقائي', ok: false, detail: '$e'));
+      }
+      try {
+        dlgSet?.call(() {});
+      } catch (_) {}
+    }
+  }
+
+  Widget _diagRow(String label, String value) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            Text('$label: ', style: const TextStyle(fontWeight: FontWeight.bold)),
+            Expanded(child: Text(value)),
+          ],
+        ),
+      );
+
+  Widget _diagBlock(String title, String body) => Container(
+        margin: const EdgeInsets.only(top: 8),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Colors.red.shade50,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.red.shade200),
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'إعدادات المزامنة',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
+            Text(title,
+                style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+            const SizedBox(height: 4),
+            Text(body, style: const TextStyle(fontSize: 12.5, height: 1.6)),
+          ],
+        ),
+      );
+
+  Widget _buildSettingsCard() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.03),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+        border: Border.all(color: Colors.grey.withOpacity(0.15)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.deepOrange.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.sync_rounded, color: Colors.deepOrange, size: 20),
+                ),
+                const SizedBox(width: 10),
+                const Text(
+                  'إعدادات المزامنة الفورية',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
             ),
-            const Divider(),
-            
-            // تفعيل/تعطيل المزامنة
+            const Divider(height: 24),
             SwitchListTile(
-              title: const Text('تفعيل المزامنة الفورية'),
+              contentPadding: EdgeInsets.zero,
+              title: const Text(
+                'تفعيل المزامنة التلقائية الحية',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              ),
               subtitle: Text(
                 _isEnabled 
-                    ? 'المزامنة مفعلة - البيانات تتزامن تلقائياً'
-                    : 'المزامنة معطلة',
+                    ? 'المزامنة الفورية مفعلة - تتزامن الديون والفواتير تلقائياً عبر الأجهزة'
+                    : 'المزامنة معطلة - يعمل التطبيق في الوضع المحلي فقط',
+                style: const TextStyle(fontSize: 12),
               ),
               value: _isEnabled,
               onChanged: (value) => _toggleSync(value),
               activeColor: Colors.deepOrange,
-            ),
-            
-            const Divider(),
-            
-            // المجموعة الحالية
-            ListTile(
-              leading: const Icon(Icons.group, color: Colors.deepOrange),
-              title: const Text('مجموعة المزامنة'),
-              subtitle: Text(
-                _currentGroupId != null
-                    ? SyncGroupIds.getDisplayName(_currentGroupId!)
-                    : 'غير محدد',
-              ),
-              trailing: const Icon(Icons.chevron_left),
-              onTap: _isEnabled ? _showChangeGroupDialog : _showSelectGroupDialog,
             ),
           ],
         ),
@@ -314,21 +627,46 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
   }
 
   Widget _buildStatsCard() {
-    return Card(
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.03),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+        border: Border.all(color: Colors.grey.withOpacity(0.15)),
+      ),
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(18),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text(
-                  'إحصائيات المزامنة',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.analytics_rounded, color: Colors.blue, size: 20),
+                    ),
+                    const SizedBox(width: 10),
+                    const Text(
+                      'إحصائيات المزامنة السحابية',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
                 ),
                 // 🔧 مؤشر تحميل الإحصائيات مع النسبة
                 if (_isLoadingStats)
@@ -345,8 +683,8 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
                       ),
                       const SizedBox(width: 8),
                       SizedBox(
-                        width: 20,
-                        height: 20,
+                        width: 18,
+                        height: 18,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
                           value: _loadingProgress > 0 ? _loadingProgress : null,
@@ -358,7 +696,7 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
                   ),
               ],
             ),
-            const Divider(),
+            const Divider(height: 24),
             
             // 🔧 عرض حالة التحميل أو الإحصائيات
             if (_isLoadingStats && _syncStats == null)
@@ -401,7 +739,7 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 child: Row(
                   children: [
-                    const Icon(Icons.warning, color: Colors.orange, size: 20),
+                    const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 20),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -415,15 +753,17 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
                 ),
               )
             else ...[
-              _buildStatRow('المجموعة', _syncStats?['groupId'] ?? '-'),
+              _buildStatRow('معرف المشروع', _projectId ?? 'غير متصل'),
+              _buildStatRow('معرف المصادقة', FirebaseAuth.instance.currentUser?.uid ?? 'غير مصادق'),
               _buildStatRow('العملاء في السحابة', '${_syncStats?['customersInCloud'] ?? 0}'),
               _buildStatRow('المعاملات في السحابة', '${_syncStats?['transactionsInCloud'] ?? 0}'),
+              _buildStatRow('الفواتير في السحابة', '${_syncStats?['invoicesInCloud'] ?? 0}'),
               _buildStatRow('آخر مزامنة', _formatLastSync(_syncStats?['lastSync'])),
             ],
             
             const SizedBox(height: 16),
             
-            // زر المزامنة اليدوية مع مؤشر التقدم
+            // 1. مزامنة الآن
             _buildActionButton(
               icon: Icons.sync,
               label: 'مزامنة الآن',
@@ -437,79 +777,117 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
             
             const SizedBox(height: 8),
             
-            // 📊 زر إحصائيات المزامنة (جديد)
+            // 2. الرفع الشامل
             _buildActionButton(
-              icon: Icons.analytics,
-              label: '📊 إحصائيات المزامنة',
+              icon: Icons.cloud_upload,
+              label: 'الرفع الشامل',
+              isLoading: _isRepairing,
+              progress: _isRepairing ? _loadingProgress : null,
+              message: _isRepairing ? _loadingMessage : null,
+              color: Colors.blue,
+              onPressed: _isRepairing ? null : _repairAndSyncAll,
+            ),
+            
+            const SizedBox(height: 8),
+
+            // 3. رفع الفواتير المعلقة
+            _buildActionButton(
+              icon: Icons.receipt_long,
+              label: 'رفع الفواتير المعلقة',
+              isLoading: _isSyncingInvoices,
+              color: Colors.indigo,
+              onPressed: _isSyncingInvoices ? null : _syncInvoices,
+            ),
+
+            const SizedBox(height: 8),
+
+            // 4. اعتبار الفواتير القديمة مرفوعة
+            _buildActionButton(
+              icon: Icons.done_all,
+              label: 'اعتبار الفواتير القديمة مرفوعة',
+              isLoading: _isMarkingOldInvoices,
+              color: Colors.blueGrey,
+              onPressed: _isMarkingOldInvoices ? null : _markOldInvoicesAsSynced,
+            ),
+
+            const SizedBox(height: 8),
+
+            // 4.5 🩺 حالة المزامنة والتشخيص — عرض الأخطاء بوضوح للمستخدم
+            _buildActionButton(
+              icon: Icons.health_and_safety,
+              label: '🩺 حالة المزامنة والتشخيص',
               isLoading: false,
-              color: Colors.purple,
+              color: Colors.redAccent,
+              onPressed: () => _showSyncDiagnostics(),
+            ),
+
+            const SizedBox(height: 8),
+
+            // 5. المطابقة بين الأجهزة
+            _buildActionButton(
+              icon: Icons.rule,
+              label: 'المطابقة بين الأجهزة',
+              isLoading: false,
+              color: Colors.deepPurple,
               onPressed: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const SyncStatsScreen()),
+                  MaterialPageRoute(
+                      builder: (_) => const ReconciliationScreen()),
+                );
+              },
+            ),
+
+            const SizedBox(height: 8),
+
+            // 6. إعدادات فايربيس
+            _buildActionButton(
+              icon: Icons.settings,
+              label: 'إعدادات فايربيس',
+              isLoading: false,
+              color: Colors.teal,
+              onPressed: () {
+                // فتح شاشة إعدادات فايربيس المخصصة
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const FirebaseCustomSetupScreen()),
                 );
               },
             ),
             
             const SizedBox(height: 8),
             
-            // 🔒 زر التحقق من سلامة البيانات
-            _buildActionButton(
-              icon: Icons.verified_user,
-              label: 'التحقق من سلامة البيانات',
-              isLoading: _isVerifying,
-              progress: _isVerifying ? _loadingProgress : null,
-              message: _isVerifying ? _loadingMessage : null,
-              color: Colors.blue,
-              onPressed: _isVerifying ? null : _verifyDataIntegrity,
-            ),
-            
-            const SizedBox(height: 8),
-            
-            // 🧹 زر تنظيف البيانات القديمة
-            _buildActionButton(
-              icon: Icons.cleaning_services,
-              label: 'تنظيف البيانات القديمة',
-              isLoading: _isCleaning,
-              progress: _isCleaning ? _loadingProgress : null,
-              message: _isCleaning ? _loadingMessage : null,
-              color: Colors.orange,
-              onPressed: _isCleaning ? null : _cleanupOldData,
-            ),
-            
-            const SizedBox(height: 8),
-            
-            // 🔧 زر إصلاح ورفع جميع المعاملات
-            _buildActionButton(
-              icon: Icons.build_circle,
-              label: 'إصلاح ورفع جميع البيانات',
-              isLoading: _isRepairing,
-              progress: _isRepairing ? _loadingProgress : null,
-              message: _isRepairing ? _loadingMessage : null,
-              color: Colors.purple,
-              onPressed: _isRepairing ? null : _repairAndSyncAll,
-            ),
-            
-            const SizedBox(height: 8),
-            
-            // 📱 زر عرض الأجهزة المتصلة
+            // 4. الأجهزة المتصلة
             _buildActionButton(
               icon: Icons.devices,
               label: 'الأجهزة المتصلة',
               isLoading: _isLoadingDevices,
-              color: Colors.teal,
+              color: Colors.purple,
               onPressed: _isLoadingDevices ? null : _showConnectedDevices,
             ),
             
             const SizedBox(height: 8),
             
-            // 📊 زر عرض إحصائيات التتبع والإقرار
+            // 4. المعاملات الفاشلة
             _buildActionButton(
-              icon: Icons.analytics,
-              label: 'إحصائيات التتبع والإقرار',
+              icon: Icons.error_outline,
+              label: 'المعاملات الفاشلة',
               isLoading: _isLoadingTrackingStats,
-              color: Colors.indigo,
-              onPressed: _isLoadingTrackingStats ? null : _showTrackingStats,
+              color: Colors.red,
+              onPressed: _isLoadingTrackingStats ? null : _showFailedOperations,
+            ),
+            
+            const SizedBox(height: 8),
+            
+            // 5. مسح قاعدة البيانات السحابية بالكامل
+            _buildActionButton(
+              icon: Icons.delete_forever,
+              label: 'حذف قاعدة البيانات السحابية بالكامل',
+              isLoading: _isCleaning,
+              progress: _isCleaning ? _loadingProgress : null,
+              message: _isCleaning ? _loadingMessage : null,
+              color: Colors.red.shade900,
+              onPressed: _isCleaning ? null : _deleteCloudDatabase,
             ),
           ],
         ),
@@ -532,56 +910,74 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
       width: double.infinity,
       child: Column(
         children: [
-          if (isPrimary)
-            ElevatedButton.icon(
-              onPressed: onPressed,
-              icon: isLoading 
-                  ? SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        value: progress,
-                        valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+          SizedBox(
+            height: 48,
+            width: double.infinity,
+            child: isPrimary
+                ? ElevatedButton.icon(
+                    onPressed: onPressed,
+                    icon: isLoading 
+                        ? SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              value: progress,
+                              valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                            ),
+                          )
+                        : Icon(icon, size: 20),
+                    label: Text(
+                      isLoading && progress != null 
+                          ? '$label (${(progress * 100).toInt()}%)'
+                          : label,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: color,
+                      foregroundColor: Colors.white,
+                      elevation: 2,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
                       ),
-                    )
-                  : Icon(icon),
-              label: Text(isLoading && progress != null 
-                  ? '$label (${(progress * 100).toInt()}%)'
-                  : label),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: color,
-                foregroundColor: Colors.white,
-              ),
-            )
-          else
-            OutlinedButton.icon(
-              onPressed: onPressed,
-              icon: isLoading 
-                  ? SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        value: progress,
-                        valueColor: AlwaysStoppedAnimation<Color>(color),
+                    ),
+                  )
+                : OutlinedButton.icon(
+                    onPressed: onPressed,
+                    icon: isLoading 
+                        ? SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              value: progress,
+                              valueColor: AlwaysStoppedAnimation<Color>(color),
+                            ),
+                          )
+                        : Icon(icon, size: 20),
+                    label: Text(
+                      isLoading && progress != null 
+                          ? '$label (${(progress * 100).toInt()}%)'
+                          : label,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: color,
+                      side: BorderSide(color: color.withOpacity(0.4), width: 1.2),
+                      backgroundColor: color.withOpacity(0.04),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
                       ),
-                    )
-                  : Icon(icon),
-              label: Text(isLoading && progress != null 
-                  ? '$label (${(progress * 100).toInt()}%)'
-                  : label),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: color,
-              ),
-            ),
+                    ),
+                  ),
+          ),
           // عرض رسالة التقدم إذا كانت موجودة
           if (isLoading && message != null && message.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(top: 4),
+              padding: const EdgeInsets.only(top: 6),
               child: Text(
                 message,
-                style: TextStyle(fontSize: 11, color: color.withOpacity(0.8)),
+                style: TextStyle(fontSize: 11, color: color.withOpacity(0.9), fontWeight: FontWeight.w500),
                 textAlign: TextAlign.center,
               ),
             ),
@@ -592,12 +988,19 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
 
   Widget _buildStatRow(String label, String value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(vertical: 5),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: const TextStyle(color: Colors.grey)),
-          Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
+          Text(label, style: TextStyle(color: Colors.grey.shade600, fontSize: 13, fontWeight: FontWeight.w500)),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.grey.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(value, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+          ),
         ],
       ),
     );
@@ -688,6 +1091,29 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
             
             const Divider(),
             
+            // 🗑️ الحذف التلقائي للبيانات
+            ListTile(
+              title: const Text('الحذف التلقائي للبيانات القديمة (TTL)'),
+              subtitle: Text('سيتم حذف البيانات الأقدم من $_autoDeleteDays يوم نهائياً من السحابة لتوفير المساحة.'),
+              trailing: DropdownButton<int>(
+                value: [30, 60, 90, 180, 365, 730].contains(_autoDeleteDays) ? _autoDeleteDays : 90,
+                items: [30, 60, 90, 180, 365, 730].map((days) {
+                  return DropdownMenuItem(
+                    value: days,
+                    child: Text('$days يوم'),
+                  );
+                }).toList(),
+                onChanged: (value) async {
+                  if (value != null) {
+                    await FirebaseSyncSecuritySettings.setAutoDeleteDays(value);
+                    setState(() => _autoDeleteDays = value);
+                  }
+                },
+              ),
+            ),
+            
+            const Divider(),
+            
             // 🔍 التحقق من الأرصدة بعد المزامنة
             SwitchListTile(
               title: const Text('التحقق من الأرصدة بعد المزامنة'),
@@ -703,6 +1129,99 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
               },
               activeColor: Colors.green,
               secondary: const Icon(Icons.account_balance_wallet, color: Colors.blue),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 🔀 بطاقة سياسة معالجة تعارض حذف العملاء
+  Widget _buildConflictPolicyCard() {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.alt_route_rounded, color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'سياسة تعارض حذف العملاء عند المزامنة',
+                    style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'تحدد ماذا يحدث إذا حُذف عميل من جهاز، بينما قام جهاز آخر (أثناء انقطاع الإنترنت) بإضافة فاتورة أو دين له:',
+              style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+            ),
+            const Divider(height: 24),
+            
+            // 🌟 الخيار الأول: التنشيط الذكي
+            RadioListTile<CustomerConflictPolicy>(
+              title: const Text(
+                'إعادة التنشيط الذكي بالمعاملات الجديدة فقط (موصى به)',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+              subtitle: const Text(
+                'يُعاد تنشيط العميل تلقائياً ويُسجل عليه فقط مبلغ المعاملة الجديدة التي أُنشئت أوفلاين، مع إبقاء ديونه القديمة المحذوفة ملغاة ومصفرة.',
+                style: TextStyle(fontSize: 12),
+              ),
+              value: CustomerConflictPolicy.smartReactivate,
+              groupValue: _customerConflictPolicy,
+              activeColor: Colors.teal,
+              contentPadding: EdgeInsets.zero,
+              secondary: const CircleAvatar(
+                radius: 16,
+                backgroundColor: Color(0xFFE0F2F1),
+                child: Icon(Icons.auto_awesome, color: Colors.teal, size: 18),
+              ),
+              onChanged: (value) async {
+                if (value != null) {
+                  await FirebaseSyncSecuritySettings.setCustomerConflictPolicy(value);
+                  setState(() => _customerConflictPolicy = value);
+                }
+              },
+            ),
+            
+            const SizedBox(height: 8),
+            
+            // 🔒 الخيار الثاني: الحذف الصارم
+            RadioListTile<CustomerConflictPolicy>(
+              title: const Text(
+                'الحذف الصارم (الحذف يلغي أي معاملة أوفلاين)',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+              subtitle: const Text(
+                'يعتبر قرار الحذف نهائياً وتُلغى أي فاتورة أو حركة أُضيفت للعميل أثناء انقطاع الإنترنت لمنع أي حركة غير مصرح بها.',
+                style: TextStyle(fontSize: 12),
+              ),
+              value: CustomerConflictPolicy.strictDelete,
+              groupValue: _customerConflictPolicy,
+              activeColor: Colors.red.shade700,
+              contentPadding: EdgeInsets.zero,
+              secondary: CircleAvatar(
+                radius: 16,
+                backgroundColor: Colors.red.shade50,
+                child: Icon(Icons.delete_forever, color: Colors.red.shade700, size: 18),
+              ),
+              onChanged: (value) async {
+                if (value != null) {
+                  await FirebaseSyncSecuritySettings.setCustomerConflictPolicy(value);
+                  setState(() => _customerConflictPolicy = value);
+                }
+              },
             ),
           ],
         ),
@@ -747,331 +1266,19 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
   // ═══════════════════════════════════════════════════════════════════════
 
   Future<void> _toggleSync(bool enable) async {
+    await FirebaseSyncConfig.setEnabled(enable);
     if (enable) {
-      // التحقق من وجود مجموعة
-      if (_currentGroupId == null) {
-        _showSelectGroupDialog();
-        return;
-      }
-      
-      await FirebaseSyncConfig.setEnabled(true);
       await _firebaseSync.initialize();
-    } else {
-      // تعطيل المزامنة
-      await FirebaseSyncConfig.setEnabled(false);
     }
-    
     await _loadSettings();
-  }
-
-  Future<void> _showSelectGroupDialog() async {
-    final selected = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('اختر مجموعة المزامنة'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: SyncGroupIds.all.map((groupId) {
-            return ListTile(
-              leading: const Icon(Icons.group),
-              title: Text(SyncGroupIds.getDisplayName(groupId)),
-              onTap: () => Navigator.pop(context, groupId),
-            );
-          }).toList(),
-        ),
-      ),
-    );
-    
-    if (selected != null) {
-      await FirebaseSyncConfig.setSyncGroupId(selected);
-      await FirebaseSyncConfig.setEnabled(true);
-      await _firebaseSync.reinitialize();
-      await _loadSettings();
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('تم تفعيل المزامنة مع ${SyncGroupIds.getDisplayName(selected)}'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _showChangeGroupDialog() async {
-    // المرحلة 1: التحدي الرياضي
-    final challenge = MathChallenge.generate();
-    final mathPassed = await _showMathChallengeDialog(challenge);
-    if (!mathPassed) return;
-    
-    // المرحلة 2: رسالة تحذيرية
-    final warningConfirmed = await _showWarningDialog();
-    if (!warningConfirmed) return;
-    
-    // المرحلة 3: كلمة السر
-    final passwordConfirmed = await _showPasswordDialog();
-    if (!passwordConfirmed) return;
-    
-    // عرض اختيار المجموعة الجديدة
-    final selected = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('اختر المجموعة الجديدة'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: SyncGroupIds.all
-              .where((g) => g != _currentGroupId)
-              .map((groupId) {
-            return ListTile(
-              leading: const Icon(Icons.group),
-              title: Text(SyncGroupIds.getDisplayName(groupId)),
-              onTap: () => Navigator.pop(context, groupId),
-            );
-          }).toList(),
-        ),
-      ),
-    );
-    
-    if (selected != null) {
-      await FirebaseSyncConfig.setSyncGroupId(selected);
-      await _firebaseSync.reinitialize();
-      await _loadSettings();
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('تم تغيير المجموعة إلى ${SyncGroupIds.getDisplayName(selected)}'),
-            backgroundColor: Colors.orange,
-          ),
-        );
-      }
-    }
-  }
-
-  Future<bool> _showMathChallengeDialog(MathChallenge challenge) async {
-    final controller = TextEditingController();
-    
-    final result = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: const [
-            Icon(Icons.calculate, color: Colors.orange),
-            SizedBox(width: 8),
-            Text('تحدي التأكيد'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'لتأكيد هويتك، أجب على السؤال التالي:',
-              style: TextStyle(color: Colors.grey),
-            ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.orange.shade50,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                challenge.questionText,
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: controller,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              textAlign: TextAlign.center,
-              decoration: const InputDecoration(
-                hintText: 'أدخل الناتج',
-                border: OutlineInputBorder(),
-              ),
-              inputFormatters: [
-                FilteringTextInputFormatter.allow(RegExp(r'[\d.]')),
-              ],
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              '💡 استخدم الآلة الحاسبة',
-              style: TextStyle(color: Colors.grey, fontSize: 12),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('إلغاء'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              if (challenge.verify(controller.text)) {
-                Navigator.pop(context, true);
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('إجابة خاطئة! حاول مرة أخرى'),
-                    backgroundColor: Colors.red,
-                  ),
-                );
-              }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.orange,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('تأكيد'),
-          ),
-        ],
-      ),
-    );
-    
-    return result ?? false;
-  }
-
-  Future<bool> _showWarningDialog() async {
-    final result = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: const [
-            Icon(Icons.warning, color: Colors.red),
-            SizedBox(width: 8),
-            Text('تحذير خطير!', style: TextStyle(color: Colors.red)),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.red.shade50,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.red.shade200),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: const [
-                  Text(
-                    'تغيير المجموعة سيؤدي إلى:',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  SizedBox(height: 8),
-                  Text('⚠️ فقدان المزامنة مع الجهاز الحالي'),
-                  Text('⚠️ بدء مزامنة مع مجموعة جديدة'),
-                  Text('⚠️ احتمال تضارب البيانات'),
-                  Text('⚠️ قد تفقد بعض التغييرات غير المزامنة'),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'هل أنت متأكد تماماً من رغبتك في المتابعة؟',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('إلغاء'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('متابعة ⚠️'),
-          ),
-        ],
-      ),
-    );
-    
-    return result ?? false;
-  }
-
-  Future<bool> _showPasswordDialog() async {
-    final controller = TextEditingController();
-    
-    final result = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: const [
-            Icon(Icons.lock, color: Colors.deepOrange),
-            SizedBox(width: 8),
-            Text('التأكيد النهائي'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'أدخل كلمة سر التطبيق للتأكيد:',
-              style: TextStyle(color: Colors.grey),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: controller,
-              obscureText: true,
-              textAlign: TextAlign.center,
-              decoration: const InputDecoration(
-                hintText: 'كلمة السر',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.key),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('إلغاء'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              // التحقق من كلمة السر
-              final passwordService = PasswordService();
-              final isValid = await passwordService.verifyPassword(controller.text);
-              if (isValid) {
-                Navigator.pop(context, true);
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('كلمة السر غير صحيحة!'),
-                    backgroundColor: Colors.red,
-                  ),
-                );
-              }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.deepOrange,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('تأكيد'),
-          ),
-        ],
-      ),
-    );
-    
-    return result ?? false;
   }
 
   Future<void> _performManualSync() async {
     if (_isSyncing) return;
+    
+    final _sw = Stopwatch()..start();
+    print('⏱️ [_performManualSync/UI] ▶️ ═══════════════════════════════════════');
+    print('⏱️ [_performManualSync/UI] ▶️ المستخدم ضغط على زر مزامنة الآن...');
     
     setState(() {
       _isSyncing = true;
@@ -1084,21 +1291,35 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
       if (_firebaseSync.status == FirebaseSyncStatus.notConfigured ||
           _firebaseSync.status == FirebaseSyncStatus.idle ||
           _firebaseSync.status == FirebaseSyncStatus.error) {
+        var _swStep = Stopwatch()..start();
+        print('⏱️ [_performManualSync/UI] 🔧 بدء التهيئة...');
         setState(() {
           _loadingProgress = 0.05;
           _loadingMessage = 'جاري تهيئة المزامنة...';
         });
-        final initSuccess = await _firebaseSync.initialize().timeout(
+        final initSuccess = await _firebaseSync.initialize(
+          onProgress: (progress, message) {
+            if (mounted) {
+              setState(() {
+                _loadingProgress = 0.05 + (progress * 0.05); // 5% -> 10%
+                _loadingMessage = message;
+              });
+            }
+          }
+        ).timeout(
           const Duration(minutes: 2),
           onTimeout: () => false,
         );
+        print('⏱️ [_performManualSync/UI] 🔧 انتهت التهيئة في ${_swStep.elapsedMilliseconds}ms | النتيجة: ${initSuccess ? "نجاح" : "فشل"}');
         if (!initSuccess) {
           throw Exception('فشلت تهيئة المزامنة - تأكد من الاتصال بالإنترنت');
         }
       }
       
       // استخدام callback للتقدم
-      await _firebaseSync.performFullSync(
+      var _swSync = Stopwatch()..start();
+      print('⏱️ [_performManualSync/UI] 🔄 بدء performFullSync...');
+      final syncSucceeded = await _firebaseSync.performFullSync(
         onProgress: (progress, message) {
           if (mounted) {
             setState(() {
@@ -1108,6 +1329,12 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
           }
         },
       );
+      print('⏱️ [_performManualSync/UI] 🔄 انتهت performFullSync في ${_swSync.elapsedMilliseconds}ms (${(_swSync.elapsedMilliseconds / 1000).toStringAsFixed(1)}s)');
+      
+      // ⚠️ إذا فشلت المزامنة (بدون اتصال أو خطأ)، لا نكمل تدفق النجاح
+      if (!syncSucceeded) {
+        throw Exception('فشلت المزامنة - تحقق من الاتصال بالإنترنت وأعد المحاولة');
+      }
       
       // التحقق من الأرصدة (85-95%)
       if (_postSyncVerification) {
@@ -1137,6 +1364,11 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
         _loadingMessage = 'تمت المزامنة بنجاح!';
       });
       
+      _sw.stop();
+      print('⏱️ [_performManualSync/UI] ⏹️ ═══════════════════════════════════════');
+      print('⏱️ [_performManualSync/UI] ⏹️ إجمالي وقت العملية: ${_sw.elapsedMilliseconds}ms (${(_sw.elapsedMilliseconds / 1000).toStringAsFixed(1)}s)');
+      print('⏱️ [_performManualSync/UI] ⏹️ ═══════════════════════════════════════');
+      
       await Future.delayed(const Duration(milliseconds: 500));
       await _loadSettingsQuick();
       
@@ -1159,11 +1391,13 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
       }
     }
     
-    setState(() {
-      _isSyncing = false;
-      _loadingProgress = 0.0;
-      _loadingMessage = '';
-    });
+    if (mounted) {
+      setState(() {
+        _isSyncing = false;
+        _loadingProgress = 0.0;
+        _loadingMessage = '';
+      });
+    }
   }
   
   /// 🔍 عرض نتيجة التحقق من الأرصدة
@@ -1239,154 +1473,25 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
     );
   }
   
-  /// 🔒 التحقق من سلامة البيانات
-  Future<void> _verifyDataIntegrity() async {
-    if (_isVerifying) return;
-    
-    setState(() {
-      _isVerifying = true;
-      _loadingProgress = 0.0;
-      _loadingMessage = 'جاري بدء التحقق...';
-    });
-    
-    try {
-      // 🔄 محاولة التهيئة إذا لم تكن مكتملة
-      if (_firebaseSync.status == FirebaseSyncStatus.notConfigured ||
-          _firebaseSync.status == FirebaseSyncStatus.idle ||
-          _firebaseSync.status == FirebaseSyncStatus.error) {
-        setState(() {
-          _loadingProgress = 0.05;
-          _loadingMessage = 'جاري تهيئة المزامنة...';
-        });
-        final initSuccess = await _firebaseSync.initialize().timeout(
-          const Duration(minutes: 2),
-          onTimeout: () => false,
-        );
-        if (!initSuccess) {
-          throw Exception('فشلت تهيئة المزامنة - تأكد من الاتصال بالإنترنت');
-        }
-      }
-      
-      // المرحلة 1: الاتصال بـ Firebase (0-20%)
-      setState(() {
-        _loadingProgress = 0.1;
-        _loadingMessage = 'جاري الاتصال بـ Firebase...';
-      });
-      await Future.delayed(const Duration(milliseconds: 200));
-      
-      // المرحلة 2: جلب عدد العملاء (20-40%)
-      setState(() {
-        _loadingProgress = 0.25;
-        _loadingMessage = 'جاري حساب عدد العملاء...';
-      });
-      
-      // المرحلة 3: جلب عدد المعاملات (40-60%)
-      setState(() {
-        _loadingProgress = 0.45;
-        _loadingMessage = 'جاري حساب عدد المعاملات...';
-      });
-      
-      // المرحلة 4: المقارنة (60-90%)
-      setState(() {
-        _loadingProgress = 0.65;
-        _loadingMessage = 'جاري مقارنة البيانات...';
-      });
-      
-      final result = await _firebaseSync.verifyDataIntegrity();
-      
-      // المرحلة 5: الانتهاء (90-100%)
-      setState(() {
-        _loadingProgress = 1.0;
-        _loadingMessage = 'اكتمل التحقق!';
-      });
-      
-      await Future.delayed(const Duration(milliseconds: 300));
-      
-      if (mounted) {
-        showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: Row(
-              children: [
-                Icon(
-                  result['valid'] == true ? Icons.check_circle : Icons.warning,
-                  color: result['valid'] == true ? Colors.green : Colors.orange,
-                ),
-                const SizedBox(width: 8),
-                Text(result['valid'] == true ? 'البيانات سليمة' : 'يوجد اختلاف'),
-              ],
-            ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildIntegrityRow('العملاء محلياً', '${result['localCustomers'] ?? 0}'),
-                _buildIntegrityRow('العملاء في السحابة', '${result['remoteCustomers'] ?? 0}'),
-                _buildIntegrityRow('المعاملات محلياً', '${result['localTransactions'] ?? 0}'),
-                _buildIntegrityRow('المعاملات في السحابة', '${result['remoteTransactions'] ?? 0}'),
-                if (result['issues'] != null && (result['issues'] as List).isNotEmpty) ...[
-                  const Divider(),
-                  const Text('المشاكل:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
-                  ...((result['issues'] as List).map((issue) => 
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Text('• $issue', style: const TextStyle(fontSize: 12)),
-                    )
-                  )),
-                ],
-              ],
-            ),
-            actions: [
-              if (result['valid'] != true)
-                TextButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _performManualSync();
-                  },
-                  child: const Text('مزامنة الآن'),
-                ),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('حسناً'),
-              ),
-            ],
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('فشل التحقق: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-    
-    setState(() {
-      _isVerifying = false;
-      _loadingProgress = 0.0;
-      _loadingMessage = '';
-    });
-  }
-  
-  /// 🧹 تنظيف البيانات القديمة
-  Future<void> _cleanupOldData() async {
-    // تأكيد قبل التنظيف
+  /// 🗑️ مسح قاعدة البيانات السحابية بالكامل
+  Future<void> _deleteCloudDatabase() async {
+    // تأكيد صارم قبل المسح
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: Row(
           children: const [
-            Icon(Icons.cleaning_services, color: Colors.orange),
+            Icon(Icons.warning, color: Colors.red),
             SizedBox(width: 8),
-            Text('تنظيف البيانات القديمة'),
+            Text('تحذير خطير جداً', style: TextStyle(color: Colors.red)),
           ],
         ),
         content: const Text(
-          'سيتم حذف البيانات المحذوفة (soft deleted) الأقدم من سنة من Firebase.\n\n'
-          'هذا لن يؤثر على البيانات المحلية أو Google Drive.',
+          'سيتم مسح جميع البيانات من Firebase بالكامل!\n'
+          '(العملاء، المعاملات، الأجهزة، وكل شيء)\n\n'
+          'هذا الإجراء لا يمكن التراجع عنه.\n'
+          'هل أنت متأكد بنسبة 1000%؟',
+          style: TextStyle(fontWeight: FontWeight.bold),
         ),
         actions: [
           TextButton(
@@ -1396,10 +1501,10 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.orange,
+              backgroundColor: Colors.red.shade900,
               foregroundColor: Colors.white,
             ),
-            child: const Text('تنظيف'),
+            child: const Text('نعم، امسح كل شيء في السحابة'),
           ),
         ],
       ),
@@ -1410,69 +1515,40 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
     setState(() {
       _isCleaning = true;
       _loadingProgress = 0.0;
-      _loadingMessage = 'جاري بدء التنظيف...';
+      _loadingMessage = 'جاري حذف قاعدة البيانات بالكامل...';
     });
     
     try {
-      // 🔄 محاولة التهيئة إذا لم تكن مكتملة
       if (_firebaseSync.status == FirebaseSyncStatus.notConfigured ||
           _firebaseSync.status == FirebaseSyncStatus.idle ||
           _firebaseSync.status == FirebaseSyncStatus.error) {
-        setState(() {
-          _loadingProgress = 0.05;
-          _loadingMessage = 'جاري تهيئة المزامنة...';
-        });
-        final initSuccess = await _firebaseSync.initialize().timeout(
+        await _firebaseSync.initialize().timeout(
           const Duration(minutes: 2),
           onTimeout: () => false,
         );
-        if (!initSuccess) {
-          throw Exception('فشلت تهيئة المزامنة - تأكد من الاتصال بالإنترنت');
-        }
       }
       
-      // المرحلة 1: البحث عن المعاملات القديمة (0-30%)
-      setState(() {
-        _loadingProgress = 0.15;
-        _loadingMessage = 'جاري البحث عن المعاملات القديمة...';
-      });
-      await Future.delayed(const Duration(milliseconds: 200));
+      final result = await _firebaseSync.clearCloudDatabase();
       
-      // المرحلة 2: حذف المعاملات (30-60%)
-      setState(() {
-        _loadingProgress = 0.4;
-        _loadingMessage = 'جاري حذف المعاملات القديمة...';
-      });
-      
-      // المرحلة 3: البحث عن العملاء القدامى (60-80%)
-      setState(() {
-        _loadingProgress = 0.65;
-        _loadingMessage = 'جاري البحث عن العملاء القدامى...';
-      });
-      
-      final result = await _firebaseSync.cleanupOldFirebaseData();
-      
-      // المرحلة 4: الانتهاء (80-100%)
       setState(() {
         _loadingProgress = 1.0;
-        _loadingMessage = 'اكتمل التنظيف!';
+        _loadingMessage = 'تم مسح قاعدة البيانات بالكامل!';
       });
       
       await Future.delayed(const Duration(milliseconds: 300));
+      
       if (mounted) {
         if (result['error'] != null) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('فشل التنظيف: ${result['error']}'),
+              content: Text('فشل المسح: ${result['error']}'),
               backgroundColor: Colors.red,
             ),
           );
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(
-                'تم حذف ${result['deletedCustomers']} عميل و ${result['deletedTransactions']} معاملة قديمة ✅'
-              ),
+              content: Text('تم مسح قاعدة البيانات السحابية بنجاح (${result['deletedCount']} مستند) ✅'),
               backgroundColor: Colors.green,
             ),
           );
@@ -1484,7 +1560,7 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('فشل التنظيف: $e'),
+            content: Text('فشل المسح: $e'),
             backgroundColor: Colors.red,
           ),
         );
@@ -1497,7 +1573,7 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
       _loadingMessage = '';
     });
   }
-  
+
   Widget _buildIntegrityRow(String label, String value) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
@@ -1511,6 +1587,88 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
     );
   }
   
+  /// 🧾 رفع الفواتير التي لم تصل بعد إلى الأجهزة الأخرى
+  Future<void> _syncInvoices() async {
+    setState(() => _isSyncingInvoices = true);
+    try {
+      final uploaded = await InvoiceSyncService().syncPendingInvoices();
+      if (!mounted) return;
+
+      final db = await DatabaseService().database;
+      final remaining = Sqflite.firstIntValue(await db.rawQuery(
+        "SELECT COUNT(*) FROM invoices WHERE is_synced = 0 AND invoice_uuid IS NOT NULL",
+      )) ?? 0;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(remaining == 0
+              ? 'تم رفع $uploaded فاتورة — لا توجد فواتير معلقة'
+              : 'تم رفع $uploaded فاتورة، وبقيت $remaining فاتورة معلقة'),
+          backgroundColor: remaining == 0 ? Colors.green : Colors.orange,
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('فشل رفع الفواتير: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSyncingInvoices = false);
+    }
+  }
+
+  /// 🧾 اعتبار الفواتير القديمة مرفوعة (تخطي أرشيف ما قبل تفعيل المزامنة)
+  Future<void> _markOldInvoicesAsSynced() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('اعتبار الفواتير القديمة مرفوعة'),
+        content: const Text(
+          'سيتم تعليم كل الفواتير الحالية على أنها مرفوعة، فلا تُرسل إلى الأجهزة '
+          'الأخرى. استخدم هذا الخيار مرة واحدة عند بدء المزامنة لتجنب رفع الأرشيف '
+          'كاملاً. الفواتير الجديدة بعد ذلك سترتفع تلقائياً.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('تأكيد'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() => _isMarkingOldInvoices = true);
+    try {
+      final db = await DatabaseService().database;
+      final count = await db.rawUpdate(
+        'UPDATE invoices SET is_synced = 1 WHERE is_synced = 0',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('تم اعتبار $count فاتورة مرفوعة'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('فشلت العملية: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isMarkingOldInvoices = false);
+    }
+  }
+
   /// 🔧 إصلاح ورفع جميع البيانات
   Future<void> _repairAndSyncAll() async {
     // تأكيد قبل الإصلاح
@@ -1560,11 +1718,22 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
       if (_firebaseSync.status == FirebaseSyncStatus.notConfigured ||
           _firebaseSync.status == FirebaseSyncStatus.idle ||
           _firebaseSync.status == FirebaseSyncStatus.error) {
-        setState(() {
-          _loadingProgress = 0.05;
-          _loadingMessage = 'جاري تهيئة المزامنة...';
-        });
-        final initSuccess = await _firebaseSync.initialize().timeout(
+        if (mounted) {
+          setState(() {
+            _loadingProgress = 0.05;
+            _loadingMessage = 'جاري تهيئة المزامنة...';
+          });
+        }
+        final initSuccess = await _firebaseSync.initialize(
+          onProgress: (progress, message) {
+            if (mounted) {
+              setState(() {
+                _loadingProgress = 0.05 + (progress * 0.05); // 5% -> 10%
+                _loadingMessage = message;
+              });
+            }
+          }
+        ).timeout(
           const Duration(minutes: 2),
           onTimeout: () => false,
         );
@@ -1574,60 +1743,88 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
       }
       
       // المرحلة 1: البحث عن المعاملات بدون UUID (0-20%)
-      setState(() {
-        _loadingProgress = 0.1;
-        _loadingMessage = 'جاري البحث عن المعاملات بدون معرف...';
-      });
+      if (mounted) {
+        setState(() {
+          _loadingProgress = 0.1;
+          _loadingMessage = 'جاري تحضير البيانات...';
+        });
+      }
       await Future.delayed(const Duration(milliseconds: 200));
       
-      // المرحلة 2: إصلاح المعاملات (20-50%)
-      setState(() {
-        _loadingProgress = 0.3;
-        _loadingMessage = 'جاري إصلاح المعاملات...';
-      });
-      
-      // المرحلة 3: رفع العملاء (50-70%)
-      setState(() {
-        _loadingProgress = 0.55;
-        _loadingMessage = 'جاري رفع العملاء...';
-      });
-      
-      // المرحلة 4: رفع المعاملات (70-95%)
-      setState(() {
-        _loadingProgress = 0.75;
-        _loadingMessage = 'جاري رفع المعاملات...';
-      });
-      
-      final result = await _firebaseSync.repairAndSyncAllTransactions();
+      final result = await _firebaseSync.repairAndSyncAllTransactions(
+        onProgress: (current, total, message) {
+          if (mounted) {
+            setState(() {
+              // تقسيم التقدم بين 0.1 و 0.9 بناءً على النسبة
+              _loadingProgress = 0.1 + (0.8 * (current / (total > 0 ? total : 1)));
+              _loadingMessage = message;
+            });
+          }
+        },
+      );
       
       // المرحلة 5: الانتهاء (95-100%)
-      setState(() {
-        _loadingProgress = 1.0;
-        _loadingMessage = 'اكتمل الإصلاح!';
-      });
+      if (mounted) {
+        setState(() {
+          _loadingProgress = 1.0;
+          _loadingMessage = 'اكتمل الإصلاح!';
+        });
+      }
       
       await Future.delayed(const Duration(milliseconds: 300));
       
       if (mounted) {
-        if (result['success'] == true) {
+        if (result.containsKey('error')) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('فشل الرفع الشامل: ${result['error']}'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        } else {
+          final complete = result['success'] == true;
+
           showDialog(
             context: context,
             builder: (context) => AlertDialog(
               title: Row(
-                children: const [
-                  Icon(Icons.check_circle, color: Colors.green),
-                  SizedBox(width: 8),
-                  Text('تم الإصلاح بنجاح'),
+                children: [
+                  Icon(complete ? Icons.check_circle : Icons.error,
+                      color: complete ? Colors.green : Colors.orange),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(complete
+                        ? 'اكتمل الرفع الشامل'
+                        : 'الرفع الشامل غير مكتمل'),
+                  ),
                 ],
               ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildIntegrityRow('معاملات تم إصلاحها', '${result['fixed'] ?? 0}'),
-                  _buildIntegrityRow('معاملات تم رفعها', '${result['uploaded'] ?? 0}'),
-                  _buildIntegrityRow('أخطاء', '${result['errors'] ?? 0}'),
-                ],
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildIntegrityRow('عملاء تم رفعهم',
+                        '${result['uploadedCustomers'] ?? 0} / ${result['totalCustomers'] ?? 0}'),
+                    _buildIntegrityRow('معاملات تم رفعها',
+                        '${result['uploadedTransactions'] ?? 0} / ${result['expectedTransactions'] ?? 0}'),
+                    _buildIntegrityRow('معرّفات تم إصلاحها', '${result['fixed'] ?? 0}'),
+                    _buildIntegrityRow('أخطاء', '${result['errors'] ?? 0}'),
+                    if ((result['txCountBefore'] ?? result['txCountAfter']) !=
+                        null)
+                      _buildIntegrityRow(
+                        'عدد المعاملات قبل/بعد',
+                        '${result['txCountBefore'] ?? '-'} → ${result['txCountAfter'] ?? '-'}',
+                      ),
+                    if (!complete) ...[
+                      const Divider(),
+                      const Text(
+                        'أعد الضغط على «الرفع الشامل» بعد التأكد من الاتصال.',
+                        style: TextStyle(fontSize: 12),
+                      ),
+                    ],
+                  ],
+                ),
               ),
               actions: [
                 ElevatedButton(
@@ -1635,13 +1832,6 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
                   child: const Text('حسناً'),
                 ),
               ],
-            ),
-          );
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('فشل الإصلاح: ${result['error']}'),
-              backgroundColor: Colors.red,
             ),
           );
         }
@@ -1659,11 +1849,13 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
       }
     }
     
-    setState(() {
-      _isRepairing = false;
-      _loadingProgress = 0.0;
-      _loadingMessage = '';
-    });
+    if (mounted) {
+      setState(() {
+        _isRepairing = false;
+        _loadingProgress = 0.0;
+        _loadingMessage = '';
+      });
+    }
   }
   
   /// 📱 عرض الأجهزة المتصلة
@@ -1675,36 +1867,49 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
     });
     
     try {
-      // 🔄 محاولة التهيئة إذا لم تكن مكتملة
-      if (_firebaseSync.status == FirebaseSyncStatus.notConfigured ||
-          _firebaseSync.status == FirebaseSyncStatus.idle ||
-          _firebaseSync.status == FirebaseSyncStatus.error) {
-        setState(() {
-          _loadingProgress = 0.1;
-          _loadingMessage = 'جاري تهيئة المزامنة...';
-        });
-        final initSuccess = await _firebaseSync.initialize().timeout(
-          const Duration(minutes: 2),
-          onTimeout: () => false,
-        );
-        if (!initSuccess) {
-          throw Exception('فشلت تهيئة المزامنة - تأكد من الاتصال بالإنترنت');
+      // 📊 محاولة استخدام البيانات اللحظية أولاً
+      List<Map<String, dynamic>> devices;
+      
+      if (_firebaseSync.statsListenersActive && _firebaseSync.liveDevices.isNotEmpty) {
+        // ✅ البيانات متوفرة لحظياً — لا حاجة للانتظار
+        devices = _firebaseSync.liveDevices;
+        print('📊 تم جلب الأجهزة من الكاش اللحظي (${devices.length} جهاز)');
+      } else {
+        // 🔄 Fallback: جلب من Firebase مباشرة
+        if (_firebaseSync.status == FirebaseSyncStatus.notConfigured ||
+            _firebaseSync.status == FirebaseSyncStatus.idle ||
+            _firebaseSync.status == FirebaseSyncStatus.error) {
+          if (mounted) {
+            setState(() {
+              _loadingProgress = 0.1;
+              _loadingMessage = 'جاري تهيئة المزامنة...';
+            });
+          }
+          final initSuccess = await _firebaseSync.initialize(
+            onProgress: (progress, message) {
+              if (mounted) {
+                setState(() {
+                  _loadingProgress = 0.1 + (progress * 0.1);
+                  _loadingMessage = message;
+                });
+              }
+            }
+          ).timeout(
+            const Duration(minutes: 2),
+            onTimeout: () => false,
+          );
+          if (!initSuccess) {
+            throw Exception('فشلت تهيئة المزامنة - تأكد من الاتصال بالإنترنت');
+          }
         }
+        
+        setState(() {
+          _loadingProgress = 0.5;
+          _loadingMessage = 'جاري جلب بيانات الأجهزة...';
+        });
+        
+        devices = await _firebaseSync.getConnectedDevices();
       }
-      
-      // المرحلة 1: الاتصال (0-30%)
-      setState(() {
-        _loadingProgress = 0.2;
-        _loadingMessage = 'جاري الاتصال بـ Firebase...';
-      });
-      
-      // المرحلة 2: جلب البيانات (30-80%)
-      setState(() {
-        _loadingProgress = 0.5;
-        _loadingMessage = 'جاري جلب بيانات الأجهزة...';
-      });
-      
-      final devices = await _firebaseSync.getConnectedDevices();
       final currentDeviceId = _firebaseSync.deviceId;
       
       // المرحلة 3: الانتهاء (80-100%)
@@ -1852,6 +2057,20 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
                                                 ),
                                               ),
                                             ],
+                                            if (device['isRetired'] == true) ...[
+                                              const SizedBox(width: 8),
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                decoration: BoxDecoration(
+                                                  color: Colors.orange,
+                                                  borderRadius: BorderRadius.circular(10),
+                                                ),
+                                                child: const Text(
+                                                  'خارج الخدمة',
+                                                  style: TextStyle(color: Colors.white, fontSize: 9),
+                                                ),
+                                              ),
+                                            ],
                                           ],
                                         ),
                                         const SizedBox(height: 2),
@@ -1862,6 +2081,26 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
                                       ],
                                     ),
                                   ),
+                                  // زر اعتبار الجهاز خارج الخدمة / إعادته
+                                  if (!isCurrentDevice)
+                                    IconButton(
+                                      icon: Icon(
+                                        device['isRetired'] == true
+                                            ? Icons.play_circle_outline
+                                            : Icons.power_settings_new,
+                                        color: device['isRetired'] == true
+                                            ? Colors.green
+                                            : Colors.orange,
+                                        size: 20,
+                                      ),
+                                      onPressed: () =>
+                                          _confirmToggleRetireDevice(device),
+                                      tooltip: device['isRetired'] == true
+                                          ? 'إعادة الجهاز للخدمة'
+                                          : 'اعتبار الجهاز خارج الخدمة',
+                                      padding: EdgeInsets.zero,
+                                      constraints: const BoxConstraints(),
+                                    ),
                                   // زر الحذف
                                   if (!isCurrentDevice)
                                     IconButton(
@@ -1975,6 +2214,71 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
   }
   
   /// تأكيد إزالة جهاز
+  /// 🚫 اعتبار جهاز خارج الخدمة / إعادته للخدمة (قرار يدوي موثّق)
+  ///
+  /// الجهاز الخارج عن الخدمة لا يُطالَب بتأكيد قراءة (ACK)، فتتاح إزالة
+  /// مستنداته القديمة من السحابة بعد قراءة بقية الأجهزة. استخدمه فقط
+  /// لجهاز لن يعود (بِيع/تالف) — الجهاز الغائب مؤقتاً يبقى محفوظاً له.
+  Future<void> _confirmToggleRetireDevice(Map<String, dynamic> device) async {
+    final retiring = device['isRetired'] != true;
+    final name = device['deviceName'] ?? 'جهاز غير معروف';
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(retiring ? 'اعتبار الجهاز خارج الخدمة' : 'إعادة الجهاز للخدمة'),
+        content: Text(
+          retiring
+              ? 'هل تريد اعتبار الجهاز "$name" خارج الخدمة نهائياً؟\n\n'
+                  '• لن يُنتظر هذا الجهاز في مزامنة الحذف من السحابة.\n'
+                  '• استخدم هذا الخيار فقط لجهاز بِيع أو تالف أو لن يعود.\n'
+                  '• قرارك يُوثّق بالتاريخ، ويمكن التراجع عنه بإعادة الجهاز للخدمة.'
+              : 'سيعود الجهاز "$name" للحساب ضمن أجهزة المزامنة، '
+                  'وستُنتظر قراءته (ACK) قبل حذف أي بيانات من السحابة.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: retiring ? Colors.orange : Colors.green,
+              foregroundColor: Colors.white,
+            ),
+            child: Text(retiring ? 'خارج الخدمة' : 'إعادة للخدمة'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      await SmartPipeCleanupService()
+          .setDeviceRetired(device['deviceId'] as String, retiring);
+      // تحديث العرض المحلي فوراً
+      setState(() => device['isRetired'] = retiring);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(retiring
+                ? '🚫 اعتُبر "$name" خارج الخدمة (قرار موثّق بالتاريخ)'
+                : '✅ أعيد "$name" للخدمة'),
+            backgroundColor: retiring ? Colors.orange : Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('❌ فشل تنفيذ العملية: $e')),
+        );
+      }
+    }
+  }
+
   Future<void> _confirmRemoveDevice(Map<String, dynamic> device) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -2030,8 +2334,210 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
   }
   
   /// 📊 عرض إحصائيات التتبع والإقرار
-  Future<void> _showTrackingStats() async {
+  /// 📋 عرض قائمة العمليات الفاشلة (عملاء ومعاملات لم تصل للسحابة).
+  /// كل عنصر يُظهر النوع، الاسم، المبلغ، عدد المحاولات، وآخر خطأ، مع زر
+  /// "إعادة المحاولة" وزر "حذف" للتخلي عن العملية.
+  Future<void> _showFailedOperations() async {
     if (!mounted) return;
+
+    setState(() {
+      _isLoadingTrackingStats = true;
+      _loadingMessage = 'جاري جلب العمليات الفاشلة...';
+    });
+
+    List<Map<String, dynamic>> failed = [];
+    try {
+      failed = await _firebaseSync.getFailedSyncOperations();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('فشل جلب العمليات الفاشلة: $e')),
+        );
+      }
+    }
+
+    if (!mounted) return;
+    setState(() => _isLoadingTrackingStats = false);
+
+    if (failed.isEmpty) {
+      showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('المعاملات الفاشلة'),
+          content: const Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.check_circle, color: Colors.green, size: 48),
+              SizedBox(height: 12),
+              Text('لا توجد عمليات فاشلة ✅'),
+              SizedBox(height: 4),
+              Text(
+                'كل العملاء والمعاملات والفواتير وصلت إلى السحابة بنجاح.',
+                style: TextStyle(fontSize: 13, color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('حسنًا'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    // عدّ العملاء والمعاملات.
+    final customers = failed.where((f) => f['type'] == 'customer').length;
+    final transactions = failed.where((f) => f['type'] == 'transaction').length;
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        bool isRetrying = false;
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return AlertDialog(
+              title: Row(
+                children: [
+                  const Icon(Icons.error_outline, color: Colors.red),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'العمليات الفاشلة (${failed.length})',
+                      style: const TextStyle(fontSize: 18),
+                    ),
+                  ),
+                ],
+              ),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // ملخص
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.orange.shade200),
+                      ),
+                      child: Text(
+                        'عملاء فاشلون: $customers | معاملات فاشلة: $transactions\n'
+                        'هذه العمليات ستُعاد محاولتها تلقائيًا، أو يمكنك إعادة المحاولة يدويًا.',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    // القائمة
+                    Flexible(
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: failed.length,
+                        itemBuilder: (ctx, i) {
+                          final op = failed[i];
+                          final isCustomer = op['type'] == 'customer';
+                          final name = op['name'] as String? ?? 'غير معروف';
+                          final amount = op['amount'] as double?;
+                          final retryCount = op['retryCount'] as int? ?? 0;
+                          final lastError = op['lastError'] as String? ?? '';
+                          return Card(
+                            child: ListTile(
+                              leading: Icon(
+                                isCustomer ? Icons.person : Icons.receipt_long,
+                                color: isCustomer
+                                    ? Colors.blue
+                                    : Colors.deepOrange,
+                              ),
+                              title: Text(
+                                isCustomer
+                                    ? 'عميل: $name'
+                                    : 'معاملة: $name'
+                                        '${amount != null ? ' (${amount.abs().toStringAsFixed(0)})' : ''}',
+                              ),
+                              subtitle: Text(
+                                'المحاولات: $retryCount'
+                                '${lastError.isNotEmpty ? '\nالخطأ: ${lastError.length > 60 ? lastError.substring(0, 60) + '...' : lastError}' : ''}',
+                                style: const TextStyle(fontSize: 11),
+                              ),
+                              trailing: IconButton(
+                                icon: const Icon(Icons.delete_outline,
+                                    color: Colors.grey),
+                                tooltip: 'حذف من القائمة',
+                                onPressed: () async {
+                                  await _firebaseSync
+                                      .removeFailedOperation(
+                                          op['syncUuid'] as String);
+                                  setDialogState(() {
+                                    failed.removeAt(i);
+                                  });
+                                },
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isRetrying
+                      ? null
+                      : () => Navigator.pop(ctx),
+                  child: const Text('إغلاق'),
+                ),
+                ElevatedButton.icon(
+                  icon: isRetrying
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh),
+                  label: Text(isRetrying ? 'جاري إعادة المحاولة...' : 'إعادة محاولة الكل'),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                  onPressed: isRetrying
+                      ? null
+                      : () async {
+                          setDialogState(() => isRetrying = true);
+                          try {
+                            final res = await _firebaseSync
+                                .retryAllFailedOperations();
+                            final remaining =
+                                res['remaining'] as int? ?? 0;
+                            failed = await _firebaseSync
+                                .getFailedSyncOperations();
+                            setDialogState(() {
+                              isRetrying = false;
+                            });
+                            if (!ctx.mounted) return;
+                            ScaffoldMessenger.of(ctx).showSnackBar(
+                              SnackBar(
+                                content: Text(remaining == 0
+                                    ? '✅ تم رفع كل العمليات الفاشلة بنجاح'
+                                    : 'بقي $remaining عملية فاشلة (ستُعاد محاولتها تلقائيًا)'),
+                              ),
+                            );
+                          } catch (e) {
+                            setDialogState(() => isRetrying = false);
+                          }
+                        },
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _showTrackingStats() async {
     
     setState(() {
       _isLoadingTrackingStats = true;

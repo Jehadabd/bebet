@@ -10,6 +10,7 @@ class InvoiceItem {
   int? id;
   int invoiceId; // Foreign key to Invoice
   int? productId; // Foreign key to Product
+  String? productSyncUuid; // 🔄 معرّف مزامنة المنتج (لمطابقته عبر الأجهزة)
   String productName;
   String unit;
   double unitPrice; // This is the *selling* unit price from the product
@@ -23,6 +24,7 @@ class InvoiceItem {
   double itemTotal;
   String? saleType; // نوع البيع بالحرف العربي: ق/ك/م/ل
   double? unitsInLargeUnit; // عدد القطع في الكرتون أو الأمتار في اللفة (للوحدة الكبيرة)
+  double? suggestedPrice; // ⚡ السعر الذي اقترحه محرك التسعير قبل أي تعديل يدوي
 
   // --- أضف هذا الحقل ---
   final String uniqueId;
@@ -39,6 +41,7 @@ class InvoiceItem {
     this.id,
     required this.invoiceId,
     this.productId,
+    this.productSyncUuid,
     required this.productName,
     required this.unit,
     required this.unitPrice,
@@ -50,6 +53,7 @@ class InvoiceItem {
     this.actualCostPrice, // التكلفة الفعلية للمنتج في وقت البيع
     this.saleType, // أضف هذا
     this.unitsInLargeUnit,
+    this.suggestedPrice, // ⚡ السعر المقترح من المحرك
     String? uniqueId, // أضف هذا
   }) : this.uniqueId =
             uniqueId ?? 'item_${DateTime.now().microsecondsSinceEpoch}' {
@@ -89,6 +93,7 @@ class InvoiceItem {
       'id': id,
       'invoice_id': invoiceId,
       'product_id': productId,
+      'product_sync_uuid': productSyncUuid,
       'product_name': productName,
       'unit': unit,
       'unit_price': unitPrice, // Selling unit price
@@ -97,6 +102,7 @@ class InvoiceItem {
       'quantity_individual': quantityIndividual,
       'quantity_large_unit': quantityLargeUnit,
       'applied_price': appliedPrice,
+      'suggested_price': suggestedPrice, // ⚡ السعر المقترح
       'item_total': itemTotal,
       'sale_type': saleType, // أضف هذا
       'units_in_large_unit': unitsInLargeUnit,
@@ -176,15 +182,17 @@ class InvoiceItem {
       id: map['id'] as int?,
       invoiceId: map['invoice_id'] ?? 0,
       productId: map['product_id'] as int?,
+      productSyncUuid: map['product_sync_uuid'] as String?,
       productName: map['product_name'] ?? '',
       unit: map['unit'] ?? '',
-      unitPrice: map['unit_price'] as double,
-      costPrice: map['cost_price'] as double?,
-      actualCostPrice: map['actual_cost_price'] as double?,
+      unitPrice: (map['unit_price'] as num).toDouble(),
+      costPrice: (map['cost_price'] as num?)?.toDouble(),
+      actualCostPrice: (map['actual_cost_price'] as num?)?.toDouble(),
       quantityIndividual: quantityIndividual,
       quantityLargeUnit: quantityLargeUnit,
-      appliedPrice: map['applied_price'] ?? 0.0,
-      itemTotal: map['item_total'] ?? 0.0,
+      appliedPrice: (map['applied_price'] as num?)?.toDouble() ?? 0.0,
+      suggestedPrice: (map['suggested_price'] as num?)?.toDouble(),
+      itemTotal: (map['item_total'] as num?)?.toDouble() ?? 0.0,
       saleType: saleType,
       unitsInLargeUnit: unitsInLargeUnit,
       uniqueId: map['unique_id'] ?? 'item_${DateTime.now().microsecondsSinceEpoch}',
@@ -200,6 +208,7 @@ class InvoiceItem {
     int? id,
     int? invoiceId,
     int? productId,
+    String? productSyncUuid,
     String? productName,
     String? unit,
     double? unitPrice,
@@ -208,6 +217,7 @@ class InvoiceItem {
     Object? quantityIndividual = _sentinel, // استخدام Object? للسماح بـ null
     Object? quantityLargeUnit = _sentinel,  // استخدام Object? للسماح بـ null
     double? appliedPrice,
+    double? suggestedPrice,
     double? itemTotal,
     String? saleType,
     double? unitsInLargeUnit,
@@ -217,6 +227,7 @@ class InvoiceItem {
       id: id ?? this.id,
       invoiceId: invoiceId ?? this.invoiceId,
       productId: productId ?? this.productId,
+      productSyncUuid: productSyncUuid ?? this.productSyncUuid,
       productName: productName ?? this.productName,
       unit: unit ?? this.unit,
       unitPrice: unitPrice ?? this.unitPrice,
@@ -230,6 +241,7 @@ class InvoiceItem {
           ? this.quantityLargeUnit 
           : quantityLargeUnit as double?,
       appliedPrice: appliedPrice ?? this.appliedPrice,
+      suggestedPrice: suggestedPrice ?? this.suggestedPrice,
       itemTotal: itemTotal ?? this.itemTotal,
       saleType: saleType ?? this.saleType,
       unitsInLargeUnit: unitsInLargeUnit ?? this.unitsInLargeUnit,

@@ -7,6 +7,7 @@ import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
 import '../services/database_service.dart';
 import '../services/pdf_service.dart';
 import '../services/sync/sync_audit_service.dart';
@@ -19,8 +20,10 @@ import '../services/expert_training_service.dart'; // العقل المدبر ل
 import 'financial_audit_screen.dart'; // 🛡️ شاشة التدقيق المالي
 import 'discord_settings_screen.dart'; // 📱 إعدادات Discord
 import 'telegram_settings_screen.dart'; // ✈️ إعدادات Telegram
+import 'backup_restore_screen.dart'; // شاشة النسخ الاحتياطي والاستعادة
 import 'package:file_picker/file_picker.dart';
 import '../services/smart_pricing_service.dart';
+import '../services/invoice_settings_service.dart';
 
 class GeneralSettingsScreen extends StatefulWidget {
   const GeneralSettingsScreen({super.key});
@@ -72,6 +75,8 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
   // ✈️ إعدادات التليجرام
   bool _telegramSyncEnabled = true;
   DateTime? _telegramTurnOffDate;
+  // 🔎 تقارير التليجرام: المحلية فقط (منع التقارير المزدوجة بين الأجهزة)
+  bool _telegramOnlyLocalInvoices = false;
   
   // 🏷️ إعدادات الختم
   String _stampType = 'barcode';
@@ -88,6 +93,14 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
   
   // 🏪 اسم الفرع
   String _branchName = 'الفرع الرئيسي';
+  
+  // 📱 رقم الجهاز التسلسلي
+  String _deviceSerialNumber = '';
+  final TextEditingController _deviceSerialController = TextEditingController();
+  
+  // 📱 رقم الجهاز للفواتير
+  int _invoiceDeviceId = 1;
+  final TextEditingController _invoiceDeviceController = TextEditingController();
   
   // 🔐 خدمة كلمة السر
   final PasswordService _passwordService = PasswordService();
@@ -139,6 +152,7 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
     // تحميل إعدادات التليجرام
     _telegramSyncEnabled = _appSettings.telegramSyncEnabled;
     _telegramTurnOffDate = _appSettings.telegramTurnOffDate;
+    _telegramOnlyLocalInvoices = _appSettings.telegramOnlyLocalInvoices;
     
     // تحميل إعدادات المزامنة
     _syncFullTransferMode = _appSettings.syncFullTransferMode;
@@ -150,6 +164,14 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
     
     // تحميل اسم الفرع
     _branchName = _appSettings.branchName;
+    
+    // تحميل رقم الجهاز التسلسلي
+    _deviceSerialNumber = _appSettings.deviceSerialNumber ?? '';
+    _deviceSerialController.text = _deviceSerialNumber;
+    
+    // تحميل رقم الجهاز للفواتير
+    _invoiceDeviceId = await InvoiceSettingsService.getInvoiceDeviceId();
+    _invoiceDeviceController.text = _invoiceDeviceId.toString();
     
     // تحميل إعدادات الختم
     _stampType = _appSettings.stampType;
@@ -202,16 +224,19 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
       autoPriceMode: _autoPriceMode,
       telegramSyncEnabled: _telegramSyncEnabled,
       telegramTurnOffDate: _telegramTurnOffDate,
+      telegramOnlyLocalInvoices: _telegramOnlyLocalInvoices,
       syncFullTransferMode: _syncFullTransferMode,
       syncShowConfirmation: _syncShowConfirmation,
       syncAutoCreateCustomers: _syncAutoCreateCustomers,
       storeSection: _storeSection,
       branchName: _branchName,
+      deviceSerialNumber: _deviceSerialController.text.trim(),
       stampType: _stampType,
       customCashStampPath: _customCashStampPath,
       customCreditStampPath: _customCreditStampPath,
       enableSmartSearchRamCache: _enableSmartSearchRamCache,
     );
+    await InvoiceSettingsService.setInvoiceDeviceId(int.tryParse(_invoiceDeviceController.text.trim()) ?? 1);
     await SettingsManager.saveAppSettings(_appSettings);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -391,6 +416,8 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
       controller.dispose();
     }
     _companyDescriptionController.dispose();
+    _deviceSerialController.dispose();
+    _invoiceDeviceController.dispose();
     _pointsController.dispose();
     super.dispose();
   }
@@ -782,6 +809,25 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                     ],
                   ),
                 ),
+                const SizedBox(height: 16),
+                const Divider(),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _invoiceDeviceController,
+                  decoration: const InputDecoration(
+                    labelText: 'رقم الجهاز للفواتير (مثل: 1, 2, 3)',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.receipt_long),
+                    helperText: 'يُستخدم هذا الرقم كجزء من أرقام الفواتير (يجب أن يكون فريداً لكل جهاز)',
+                  ),
+                  keyboardType: TextInputType.number,
+                  onChanged: (value) {
+                    final val = int.tryParse(value);
+                    if (val != null) {
+                      _invoiceDeviceId = val;
+                    }
+                  },
+                ),
               ],
             ),
           ),
@@ -991,6 +1037,9 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                       DropdownMenuItem(value: 22, child: Text('الأكثر تكراراً - شهرين')),
                       DropdownMenuItem(value: 23, child: Text('الأكثر تكراراً - 3 أشهر')),
                       DropdownMenuItem(value: 99, child: Text('🔮 تسعير ذكي (AI)')),
+                      DropdownMenuItem(value: 101, child: Text('👤 تسعير شخصي (بالاعتماد على التكلفة)')),
+                      DropdownMenuItem(value: 102, child: Text('👤 تسعير شخصي (بالاعتماد على النسبة)')),
+                      DropdownMenuItem(value: 103, child: Text('⚡ تسعير شخصي هايبرد (نظام التشخيص)')),
                     ],
                     onChanged: (val) {
                       if (val != null) {
@@ -1114,6 +1163,20 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                   title: 'مزامنة Firebase الفورية',
                   subtitle: 'مزامنة تلقائية في الخلفية بين الأجهزة',
                   onTap: () => Navigator.pushNamed(context, '/firebase_sync_settings'),
+                ),
+                const Divider(height: 1),
+                // 💾 النسخ الاحتياطي المحلي
+                _buildActionTile(
+                  icon: Icons.security,
+                  iconColor: Colors.blueAccent,
+                  title: 'النسخ الاحتياطي والاستعادة (محلياً)',
+                  subtitle: 'تصدير واستيراد قاعدة البيانات لحمايتها من الضياع',
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const BackupRestoreScreen()),
+                    );
+                  },
                 ),
                 const Divider(height: 1),
                 SwitchListTile(
@@ -1302,10 +1365,27 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                     }
                   },
                 ),
+                const Divider(height: 1),
+                // 🔎 منع التقارير المزدوجة: كل جهاز يرسل مبيعاته هو فقط
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('تقارير التليجرام: الفواتير المحلية فقط'),
+                  subtitle: Text(
+                    'عند التفعيل يُرسل هذا الجهاز مبيعاته هو فقط دون الفواتير الواردة من المزامنة — لمنع التكرار عندما ترسل عدة أجهزة لنفس الجروب',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                  ),
+                  value: _telegramOnlyLocalInvoices,
+                  activeColor: primaryColor,
+                  onChanged: (value) {
+                    setState(() {
+                      _telegramOnlyLocalInvoices = value;
+                    });
+                  },
+                ),
               ],
             ),
           ),
-          
+
           // ⭐ إعدادات نقاط المؤسسين
           _buildSettingsCard(
             icon: Icons.star,
@@ -2210,7 +2290,7 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                   ),
                   const SizedBox(height: 8),
                   // عرض العملاء غير السليمين (سواء لديهم issues أو لا)
-                  ...reports.where((r) => !r.isHealthy).take(15).map((r) {
+                  ...reports.where((r) => !r.isHealthy).map((r) {
                     // تحديد نص المشكلة
                     String issueText = '';
                     if (r.invoiceIssues.isNotEmpty) {
@@ -2233,27 +2313,17 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                           Text('  $issueText', style: TextStyle(fontSize: 11, color: Colors.grey[700])),
                           // عرض تفاصيل مشاكل الفواتير
                           if (r.invoiceIssues.isNotEmpty)
-                            ...r.invoiceIssues.take(3).map((inv) => Padding(
+                            ...r.invoiceIssues.map((inv) => Padding(
                               padding: const EdgeInsets.only(right: 16, top: 2),
                               child: Text(
-                                '📄 فاتورة #${inv.invoiceId}: فرق ${inv.difference.toStringAsFixed(0)} دينار',
+                                '📄 فاتورة #${inv.displayInvoiceNumber}: فرق ${inv.difference.toStringAsFixed(0)} دينار',
                                 style: TextStyle(fontSize: 10, color: Colors.red[400]),
                               ),
                             )),
-                          if (r.invoiceIssues.length > 3)
-                            Padding(
-                              padding: const EdgeInsets.only(right: 16, top: 2),
-                              child: Text(
-                                '... و ${r.invoiceIssues.length - 3} فواتير أخرى',
-                                style: TextStyle(fontSize: 10, color: Colors.grey[500]),
-                              ),
-                            ),
                         ],
                       ),
                     );
                   }),
-                  if (issueCount > 15)
-                    Text('... و ${issueCount - 15} عملاء آخرين', style: TextStyle(color: Colors.grey[600], fontSize: 11)),
                 ],
                 
                 // عرض العملاء الذين لديهم تحذيرات (فقط إذا لم تكن هناك مشاكل)
@@ -2261,7 +2331,7 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
                   const SizedBox(height: 16),
                   const Text('عملاء لديهم تحذيرات:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
                   const SizedBox(height: 8),
-                  ...reports.where((r) => r.warnings.isNotEmpty).take(10).map((r) => Padding(
+                  ...reports.where((r) => r.warnings.isNotEmpty).map((r) => Padding(
                     padding: const EdgeInsets.only(bottom: 6),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2938,13 +3008,15 @@ class _GeneralSettingsScreenState extends State<GeneralSettingsScreen> {
       } else {
         // على الأجهزة الأخرى: استخدام share_plus للمشاركة
         final tempDir = await getTemporaryDirectory();
-        final filePath = '${tempDir.path}/$fileName';
+        final filePath = p.join(tempDir.path, fileName);
         final file = File(filePath);
         await file.writeAsBytes(pdfBytes);
         
+        // 📎 subject بدل text، مع نوع الملف واسمه (انظر شرح المشاركة في
+        // edit_invoices_screen.dart).
         await Share.shareXFiles(
-          [XFile(filePath)],
-          text: 'كشوفات حسابات العملاء - ${now.year}/${now.month}/${now.day}',
+          [XFile(filePath, mimeType: 'application/pdf', name: fileName)],
+          subject: 'كشوفات حسابات العملاء - ${now.year}/${now.month}/${now.day}',
         );
       }
     } catch (e) {

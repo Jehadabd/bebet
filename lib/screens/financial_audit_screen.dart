@@ -1,6 +1,5 @@
 // lib/screens/financial_audit_screen.dart
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import '../services/firebase_sync/cross_device_verifier.dart';
 import '../services/firebase_sync/device_snapshot_service.dart';
 import '../services/firebase_sync/discrepancy_resolution_service.dart';
@@ -277,13 +276,19 @@ class _FinancialAuditScreenState extends State<FinancialAuditScreen> {
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
                 ),
                 
-              if (assessment.type == ResolutionType.manualCorrection || assessment.type == ResolutionType.restoreMissing)
-                 TextButton(
-                  onPressed: () async {
-                    Navigator.pop(context);
-                     await _executeManualCorrection(service, discrepancy.customerSyncUuid, assessment.discrepancyAmount);
-                  },
-                  child: const Text('تصحيح الرصيد يدوياً (Fallback)'),
+              // 🔒 لا نعرض "تصحيح الرصيد بمبلغ" إطلاقاً. اختراع معاملة لتسوية
+              // الرقم يجعل الرصيد صحيحاً بالصدفة بينما المعاملة الناقصة تبقى
+              // ناقصة، ويظهر في كشف حساب العميل سطر لا وجود له في الواقع.
+              // العلاج الوحيد المشروع هو جلب المعاملة من مصدرها.
+              if (assessment.type == ResolutionType.unresolved)
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 8),
+                  child: Text(
+                    'لم نتمكن من تحديد المعاملة الناقصة. استخدم شاشة\n'
+                    '«المطابقة بين الأجهزة» فهي تقارن معرّفات المعاملات\n'
+                    'واحدة واحدة وتجلب الناقص من مصدره.',
+                    style: TextStyle(fontSize: 12, color: Colors.black54),
+                  ),
                 ),
             ],
           ),
@@ -310,17 +315,4 @@ class _FinancialAuditScreenState extends State<FinancialAuditScreen> {
       }
   }
 
-  Future<void> _executeManualCorrection(DiscrepancyResolutionService service, String customerUuid, double amount) async {
-      showDialog(context: context, barrierDismissible: false, builder: (c) => const Center(child: CircularProgressIndicator()));
-      
-      await service.createCorrectionTransaction(customerUuid, amount);
-      
-      if (mounted) Navigator.pop(context);
-      
-       if (mounted) {
-         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم تصحيح الرصيد ✅')));
-         // إعادة تشغيل التحقق لتحديث القائمة
-         _runVerification();
-      }
-  }
 }

@@ -14,6 +14,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
 import '../services/invoice_pdf_service.dart';
 import 'package:alnaser/services/settings_manager.dart';
 import 'package:alnaser/models/app_settings.dart';
@@ -394,17 +395,39 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
                                         horizontal: 20.0,
                                         vertical:
                                             12.0), // Increased internal padding for ListTile
-                                    title: Text(
-                                      invoice.customerName,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodyLarge
-                                          ?.copyWith(
-                                            fontWeight: FontWeight.bold,
-                                            color: Theme.of(context)
-                                                .colorScheme
-                                                .onSurface,
+                                    title: Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            invoice.customerName,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodyLarge
+                                                ?.copyWith(
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Theme.of(context)
+                                                      .colorScheme
+                                                      .onSurface,
+                                                ),
                                           ),
+                                        ),
+                                        if (invoice.isLocked)
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                            decoration: BoxDecoration(
+                                              color: Colors.orange.shade100,
+                                              borderRadius: BorderRadius.circular(4),
+                                            ),
+                                            child: const Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Icon(Icons.cloud_sync, size: 14, color: Colors.orange),
+                                                SizedBox(width: 4),
+                                                Text('مستوردة', style: TextStyle(fontSize: 10, color: Colors.orange, fontWeight: FontWeight.bold)),
+                                              ],
+                                            ),
+                                          ),
+                                      ],
                                     ),
                                     subtitle: Column(
                                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -561,10 +584,10 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
       // تحميل الإعدادات العامة
       final appSettings = await SettingsManager.getAppSettings();
 
-      // احتساب أجور التحميل من الفرق بين إجمالي الفاتورة ومجموع البنود
-      final double itemsTotal =
-          items.fold(0.0, (sum, item) => sum + item.itemTotal);
-      final double loadingFee = (invoice.totalAmount - itemsTotal);
+      // 🛡️ أجور التحميل تُقرأ من حقلها مباشرة.
+      // الاشتقاق السابق (الإجمالي − مجموع البنود) كان يعطي (التحميل − الخصم)
+      // لأن total_amount يتضمن الخصم مطروحاً أصلاً.
+      final double loadingFee = invoice.loadingFee;
 
       final doc = await InvoicePdfService.generateInvoicePdf(
         invoiceItems: items,
@@ -581,8 +604,10 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
         invoiceToManage: invoice,
         previousDebt: 0,
         currentDebt: 0,
-        afterDiscount: (invoice.totalAmount - invoice.discount),
-        remaining: (invoice.totalAmount - invoice.discount - invoice.amountPaidOnInvoice),
+        // 🛡️ total_amount يتضمن الخصم مطروحاً بالفعل — طرحه ثانيةً كان
+        // يطبع «الإجمالي بعد الخصم» و«المتبقي» أقل من الحقيقة بمقدار الخصم.
+        afterDiscount: invoice.totalAmount,
+        remaining: (invoice.totalAmount - invoice.amountPaidOnInvoice),
         font: font,
         alnaserFont: alnaserFont,
         logoImage: logoImage,
@@ -590,19 +615,56 @@ class _EditInvoicesScreenState extends State<EditInvoicesScreen> {
         appSettings: appSettings,
       );
 
-      // حفظ الملف
-      final safeCustomerName = invoice.customerName.replaceAll(RegExp(r'[^\w\u0600-\u06FF]+'), '_');
+      // 📎 اسم لاتيني: واتساب سطح المكتب يقرأ بايتات UTF-8 للاسم العربي
+      // بايتاً بايتاً فتظهر رموز غريبة (ÙØ§ØªÙˆØ±Ø©). الاسم العربي يبقى
+      // داخل الملف نفسه.
+      //
+      // 📁 مجلد فرعي جديد لكل مشاركة: ويندوز يُبقي الملف الذي شاركته
+      // مفتوحاً (user-mapped section) فلا يمكن استبداله، وتفشل المشاركة
+      // التالية بخطأ errno 1224. مجلد جديد = ملف جديد دائماً، مع بقاء
+      // الاسم المعروض نظيفاً بلا أرقام إضافية.
       final formattedDate = DateFormat('yyyy-MM-dd').format(invoice.invoiceDate);
-      final fileName = '${safeCustomerName}_$formattedDate.pdf';
-      final directory = Directory('${Platform.environment['USERPROFILE']}/Documents/invoices');
-      if (!await directory.exists()) {
-        await directory.create(recursive: true);
-      }
-      final filePath = '${directory.path}/$fileName';
+      final fileName = 'Invoice-$formattedDate.pdf';
+      final tempDir = await getTemporaryDirectory();
+      final shareRoot = Directory(p.join(tempDir.path, 'invoices_share_cache'));
+      // 🧹 حذف مجلدات المشاركة الأقدم من يوم (تجاهل أي فشل — قد يكون
+      // ويندوز ما زال ممسكاً بملف شاركته للتوّ).
+      try {
+        if (await shareRoot.exists()) {
+          final cutoff = DateTime.now().subtract(const Duration(days: 1));
+          for (final entity in shareRoot.listSync()) {
+            try {
+              if (entity.statSync().modified.isBefore(cutoff)) {
+                entity.deleteSync(recursive: true);
+              }
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+      final directory = Directory(p.join(
+          shareRoot.path, DateTime.now().millisecondsSinceEpoch.toString()));
+      await directory.create(recursive: true);
+      final filePath = p.join(directory.path, fileName);
       final file = File(filePath);
-      await file.writeAsBytes(await doc.save());
+      await file.writeAsBytes(await doc.save(), flush: true);
 
-      await Share.shareXFiles([XFile(file.path)], text: 'فاتورة ${invoice.customerName}');
+      // 📎 مشاركة كملف PDF لا كرسالة نصية — ثلاثة أمور إلزامية على ويندوز:
+      //
+      //  1) mimeType و name: بدونهما لا يتعرّف واتساب على المرفق.
+      //
+      //  2) subject: مكتبة share_plus على ويندوز تضع العنوان من title ثم
+      //     subject ثم text، وتعليق الكود فيها صريح: "Setting a title is
+      //     mandatory for Windows". فبلا أيٍّ منها يصير العنوان فارغاً
+      //     وتفشل نافذة ويندوز برسالة «Try that again». subject يضبط
+      //     العنوان فقط ولا يضيف نصاً إلى الرسالة.
+      //
+      //  3) لا نمرّر text إطلاقاً: وجود نصّ مع الملف يجعل واتساب يرسل
+      //     النص ويتجاهل المرفق. (ولا يصحّ تمرير نصّ فارغ — المكتبة
+      //     ترفضه صراحةً: 'text provided, but cannot be empty'.)
+      await Share.shareXFiles(
+        [XFile(filePath, mimeType: 'application/pdf', name: fileName)],
+        subject: 'فاتورة ${invoice.customerName}',
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

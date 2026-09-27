@@ -23,8 +23,32 @@ class SyncTracker {
   bool _isInitialized = false;
   bool _isInitializing = false;
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🚫 مزامنة Google Drive معطّلة
+  // ═══════════════════════════════════════════════════════════════════════════
+  // المزامنة المعتمدة في التطبيق هي Firebase وحدها، ولها متتبّعها المستقل
+  // (services/firebase_sync/sync_operation_tracker.dart) الذي لا علاقة له
+  // بهذا الملف ولا بجدول sync_operations.
+  //
+  // هذا المتتبّع كان يكتب صفاً في sync_operations مع كل معاملة وكل عميل —
+  // 3,489 بايت للصف الواحد (نسخة JSON قبل وبعد + توقيع + checksum)، أي
+  // ~13.8 ميجابايت سنوياً — في طابور انتظار لرفع إلى Google Drive لم يحدث
+  // ولا مرة: 3,388 عملية بحالة pending منذ 2025-12-16، و uploaded_at فارغ
+  // في جميعها.
+  //
+  // لإعادة تفعيل مزامنة Drive يوماً ما: اجعل هذا الثابت true فقط.
+  static const bool kDriveSyncEnabled = false;
+
   /// تهيئة المتتبع
   Future<void> initialize() async {
+    // 🚫 التتبع معطّل: نخرج قبل تفعيل _isEnabled، فتصبح كل دوال التسجيل
+    //    بلا أثر (كلها تبدأ بـ if (!isEnabled) return).
+    if (!kDriveSyncEnabled) {
+      _isInitialized = true;
+      print('ℹ️ تتبّع مزامنة Google Drive معطّل — المزامنة عبر Firebase فقط');
+      return;
+    }
+
     // تجنب التهيئة المتكررة
     if (_isInitialized) return;
     
@@ -148,8 +172,8 @@ class SyncTracker {
   }) async {
     if (!isEnabled) return null;
     
-    final syncUuid = transactionData['sync_uuid'] as String? 
-        ?? transactionData['transaction_uuid'] as String?
+    final transactionUuid = transactionData['transaction_uuid'] as String? 
+        ?? transactionData['sync_uuid'] as String?
         ?? SyncSecurity.generateUuid();
     
     // 🔄 تضمين بيانات العميل في المعاملة (Enriched Operation)
@@ -164,22 +188,22 @@ class SyncTracker {
     final operation = await _createOperation(
       operationType: SyncOperationType.transactionCreate,
       entityType: 'transaction',
-      entityUuid: syncUuid,
+      entityUuid: transactionUuid,
       customerUuid: customerSyncUuid,
       payloadAfter: enrichedData,
     );
     
     if (operation != null) {
       await _storage.saveOperation(operation);
-      print('📝 تم تسجيل عملية إنشاء معاملة: $syncUuid (عميل: $customerName)');
+      print('📝 تم تسجيل عملية إنشاء معاملة: $transactionUuid (عميل: $customerName)');
     }
     
-    return syncUuid;
+    return transactionUuid;
   }
 
   /// تسجيل تحديث معاملة
   Future<void> trackTransactionUpdate(
-    String syncUuid,
+    String transactionUuid,
     Map<String, dynamic> oldData,
     Map<String, dynamic> newData,
     String? customerSyncUuid,
@@ -189,7 +213,7 @@ class SyncTracker {
     final operation = await _createOperation(
       operationType: SyncOperationType.transactionUpdate,
       entityType: 'transaction',
-      entityUuid: syncUuid,
+      entityUuid: transactionUuid,
       customerUuid: customerSyncUuid,
       payloadBefore: _sanitizeTransactionData(oldData),
       payloadAfter: _sanitizeTransactionData(newData),
@@ -197,13 +221,13 @@ class SyncTracker {
     
     if (operation != null) {
       await _storage.saveOperation(operation);
-      print('📝 تم تسجيل عملية تحديث معاملة: $syncUuid');
+      print('📝 تم تسجيل عملية تحديث معاملة: $transactionUuid');
     }
   }
 
   /// تسجيل حذف معاملة
   Future<void> trackTransactionDelete(
-    String syncUuid,
+    String transactionUuid,
     Map<String, dynamic> oldData,
     String? customerSyncUuid,
   ) async {
@@ -212,7 +236,7 @@ class SyncTracker {
     final operation = await _createOperation(
       operationType: SyncOperationType.transactionDelete,
       entityType: 'transaction',
-      entityUuid: syncUuid,
+      entityUuid: transactionUuid,
       customerUuid: customerSyncUuid,
       payloadBefore: _sanitizeTransactionData(oldData),
       payloadAfter: {'deleted': true, 'deleted_at': DateTime.now().toUtc().toIso8601String()},
@@ -220,7 +244,7 @@ class SyncTracker {
     
     if (operation != null) {
       await _storage.saveOperation(operation);
-      print('📝 تم تسجيل عملية حذف معاملة: $syncUuid');
+      print('📝 تم تسجيل عملية حذف معاملة: $transactionUuid');
     }
   }
 
