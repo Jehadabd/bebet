@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart';
-import 'package:sqflite/sqflite.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -12,13 +11,11 @@ class LocalBackupService {
   /// تصدير قاعدة البيانات (النسخ الاحتياطي)
   static Future<bool> backupDatabase() async {
     try {
-      final dbPath = await getDatabasesPath();
-      final currentDbPath = join(dbPath, 'debt_book.db');
-      final dbFile = File(currentDbPath);
-
-      if (!await dbFile.exists()) {
-        throw Exception('قاعدة البيانات غير موجودة');
-      }
+      // 🛡️ الملف الحي هو ما يفتحه التطبيق فعلاً (مجلد دعم التطبيق)، لا مسار
+      // getDatabasesPath القديم. النسخة تُؤخذ بعد دمج WAL وتُفحص سلامتها.
+      final tmpDir = await Directory.systemTemp.createTemp('debt_book_export');
+      final dbFile = await DatabaseService()
+          .createSafeBackup(join(tmpDir.path, 'debt_book_backup.db'));
 
       // في أندرويد و iOS يفضل استخدام share_plus لمشاركتها لتطبيقات مثل تيليجرام
       // في الويندوز ستعمل كحفظ في الجهاز إذا كان مدعوماً
@@ -70,19 +67,28 @@ class LocalBackupService {
         // 2. إغلاق قاعدة البيانات الحالية بشكل آمن
         await DatabaseService().closeDatabase();
 
-        // 3. مسار قاعدة البيانات الأصلي
-        final dbPath = await getDatabasesPath();
-        final currentDbPath = join(dbPath, 'debt_book.db');
+        // 3. مسار قاعدة البيانات الذي يفتحه التطبيق فعلاً
+        final currentDbPath = await DatabaseService().getDatabaseFilePath();
         final currentDbFile = File(currentDbPath);
 
         // 4. استبدال الملف
-        // نحذف القديم (إن وجد)
+        // نحذف القديم (إن وجد) ومعه ملفات WAL/SHM كي لا تُطبَّق على الملف الجديد
         if (await currentDbFile.exists()) {
           await currentDbFile.delete();
+        }
+        for (final suffix in ['-wal', '-shm']) {
+          final f = File('$currentDbPath$suffix');
+          if (await f.exists()) {
+            await f.delete();
+          }
         }
         
         // ننسخ الجديد مكانه
         await selectedFile.copy(currentDbPath);
+
+        // 🛡️ وضع الاستعادة: لا رفع حتى تُقارن النسخة بالسحابة، فلا تُفرض
+        // بيانات قديمة على الأجهزة الأخرى.
+        await DatabaseService.flagDatabaseRestored();
 
         print('✅ تم استعادة قاعدة البيانات بنجاح في المسار المخفي!');
         return true;

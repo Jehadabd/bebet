@@ -38,7 +38,7 @@ class CommercialStatementService {
     final txYears = await db.rawQuery('''
       SELECT DISTINCT strftime('%Y', transaction_date) as year
       FROM transactions
-      WHERE customer_id = ?
+      WHERE customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)
     ''', [customerId]);
 
     // جلب السنوات من الفواتير (بما فيها النقدية)
@@ -408,6 +408,7 @@ class CommercialStatementService {
         SELECT COALESCE(SUM(amount_changed), 0) as total
         FROM transactions
         WHERE customer_id = ? AND DATE(transaction_date) < DATE(?)
+          AND (is_deleted IS NULL OR is_deleted = 0)
       ''', [customerId, startDate.toIso8601String()]);
       debtBeforePeriod =
           (txResult.first['total'] as num?)?.toDouble() ?? 0.0;
@@ -419,7 +420,7 @@ class CommercialStatementService {
           i.total_amount,
           i.amount_paid_on_invoice,
           i.payment_type,
-          (SELECT COUNT(*) FROM transactions t WHERE t.invoice_id = i.id) as tx_count
+          (SELECT COUNT(*) FROM transactions t WHERE t.invoice_id = i.id AND (t.is_deleted IS NULL OR t.is_deleted = 0)) as tx_count
         FROM invoices i
         WHERE i.customer_id = ? 
           AND i.status = 'محفوظة'

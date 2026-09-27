@@ -104,7 +104,7 @@ class _OverdueDebtsScreenState extends State<OverdueDebtsScreen> {
       final result = await db.rawQuery('''
         SELECT transaction_type, invoice_id, transaction_date
         FROM transactions
-        WHERE customer_id = ?
+        WHERE customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)
         ORDER BY transaction_date DESC
         LIMIT 1
       ''', [customerId]);

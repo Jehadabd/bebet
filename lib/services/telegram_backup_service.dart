@@ -539,6 +539,7 @@ class TelegramBackupService {
         AND transaction_type = 'manual_payment_return'
         AND is_created_by_me = 1
         AND invoice_id IS NULL
+        AND (is_deleted IS NULL OR is_deleted = 0)
         AND id NOT IN (SELECT COALESCE(transaction_id, 0) FROM returns)
     ''', [startStr, endStr]);
 
@@ -554,6 +555,7 @@ class TelegramBackupService {
       WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
         AND transaction_type IN ('manual_debt', 'opening_balance')
         AND is_created_by_me = 1 AND invoice_id IS NULL
+        AND (is_deleted IS NULL OR is_deleted = 0)
     ''', [startStr, endStr]);
 
     final manualDebtCount = manualDebtData.first['count'] as int? ?? 0;
@@ -565,6 +567,7 @@ class TelegramBackupService {
       WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
         AND transaction_type = 'manual_debt'
         AND is_created_by_me = 1 AND invoice_id IS NULL
+        AND (is_deleted IS NULL OR is_deleted = 0)
     ''', [startStr, endStr]);
 
     final manualDebtOnlyTotal = (manualDebtProfitData.first['total'] as num?)?.toDouble() ?? 0.0;
@@ -576,6 +579,7 @@ class TelegramBackupService {
       WHERE DATE(transaction_date) >= ? AND DATE(transaction_date) <= ?
         AND transaction_type = 'manual_payment'
         AND is_created_by_me = 1 AND invoice_id IS NULL
+        AND (is_deleted IS NULL OR is_deleted = 0)
     ''', [startStr, endStr]);
 
     final manualPaymentCount = manualPaymentData.first['count'] as int? ?? 0;
@@ -700,6 +704,7 @@ ${onlyLocal ? '📲 مبيعات هذا الجهاز فقط' : '🏬 مبيعا�
       WHERE DATE(transaction_date) = ?
         AND transaction_type = 'manual_payment'
         AND is_created_by_me = 1 AND invoice_id IS NULL
+        AND (is_deleted IS NULL OR is_deleted = 0)
     ''', [nowStr]);
     final manualPaymentCount =
         (manualPaymentData.first['count'] as num?)?.toInt() ?? 0;

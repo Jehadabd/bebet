@@ -1668,7 +1668,7 @@ class AIChatService {
       // 🔧 إصلاح: فقط المعاملات اليدوية من هذا الجهاز وغير المرتبطة بفاتورة
       final manualDebtTransactions = await db.query(
         'transactions',
-        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1',
+        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1 AND (is_deleted IS NULL OR is_deleted = 0)',
         whereArgs: [startStr, endStr, 'manual_debt'],
       );
       
@@ -1680,6 +1680,7 @@ class AIChatService {
           AND t.transaction_type = 'manual_payment' 
           AND t.invoice_id IS NULL 
           AND t.is_created_by_me = 1
+          AND (t.is_deleted IS NULL OR t.is_deleted = 0)
           AND r.id IS NULL
       ''', [startStr, endStr]);
 
@@ -1691,6 +1692,7 @@ class AIChatService {
           AND t.transaction_type = 'manual_payment' 
           AND t.invoice_id IS NULL 
           AND t.is_created_by_me = 1
+          AND (t.is_deleted IS NULL OR t.is_deleted = 0)
       ''', [startStr, endStr]);
       
       double totalManualDebt = 0.0;
@@ -1713,7 +1715,7 @@ class AIChatService {
       // 🔧 إصلاح: فقط المعاملات من هذا الجهاز وغير المرتبطة بفاتورة
       final openingBalanceTransactions = await db.query(
         'transactions',
-        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1',
+        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1 AND (is_deleted IS NULL OR is_deleted = 0)',
         whereArgs: [startStr, endStr, 'opening_balance'],
       );
       
@@ -1726,7 +1728,7 @@ class AIChatService {
       double manualDebtProfit = 0.0;
       final manualDebtOnlyTransactions = await db.query(
         'transactions',
-        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1',
+        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1 AND (is_deleted IS NULL OR is_deleted = 0)',
         whereArgs: [startStr, endStr, 'manual_debt'],
       );
       for (var trans in manualDebtOnlyTransactions) {
@@ -1892,7 +1894,7 @@ class AIChatService {
       // 🔧 إصلاح: فقط المعاملات اليدوية من هذا الجهاز وغير المرتبطة بفاتورة
       final manualDebtTransactions = await db.query(
         'transactions',
-        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1',
+        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1 AND (is_deleted IS NULL OR is_deleted = 0)',
         whereArgs: [startStr, endStr, 'manual_debt'],
       );
       
@@ -1904,6 +1906,7 @@ class AIChatService {
           AND t.transaction_type = 'manual_payment' 
           AND t.invoice_id IS NULL 
           AND t.is_created_by_me = 1
+          AND (t.is_deleted IS NULL OR t.is_deleted = 0)
           AND r.id IS NULL
       ''', [startStr, endStr]);
 
@@ -1915,6 +1918,7 @@ class AIChatService {
           AND t.transaction_type = 'manual_payment' 
           AND t.invoice_id IS NULL 
           AND t.is_created_by_me = 1
+          AND (t.is_deleted IS NULL OR t.is_deleted = 0)
       ''', [startStr, endStr]);
       
       double totalManualDebt = 0.0;
@@ -1937,7 +1941,7 @@ class AIChatService {
       // 🔧 إصلاح: فقط المعاملات من هذا الجهاز وغير المرتبطة بفاتورة
       final openingBalanceTransactions = await db.query(
         'transactions',
-        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1',
+        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1 AND (is_deleted IS NULL OR is_deleted = 0)',
         whereArgs: [startStr, endStr, 'opening_balance'],
       );
       
@@ -1950,7 +1954,7 @@ class AIChatService {
       double manualDebtProfit = 0.0;
       final manualDebtOnlyTransactions = await db.query(
         'transactions',
-        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1',
+        where: 'transaction_date >= ? AND transaction_date < ? AND transaction_type = ? AND invoice_id IS NULL AND is_created_by_me = 1 AND (is_deleted IS NULL OR is_deleted = 0)',
         whereArgs: [startStr, endStr, 'manual_debt'],
       );
       for (var trans in manualDebtOnlyTransactions) {
@@ -2427,7 +2431,7 @@ $dbContext
       
       if (debt > 0) {
         // التحقق من المعاملات
-        final transactions = await db.query('transactions', where: 'customer_id = ?', whereArgs: [id]);
+        final transactions = await db.query('transactions', where: 'customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)', whereArgs: [id]);
         double transSum = 0.0;
         for (var t in transactions) {
           transSum += (t['amount_changed'] as num?)?.toDouble() ?? 0.0;

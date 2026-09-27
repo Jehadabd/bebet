@@ -35,6 +35,7 @@ import '../services/invoice_prediction_service.dart'; // 🔮 التوقعات �
 import '../services/firebase_sync/firebase_sync_helper.dart'; // 🔥 Firebase Sync
 import '../services/firebase_sync/invoice_sync_service.dart'; // 🧾 رفع الفاتورة فور حفظها
 import '../services/sync/sync_security.dart'; // 🔐 Sync UUID Generation
+import '../utils/uuid_helper.dart';
 import '../services/financial_guardians.dart'; // 🛡️ Financial Guardians
 import '../services/smart_pricing_service.dart'; // 🔮 محرك التسعير الذكي
 import 'create_invoice_screen.dart';
@@ -1060,7 +1061,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                 }, where: 'id = ?', whereArgs: [oldCustomerId]);
                 
                 // تسجيل معاملة إلغاء الدين
-                final txUuid = SyncSecurity.generateTransactionUuid(oldCustomer.name, -currentDebtFromTx, DateTime.now());
+                final txUuid = UuidHelper.newTransactionUuid();
                 await txn.insert('transactions', {
                   'customer_id': oldCustomerId,
                   'transaction_date': DateTime.now().toIso8601String(),
@@ -1102,7 +1103,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
               }, where: 'id = ?', whereArgs: [customer.id]);
               
               // تسجيل معاملة إضافة الدين
-              final txUuid = SyncSecurity.generateTransactionUuid(freshCustomer.name, newRemaining, DateTime.now());
+              final txUuid = UuidHelper.newTransactionUuid();
               await txn.insert('transactions', {
                 'customer_id': customer.id,
                 'transaction_date': DateTime.now().toIso8601String(),
@@ -1142,7 +1143,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                   'last_modified_at': DateTime.now().toIso8601String(),
                 }, where: 'id = ?', whereArgs: [oldCustomerId]);
                 
-                final txUuid1 = SyncSecurity.generateTransactionUuid(oldCustomer.name, -currentDebtFromTx, DateTime.now());
+                final txUuid1 = UuidHelper.newTransactionUuid();
                 await txn.insert('transactions', {
                   'customer_id': oldCustomerId,
                   'transaction_date': DateTime.now().toIso8601String(),
@@ -1175,7 +1176,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                   'last_modified_at': DateTime.now().toIso8601String(),
                 }, where: 'id = ?', whereArgs: [newCustomerId]);
                 
-                final txUuid2 = SyncSecurity.generateTransactionUuid(newCustomer.name, newRemaining, DateTime.now());
+                final txUuid2 = UuidHelper.newTransactionUuid();
                 await txn.insert('transactions', {
                   'customer_id': newCustomerId,
                   'transaction_date': DateTime.now().toIso8601String(),
@@ -1216,7 +1217,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
                 'last_modified_at': DateTime.now().toIso8601String(),
               }, where: 'id = ?', whereArgs: [customer.id]);
               
-              final txUuidEdit = SyncSecurity.generateTransactionUuid(currentCustomer.name, debtChange, DateTime.now());
+              final txUuidEdit = UuidHelper.newTransactionUuid();
               await txn.insert('transactions', {
                 'customer_id': customer.id,
                 'transaction_date': DateTime.now().toIso8601String(),
@@ -1258,7 +1259,7 @@ mixin InvoiceActionsMixin on State<CreateInvoiceScreen> implements InvoiceAction
               'last_modified_at': DateTime.now().toIso8601String(),
             }, where: 'id = ?', whereArgs: [customer.id]);
             
-            final txUuid = SyncSecurity.generateTransactionUuid(freshCustomer.name, newRemaining, DateTime.now());
+            final txUuid = UuidHelper.newTransactionUuid();
             final txSyncUuid = txUuid; // 🔄 sync_uuid للمزامنة
             
             final transactionId = await txn.insert('transactions', {

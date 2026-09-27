@@ -576,6 +576,7 @@ class ReportsService {
         AND transaction_type IN ('manual_debt', 'opening_balance')
         AND invoice_id IS NULL
         AND is_created_by_me = 1
+        AND (is_deleted IS NULL OR is_deleted = 0)
     ''', [startStr, endStr]);
     
     final manualPayment = await db.rawQuery('''
@@ -588,6 +589,7 @@ class ReportsService {
         AND t.transaction_type = 'manual_payment'
         AND t.invoice_id IS NULL
         AND t.is_created_by_me = 1
+        AND (t.is_deleted IS NULL OR t.is_deleted = 0)
         AND r.id IS NULL
     ''', [startStr, endStr]);
 
@@ -601,6 +603,7 @@ class ReportsService {
         AND t.transaction_type = 'manual_payment'
         AND t.invoice_id IS NULL
         AND t.is_created_by_me = 1
+        AND (t.is_deleted IS NULL OR t.is_deleted = 0)
     ''', [startStr, endStr]);
     
     final inv = invoiceData.first;
@@ -727,12 +730,12 @@ class ReportsService {
         (
           SELECT MAX(transaction_date)
           FROM transactions t
-          WHERE t.customer_id = c.id AND t.transaction_type = 'manual_payment'
+          WHERE t.customer_id = c.id AND t.transaction_type = 'manual_payment' AND (t.is_deleted IS NULL OR t.is_deleted = 0)
         ) as last_payment_date,
         (
           SELECT MAX(transaction_date)
           FROM transactions t
-          WHERE t.customer_id = c.id
+          WHERE t.customer_id = c.id AND (t.is_deleted IS NULL OR t.is_deleted = 0)
         ) as last_transaction_date
       FROM customers c
       WHERE c.current_total_debt > ?

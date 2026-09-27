@@ -3236,7 +3236,18 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen> with InvoiceA
                                         ),
                                       );
                                       if (confirm == true && inv.id != null) {
-                                        await db.deleteInvoice(inv.id!);
+                                        try {
+                                          await db.deleteInvoice(inv.id!);
+                                        } catch (e) {
+                                          // مثلاً: فاتورة معلقة واردة من جهاز آخر لا يحذفها إلا مالكها
+                                          if (context.mounted) {
+                                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                              content: Text(e.toString().replaceFirst('Exception: ', '')),
+                                              backgroundColor: Colors.red,
+                                            ));
+                                          }
+                                          return;
+                                        }
                                         suspendedInvoices.removeAt(index);
                                         setSheetState(() {});
                                         _loadSuspendedCount();

@@ -15,7 +15,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../utils/uuid_helper.dart';
 import '../database_service.dart';
-import '../database/core/database_helpers.dart';
 import '../sync/sync_security.dart';
 import 'firebase_sync_service.dart';
 import 'reconciliation_service.dart' show ReconciliationService;
@@ -214,8 +213,7 @@ class LiveMatchService {
   final ReconciliationService _devices = ReconciliationService();
 
   StreamSubscription<QuerySnapshot>? _sessionsSub;
-  /// 📡 مستمع لكل جهاز مشارك (لا جهاز واحد): المطابقة بين كل الأجهزة.
-  final Map<String, StreamSubscription<DocumentSnapshot>> _peerSubs = {};
+  StreamSubscription<DocumentSnapshot>? _peerSub;
   Timer? _publishTimer;
   Timer? _localRefreshTimer;
 
@@ -223,15 +221,8 @@ class LiveMatchService {
   String _sessionStatus = '';
   final Set<String> _handledSessions = {};
 
-  /// آخر حالة منشورة من كل جهاز مشارك.
-  final Map<String, _PeerState> _peers = {};
-  /// كل الأجهزة المشاركة في الجلسة عدا هذا الجهاز.
-  List<String> _peerIds = const [];
-
-  /// أجهزة ذات بثّ حيّ حديث (خلال مهلة الحداثة).
-  List<_PeerState> get _freshPeers => _peers.values
-      .where((p) => _sync.now.difference(p.updatedAt) <= _peerFreshness)
-      .toList();
+  _PeerState? _peer;
+  String? _selectedPeerId;
 
   final Map<String, QueuedOwnedTx> _queue = {};
 
@@ -283,14 +274,12 @@ class LiveMatchService {
 
   void stop() {
     _sessionsSub?.cancel();
-    for (final sub in _peerSubs.values) {
-      sub.cancel();
-    }
-    _peerSubs.clear();
+    _peerSub?.cancel();
     _commandsSub?.cancel();
     _publishTimer?.cancel();
     _localRefreshTimer?.cancel();
     _sessionsSub = null;
+    _peerSub = null;
     _commandsSub = null;
     _publishTimer = null;
     _localRefreshTimer = null;
@@ -327,7 +316,18 @@ class LiveMatchService {
     }
 
     // 2) احتياط: قراءة مباشرة من مجموعة devices.
-    return _devices.getOnlineDevices();
+    // 🛡️ بلا إنترنت ترمي القراءة، والمستدعون (recompute …) كثيراً ما يُطلقون
+    // بلا انتظار — فكان خطأً غير ممسوك (اختبار الكود الحقيقي).
+    try {
+      return await _devices.getOnlineDevices();
+    } catch (e) {
+      print('⚠️ المطابقة الحية: تعذّرت قراءة الأجهزة المتصلة: $e');
+      final myId = _myId;
+      return [
+        if (myId != null)
+          {'deviceId': myId, 'deviceName': 'هذا الجهاز', 'isCurrentDevice': true},
+      ];
+    }
   }
 
   /// يبدأ طلب مطابقة حية: يدعو كل الأجهزة الحاضرة، ولا تُفعَّل المقارنة
@@ -383,13 +383,11 @@ class LiveMatchService {
     final myId = _myId;
     if (fs == null || myId == null) return;
 
-    // 🛡️ رفض جهاز واحد يستثنيه هو فقط؛ المطابقة تكمل بين الموافقين.
     await fs.collection(_sessionsCol).doc(sessionId).update({
       'responses.$myId': accept ? 'accepted' : 'rejected',
+      if (!accept) 'status': 'cancelled',
+      if (!accept) 'cancelledBy': myId,
     });
-    if (!accept) {
-      await evaluateSession(sessionId);
-    }
 
     if (accept) {
       _activeSessionId = sessionId;
@@ -422,26 +420,24 @@ class LiveMatchService {
     final expiresAt =
         DateTime.tryParse(data['expiresAt'] as String? ?? '') ?? DateTime.now();
 
-    // 🧮 المشاركون = كل من وافق. الجلسة تبدأ حين يردّ الجميع أو تنتهي المهلة،
-    // بشرط وجود جهازين موافقين على الأقل (المُبادِر + جهاز آخر).
-    final accepted =
-        invited.where((id) => responses[id] == 'accepted').toList();
-    final pending = invited.where((id) => !responses.containsKey(id)).toList();
-    final expired = DateTime.now().isAfter(expiresAt);
+    if (responses.values.contains('rejected')) {
+      await ref.update({'status': 'cancelled'});
+      _sessionStatus = 'cancelled';
+      return 'cancelled';
+    }
 
-    if (pending.isEmpty || expired) {
-      if (accepted.length >= 2) {
-        await ref.update({'status': 'active', 'participants': accepted});
-        if (accepted.contains(_myId)) {
-          _sessionStatus = 'active';
-          await _enterActiveSession(sessionId, accepted);
-        }
-        return 'active';
-      }
-      final st = expired ? 'expired' : 'cancelled';
-      await ref.update({'status': st});
-      _sessionStatus = st;
-      return st;
+    final allAccepted = invited.every((id) => responses[id] == 'accepted');
+    if (allAccepted) {
+      await ref.update({'status': 'active'});
+      _sessionStatus = 'active';
+      await _enterActiveSession(sessionId, invited);
+      return 'active';
+    }
+
+    if (DateTime.now().isAfter(expiresAt)) {
+      await ref.update({'status': 'expired'});
+      _sessionStatus = 'expired';
+      return 'expired';
     }
 
     return 'requesting';
@@ -494,17 +490,14 @@ class LiveMatchService {
           invitedCount: invited.length,
         ));
       } else if (status == 'active') {
-        // (لا فحص لمهلة الدعوة هنا: الجلسة قد تُفعَّل لحظة انتهاء المهلة)
-        final participants =
-            List<String>.from(data['participants'] as List? ?? invited);
-        if (!participants.contains(myId)) continue; // رفضتُ ⇒ لستُ مشاركاً
+        if (DateTime.now().isAfter(expiresAt)) continue;
         if (_activeSessionId == sessionId && _sessionStatus == 'active') {
           continue;
         }
         if (!_handledSessions.add('run_$sessionId')) continue;
         _activeSessionId = sessionId;
         _sessionStatus = 'active';
-        unawaited(_enterActiveSession(sessionId, participants));
+        unawaited(_enterActiveSession(sessionId, invited));
       } else if (status == 'cancelled' ||
           status == 'expired' ||
           status == 'ended') {
@@ -523,9 +516,12 @@ class LiveMatchService {
     _activeSessionId = sessionId;
     _sessionStatus = 'active';
 
-    // 📡 كل الأجهزة المشاركة نظراء (كان: أول جهاز فقط).
-    _peerIds = invited.where((id) => id != myId && id.isNotEmpty).toList();
-    if (_peerIds.isEmpty) {
+    // اختر أول جهاز آخر كنظير للمقارنة.
+    _selectedPeerId = invited.firstWhere(
+      (id) => id != myId,
+      orElse: () => '',
+    );
+    if (_selectedPeerId == null || _selectedPeerId!.isEmpty) {
       await _emitIdle('لا يوجد جهاز نظير في الجلسة');
       return;
     }
@@ -535,19 +531,12 @@ class LiveMatchService {
     _publishTimer = Timer.periodic(
         const Duration(seconds: 3), (_) => _publishLocalState());
 
-    for (final sub in _peerSubs.values) {
-      await sub.cancel();
-    }
-    _peerSubs.clear();
-    _peers.clear();
-    for (final pid in _peerIds) {
-      _peerSubs[pid] = _fs!
-          .collection(_peerStateCol)
-          .doc(pid)
-          .snapshots()
-          .listen((doc) => _onPeerState(pid, doc),
-              onError: (e) => print('❌ بث النظير $pid: $e'));
-    }
+    _peerSub?.cancel();
+    _peerSub = _fs!
+        .collection(_peerStateCol)
+        .doc(_selectedPeerId)
+        .snapshots()
+        .listen(_onPeerState, onError: (e) => print('❌ بث النظير: $e'));
 
     // إظهار شاشة المطابقة فقط إذا تم بدء الجلسة أو قبولها محلياً في هذا التطبيق
     if (_handledSessions.contains('accepted_$sessionId') && !_showMatchScreenController.isClosed) {
@@ -560,12 +549,10 @@ class LiveMatchService {
   Future<void> _leaveActiveSession() async {
     _publishTimer?.cancel();
     _publishTimer = null;
-    for (final sub in _peerSubs.values) {
-      await sub.cancel();
-    }
-    _peerSubs.clear();
-    _peers.clear();
-    _peerIds = const [];
+    await _peerSub?.cancel();
+    _peerSub = null;
+    _peer = null;
+    _selectedPeerId = null;
     _activeSessionId = null;
     _sessionStatus = '';
 
@@ -586,9 +573,9 @@ class LiveMatchService {
     }
   }
 
-  void _onPeerState(String peerId, DocumentSnapshot doc) {
+  void _onPeerState(DocumentSnapshot doc) {
     if (!doc.exists) {
-      _peers.remove(peerId);
+      _peer = null;
       unawaited(recompute());
       return;
     }
@@ -599,7 +586,7 @@ class LiveMatchService {
         DateTime.tryParse(data['updatedAt'] as String? ?? '') ?? DateTime.now();
     // نبضة قديمة = الجهاز انقطع عن النشر.
     if (_sync.now.difference(updatedAt) > _peerFreshness) {
-      _peers.remove(peerId);
+      _peer = null;
       unawaited(recompute());
       return;
     }
@@ -617,7 +604,7 @@ class LiveMatchService {
       );
     });
 
-    _peers[peerId] = _PeerState(
+    _peer = _PeerState(
       deviceId: data['deviceId'] as String? ?? doc.id,
       deviceName: data['deviceName'] as String? ?? 'جهاز آخر',
       totalDebt: (data['totalDebt'] as num?)?.toDouble() ?? 0.0,
@@ -762,8 +749,7 @@ class LiveMatchService {
     final others =
         online.where((d) => d['isCurrentDevice'] != true).length;
 
-    final peers = _freshPeers;
-    if (!sessionActive || peers.isEmpty) {
+    if (!sessionActive || _peer == null) {
       String msg;
       if (_sessionStatus == 'requesting') {
         msg = 'بانتظار موافقة الأجهزة المتصلة...';
@@ -772,15 +758,16 @@ class LiveMatchService {
             'لا يوجد جهاز آخر متصل. المطابقة الحية لا تعمل إلا بين أجهزة متصلة.';
       } else if (!sessionActive) {
         msg =
-            'اضغط «طلب مطابقة حية» لدعوة $others جهاز متصل. المقارنة مع الأجهزة الأخرى لا مع السحابة.';
+            'اضغط «طلب مطابقة حية» لدعوة $others جهاز متصل. المقارنة مع الجهاز الآخر لا مع السحابة.';
       } else {
-        msg = 'بانتظار بث حيّ من الأجهزة المشاركة...';
+        msg = 'بانتظار بث حيّ من الجهاز النظير...';
       }
       await _emitIdle(msg);
       return _last!;
     }
 
     final local = await _readLocalCustomers();
+    final peer = _peer!;
     final db = await _db.database;
 
     // معاملات هذا الجهاز — للطابور فقط عند الفحص.
@@ -804,87 +791,61 @@ class LiveMatchService {
       ownedByCustomer.putIfAbsent(cu, () => []).add(row);
     }
 
-    // 🛡️ المطابقة بمعرّف المزامنة لا بالاسم: عميلان مختلفان بنفس الاسم
-    // كانا يُدمجان في صف واحد فيختفي دين أحدهما من الشاشة.
-    final localByUuid = {for (final c in local.customers) c.syncUuid: c};
-    final allUuids = <String>{
-      ...localByUuid.keys,
-      for (final p in peers) ...p.customers.keys,
+    // 🔍 المطابقة بالهوية (sync_uuid) لا بالاسم.
+    // 🛡️ (المحاكاة: tools/sync_sim) الاسم المعياري يجمع عميلين مختلفين
+    // يحملان نفس الاسم في صف واحد، ويختار من النظير صاحب الدين الأكبر؛ فيظهر
+    // تطابق كاذب أو فرق كاذب، وكان زر «الجهاز الآخر صحيح» يبني عليه تصحيحاً.
+    final localByUuid = <String, ({String syncUuid, String name, int id, double debt, int txCount, double txSum})>{
+      for (final c in local.customers) c.syncUuid: c,
     };
+    final allUuids = <String>{...localByUuid.keys, ...peer.customers.keys};
 
     final matches = <LiveCustomerMatch>[];
     for (final uuid in allUuids) {
       final loc = localByUuid[uuid];
+      final rem = peer.customers[uuid];
+
+      final name = loc?.name ?? rem?.name ?? 'غير معروف';
+      final syncUuid = uuid;
       final localDebt = loc?.debt ?? 0.0;
       final localCount = loc?.txCount ?? 0;
       final localSum = loc?.txSum ?? 0.0;
+      final peerDebt = rem?.debt ?? 0.0;
+      final peerCount = rem?.txCount ?? 0;
+      final peerSum = rem?.txSum ?? 0.0;
 
-      // 🧮 مقارنة مع كل جهاز مشارك؛ يُعرض الأشد اختلافاً ويُذكر عدد المختلفين.
-      _PeerState? worst;
-      _PeerCustomer? worstC;
-      double worstDiff = -1;
-      int disagreeing = 0;
-      for (final p in peers) {
-        final pc = p.customers[uuid];
-        final pDebt = pc?.debt ?? 0.0;
-        final pCount = pc?.txCount ?? 0;
-        final differs =
-            (pDebt - localDebt).abs() > 0.01 || pCount != localCount;
-        if (differs) disagreeing++;
-        final d = (pDebt - localDebt).abs() + (pCount != localCount ? 0.001 : 0);
-        if (d > worstDiff) {
-          worstDiff = d;
-          worst = p;
-          worstC = pc;
-        }
-      }
-      String? anyPeerName;
-      for (final p in peers) {
-        final n = p.customers[uuid]?.name;
-        if (n != null && n.isNotEmpty) {
-          anyPeerName = n;
-          break;
-        }
-      }
-      final name = loc?.name ?? worstC?.name ?? anyPeerName ?? 'غير معروف';
-      final peerDebt = worstC?.debt ?? 0.0;
-      final peerCount = worstC?.txCount ?? 0;
-      final peerSum = worstC?.txSum ?? 0.0;
-      final peerLabel = disagreeing > 1
-          ? '${worst?.deviceName ?? 'جهاز آخر'} (+${disagreeing - 1} أجهزة مختلفة)'
-          : (worst?.deviceName ?? 'جهاز آخر');
-
-      final debtDiffers = disagreeing > 0;
+      final debtDiffers = (localDebt - peerDebt).abs() > 0.01;
+      final countDiffers = localCount != peerCount;
       final localDrift = (localDebt - localSum).abs() > 0.01;
 
       final problems = <QueuedOwnedTx>[];
-      if ((debtDiffers || localDrift) && uuid.isNotEmpty) {
-        for (final owned in ownedByCustomer[uuid] ?? const []) {
+      if ((debtDiffers || countDiffers || localDrift) && syncUuid.isNotEmpty) {
+        for (final owned in ownedByCustomer[syncUuid] ?? const []) {
           final uploaded = ((owned['uploaded'] as num?)?.toInt() ?? 0) == 1;
           final txUuid = owned['uuid'] as String;
           final amount = (owned['amount'] as num?)?.toDouble() ?? 0.0;
           if (!uploaded) {
             problems.add(QueuedOwnedTx(
               syncUuid: txUuid,
-              customerSyncUuid: uuid,
+              customerSyncUuid: syncUuid,
               customerName: name,
               amount: amount,
-              reason: 'غير مرفوعة — قد تكون سبب الفرق مع $peerLabel',
+              reason: 'غير مرفوعة — قد تكون سبب الفرق مع ${peer.deviceName}',
             ));
-          } else if (localCount > peerCount) {
+          } else if (countDiffers && localCount > peerCount) {
             problems.add(QueuedOwnedTx(
               syncUuid: txUuid,
-              customerSyncUuid: uuid,
+              customerSyncUuid: syncUuid,
               customerName: name,
               amount: amount,
-              reason: 'مرشّحة لإعادة الرفع — عددنا أكبر من $peerLabel',
+              reason: 'مرشّحة لإعادة الرفع — عددنا أكبر من ${peer.deviceName}',
             ));
           }
         }
       }
 
       matches.add(LiveCustomerMatch(
-        customerSyncUuid: uuid,
+        customerSyncUuid: syncUuid,
         customerName: name,
         localCustomerId: loc?.id ?? 0,
         localDebt: localDebt,
@@ -893,7 +854,7 @@ class LiveMatchService {
         peerDebt: peerDebt,
         peerTxCount: peerCount,
         peerTxSum: peerSum,
-        peerDeviceName: peerLabel,
+        peerDeviceName: peer.deviceName,
         ownedProblems: problems,
       ));
     }
@@ -904,23 +865,15 @@ class LiveMatchService {
     });
 
     final mismatchCount = matches.where((m) => !m.isMatch).length;
-    // للعنوان: الجهاز الأبعد إجمالياً عن هذا الجهاز
-    peers.sort((a, b) => (b.totalDebt - local.totalDebt)
-        .abs()
-        .compareTo((a.totalDebt - local.totalDebt).abs()));
-    final headline = peers.first;
-    final peersLabel = peers.length == 1
-        ? headline.deviceName
-        : '${peers.length} أجهزة (الأبعد: ${headline.deviceName})';
     final snap = LiveMatchSnapshot(
       at: DateTime.now(),
       localTotalDebt: local.totalDebt,
       localTotalCredit: local.totalCredit,
       localCustomerCount: local.customers.length,
-      peerTotalDebt: headline.totalDebt,
-      peerCustomerCount: headline.customers.length,
-      peerDeviceName: peersLabel,
-      peerDeviceId: headline.deviceId,
+      peerTotalDebt: peer.totalDebt,
+      peerCustomerCount: peer.customers.length,
+      peerDeviceName: peer.deviceName,
+      peerDeviceId: peer.deviceId,
       customers: matches,
       uploadQueue: _queue.values.toList(),
       sessionActive: true,
@@ -928,7 +881,7 @@ class LiveMatchService {
       onlineDeviceCount: online.length,
       onlineDevices: online,
       statusMessage:
-          'مطابقة حية مع $peersLabel · $mismatchCount عميل غير متطابق',
+          'مطابقة حية مع ${peer.deviceName} · $mismatchCount عميل غير متطابق',
       sessionId: _activeSessionId,
       sessionStatus: _sessionStatus,
     );
@@ -1046,53 +999,43 @@ class LiveMatchService {
     return result;
   }
 
-  /// عندما يكون النظير هو الصحيح: **لا معاملات تصحيحية**.
+  /// عندما يكون النظير هو الصحيح: اسحب ما ينقصني من السحابة واطلب منه إعادة
+  /// رفع ما يملك. لا يُنشئ أي معاملة. يُرجع دائماً 0 (لا معاملات تصحيحية).
   ///
-  /// المعاملة التصحيحية كانت تُرفع كمعاملة عادية فتصل لكل الأجهزة — ومنها
-  /// الجهاز الصحيح نفسه — فيصبح الجميع خاطئاً بمقدار الفرق. الآن: نطلب من
-  /// كل الأجهزة المشاركة إعادة رفع معاملاتها لهذا العميل، ثم نسحب معاملاته
-  /// من السحابة بمعرّفاتها عبر مسار الاستقبال الإدمبوتنت نفسه.
-  /// يُرجع عدد العملاء الذين عولجوا.
+  /// 🛡️ (المحاكاة: tools/sync_sim) كانت تُسجَّل هنا معاملة «تصحيح» بفرق الرصيد
+  /// يملكها هذا الجهاز. لكنها تنتشر لكل الأجهزة — ومنها الجهاز الذي كان صحيحاً
+  /// فيختلّ رصيده بنفس الفرق — وحين تصل المعاملة الأصلية المتأخرة التي سبّبت
+  /// الفرق يُحسب المبلغ مرتين. الفرق سببه معاملات لم تصل، فالعلاج إيصالها.
   Future<int> addCorrectiveTransactionsForPeerTruth() async {
     if (!sessionActive) return 0;
     final snap = await recompute();
-    return _pullPeerTruthFor(snap.mismatches
-        .where((c) => c.customerSyncUuid.isNotEmpty)
+    final uuids = snap.mismatches
         .map((c) => c.customerSyncUuid)
-        .toSet());
+        .where((u) => u.isNotEmpty)
+        .toSet();
+    await _pullFromPeerTruth(uuids);
+    return 0;
   }
 
-  /// نفس ما سبق لعملاء محددين.
+  /// مثل [addCorrectiveTransactionsForPeerTruth] لعملاء محددين.
   Future<int> addCorrectiveTransactionsForSelectedPeerTruth(Set<String> selectedUuids) async {
     if (!sessionActive || selectedUuids.isEmpty) return 0;
-    return _pullPeerTruthFor(selectedUuids);
+    await _pullFromPeerTruth(selectedUuids);
+    return 0;
   }
 
-  Future<int> _pullPeerTruthFor(Set<String> customerUuids) async {
-    final fs = _fs;
-    if (fs == null || customerUuids.isEmpty) return 0;
-    // 1) اطلب من المالكين إعادة رفع معاملاتهم لهؤلاء العملاء
-    await requestPeerToUploadCustomers(customerUuids);
-    // 2) مهلة قصيرة لوصول الرفع، ثم سحب كامل لمعاملات كل عميل من السحابة
-    await Future.delayed(const Duration(seconds: 6));
-    int done = 0;
-    for (final cu in customerUuids) {
-      try {
-        final snap = await fs
-            .collection('transactions')
-            .where('customerSyncUuid', isEqualTo: cu)
-            .get(const GetOptions(source: Source.server));
-        for (final d in snap.docs) {
-          await _sync.applyRemoteTransaction(d.id, d.data());
-        }
-        done++;
-      } catch (e) {
-        print('⚠️ [LiveMatch] تعذّر سحب معاملات العميل $cu: $e');
-      }
+  Future<void> _pullFromPeerTruth(Set<String> customerSyncUuids) async {
+    if (customerSyncUuids.isEmpty) return;
+    _peerNotificationController.add(
+        '📥 جاري سحب ما ينقص هذا الجهاز من السحابة، وطلب إعادة الرفع من الجهاز الآخر...');
+    try {
+      await _sync.performFullCatchUp();
+    } catch (e) {
+      print('⚠️ [LiveMatchService] تعذّر السحب الكامل: $e');
     }
+    await requestPeerToUploadCustomers(customerSyncUuids);
     await _publishLocalState();
     await recompute();
-    return done;
   }
 
   /// إعادة رفع واعتماد بيانات هذا الجهاز لعملاء محددين:
@@ -1160,19 +1103,18 @@ class LiveMatchService {
   Future<void> requestPeerToUploadCustomers(Set<String> customerSyncUuids) async {
     final fs = _fs;
     final myId = _myId;
-    if (fs == null || myId == null || _peerIds.isEmpty || customerSyncUuids.isEmpty) return;
+    final peerId = _selectedPeerId;
+    if (fs == null || myId == null || peerId == null || customerSyncUuids.isEmpty) return;
 
-    for (final peerId in _peerIds) {
-      for (final uuid in customerSyncUuids) {
-        final docId = 'cmd_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(99999)}';
-        await fs.collection('live_match_commands').doc(docId).set({
-          'command': 'request_customer_data',
-          'targetDeviceId': peerId,
-          'senderDeviceId': myId,
-          'customerSyncUuid': uuid,
-          'createdAt': DateTime.now().toIso8601String(),
-        });
-      }
+    for (final uuid in customerSyncUuids) {
+      final docId = 'cmd_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(99999)}';
+      await fs.collection('live_match_commands').doc(docId).set({
+        'command': 'request_customer_data',
+        'targetDeviceId': peerId,
+        'senderDeviceId': myId,
+        'customerSyncUuid': uuid,
+        'createdAt': DateTime.now().toIso8601String(),
+      });
     }
   }
 
@@ -1180,18 +1122,17 @@ class LiveMatchService {
   Future<void> notifyPeerOfPushedCustomer(String customerSyncUuid) async {
     final fs = _fs;
     final myId = _myId;
-    if (fs == null || myId == null || _peerIds.isEmpty) return;
+    final peerId = _selectedPeerId;
+    if (fs == null || myId == null || peerId == null) return;
 
-    for (final peerId in _peerIds) {
-      final docId = 'cmd_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(99999)}';
-      await fs.collection('live_match_commands').doc(docId).set({
-        'command': 'push_customer_notify',
-        'targetDeviceId': peerId,
-        'senderDeviceId': myId,
-        'customerSyncUuid': customerSyncUuid,
-        'createdAt': DateTime.now().toIso8601String(),
-      });
-    }
+    final docId = 'cmd_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(99999)}';
+    await fs.collection('live_match_commands').doc(docId).set({
+      'command': 'push_customer_notify',
+      'targetDeviceId': peerId,
+      'senderDeviceId': myId,
+      'customerSyncUuid': customerSyncUuid,
+      'createdAt': DateTime.now().toIso8601String(),
+    });
   }
 
   /// 🔄 إعادة رفع معاملات عميل محدد من SQLite إلى Firebase استجابة لطلب الجهاز النظير
@@ -1205,20 +1146,17 @@ class LiveMatchService {
 
       _peerNotificationController.add('📲 جاري رفع معاملات العميل «$customerName» بناءً على طلب الجهاز الآخر...');
 
-      // 🛡️ معاملاتي فقط — تصفير is_uploaded لمعاملات أجهزة أخرى كان يُعلّقها
-      // كـ«غير مرفوعة» للأبد. وبدل رفع شامل لكل العملاء نرفع هذا العميل وحده.
-      final owned = await db.query(
+      // 🛡️ معاملات هذا الجهاز النشطة فقط: صفوف الأجهزة الأخرى لا نرفعها،
+      // وإعادة شاهد حذف قديم إلى الطابور لا تضيف شيئاً.
+      await db.update(
         'transactions',
-        columns: ['sync_uuid'],
-        where: 'customer_id = ? AND sync_uuid IS NOT NULL '
-            'AND (is_created_by_me = 1 OR is_created_by_me IS NULL)',
+        {'is_uploaded': 0},
+        where: 'customer_id = ? AND (is_created_by_me = 1 OR is_created_by_me IS NULL) '
+            'AND (is_deleted IS NULL OR is_deleted = 0)',
         whereArgs: [customerId],
       );
-      for (final row in owned) {
-        final u = row['sync_uuid'] as String?;
-        if (u == null || u.isEmpty) continue;
-        await _sync.forceReuploadOwnedTransaction(u);
-      }
+
+      await _sync.repairAndSyncAllTransactions();
       await notifyPeerOfPushedCustomer(customerSyncUuid);
       await _publishLocalState();
       await recompute();

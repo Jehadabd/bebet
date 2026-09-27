@@ -16,7 +16,6 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:async'; // 🛡️ لـ StreamSubscription
 import 'package:archive/archive_io.dart';
 import '../services/firebase_sync/firebase_sync_helper.dart'; // Import SyncHelper
-import '../services/firebase_sync/firebase_sync_service.dart'; // 🗑️ شاهد حذف العميل
 import '../models/account_statement_item.dart';
 
 // أنواع ترتيب العملاء
@@ -237,14 +236,10 @@ class AppProvider with ChangeNotifier {
   }
 
   Future<void> deleteCustomer(int id) async {
-    // 🗑️ الحذف يُرفع كشاهد (isDeleted) لتحذفه كل الأجهزة، ولا «يُبعث» عند
-    // السحب الكامل التالي. أوفلاين؟ يُحفظ في طابور الإعادة ويُرفع لاحقاً.
-    final existing = await _db.getCustomerById(id);
-    final syncUuid = existing?.syncUuid;
+    // 🗑️ الحذف منطقي ويُرفع كشاهد حذف للعميل ولكل معاملة كانت معروفة هنا
+    // (DatabaseService.deleteCustomer → syncCustomerDeletionNow). أوفلاين؟
+    // يبقى معلّقاً (tombstoned = 2) وتلتقطه دورات المزامنة.
     await _db.deleteCustomer(id);
-    if (syncUuid != null && syncUuid.isNotEmpty) {
-      unawaited(FirebaseSyncService().deleteCustomerFromFirebase(syncUuid));
-    }
     _customers.removeWhere((c) => c.id == id);
     if (_selectedCustomer?.id == id) {
       _selectedCustomer = null;

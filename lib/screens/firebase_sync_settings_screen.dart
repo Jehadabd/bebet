@@ -37,6 +37,7 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
   int _maxTransactionAgeDays = 30;
   int _autoDeleteDays = 90;
   bool _postSyncVerification = true;
+  bool _strictSignature = false;
   CustomerConflictPolicy _customerConflictPolicy = CustomerConflictPolicy.smartReactivate;
   
   // 🔄 حالة تحميل كل زر
@@ -78,6 +79,7 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
     _maxTransactionAgeDays = await FirebaseSyncSecuritySettings.getMaxTransactionAgeDays();
     _autoDeleteDays = await FirebaseSyncSecuritySettings.getAutoDeleteDays();
     _postSyncVerification = await FirebaseSyncSecuritySettings.isPostSyncVerificationEnabled();
+    _strictSignature = await FirebaseSyncSecuritySettings.isStrictSignatureEnabled();
     _customerConflictPolicy = await FirebaseSyncSecuritySettings.getCustomerConflictPolicy();
     
     // 🆕 تحميل Project ID
@@ -1129,6 +1131,85 @@ class _FirebaseSyncSettingsScreenState extends State<FirebaseSyncSettingsScreen>
               },
               activeColor: Colors.green,
               secondary: const Icon(Icons.account_balance_wallet, color: Colors.blue),
+            ),
+
+            const Divider(),
+
+            // 🔐 الوضع الصارم للتوقيع: رفض أي بيانات لم توقَّع بسرّ المجموعة
+            SwitchListTile(
+              title: const Text('رفض البيانات غير الموقّعة (الوضع الصارم)'),
+              subtitle: Text(
+                _strictSignature
+                    ? 'يُرفض أي مستند لم يوقَّع بسرّ المجموعة — يحمي من الكتابة المزوّرة'
+                    : 'تُقبل البيانات غير الموقّعة (للتوافق مع الأجهزة القديمة)',
+              ),
+              value: _strictSignature,
+              onChanged: (value) async {
+                if (value) {
+                  // 🛡️ لا نفعّله إن كان جهاز لا يشارك نفس السرّ: كانت بياناته
+                  // ستُرفض بصمت وتفترق الأرصدة.
+                  List<String> mismatched;
+                  try {
+                    mismatched = await _firebaseSync.devicesWithMismatchedSecret();
+                  } catch (e) {
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text('تعذّر التحقق من أسرار الأجهزة (يلزم اتصال): $e')));
+                    return;
+                  }
+                  if (mismatched.isNotEmpty) {
+                    if (!mounted) return;
+                    await showDialog<void>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('لا يمكن التفعيل الآن'),
+                        content: Text(
+                          'هذه الأجهزة لا تشارك نفس سرّ المجموعة أو لم تُحدَّث بعد:\n'
+                          '• ${mismatched.join('\n• ')}\n\n'
+                          'أدخل نفس السرّ عليها (إعداد Firebase المخصص) وحدّثها، '
+                          'ثم افتحها مرة واحدة متصلة، ثم أعد المحاولة.',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(ctx),
+                            child: const Text('حسناً'),
+                          ),
+                        ],
+                      ),
+                    );
+                    return;
+                  }
+                  if (!mounted) return;
+                  final ok = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text('تفعيل الوضع الصارم'),
+                      content: const Text(
+                        'فعّله فقط بعد:\n'
+                        '• تحديث كل الأجهزة إلى هذه النسخة.\n'
+                        '• إدخال نفس سرّ المجموعة على كل الأجهزة.\n\n'
+                        'وإلا ستُرفض بيانات أي جهاز يختلف سرّه، ولن تصل معاملاته '
+                        'إلى هذا الجهاز حتى يُصحَّح السرّ.',
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, false),
+                          child: const Text('إلغاء'),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, true),
+                          child: const Text('تفعيل'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (ok != true) return;
+                }
+                await FirebaseSyncSecuritySettings.setStrictSignatureEnabled(value);
+                if (mounted) setState(() => _strictSignature = value);
+              },
+              activeColor: Colors.green,
+              secondary: const Icon(Icons.verified_user, color: Colors.deepPurple),
             ),
           ],
         ),

@@ -22,7 +22,6 @@ import '../utils/uuid_helper.dart'; // للـ UUID الحتمي
 import 'package:pdf/widgets.dart' as pw;
 import 'package:flutter/services.dart' show rootBundle;
 import '../utils/money_calculator.dart'; // 🔒 إضافة MoneyCalculator للأمان المالي
-import '../services/sync/sync_security.dart';
 
 class AddTransactionScreen extends StatefulWidget {
   final Customer customer;
@@ -203,11 +202,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       
       final now = DateTime.now();
       // 🔑 هوية المعاملة تُولّد هنا لحظة إنشائها، وهي فريدة بالبناء.
-      final uuid = SyncSecurity.generateTransactionUuid(
-        widget.customer.name,
-        amountChanged,
-        now,
-      );
+      final uuid = UuidHelper.newTransactionUuid();
       final transaction = DebtTransaction(
         customerId: widget.customer.id!,
         amountChanged: amountChanged,

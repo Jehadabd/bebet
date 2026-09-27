@@ -18,6 +18,7 @@ import '../utils/money_calculator.dart'; // Added import
 import 'package:pdf/widgets.dart' as pw;
 import 'package:pdf/pdf.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:convert';
@@ -27,6 +28,7 @@ import 'dart:math'; // 🔮 للتسعير الذكي + محرك التسعير 
 import 'sync/sync_tracker.dart'; // 🔄 تتبع المزامنة
 import 'sync/sync_security.dart'; // 🔄 أمان المزامنة (لتوليد UUID)
 import 'firebase_sync/firebase_sync_helper.dart'; // 🔥 مزامنة Firebase
+import 'firebase_sync/firebase_sync_service.dart'; // 🛡️ رفع شواهد الحذف فوراً
 import 'firebase_sync/invoice_sync_service.dart'; // 🧾 مزامنة الفواتير الفورية
 import 'firebase_sync/firebase_sync_config.dart'; // 🔧 إعدادات المزامنة (معرف الجهاز)
 import 'smart_pricing_service.dart'; // 🔮 محرك التسعير الذكي
@@ -1080,6 +1082,8 @@ class DatabaseService {
         // أو كانت القاعدة بحالة شاذة، ثم تعبئة السنة/الشهر من التاريخ.
         try {
           await _ensureAllRequiredColumns(db);
+          // 🛡️ أعمدة وقيود سلامة المزامنة (مستقلة: فشلها لا يوقف ما بعدها)
+          await _ensureSyncSafetySchema(db);
           await db.execute('''
             UPDATE invoices SET
               invoice_year = CAST(strftime('%Y', invoice_date) AS INTEGER),
@@ -1234,6 +1238,41 @@ class DatabaseService {
       }
     } catch (e) {
       // تجاهل الخطأ
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // 🛡️ وضع الاستعادة للمزامنة
+  // ═══════════════════════════════════════════════════════
+  // نسخة احتياطية قديمة تفتقد ما وصل بعد أخذها، وقد تحمل تعديلات «بانتظار
+  // الرفع» سبق أن رُفعت نسخ أحدث منها. بعد الاستعادة يوقف الجهاز الرفع حتى
+  // يقارن بياناته بالسحابة ويطلب ما فاته من الأجهزة الأخرى (FirebaseSyncService).
+  static const String restoredFlagKey = 'sync_db_restored_pending';
+  static const String restoredRowsMarkedKey = 'sync_db_restored_rows_marked';
+
+  /// يُضبط العلَم فقط (عندما يُستبدل ملف القاعدة وهي مغلقة)؛ وتُوسم الصفوف
+  /// عند أول تهيئة للمزامنة بعدها.
+  static Future<void> flagDatabaseRestored() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(restoredFlagKey, true);
+      await prefs.setBool(restoredRowsMarkedKey, false);
+    } catch (e) {
+      print('⚠️ تعذّر ضبط علَم الاستعادة: $e');
+    }
+  }
+
+  /// يضبط العلَم ويوسم صفوف النسخة المستعادة (القاعدة مفتوحة).
+  Future<void> markDatabaseRestored([Database? db]) async {
+    await flagDatabaseRestored();
+    try {
+      final d = db ?? await database;
+      await d.rawUpdate('UPDATE transactions SET restored_mark = 1');
+      await d.rawUpdate('UPDATE invoices SET restored_mark = 1 WHERE is_created_by_me = 1 OR is_created_by_me IS NULL');
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(restoredRowsMarkedKey, true);
+    } catch (e) {
+      print('⚠️ تعذّر وسم صفوف النسخة المستعادة: $e');
     }
   }
 
@@ -3063,6 +3102,152 @@ class DatabaseService {
   
   /// تحقق شامل من وجود جميع الأعمدة المطلوبة وإضافتها إذا لم تكن موجودة
   /// يُستدعى في نهاية _onUpgrade لضمان التوافق مع جميع الإصدارات
+  /// 🛡️ أعمدة وقيود سلامة المزامنة عبر Firebase.
+  ///
+  /// آمنة التكرار: تضيف ما ينقص فقط، وتُستدعى عند كل فتح للقاعدة.
+  /// معنى كل عمود في SYNC_FIXES_GUIDE_AR.md (القسم 3) في مشروع الناصر المرجعي.
+  Future<void> _ensureSyncSafetySchema(Database db) async {
+    Future<void> col(String table, String column, String ddl) async {
+      try {
+        final info = await db.rawQuery('PRAGMA table_info($table);');
+        if (!info.any((c) => c['name'] == column)) {
+          await db.execute('ALTER TABLE $table ADD COLUMN $column $ddl;');
+        }
+      } catch (e) {
+        print('⚠️ عمود $table.$column: $e');
+      }
+    }
+
+    // المعاملات: الملكية والإصدار ووسم الاستعادة
+    await col('transactions', 'origin_device_id', 'TEXT');
+    await col('transactions', 'remote_ver', 'INTEGER');
+    await col('transactions', 'remote_modified_at', 'TEXT');
+    await col('transactions', 'last_uploaded_at', 'TEXT');
+    await col('transactions', 'restored_mark', 'INTEGER DEFAULT 0');
+
+    // الفواتير: وسم الاستعادة، المالك الحقيقي لفاتورة واردة، الحذف المتزامن
+    await col('invoices', 'restored_mark', 'INTEGER DEFAULT 0');
+    await col('invoices', 'owner_device_id', 'TEXT');
+    await col('invoices', 'is_deleted', 'INTEGER DEFAULT 0');
+    // أعمدة السنتات تكتبها مزامنة الفواتير الواردة (بدونها يفشل حفظ الفاتورة الواردة)
+    await col('invoices', 'total_amount_cents', 'INTEGER');
+    await col('invoices', 'final_total_cents', 'INTEGER');
+    await col('invoices', 'discount_cents', 'INTEGER');
+    await col('invoices', 'amount_paid_cents', 'INTEGER');
+    await col('invoice_items', 'unit_price_cents', 'INTEGER');
+    await col('invoice_items', 'cost_price_cents', 'INTEGER');
+    await col('invoice_items', 'applied_price_cents', 'INTEGER');
+    await col('invoice_items', 'item_total_cents', 'INTEGER');
+
+    // العملاء: حالة شاهد الحذف (0 لا شيء، 1 محذوف، 2 حذف محلي بانتظار الرفع،
+    // 3 إعادة تنشيط محلية بانتظار الرفع)
+    await col('customers', 'tombstoned', 'INTEGER DEFAULT 0');
+    // العملاء المحذوفون قبل هذا العمود: نثبّت وسم حذفهم كي لا تُظهرهم قاعدة الظهور
+    try {
+      await db.execute(
+          'UPDATE customers SET tombstoned = 1 WHERE is_deleted = 1 AND (tombstoned IS NULL OR tombstoned = 0)');
+    } catch (_) {}
+
+    // شواهد حذف الفواتير (الحذف في هذا المشروع نهائي محلياً): تمنع نسخة أقدم
+    // من إحياء فاتورة حُذفت، وتحمل حذف المالك حتى يُرفع.
+    try {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS deleted_invoices (
+          invoice_uuid TEXT PRIMARY KEY,
+          version INTEGER NOT NULL DEFAULT 1,
+          deleted_at TEXT,
+          is_synced INTEGER NOT NULL DEFAULT 0
+        )
+      ''');
+    } catch (e) {
+      print('⚠️ جدول deleted_invoices: $e');
+    }
+
+    // هوية العميل فريدة: دمج أي تكرار لنفس sync_uuid ثم قيد فريد
+    await mergeDuplicateCustomerIdentities(db);
+
+    // معرّف المعاملة والفاتورة فريدان (الاستقبال إدمبوتنت بالمعرّف).
+    // إن وُجد تكرار قديم يفشل القيد وحده ولا يُحذف شيء تلقائياً.
+    for (final ddl in const [
+      'CREATE UNIQUE INDEX IF NOT EXISTS ux_transactions_uuid ON transactions(transaction_uuid) WHERE transaction_uuid IS NOT NULL',
+      'CREATE UNIQUE INDEX IF NOT EXISTS ux_invoices_invoice_uuid ON invoices(invoice_uuid) WHERE invoice_uuid IS NOT NULL',
+    ]) {
+      try {
+        await db.execute(ddl);
+      } catch (e) {
+        print('⚠️ تعذّر إنشاء قيد فريد (يوجد تكرار قديم): $e');
+      }
+    }
+  }
+
+  /// 🛡️ يدمج صفوف العملاء التي تحمل نفس sync_uuid في صف واحد، ثم ينشئ قيداً
+  /// فريداً يمنع التكرار. آمن التكرار. الصف الباقي هو الأقدم؛ تُنقل إليه معاملات
+  /// وفواتير وسندات قبض الصفوف الأخرى، ويُعاد حساب رصيده من مجموع معاملاته.
+  /// (بلا db.transaction داخلها: قد تُستدعى داخل معاملة قائمة.)
+  static Future<void> mergeDuplicateCustomerIdentities(DatabaseExecutor db) async {
+    try {
+      final groups = await db.rawQuery("""
+        SELECT sync_uuid AS u, MIN(id) AS keep FROM customers
+        WHERE sync_uuid IS NOT NULL AND sync_uuid != ''
+        GROUP BY sync_uuid HAVING COUNT(*) > 1
+      """);
+      for (final g in groups) {
+        final uuid = g['u'] as String;
+        final keep = g['keep'] as int;
+        final rows = await db.query('customers',
+            where: 'sync_uuid = ? AND id != ?', whereArgs: [uuid, keep]);
+        int tomb = 0;
+        bool mine = false;
+        final keepRow = await db.query('customers',
+            columns: ['tombstoned', 'is_created_by_me'], where: 'id = ?', whereArgs: [keep]);
+        if (keepRow.isNotEmpty) {
+          tomb = (keepRow.first['tombstoned'] as int?) ?? 0;
+          mine = ((keepRow.first['is_created_by_me'] as int?) ?? 1) != 0;
+        }
+        for (final r in rows) {
+          final dup = r['id'] as int;
+          await db.update('transactions', {'customer_id': keep},
+              where: 'customer_id = ?', whereArgs: [dup]);
+          await db.update('invoices', {'customer_id': keep},
+              where: 'customer_id = ?', whereArgs: [dup]);
+          try {
+            await db.update('customer_receipt_vouchers', {'customer_id': keep},
+                where: 'customer_id = ?', whereArgs: [dup]);
+          } catch (_) {}
+          final t = (r['tombstoned'] as int?) ?? 0;
+          if (t > tomb) tomb = t;
+          if (((r['is_created_by_me'] as int?) ?? 1) != 0) mine = true;
+          await db.delete('customers', where: 'id = ?', whereArgs: [dup]);
+        }
+        final sum = await db.rawQuery(
+            'SELECT COALESCE(SUM(amount_changed), 0) AS s, COUNT(*) AS n FROM transactions '
+            'WHERE customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)',
+            [keep]);
+        final total = (sum.first['s'] as num?)?.toDouble() ?? 0.0;
+        final active = (sum.first['n'] as num?)?.toInt() ?? 0;
+        await db.update(
+          'customers',
+          {
+            'current_total_debt': total,
+            'tombstoned': tomb,
+            'is_created_by_me': mine ? 1 : 0,
+            // قاعدة الظهور: مخفي ⇔ موسوم بالحذف ولا معاملة نشطة
+            'is_deleted': ((tomb == 1 || tomb == 2) && active == 0) ? 1 : 0,
+          },
+          where: 'id = ?',
+          whereArgs: [keep],
+        );
+        print('🧹 دُمجت صفوف مكررة لنفس العميل ($uuid) في صف واحد');
+      }
+      await db.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_customers_sync_uuid
+        ON customers(sync_uuid) WHERE sync_uuid IS NOT NULL AND sync_uuid != ''
+      """);
+    } catch (e) {
+      print('⚠️ دمج هويات العملاء المكررة: $e');
+    }
+  }
+
   Future<void> _ensureAllRequiredColumns(Database db) async {
     // دالة مساعدة لإضافة عمود إذا لم يكن موجوداً
     Future<void> ensureColumn(String table, String column, String definition) async {
@@ -3230,7 +3415,7 @@ class DatabaseService {
     // إذا كان هناك دين مبدئي، أضف معاملة تلقائية
     if (customer.currentTotalDebt > 0) {
       final now = DateTime.now();
-      final txSyncUuid = SyncSecurity.generateTransactionUuid(customer.name, customer.currentTotalDebt, now); // 🔄 توليد transaction_uuid للمعاملة
+      final txSyncUuid = UuidHelper.newTransactionUuid(); // 🔄 توليد transaction_uuid للمعاملة
       final transactionId = await db.insert('transactions', {
         'customer_id': customerId,
         'transaction_date': now.toIso8601String(),
@@ -3326,8 +3511,9 @@ class DatabaseService {
     
     final db = await database;
     try {
-      final List<Map<String, dynamic>> maps =
-          await db.query('customers', orderBy: orderBy);
+      // 🛡️ المحذوف (tombstone) يبقى في القاعدة للمزامنة لكنه مخفي
+      final List<Map<String, dynamic>> maps = await db.query('customers',
+          where: 'is_deleted IS NULL OR is_deleted = 0', orderBy: orderBy);
       final customers = List.generate(maps.length, (i) => Customer.fromMap(maps[i]));
       
       // 🚀 تحديث Cache
@@ -3353,7 +3539,7 @@ class DatabaseService {
         FROM customers c
         WHERE (
              c.current_total_debt != 0
-             OR EXISTS (SELECT 1 FROM transactions t WHERE t.customer_id = c.id LIMIT 1)
+             OR EXISTS (SELECT 1 FROM transactions t WHERE t.customer_id = c.id AND (t.is_deleted IS NULL OR t.is_deleted = 0) LIMIT 1)
              OR c.created_at >= '$oneDayAgo'
            )
            AND (c.is_deleted IS NULL OR c.is_deleted = 0)
@@ -3375,8 +3561,9 @@ class DatabaseService {
         FROM customers c
         LEFT JOIN transactions t ON t.customer_id = c.id 
           AND t.transaction_type IN ('manual_debt', 'DEBT_ADDITION', 'debt_addition')
+          AND (t.is_deleted IS NULL OR t.is_deleted = 0)
         WHERE c.current_total_debt > 0
-           OR EXISTS (SELECT 1 FROM transactions t2 WHERE t2.customer_id = c.id LIMIT 1)
+           OR EXISTS (SELECT 1 FROM transactions t2 WHERE t2.customer_id = c.id AND (t2.is_deleted IS NULL OR t2.is_deleted = 0) LIMIT 1)
         GROUP BY c.id
         ORDER BY last_debt_date DESC NULLS LAST, c.name ASC
       ''');
@@ -3396,8 +3583,9 @@ class DatabaseService {
         FROM customers c
         LEFT JOIN transactions t ON t.customer_id = c.id 
           AND t.transaction_type IN ('debt_payment', 'DEBT_PAYMENT')
+          AND (t.is_deleted IS NULL OR t.is_deleted = 0)
         WHERE c.current_total_debt > 0
-           OR EXISTS (SELECT 1 FROM transactions t2 WHERE t2.customer_id = c.id LIMIT 1)
+           OR EXISTS (SELECT 1 FROM transactions t2 WHERE t2.customer_id = c.id AND (t2.is_deleted IS NULL OR t2.is_deleted = 0) LIMIT 1)
         GROUP BY c.id
         ORDER BY last_payment_date DESC NULLS LAST, c.name ASC
       ''');
@@ -3415,9 +3603,9 @@ class DatabaseService {
       final List<Map<String, dynamic>> maps = await db.rawQuery('''
         SELECT c.id, MAX(t.transaction_date) as last_transaction_date
         FROM customers c
-        LEFT JOIN transactions t ON t.customer_id = c.id
+        LEFT JOIN transactions t ON t.customer_id = c.id AND (t.is_deleted IS NULL OR t.is_deleted = 0)
         WHERE c.current_total_debt > 0
-           OR EXISTS (SELECT 1 FROM transactions t2 WHERE t2.customer_id = c.id LIMIT 1)
+           OR EXISTS (SELECT 1 FROM transactions t2 WHERE t2.customer_id = c.id AND (t2.is_deleted IS NULL OR t2.is_deleted = 0) LIMIT 1)
         GROUP BY c.id
         ORDER BY last_transaction_date DESC NULLS LAST, c.name ASC
       ''');
@@ -3617,26 +3805,40 @@ class DatabaseService {
         print('⚠️ تحذير: فشل تسجيل مزامنة حذف المعاملات: $e');
       }
 
-      // حذف المعاملات المرتبطة بالعميل يدوياً (لضمان الحذف حتى لو CASCADE لم يعمل)
-      await db.delete(
-        'transactions',
-        where: 'customer_id = ?',
-        whereArgs: [id],
-      );
-      
-      // حذف سندات القبض المرتبطة بالعميل
-      await db.delete(
-        'customer_receipt_vouchers',
-        where: 'customer_id = ?',
-        whereArgs: [id],
-      );
-      
-      // حذف العميل
-      final result = await db.delete(
-        'customers',
-        where: 'id = ?',
-        whereArgs: [id],
-      );
+      // 🛡️ حذف منطقي يتزامن (شاهد حذف) بدل الحذف النهائي:
+      // الحذف النهائي كان لا يصل للأجهزة الأخرى أبداً، ويُعاد العميل بديونه
+      // مع أول سحب كامل. الآن:
+      //  1) المعاملات النشطة فقط تُبطل، و is_uploaded = 0 لكل واحدة منها (حتى
+      //     معاملات الأجهزة الأخرى): المزامنة ترفع لكل واحدة «شاهد حذف».
+      //  2) العميل: is_deleted = 1 (مخفي) و tombstoned = 2 (حذف محلي بانتظار الرفع).
+      final now = DateTime.now().toIso8601String();
+      final result = await db.transaction((txn) async {
+        await txn.update(
+          'transactions',
+          {'is_deleted': 1, 'is_uploaded': 0, 'restored_mark': 0},
+          where: 'customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)',
+          whereArgs: [id],
+        );
+
+        // سندات القبض محلية لهذا الجهاز ولا معنى لها بعد إبطال المعاملات
+        await txn.delete(
+          'customer_receipt_vouchers',
+          where: 'customer_id = ?',
+          whereArgs: [id],
+        );
+
+        return await txn.update(
+          'customers',
+          {
+            'is_deleted': 1,
+            'tombstoned': 2,
+            'current_total_debt': 0.0,
+            'last_modified_at': now,
+          },
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+      });
       
       // 🔄 تتبع المزامنة: تسجيل حذف العميل (غير متزامن)
       if (result > 0 && customerData != null && syncUuid != null) {
@@ -3657,7 +3859,17 @@ class DatabaseService {
       
       // 🚀 إبطال Cache بعد حذف عميل
       invalidateCustomersCache();
-      
+
+      // 📡 مزامنة الحذف: شاهد حذف للعميل + شاهد حذف لكل معاملة كانت معروفة هنا.
+      //    إن فشل الرفع الآن التقطته دورات المزامنة (tombstoned = 2 و is_uploaded = 0).
+      if (syncUuid != null && syncUuid.isNotEmpty) {
+        try {
+          unawaited(FirebaseSyncService().syncCustomerDeletionNow(id));
+        } catch (e) {
+          print('⚠️ تعذّر إرسال أمر حذف العميل لـ Firebase: $e');
+        }
+      }
+
       return result;
     } catch (e) {
       throw Exception(_handleDatabaseError(e));
@@ -3686,7 +3898,7 @@ class DatabaseService {
     try {
       final List<Map<String, dynamic>> maps = await db.query(
         'customers',
-        where: 'name LIKE ? OR phone LIKE ?',
+        where: '(name LIKE ? OR phone LIKE ?) AND (is_deleted IS NULL OR is_deleted = 0)',
         whereArgs: ['%$query%', '%$query%'],
         orderBy: 'name ASC',
       );
@@ -3701,7 +3913,8 @@ class DatabaseService {
     final db = await database;
     try {
       final normalizedName = normalizeArabic(name.trim().toLowerCase());
-      String whereClause = 'name_norm = ?';
+      // العميل المحذوف (مخفي) لا يمنع إنشاء عميل جديد بنفس الاسم
+      String whereClause = 'name_norm = ? AND (is_deleted IS NULL OR is_deleted = 0)';
       List<dynamic> whereArgs = [normalizedName];
       
       if (excludeId != null) {
@@ -4245,35 +4458,21 @@ class DatabaseService {
           }
           final customer = Customer.fromMap(customerMaps.first);
           
-          // 2. جلب آخر معاملة للتحقق من التسلسل
-          final List<Map<String, dynamic>> lastTxRows = await txn.query(
-            'transactions',
-            where: 'customer_id = ?',
-            whereArgs: [transaction.customerId],
-            orderBy: 'transaction_date DESC, id DESC',
-            limit: 1,
+          // 2. 🛡️ الرصيد قبل المعاملة = مجموع المعاملات الفعّالة (مصدر الحقيقة الوحيد).
+          //    كان يُقارن الرصيد المخزّن بـ «آخر صف بالتاريخ» ويرمي خطأً حرجاً إن
+          //    اختلفا، لكن المزامنة تُدرج معاملات قديمة التاريخ من أجهزة أخرى،
+          //    فيختلف الرقمان دون أي تلف ويُمنع المستخدم من إضافة أي معاملة.
+          final sumRows = await txn.rawQuery(
+            'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions '
+            'WHERE customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)',
+            [transaction.customerId],
           );
-          
-          double verifiedBalanceBefore = customer.currentTotalDebt;
-
-          // ═══════════════════════════════════════════════════════════════════════════
-          // 🔒 تحسين الأمان: التحقق الصارم من سلامة البيانات قبل الإضافة
-          // ═══════════════════════════════════════════════════════════════════════════
-          if (lastTxRows.isNotEmpty) {
-            final lastTx = DebtTransaction.fromMap(lastTxRows.first);
-            final balanceDiff = (verifiedBalanceBefore - (lastTx.newBalanceAfterTransaction ?? 0)).abs();
-            if (balanceDiff > 0.01) {
-              // 🔒 تحويل التحذير إلى خطأ في الحالات الحرجة (فرق أكبر من 1 دينار)
-              if (balanceDiff > 1.0) {
-                throw Exception(
-                  'خطأ أمني حرج: رصيد العميل (${verifiedBalanceBefore.toStringAsFixed(2)}) '
-                  'لا يتطابق مع آخر معاملة (${lastTx.newBalanceAfterTransaction?.toStringAsFixed(2)}). '
-                  'الفرق: ${balanceDiff.toStringAsFixed(2)} دينار. '
-                  'يرجى إصلاح البيانات أولاً.'
-                );
-              }
-              print('⚠️ تحذير: فرق بسيط في الرصيد (${balanceDiff.toStringAsFixed(3)}) - سيتم المتابعة');
-            }
+          double verifiedBalanceBefore =
+              (sumRows.first['total'] as num?)?.toDouble() ?? 0.0;
+          if ((verifiedBalanceBefore - customer.currentTotalDebt).abs() > 0.01) {
+            print('🛡️ رصيد العميل ${transaction.customerId} المخزّن '
+                '(${customer.currentTotalDebt}) ≠ مجموع معاملاته '
+                '($verifiedBalanceBefore) — اعتُمد المجموع');
           }
           
           // 3. حساب الرصيد الجديد
@@ -4311,7 +4510,7 @@ class DatabaseService {
           // 4. تجهيز المعاملة بالأرصدة الصحيحة
           // 🔄 تعيين transaction_uuid بطريقة ديناميكية بناءً على العميل والوقت والمبلغ
           final syncUuid = transaction.transactionUuid 
-              ?? SyncSecurity.generateTransactionUuid(customer.name, transaction.amountChanged, transaction.transactionDate);
+              ?? UuidHelper.newTransactionUuid();
           
           final updatedTransaction = transaction.copyWith(
             balanceBeforeTransaction: verifiedBalanceBefore,
@@ -4539,6 +4738,8 @@ class DatabaseService {
           'new_balance_after_transaction': newBalanceAfter,
           'balance_before_transaction': balanceBeforeTransaction,
           'is_uploaded': fromSync ? 1 : 0,
+          // 🛡️ تعديل بعد استعادة نسخة احتياطية = نية جديدة لا تُستبدل بنسخة السحابة
+          if (!fromSync) 'restored_mark': 0,
         },
         where: 'id = ?',
         whereArgs: [updated.id],
@@ -4697,6 +4898,7 @@ class DatabaseService {
           'new_balance_after_transaction': newBalanceAfter,
           'balance_before_transaction': balanceBeforeTransaction,
           'is_uploaded': 0,
+          'restored_mark': 0,
         },
         where: 'id = ?',
         whereArgs: [transactionId],
@@ -4798,7 +5000,7 @@ class DatabaseService {
       final db = await database;
       // احسب مجموع amount_changed للعميل
       final res = await db.rawQuery(
-          'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ?;',
+          'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0);',
           [customerId]);
       final double total = ((res.first['total'] as num?) ?? 0).toDouble();
 
@@ -4944,12 +5146,16 @@ class DatabaseService {
   }
 
   Future<List<DebtTransaction>> getCustomerTransactions(int customerId,
-      {String orderBy = 'transaction_date DESC, id DESC'}) async {
+      {String orderBy = 'transaction_date DESC, id DESC',
+      bool includeDeleted = false}) async {
     final db = await database;
     try {
+      // 🛡️ المعاملة المبطلة (شاهد حذف) تبقى للمزامنة ولا تدخل في الرصيد ولا تُعرض
       final List<Map<String, dynamic>> maps = await db.query(
         'transactions',
-        where: 'customer_id = ?',
+        where: includeDeleted
+            ? 'customer_id = ?'
+            : 'customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)',
         whereArgs: [customerId],
         orderBy: orderBy,
       );
@@ -4981,7 +5187,7 @@ class DatabaseService {
       // 1. جلب جميع المعاملات مرتبة بالتاريخ
       final allTransactions = await db.query(
         'transactions',
-        where: 'customer_id = ?',
+        where: 'customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)',
         whereArgs: [customerId],
         orderBy: 'transaction_date ASC, id ASC',
       );
@@ -5459,6 +5665,8 @@ class DatabaseService {
     }
 
     map['is_synced'] = 0;
+    // 🛡️ تعديل المستخدم بعد استعادة نسخة احتياطية يتقدّم على نسخة السحابة
+    map['restored_mark'] = 0;
   }
 
   /// علم جلسة: الربط الرجعي لبصمة ملكية الفواتير تم في هذه الجلسة.
@@ -5870,6 +6078,7 @@ class DatabaseService {
                    }
                  } else if (newDebtContribution > 0) {
                    // إنشاء معاملة جديدة (ربما كانت نقد وأصبحت دين)
+                   final debtTxUuid = UuidHelper.newTransactionUuid();
                    await txn.insert('transactions', {
                       'customer_id': customer.id,
                       'transaction_date': invoiceToSave.invoiceDate.toIso8601String(),
@@ -5881,13 +6090,14 @@ class DatabaseService {
                       'created_at': DateTime.now().toIso8601String(),
                       'invoice_id': invoiceId,
                       'invoice_sync_uuid': invoiceSyncUuid,
-                      'transaction_uuid': SyncSecurity.generateTransactionUuid(customer.name, newDebtContribution, invoiceToSave.invoiceDate),
-                      'sync_uuid': SyncSecurity.generateTransactionUuid(customer.name, newDebtContribution, invoiceToSave.invoiceDate), // 🔄 إضافة sync_uuid
+                      'transaction_uuid': debtTxUuid,
+                      'sync_uuid': debtTxUuid, // 🔑 معرّف فريد بالبناء
                    });
                  }
                } else {
                  // فاتورة جديدة أو كانت معلقة وأصبحت محفوظة
                  if (newDebtContribution > 0) {
+                   final debtTxUuid = UuidHelper.newTransactionUuid();
                    await txn.insert('transactions', {
                       'customer_id': customer.id,
                       'transaction_date': invoiceToSave.invoiceDate.toIso8601String(),
@@ -5899,8 +6109,8 @@ class DatabaseService {
                       'created_at': DateTime.now().toIso8601String(),
                       'invoice_id': invoiceId,
                       'invoice_sync_uuid': invoiceSyncUuid,
-                      'transaction_uuid': SyncSecurity.generateTransactionUuid(customer.name, newDebtContribution, invoiceToSave.invoiceDate),
-                      'sync_uuid': SyncSecurity.generateTransactionUuid(customer.name, newDebtContribution, invoiceToSave.invoiceDate), // 🔄 إضافة sync_uuid
+                      'transaction_uuid': debtTxUuid,
+                      'sync_uuid': debtTxUuid, // 🔑 معرّف فريد بالبناء
                    });
                  }
                }
@@ -6037,6 +6247,7 @@ class DatabaseService {
       final txSum = await txn.rawQuery(
         'SELECT COALESCE(SUM(amount_changed), 0) as total '
         'FROM transactions WHERE invoice_id = ? '
+        'AND (is_deleted IS NULL OR is_deleted = 0) '
         'AND transaction_type NOT IN (?, ?, ?)',
         [invoiceId, 'manual_payment', 'invoice_payment_type_change', 'SETTLEMENT']);
       final double actualDebt = (txSum.first['total'] as num?)?.toDouble() ?? 0.0;
@@ -6128,7 +6339,7 @@ class DatabaseService {
                     'last_modified_at': DateTime.now().toIso8601String(),
                   }, where: 'id = ?', whereArgs: [customer.id]);
                     final now = DateTime.now();
-                    final txUuid = SyncSecurity.generateTransactionUuid(customer.name, appliedDelta, now);
+                    final txUuid = UuidHelper.newTransactionUuid();
                     await txn.insert('transactions', {
                       'customer_id': customer.id,
                       'transaction_date': now.toIso8601String(),
@@ -6187,7 +6398,7 @@ class DatabaseService {
                         'last_modified_at': DateTime.now().toIso8601String(),
                       }, where: 'id = ?', whereArgs: [customer.id]);
                       final now = DateTime.now();
-                      final txUuid = SyncSecurity.generateTransactionUuid(customer.name, appliedDelta, now);
+                      final txUuid = UuidHelper.newTransactionUuid();
                       await txn.insert('transactions', {
                         'customer_id': customer.id,
                         'transaction_date': now.toIso8601String(),
@@ -6462,6 +6673,20 @@ class DatabaseService {
     final invoice = await getInvoiceById(id);
     if (invoice == null) return 0;
 
+    // 🛡️ مزامنة الحذف: الفاتورة الواردة من جهاز آخر لا يحذفها إلا مالكها
+    // (حذفها هنا وحده كان يُعاد مع أول سحب كامل). ونلتقط هويتها ونسختها قبل
+    // الحذف لنرفع شاهد حذف بإصدار أعلى تطبّقه كل الأجهزة.
+    final syncRow = await db.query('invoices',
+        columns: ['invoice_uuid', 'version', 'is_created_by_me'],
+        where: 'id = ?', whereArgs: [id], limit: 1);
+    if (syncRow.isNotEmpty && (syncRow.first['is_created_by_me'] as int?) == 0) {
+      throw Exception('لا يمكن حذف هذه الفاتورة لأنها مستوردة من جهاز آخر.');
+    }
+    final String? deletedInvoiceUuid =
+        syncRow.isNotEmpty ? syncRow.first['invoice_uuid'] as String? : null;
+    final int deletedInvoiceVersion =
+        syncRow.isNotEmpty ? ((syncRow.first['version'] as num?)?.toInt() ?? 1) : 1;
+
     // ═══════════════════════════════════════════════════════════════════════════
     // 🛡️ عكس دين الفاتورة عند الحذف
     // ═══════════════════════════════════════════════════════════════════════════
@@ -6554,6 +6779,28 @@ class DatabaseService {
       if (invoice.customerId != null) {
         await reconcileCustomerLedger(invoice.customerId!,
             reason: 'حذف الفاتورة رقم $id');
+      }
+
+      // 🗑️ شاهد حذف الفاتورة: يُسجَّل محلياً (لا تُحييها نسخة أقدم) ويُرفع
+      // بإصدار أعلى من آخر نسخة. الفشل أوفلاين تلتقطه دورة رفع الفواتير.
+      if (deleted > 0 && deletedInvoiceUuid != null && deletedInvoiceUuid.isNotEmpty) {
+        try {
+          await db.insert(
+            'deleted_invoices',
+            {
+              'invoice_uuid': deletedInvoiceUuid,
+              'version': deletedInvoiceVersion + 1,
+              'deleted_at': DateTime.now().toIso8601String(),
+              'is_synced': 0,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+          unawaited(InvoiceSyncService()
+              .syncInvoiceTombstoneNow(deletedInvoiceUuid)
+              .catchError((_) => false));
+        } catch (e) {
+          print('⚠️ تعذّر تسجيل شاهد حذف الفاتورة: $e');
+        }
       }
 
       return deleted;
@@ -7177,6 +7424,8 @@ class DatabaseService {
           'total_amount',
           'amount_paid_on_invoice',
           'invoice_uuid',
+          'is_created_by_me',
+          'restored_mark',
         ],
         where: 'id = ?',
         whereArgs: [invoiceId],
@@ -7184,6 +7433,12 @@ class DatabaseService {
       );
       if (invRows.isEmpty) return 0.0;
       final inv = invRows.first;
+
+      // 🛡️ فاتورة مستلمة من جهاز آخر: أثرها المالي يصل كاملاً في حزمتها.
+      // صف تصحيح «أملكه» على فاتورة غيري لا تستبدله الحزمة التالية فيُحسب
+      // الدين مرتين. (مسار الاستقبال يستدعي الحارس بـ isLocalOrigin = false
+      // فيكتب صفاً محلياً مؤقتاً تستبدله الحزمة التالية.)
+      if (isLocalOrigin && (inv['is_created_by_me'] as int?) == 0) return 0.0;
 
       final int? customerId = inv['customer_id'] as int?;
       if (customerId == null) return 0.0;
@@ -7236,8 +7491,25 @@ class DatabaseService {
           print('🛡️ [DebtGuard] تصحيح إجمالي الفاتورة #$invoiceId: '
               '$total → $realTotal');
           total = realTotal;
+          // تغيّر محتوى فاتورتي ⇒ نسخة جديدة تُرفع (وإلا بقي الإجمالي القديم عند غيري)
+          if (isLocalOrigin && (inv['restored_mark'] as int?) != 1) {
+            await txn.rawUpdate(
+                'UPDATE invoices SET version = COALESCE(version, 1) + 1, is_synced = 0 WHERE id = ?',
+                [invoiceId]);
+          }
         }
       }
+
+      // 🛡️ صف دين أبطله حذف العميل (شاهد حذف من أي جهاز): لا نعيد الدين
+      // إلى الحياة بصف تصحيح جديد. الحذف نهائي.
+      final String voidPh =
+          List<String>.filled(kNonContributionTxTypes.length, '?').join(',');
+      final voided = await txn.rawQuery(
+        'SELECT 1 FROM transactions WHERE invoice_id = ? AND is_deleted = 1 '
+        'AND (transaction_type IS NULL OR transaction_type NOT IN ($voidPh)) LIMIT 1',
+        <Object?>[invoiceId, ...kNonContributionTxTypes],
+      );
+      if (voided.isNotEmpty) return 0.0;
 
       // 1) ما يجب أن تكون عليه مساهمة الفاتورة (صفّ الفاتورة هو المرجع)
       final double expected =
@@ -7278,7 +7550,7 @@ class DatabaseService {
 
       final String reasonText = reason ?? 'guard';
       final String txUuid =
-          SyncSecurity.generateTransactionUuid(customer.name, delta, now);
+          UuidHelper.newTransactionUuid();
       await txn.insert('transactions', {
         'customer_id': customerId,
         'transaction_date': now.toIso8601String(),
@@ -7297,6 +7569,19 @@ class DatabaseService {
         'is_created_by_me': isLocalOrigin ? 1 : 0,
         'created_at': now.toIso8601String(),
       });
+
+      // 🛡️ الأثر المالي للفاتورة تغيّر = نسخة جديدة من حزمتها، وإلا يرى
+      // المستقبِل نفس رقم النسخة بمحتوى مختلف فيتجاهله. استثناء: صف ما زال من
+      // نسخة احتياطية مستعادة — تُرفع نسخته عند انتهاء الاستعادة.
+      if (isLocalOrigin) {
+        if ((inv['restored_mark'] as int?) == 1) {
+          await txn.rawUpdate('UPDATE invoices SET is_synced = 0 WHERE id = ?', [invoiceId]);
+        } else {
+          await txn.rawUpdate(
+              'UPDATE invoices SET version = COALESCE(version, 1) + 1, is_synced = 0 WHERE id = ?',
+              [invoiceId]);
+        }
+      }
 
       try {
         await txn.insert('invoice_logs', {
@@ -7352,6 +7637,7 @@ class DatabaseService {
         FROM invoices i
         WHERE i.customer_id = ?
           AND i.status = 'محفوظة'
+          AND COALESCE(i.is_created_by_me, 1) = 1
           AND ABS(
           (CASE WHEN i.payment_type = 'دين'
                 THEN (
@@ -7526,7 +7812,7 @@ class DatabaseService {
 
       // اكتب معاملة تمثل الفارق فقط
       final now = DateTime.now();
-      final txUuid = SyncSecurity.generateTransactionUuid(customer.name, delta, now);
+      final txUuid = UuidHelper.newTransactionUuid();
       await txn.insert('transactions', {
         'customer_id': customerId,
         'transaction_date': now.toIso8601String(),
@@ -8100,6 +8386,7 @@ class DatabaseService {
           WHERE t.transaction_type = 'manual_payment'
             AND t.invoice_id IS NULL
             AND t.is_created_by_me = 1
+            AND (t.is_deleted IS NULL OR t.is_deleted = 0)
             AND t.transaction_date >= ?
             AND t.transaction_date < ?
           ''',
@@ -8251,7 +8538,7 @@ class DatabaseService {
 
     final List<Map<String, dynamic>> maps = await db.query(
       'customers',
-      where: 'last_modified_at >= ? AND current_total_debt > 0',
+      where: 'last_modified_at >= ? AND current_total_debt > 0 AND (is_deleted IS NULL OR is_deleted = 0)',
       whereArgs: [startOfDay.toIso8601String()],
     );
 
@@ -8930,7 +9217,8 @@ class DatabaseService {
     final List<Map<String, dynamic>> maps = await db.query(
       'customers',
       where:
-          '((last_modified_at >= ? AND last_modified_at < ?) OR (created_at >= ? AND created_at < ?)) AND current_total_debt > 0',
+          '((last_modified_at >= ? AND last_modified_at < ?) OR (created_at >= ? AND created_at < ?)) AND current_total_debt > 0'
+          ' AND (is_deleted IS NULL OR is_deleted = 0)',
       whereArgs: [start, end, start, end],
     );
     return List.generate(maps.length, (i) => Customer.fromMap(maps[i]));
@@ -8999,19 +9287,19 @@ class DatabaseService {
         (
           SELECT MAX(transaction_date) 
           FROM transactions t 
-          WHERE t.customer_id = c.id
+          WHERE t.customer_id = c.id AND (t.is_deleted IS NULL OR t.is_deleted = 0)
         ) as last_transaction_date,
         (
           SELECT transaction_type
           FROM transactions t
-          WHERE t.customer_id = c.id
+          WHERE t.customer_id = c.id AND (t.is_deleted IS NULL OR t.is_deleted = 0)
           ORDER BY transaction_date DESC
           LIMIT 1
         ) as last_transaction_type,
         (
           SELECT invoice_id
           FROM transactions t
-          WHERE t.customer_id = c.id
+          WHERE t.customer_id = c.id AND (t.is_deleted IS NULL OR t.is_deleted = 0)
           ORDER BY transaction_date DESC
           LIMIT 1
         ) as last_transaction_invoice_id
@@ -9034,9 +9322,7 @@ class DatabaseService {
       if (transaction.transactionUuid != null) {
          transactionMap['sync_uuid'] = transaction.transactionUuid;
       } else {
-         final customerRows = await db.query('customers', columns: ['name'], where: 'id = ?', whereArgs: [transaction.customerId], limit: 1);
-         final customerName = customerRows.isNotEmpty ? customerRows.first['name'] as String : 'غير_معروف';
-         transactionMap['sync_uuid'] = SyncSecurity.generateTransactionUuid(customerName, transaction.amountChanged, transaction.transactionDate);
+         transactionMap['sync_uuid'] = UuidHelper.newTransactionUuid();
       }
     }
     final id = await db.insert('transactions', transactionMap,
@@ -9258,6 +9544,7 @@ class DatabaseService {
         LEFT JOIN customers c ON t.customer_id = c.id
         LEFT JOIN returns r ON t.id = r.transaction_id
         WHERE t.transaction_type IN ($typePlaceholders)
+          AND (t.is_deleted IS NULL OR t.is_deleted = 0)
           AND t.transaction_date >= ?
           AND t.transaction_date < ?
           $returnFilter
@@ -9323,6 +9610,7 @@ class DatabaseService {
       }, where: 'id = ?', whereArgs: [customer.id]);
       
       // إدراج المعاملة مع الأرصدة الصحيحة
+      final externalTxUuid = transactionUuid ?? UuidHelper.newTransactionUuid();
       await txn.insert('transactions', {
         'customer_id': customer.id,
         'transaction_date': (occurredAt ?? DateTime.now()).toIso8601String(),
@@ -9336,8 +9624,8 @@ class DatabaseService {
         'audio_note_path': null,
         'is_created_by_me': 0,
         'is_uploaded': 0,
-        'transaction_uuid': transactionUuid ?? SyncSecurity.generateTransactionUuid(customer.name, amount, occurredAt ?? DateTime.now()),
-        'sync_uuid': transactionUuid ?? SyncSecurity.generateTransactionUuid(customer.name, amount, occurredAt ?? DateTime.now()), // 🔄 إضافة sync_uuid
+        'transaction_uuid': externalTxUuid,
+        'sync_uuid': externalTxUuid, // 🔑 معرّف فريد بالبناء
       });
       
       print('✅ SYNC: تم إدراج معاملة خارجية للعميل $customerId، المبلغ: $amount، الرصيد الجديد: $newBalance');
@@ -10228,6 +10516,7 @@ class DatabaseService {
           COALESCE(SUM(CASE WHEN amount_changed < 0 THEN -amount_changed ELSE 0 END), 0) as manual_payment_total
         FROM transactions
         WHERE customer_id = ? AND invoice_id IS NULL$dateConditionTx
+          AND (is_deleted IS NULL OR is_deleted = 0)
       ''', [customerId]);
  
       // جلب جميع البنود مع بيانات المنتج (مع unit_costs و unit_hierarchy)
@@ -10514,6 +10803,7 @@ class DatabaseService {
           COALESCE(SUM(CASE WHEN amount_changed < 0 THEN -amount_changed ELSE 0 END), 0) as manual_payment_total
         FROM transactions
         WHERE customer_id IS NOT NULL AND invoice_id IS NULL$dateConditionTx
+          AND (is_deleted IS NULL OR is_deleted = 0)
         GROUP BY customer_id
       ''');
 
@@ -10749,7 +11039,7 @@ class DatabaseService {
           strftime('%Y', transaction_date) as year,
           COUNT(*) as total_transactions
         FROM transactions
-        WHERE customer_id = ?
+        WHERE customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)
         GROUP BY strftime('%Y', transaction_date)
       ''', [customerId]);
  
@@ -10881,7 +11171,7 @@ class DatabaseService {
           COALESCE(SUM(CASE WHEN amount_changed > 0 THEN amount_changed ELSE 0 END), 0) as manual_debt_total,
           COALESCE(SUM(CASE WHEN amount_changed < 0 THEN -amount_changed ELSE 0 END), 0) as manual_payment_total
         FROM transactions
-        WHERE customer_id = ? AND invoice_id IS NULL
+        WHERE customer_id = ? AND invoice_id IS NULL AND (is_deleted IS NULL OR is_deleted = 0)
         GROUP BY strftime('%Y', transaction_date)
       ''', [customerId]);
       for (final row in manualByYear) {
@@ -10939,6 +11229,7 @@ class DatabaseService {
           SELECT strftime('%m', transaction_date) AS month, COUNT(DISTINCT id) AS total_transactions
           FROM transactions
           WHERE customer_id = ? AND strftime('%Y', transaction_date) = ?
+            AND (is_deleted IS NULL OR is_deleted = 0)
           GROUP BY strftime('%m', transaction_date)
         ) t ON t.month = m.month
         ORDER BY m.month ASC
@@ -11150,6 +11441,7 @@ class DatabaseService {
           COUNT(*) as manual_count
         FROM transactions
         WHERE customer_id = ? AND invoice_id IS NULL
+          AND (is_deleted IS NULL OR is_deleted = 0)
           AND strftime('%Y', transaction_date) = ?
         GROUP BY strftime('%m', transaction_date)
       ''', [customerId, year.toString()]);
@@ -11207,6 +11499,7 @@ class DatabaseService {
         SELECT *
         FROM transactions
         WHERE customer_id = ? 
+          AND (is_deleted IS NULL OR is_deleted = 0)
           AND strftime('%Y', transaction_date) = ?
           AND strftime('%m', transaction_date) = ?
         ORDER BY transaction_date DESC
@@ -12073,7 +12366,8 @@ class DatabaseService {
         // هنا نحسب كل المبالغ المتعلقة بهذه الفاتورة عدا الدفع الخارجي والتسويات اللاحقة
         final txSum = await db.rawQuery(
           'SELECT COALESCE(SUM(amount_changed), 0) as total FROM transactions '
-          'WHERE invoice_id = ? AND transaction_type NOT IN (?, ?)',
+          'WHERE invoice_id = ? AND (is_deleted IS NULL OR is_deleted = 0) '
+          'AND transaction_type NOT IN (?, ?)',
           [invoiceId, 'manual_payment', 'SETTLEMENT']
         );
         actualDebtSum = (txSum.first['total'] as num?)?.toDouble() ?? 0.0;
@@ -12125,7 +12419,7 @@ class DatabaseService {
 
       // 2. حساب مجموع المعاملات
       final sumResult = await db.rawQuery(
-        'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ?',
+        'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)',
         [customerId]
       );
       final double calculatedBalance = ((sumResult.first['total'] as num?) ?? 0).toDouble();
@@ -12133,7 +12427,7 @@ class DatabaseService {
 
       // 3. جلب عدد المعاملات
       final countResult = await db.rawQuery(
-        'SELECT COUNT(*) AS cnt FROM transactions WHERE customer_id = ?',
+        'SELECT COUNT(*) AS cnt FROM transactions WHERE customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)',
         [customerId]
       );
       final int transactionCount = (countResult.first['cnt'] as int?) ?? 0;
@@ -12369,7 +12663,7 @@ class DatabaseService {
       
       // جمع المعاملات اليدوية (غير مرتبطة بفاتورة)
       final manualTxResult = await db.rawQuery(
-        'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ? AND invoice_id IS NULL',
+        'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ? AND invoice_id IS NULL AND (is_deleted IS NULL OR is_deleted = 0)',
         [customerId]
       );
       final double manualTxTotal = ((manualTxResult.first['total'] as num?) ?? 0).toDouble();
@@ -12377,7 +12671,7 @@ class DatabaseService {
       
       // حساب المدفوعات اليدوية
       final manualPaymentsResult = await db.rawQuery(
-        'SELECT COALESCE(SUM(ABS(amount_changed)), 0) AS total FROM transactions WHERE customer_id = ? AND invoice_id IS NULL AND amount_changed < 0',
+        'SELECT COALESCE(SUM(ABS(amount_changed)), 0) AS total FROM transactions WHERE customer_id = ? AND invoice_id IS NULL AND amount_changed < 0 AND (is_deleted IS NULL OR is_deleted = 0)',
         [customerId]
       );
       totalPaymentsSum += ((manualPaymentsResult.first['total'] as num?) ?? 0).toDouble();
@@ -12479,7 +12773,7 @@ class DatabaseService {
       
       // 3. جلب صافي المعاملات الحالية
       final txResult = await db.rawQuery(
-        'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE invoice_id = ?',
+        'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE invoice_id = ? AND (is_deleted IS NULL OR is_deleted = 0)',
         [invoiceId]
       );
       final double currentNetTx = ((txResult.first['total'] as num?) ?? 0).toDouble();
@@ -12519,7 +12813,7 @@ class DatabaseService {
       final now = DateTime.now();
       final transactionNote = 'تصحيح تلقائي - فاتورة #$invoiceId - الفرق: ${actualDifference.toStringAsFixed(0)}';
       
-      final txUuid = SyncSecurity.generateTransactionUuid(customer.name, actualDifference, now);
+      final txUuid = UuidHelper.newTransactionUuid();
       await db.insert('transactions', {
         'customer_id': customerId,
         'invoice_id': invoiceId,
@@ -12584,7 +12878,7 @@ class DatabaseService {
         
         // حساب المجموع الصحيح
         final sumResult = await db.rawQuery(
-          'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ?',
+          'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)',
           [customer.id]
         );
         final double correctBalance = ((sumResult.first['total'] as num?) ?? 0).toDouble();
@@ -12746,10 +13040,8 @@ class DatabaseService {
           date: now,
         );
         
-        // 3.5 الحصول على اسم العميل لتوليد UUID
-        final customerRows = await txn.query('customers', columns: ['name'], where: 'id = ?', whereArgs: [customerId], limit: 1);
-        final customerName = customerRows.isNotEmpty ? customerRows.first['name'] as String : 'غير_معروف';
-        final syncUuid = SyncSecurity.generateTransactionUuid(customerName, correctionAmount, now);
+        // 3.5 معرّف المعاملة: فريد بالبناء
+        final syncUuid = UuidHelper.newTransactionUuid();
         
         // 4. إدراج المعاملة التصحيحية
         final transactionId = await txn.insert('transactions', {
@@ -13570,16 +13862,16 @@ class DatabaseService {
         SELECT c.id, c.name, c.current_total_debt as recorded_balance,
                (SELECT new_balance_after_transaction 
                 FROM transactions 
-                WHERE customer_id = c.id 
+                WHERE customer_id = c.id AND (is_deleted IS NULL OR is_deleted = 0)
                 ORDER BY transaction_date DESC, id DESC 
                 LIMIT 1) as last_tx_balance
         FROM customers c
         WHERE c.current_total_debt != 0
-        AND EXISTS (SELECT 1 FROM transactions WHERE customer_id = c.id)
+        AND EXISTS (SELECT 1 FROM transactions WHERE customer_id = c.id AND (is_deleted IS NULL OR is_deleted = 0))
         AND ABS(c.current_total_debt - 
                COALESCE((SELECT new_balance_after_transaction 
                          FROM transactions 
-                         WHERE customer_id = c.id 
+                         WHERE customer_id = c.id AND (is_deleted IS NULL OR is_deleted = 0)
                          ORDER BY transaction_date DESC, id DESC 
                          LIMIT 1), 0)) > 0.01
         LIMIT 10
@@ -13708,7 +14000,7 @@ class DatabaseService {
     
     // 1. حساب مجموع المعاملات
     final sumResult = await db.rawQuery(
-      'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ?',
+      'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)',
       [customerId],
     );
     final double calculatedBalance = ((sumResult.first['total'] as num?) ?? 0).toDouble();
@@ -13788,7 +14080,7 @@ class DatabaseService {
     final db = await database;
     
     final sumResult = await db.rawQuery(
-      'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ?',
+      'SELECT COALESCE(SUM(amount_changed), 0) AS total FROM transactions WHERE customer_id = ? AND (is_deleted IS NULL OR is_deleted = 0)',
       [customerId],
     );
     final double calculatedBalance = ((sumResult.first['total'] as num?) ?? 0).toDouble();
