@@ -71,8 +71,15 @@ Future<void> _run(DeviceBoot boot, List<String> logs, List<String> errors) async
   final sqliteServer = SqfliteIsolate(sendPort: boot.sqlite);
   databaseFactory = buildDatabaseFactory(
     tag: 'harness',
-    invokeMethod: (String method, [Object? arguments]) =>
-        sqliteServer.handle(FfiMethodCall(method, arguments)),
+    invokeMethod: (String method, [Object? arguments]) async {
+      if (!_sqlStatsOn) return sqliteServer.handle(FfiMethodCall(method, arguments));
+      final sw = Stopwatch()..start();
+      try {
+        return await sqliteServer.handle(FfiMethodCall(method, arguments));
+      } finally {
+        _recordSql(method, arguments, sw.elapsedMicroseconds);
+      }
+    },
   );
   PathProviderPlatform.instance = FakePathProvider(boot.dir);
   SharedPreferences.setMockInitialValues(boot.prefs);
@@ -103,6 +110,28 @@ Future<void> _run(DeviceBoot boot, List<String> logs, List<String> errors) async
           msg.id, null, '$e\n${st.toString().split('\n').take(10).join('\n')}'));
     }
   }
+}
+
+// ── قياس زمن جمل SQL (--dart-define=SQLSTATS=true): أين يذهب الوقت مع نمو البيانات
+const _sqlStatsOn = bool.fromEnvironment('SQLSTATS');
+final Map<String, List<int>> _sqlStats = {}; // جملة ← [عدد، مجموع µs، أقصى µs]
+
+void _recordSql(String method, Object? args, int micros) {
+  var sql = method;
+  if (args is Map) {
+    final ops = args['operations'];
+    if (ops is List && ops.isNotEmpty && ops.first is Map) {
+      sql = 'batch(${ops.length}) ${(ops.first as Map)['sql']}';
+    } else if (args['sql'] != null) {
+      sql = '$method ${args['sql']}';
+    }
+  }
+  sql = sql.replaceAll(RegExp(r'\s+'), ' ');
+  if (sql.length > 220) sql = sql.substring(0, 220);
+  final e = _sqlStats[sql] ??= [0, 0, 0];
+  e[0]++;
+  e[1] += micros;
+  if (micros > e[2]) e[2] = micros;
 }
 
 Future<int?> _customerId(String uuid) async {
@@ -766,6 +795,14 @@ Future<Object?> _exec(DeviceCommand c, FakeConnectivity connectivity, List<Strin
     case 'logs':
       final n = (a['n'] as int?) ?? 200;
       return logs.length <= n ? List<String>.from(logs) : logs.sublist(logs.length - n);
+
+    case 'sqlStats':
+      final list = _sqlStats.entries.toList()
+        ..sort((a, b) => b.value[1].compareTo(a.value[1]));
+      return [
+        for (final e in list.take((a['n'] as int?) ?? 15))
+          [e.key, e.value[0], e.value[1] ~/ 1000, e.value[2] ~/ 1000]
+      ];
 
     case 'errors':
       return List<String>.from(errors);

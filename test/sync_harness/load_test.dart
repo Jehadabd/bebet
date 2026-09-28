@@ -636,6 +636,14 @@ void main() {
       await Future.wait([for (final d in devs) L.worker(d, txPlan, invPlan[d] ?? const [])]);
       await L.verify('بعد العمل اليومي');
       await L.report();
+      if (const bool.fromEnvironment('SQLSTATS')) {
+        for (final d in devs) {
+          print('── أثقل جمل SQL على $d (العدد، مجموع ms، أقصى ms):');
+          for (final r in (await h.d(d).call('sqlStats', {'n': 15}) as List).cast<List>()) {
+            print('   ${r[1]}× ${r[2]}ms (أقصى ${r[3]}ms) ${r[0]}');
+          }
+        }
+      }
 
       // 3) حذف عملاء (من كل نوع)
       if (_custDeletes > 0) {
