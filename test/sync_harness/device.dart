@@ -446,6 +446,158 @@ Future<Object?> _exec(DeviceCommand c, FakeConnectivity connectivity, List<Strin
       await InvoiceSyncService().syncInvoiceBundleNow(uuid).catchError((e) => false);
       return uuid;
 
+    case 'saveInvoiceX':
+      // حفظ فاتورة كاملة كما يحفظها المستخدم: عدة بنود (كمية × سعر)، خصم،
+      // أجور تحميل، نوع دفع، مسدد، وحالة (محفوظة/معلّقة). جديدة أو تعديل.
+      // التعديل: تنظيف صفوف التعديل الحي القديمة، استبدال البنود، ثم
+      // updateInvoice (ختم النسخة + الحارس المحاسبي)، ثم رفع الحزمة فوراً.
+      final dbs = DatabaseService();
+      final db = await dbs.database;
+      final cr = await db.query('customers',
+          where: 'sync_uuid = ?', whereArgs: [a['cust']], limit: 1);
+      if (cr.isEmpty) throw StateError('customer not on device');
+      final cust = cr.first;
+      final lines = (a['lines'] as List).cast<List>();
+      final discount = (a['discount'] as num).toDouble();
+      final fee = (a['fee'] as num).toDouble();
+      final ptype = a['ptype'] as String;
+      final paid = (a['paid'] as num).toDouble();
+      final status = a['status'] as String;
+      var itemsTotal = 0.0;
+      for (final l in lines) {
+        itemsTotal += (l[0] as num).toDouble() * (l[1] as num).toDouble();
+      }
+      final total = itemsTotal + fee - discount;
+      final now = DateTime.now();
+      List<InvoiceItem> itemsFor(int id) => [
+            for (var k = 0; k < lines.length; k++)
+              InvoiceItem(
+                invoiceId: id,
+                productName: 'صنف ${k + 1}',
+                unit: 'قطعة',
+                unitPrice: (lines[k][1] as num).toDouble(),
+                quantityIndividual: (lines[k][0] as num).toDouble(),
+                appliedPrice: (lines[k][1] as num).toDouble(),
+                itemTotal: (lines[k][0] as num).toDouble() * (lines[k][1] as num).toDouble(),
+                saleType: 'قطعة',
+              )
+          ];
+      final invUuid = a['inv'] as String?;
+      int invoiceId;
+      if (invUuid == null) {
+        invoiceId = await dbs.insertInvoice(Invoice(
+          customerName: cust['name'] as String,
+          customerPhone: (cust['phone'] as String?) ?? '',
+          customerAddress: (cust['address'] as String?) ?? '',
+          installerName: '',
+          invoiceDate: now,
+          paymentType: ptype,
+          totalAmount: total,
+          discount: discount,
+          loadingFee: fee,
+          amountPaidOnInvoice: paid,
+          createdAt: now,
+          lastModifiedAt: now,
+          customerId: cust['id'] as int,
+          status: status,
+        ));
+        for (final it in itemsFor(invoiceId)) {
+          await dbs.insertInvoiceItem(it);
+        }
+        await dbs.reconcileInvoiceDebt(invoiceId, reason: 'حفظ فاتورة (اختبار الحمل)');
+      } else {
+        final ir = await db.query('invoices',
+            where: 'invoice_uuid = ?', whereArgs: [invUuid], limit: 1);
+        if (ir.isEmpty) throw StateError('invoice not on device');
+        final existing = Invoice.fromMap(ir.first);
+        invoiceId = existing.id!;
+        await dbs.deleteLiveDebtTransactions(invoiceId);
+        await db.delete('invoice_items', where: 'invoice_id = ?', whereArgs: [invoiceId]);
+        for (final it in itemsFor(invoiceId)) {
+          await dbs.insertInvoiceItem(it);
+        }
+        await dbs.updateInvoice(existing.copyWith(
+          totalAmount: total,
+          discount: discount,
+          loadingFee: fee,
+          amountPaidOnInvoice: paid,
+          paymentType: ptype,
+          status: status,
+          lastModifiedAt: now,
+        ));
+      }
+      final saved = await db.query('invoices',
+          columns: ['invoice_uuid', 'total_amount', 'amount_paid_on_invoice'],
+          where: 'id = ?', whereArgs: [invoiceId], limit: 1);
+      final savedUuid = saved.first['invoice_uuid'] as String;
+      unawaited(InvoiceSyncService().syncInvoiceBundleNow(savedUuid).catchError((e) {
+        print('⚠️ الرفع الفوري تأجّل: $e');
+        return false;
+      }));
+      return {
+        'ok': true,
+        'uuid': savedUuid,
+        'total': (saved.first['total_amount'] as num?)?.toDouble() ?? total,
+        'paid': (saved.first['amount_paid_on_invoice'] as num?)?.toDouble() ?? paid,
+      };
+
+    case 'audit':
+      // لقطة كاملة للتدقيق الحسابي: الفواتير ومساهمة كل منها في الدفتر،
+      // وكل صفوف الدفتر الفعّالة، والتكرارات.
+      final db = await DatabaseService().database;
+      final nc = DatabaseService.kNonContributionTxTypes;
+      final ph = List<String>.filled(nc.length, '?').join(',');
+      final invs = await db.rawQuery('''
+        SELECT i.invoice_uuid AS u, c.sync_uuid AS cs, i.total_amount AS total,
+               i.amount_paid_on_invoice AS paid, i.payment_type AS pt, i.status AS st,
+               i.discount AS disc, i.loading_fee AS fee,
+               i.total_amount_cents AS tc, i.discount_cents AS dc, i.amount_paid_cents AS pc,
+               i.is_created_by_me AS mine,
+               (SELECT COUNT(*) FROM invoice_items ii WHERE ii.invoice_id = i.id
+                  AND (ii.item_total_cents IS NULL
+                       OR ii.item_total_cents != CAST(ROUND(ii.item_total * 100) AS INTEGER))) AS badItemCents,
+               (SELECT COALESCE(SUM(ii.item_total), 0) FROM invoice_items ii
+                 WHERE ii.invoice_id = i.id) AS items,
+               (SELECT COALESCE(SUM(t.amount_changed), 0) FROM transactions t
+                 WHERE t.invoice_sync_uuid = i.invoice_uuid
+                   AND (t.is_deleted IS NULL OR t.is_deleted = 0)
+                   AND (t.transaction_type IS NULL OR t.transaction_type NOT IN ($ph))) AS contrib
+        FROM invoices i LEFT JOIN customers c ON c.id = i.customer_id
+        WHERE (i.is_deleted IS NULL OR i.is_deleted = 0)
+      ''', nc);
+      final rows = await db.rawQuery('''
+        SELECT t.transaction_uuid AS u, c.sync_uuid AS cs, t.amount_changed AS amt,
+               t.invoice_sync_uuid AS inv, t.transaction_type AS ty
+        FROM transactions t LEFT JOIN customers c ON c.id = t.customer_id
+        WHERE (t.is_deleted IS NULL OR t.is_deleted = 0)
+      ''');
+      final dupTx = await db.rawQuery('''
+        SELECT COUNT(*) AS n FROM (SELECT transaction_uuid FROM transactions
+          WHERE transaction_uuid IS NOT NULL GROUP BY transaction_uuid HAVING COUNT(*) > 1)
+      ''');
+      final dupInv = await db.rawQuery('''
+        SELECT COUNT(*) AS n FROM (SELECT invoice_uuid FROM invoices
+          WHERE invoice_uuid IS NOT NULL GROUP BY invoice_uuid HAVING COUNT(*) > 1)
+      ''');
+      return {
+        'invoices': [
+          for (final r in invs)
+            [
+              r['u'], r['cs'], (r['total'] as num?)?.toDouble() ?? 0.0,
+              (r['paid'] as num?)?.toDouble() ?? 0.0, r['pt'], r['st'],
+              (r['disc'] as num?)?.toDouble() ?? 0.0, (r['fee'] as num?)?.toDouble() ?? 0.0,
+              (r['items'] as num?)?.toDouble() ?? 0.0, (r['contrib'] as num?)?.toDouble() ?? 0.0,
+              r['tc'], r['dc'], r['pc'], r['mine'], r['badItemCents'],
+            ]
+        ],
+        'rows': [
+          for (final r in rows)
+            [r['u'], r['cs'], (r['amt'] as num?)?.toDouble() ?? 0.0, r['inv'], r['ty']]
+        ],
+        'dupTx': dupTx.first['n'],
+        'dupInv': dupInv.first['n'],
+      };
+
     case 'suspendInvoice':
       // InvoiceSuspendService.suspendInvoice (بلا التحقق من نموذج الواجهة)،
       // ثم «التعديل الحي» الذي تستدعيه الشاشة (لم يعد يكتب شيئاً).
