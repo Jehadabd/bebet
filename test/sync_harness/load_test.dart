@@ -37,6 +37,8 @@ const _txEdits = int.fromEnvironment('TX_EDITS', defaultValue: 2);
 const _custDeletes = int.fromEnvironment('DELETES', defaultValue: 5); // لكل جهاز
 const _seed = int.fromEnvironment('SEED', defaultValue: 1);
 const _join = bool.fromEnvironment('JOIN', defaultValue: true);
+// الحجم الكامل يحتاج ساعات: كل تغيير وارد يكلّف بقدر كل المعاملات (استماع شامل)
+const _timeoutHours = int.fromEnvironment('TIMEOUT_H', defaultValue: 16);
 
 const _solo = 'منفرد';
 const _shared = 'مشترك';
@@ -675,5 +677,5 @@ void main() {
     } finally {
       await h.dispose(keepFiles: failed);
     }
-  }, timeout: const Timeout(Duration(hours: 6)));
+  }, timeout: const Timeout(Duration(hours: _timeoutHours)));
 }
