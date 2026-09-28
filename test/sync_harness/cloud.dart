@@ -34,7 +34,21 @@ class _Listener {
   List<String> lastOrder = [];
   bool dirty = false;
   bool sentOnce = false;
+  final Set<String> pending = {}; // تغيّرت أثناء انقطاع الجهاز (مستمع بسيط)
   _Listener(this.id, this.device, this.port, {this.docPath, this.query});
+
+  /// استعلام بلا ترتيب ولا حدود ولا مؤشرات: تكفيه الفروق (ترتيبه بالمعرّف).
+  bool get simple {
+    final q = query;
+    return q != null &&
+        q.orderBy.isEmpty &&
+        q.limit == null &&
+        q.limitToLast == null &&
+        q.startAt == null &&
+        q.startAfter == null &&
+        q.endAt == null &&
+        q.endBefore == null;
+  }
 }
 
 class CloudError implements Exception {
@@ -47,6 +61,7 @@ class CloudError implements Exception {
 
 class FakeCloud {
   final Map<String, _Doc> docs = {};
+  final Map<String, Set<String>> _byColl = {}; // مجموعة ← مسارات مستنداتها
   final Map<String, bool> online = {};
   final Map<String, List<CloudRequest>> _queued = {};
   final Map<String, _Listener> _listeners = {};
@@ -79,8 +94,16 @@ class FakeCloud {
     for (final r in q) {
       _handle(r);
     }
-    for (final l in _listeners.values) {
-      if (l.device == device && l.dirty) _flush(l);
+    for (final l in _listeners.values.toList()) {
+      if (l.device != device || !l.dirty) continue;
+      if (l.simple && l.sentOnce) {
+        l.dirty = false;
+        final p = {...l.pending};
+        l.pending.clear();
+        _flushChanges(l, p);
+      } else {
+        _flush(l);
+      }
     }
   }
 
@@ -175,17 +198,19 @@ class FakeCloud {
 
   List<String> _matchPaths(QuerySpec q) {
     final out = <String>[];
-    docs.forEach((path, d) {
-      if (_parent(path) != q.collection) return;
-      for (final w in q.where) {
-        if (!_matches(path, d.data, w[0] as FieldPathSpec, w[1] as String, w[2])) return;
+    for (final path in _byColl[q.collection] ?? const <String>{}) {
+      final d = docs[path]!;
+      if (!q.where.every((w) =>
+          _matches(path, d.data, w[0] as FieldPathSpec, w[1] as String, w[2]))) {
+        continue;
       }
+      var hasOrderFields = true;
       for (final o in q.orderBy) {
         final f = o[0] as FieldPathSpec;
-        if (!_isDocId(f) && !_has(d.data, f)) return; // orderBy يستبعد من لا يملك الحقل
+        if (!_isDocId(f) && !_has(d.data, f)) hasOrderFields = false; // orderBy يستبعد من لا يملك الحقل
       }
-      out.add(path);
-    });
+      if (hasOrderFields) out.add(path);
+    }
     final orders = <List<Object?>>[...q.orderBy];
     if (orders.isEmpty || !_isDocId(orders.last[0] as FieldPathSpec)) {
       final dir = orders.isEmpty ? false : orders.last[1] as bool;
@@ -271,9 +296,9 @@ class FakeCloud {
       });
     }
     // تحقق مسبق: update يتطلب وجود المستند (كل العملية تفشل ذرياً)
-    final exists = <String, bool>{for (final p in docs.keys) p: true};
+    final exists = <String, bool>{};
     for (final op in ops) {
-      if (op.kind == 'update' && exists[op.path] != true) {
+      if (op.kind == 'update' && (exists[op.path] ?? docs.containsKey(op.path)) != true) {
         throw CloudError('not-found', 'No document to update: ${op.path}');
       }
       if (op.kind == 'set') exists[op.path] = true;
@@ -301,6 +326,7 @@ class FakeCloud {
             _mergeInto(data, op.data!, now);
           }
           docs[op.path] = _Doc(data, ++_ver);
+          _index(op.path, true);
           break;
         case 'update':
           final data = _deepCopy(docs[op.path]!.data);
@@ -309,9 +335,11 @@ class FakeCloud {
             _setPath(data, f, v, now, prev: _get(data, f));
           });
           docs[op.path] = _Doc(data, ++_ver);
+          _index(op.path, true);
           break;
         case 'delete':
           docs.remove(op.path);
+          _index(op.path, false);
           break;
       }
       changed.add(op.path);
@@ -321,6 +349,15 @@ class FakeCloud {
     }
     lastWriteAt = DateTime.now();
     _notify(changed);
+  }
+
+  void _index(String path, bool present) {
+    final c = _parent(path);
+    if (present) {
+      (_byColl[c] ??= <String>{}).add(path);
+    } else {
+      _byColl[c]?.remove(path);
+    }
   }
 
   void _mergeInto(Map<String, Object?> target, Map<String, Object?> src, Timestamp now) {
@@ -404,20 +441,54 @@ class FakeCloud {
 
   void _notify(Set<String> changed) {
     for (final l in _listeners.values.toList()) {
-      final relevant = l.docPath != null
-          ? changed.contains(l.docPath)
-          : changed.any((p) => _parent(p) == l.query!.collection);
-      if (!relevant) continue;
+      final rel = l.docPath != null
+          ? (changed.contains(l.docPath) ? {l.docPath!} : const <String>{})
+          : changed.where((p) => _parent(p) == l.query!.collection).toSet();
+      if (rel.isEmpty) continue;
       if (!_isOnline(l.device)) {
         l.dirty = true;
+        if (l.simple) l.pending.addAll(rel);
         continue;
       }
-      _flush(l);
+      if (l.simple && l.sentOnce) {
+        _flushChanges(l, rel);
+      } else {
+        _flush(l);
+      }
     }
+  }
+
+  /// الفروق وحدها لمستمع بسيط: ما تغيّر من المستندات المعنيّة فقط.
+  void _flushChanges(_Listener l, Set<String> paths) {
+    final q = l.query!;
+    final changes = <DocChangeMsg>[];
+    for (final p in paths) {
+      final d = docs[p];
+      final match = d != null &&
+          q.where.every((w) =>
+              _matches(p, d.data, w[0] as FieldPathSpec, w[1] as String, w[2]));
+      final before = l.lastSent[p];
+      if (match) {
+        if (before == null) {
+          changes.add(DocChangeMsg('added', -1, -1, _snap(p)));
+        } else if (before != d.version) {
+          changes.add(DocChangeMsg('modified', -1, -1, _snap(p)));
+        } else {
+          continue;
+        }
+        l.lastSent[p] = d.version;
+      } else if (before != null) {
+        changes.add(DocChangeMsg('removed', -1, -1, DocSnap(p, null, 0)));
+        l.lastSent.remove(p);
+      }
+    }
+    if (changes.isEmpty) return;
+    l.port.send(ListenerEvent(l.id, null, changes));
   }
 
   void _flush(_Listener l, {bool initial = false}) {
     l.dirty = false;
+    l.pending.clear();
     if (l.docPath != null) {
       final s = _snap(l.docPath!);
       final prevVer = l.lastSent[l.docPath!];
@@ -564,14 +635,14 @@ class FakeCloud {
   // ───────────────────────── للفحص ─────────────────────────
 
   Map<String, Map<String, Object?>> collection(String name) => {
-        for (final e in docs.entries)
-          if (_parent(e.key) == name) _id(e.key): _deepCopy(e.value.data)
+        for (final p in _byColl[name] ?? const <String>{}) _id(p): _deepCopy(docs[p]!.data)
       };
 
   void clearCollection(String name) {
-    final paths = docs.keys.where((p) => _parent(p) == name).toList();
+    final paths = (_byColl[name] ?? const <String>{}).toList();
     for (final p in paths) {
       docs.remove(p);
+      _index(p, false);
     }
     _notify(paths.toSet());
   }

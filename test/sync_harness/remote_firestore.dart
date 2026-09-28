@@ -6,6 +6,7 @@
 // ignore_for_file: implementation_imports, invalid_use_of_protected_member
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:isolate';
 
 import 'package:cloud_firestore_platform_interface/cloud_firestore_platform_interface.dart';
@@ -181,6 +182,41 @@ class RemoteFirestore extends FirebaseFirestorePlatform {
         InternalSnapshotMetadata(hasPendingWrites: false, isFromCache: false),
       );
 
+  /// لقطة مستمع: كاملة (تُستبدل بها الحالة) أو فروق تُطبَّق على آخر لقطة.
+  /// الترتيب في الفروق بالمعرّف (المستمع البسيط بلا ترتيب)، كترتيب Firestore.
+  QuerySnapshotPlatform querySnapApply(
+      SplayTreeMap<String, DocumentSnapshotPlatform> cur, ListenerEvent e) {
+    DocumentChangeType t(String s) => s == 'added'
+        ? DocumentChangeType.added
+        : s == 'modified'
+            ? DocumentChangeType.modified
+            : DocumentChangeType.removed;
+    final List<DocumentSnapshotPlatform> list;
+    final changed = <DocumentChangePlatform>[];
+    if (e.docs != null) {
+      cur.clear();
+      list = [for (final d in e.docs!) snapFrom(d)];
+      for (var i = 0; i < list.length; i++) {
+        cur[e.docs![i].path] = list[i];
+      }
+      for (final c in e.changes) {
+        changed.add(DocumentChangePlatform(t(c.type), c.oldIndex, c.newIndex, snapFrom(c.doc)));
+      }
+    } else {
+      for (final c in e.changes) {
+        final s = snapFrom(c.doc);
+        if (c.type == 'removed') {
+          cur.remove(c.doc.path);
+        } else {
+          cur[c.doc.path] = s;
+        }
+        changed.add(DocumentChangePlatform(t(c.type), c.oldIndex, c.newIndex, s));
+      }
+      list = cur.values.toList();
+    }
+    return QuerySnapshotPlatform(list, changed, SnapshotMetadataPlatform(false, false));
+  }
+
   QuerySnapshotPlatform querySnapFrom(List<DocSnap> docs, List<DocChangeMsg> changes) {
     DocumentChangeType t(String s) => s == 'added'
         ? DocumentChangeType.added
@@ -234,7 +270,7 @@ class RemoteDocument extends DocumentReferencePlatform {
     bool includeMetadataChanges = false,
     required ListenSource listenSource,
   }) =>
-      fs.link.listen(doc: path).map((e) => fs.snapFrom(e.docs.first));
+      fs.link.listen(doc: path).map((e) => fs.snapFrom(e.docs!.first));
 
   @override
   Future<void> set(Map<String, dynamic> data, [SetOptions? options]) =>
@@ -308,7 +344,10 @@ class RemoteQuery extends QueryPlatform {
     bool includeMetadataChanges = false,
     required ListenSource listenSource,
   }) =>
-      fs.link.listen(query: spec).map((e) => fs.querySnapFrom(e.docs, e.changes));
+      () {
+        final cur = SplayTreeMap<String, DocumentSnapshotPlatform>();
+        return fs.link.listen(query: spec).map((e) => fs.querySnapApply(cur, e));
+      }();
 
   @override
   QueryPlatform where(List<List<dynamic>> conditions) => _copy({'where': conditions});

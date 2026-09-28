@@ -2915,9 +2915,34 @@ class FirebaseSyncService {
   }
 
   /// بصمة الحقول المالية لمعاملة — للمقارنة قبل الرفع وبعده (CAS).
-  String _txFingerprint(Map<String, dynamic> t) =>
-      '${(t['amount_changed'] as num?)?.toDouble()}|${t['transaction_type']}|'
-      '${t['is_deleted'] ?? 0}|${t['customer_id']}|${t['transaction_note']}|${t['invoice_sync_uuid']}';
+  /// 🛡️ CAS ذري: «مرفوعة» فقط إن كانت المعاملة ما زالت كما رُفعت، في جملة
+  /// واحدة. القراءة ثم الكتابة كانت تترك نافذة: تعديل المستخدم بينهما (تحويل
+  /// تسديد إلى دين بعد تعديل مبلغه بأجزاء من الثانية) يُعلَّم «مرفوعاً» ولم
+  /// يُرفع، فلا يصل للأجهزة الأخرى أبداً (اختبار الحمل: 5000− عندها و5000 هنا).
+  Future<void> _markTxUploadedIfUnchanged(
+      Database db, String syncUuid, Map<String, dynamic> sent, String nowIso) async {
+    final n = await db.rawUpdate(
+      'UPDATE transactions SET is_uploaded = 1, last_uploaded_at = ? '
+      'WHERE transaction_uuid = ? AND amount_changed IS ? AND transaction_type IS ? '
+      'AND COALESCE(is_deleted, 0) = ? AND customer_id IS ? '
+      'AND transaction_note IS ? AND invoice_sync_uuid IS ?',
+      [
+        nowIso,
+        syncUuid,
+        (sent['amount_changed'] as num?)?.toDouble(),
+        sent['transaction_type'],
+        (sent['is_deleted'] as num?)?.toInt() ?? 0,
+        sent['customer_id'],
+        sent['transaction_note'],
+        sent['invoice_sync_uuid'],
+      ],
+    );
+    if (n == 0) {
+      // تغيّرت أثناء الرفع: تبقى بانتظار الرفع فتُرفع نسختها الجديدة
+      await db.update('transactions', {'is_uploaded': 0},
+          where: 'transaction_uuid = ?', whereArgs: [syncUuid]);
+    }
+  }
 
   /// رفع معاملة جديدة أو محدثة
   /// يرجع true عند النجاح (أو عند تخطي مقصود)، و false عند فشل الرفع
@@ -3002,7 +3027,6 @@ class FirebaseSyncService {
         await _crashRecovery!.markUploading(walOperationId);
       }
 
-      final sentFingerprint = _txFingerprint(tx);
       final checksum = _calculateChecksum(tx);
       final nowIso = DateTime.now().toIso8601String();
       final doc = <String, dynamic>{
@@ -3047,17 +3071,7 @@ class FirebaseSyncService {
       await _coordinator!.markFirebaseSynced('transaction', syncUuid);
 
       // 🛡️ CAS: «مرفوعة» فقط إن لم تتغير المعاملة أثناء الرفع
-      final cur = await db.query('transactions',
-          where: 'transaction_uuid = ?', whereArgs: [syncUuid], limit: 1);
-      if (cur.isNotEmpty) {
-        if (_txFingerprint(cur.first) == sentFingerprint) {
-          await db.update('transactions', {'is_uploaded': 1, 'last_uploaded_at': nowIso},
-              where: 'transaction_uuid = ?', whereArgs: [syncUuid]);
-        } else {
-          await db.update('transactions', {'is_uploaded': 0},
-              where: 'transaction_uuid = ?', whereArgs: [syncUuid]);
-        }
-      }
+      await _markTxUploadedIfUnchanged(db, syncUuid, tx, nowIso);
 
       if (walOperationId != null && _crashRecovery != null) {
         await _crashRecovery!.markSynced(walOperationId);
@@ -5613,7 +5627,6 @@ class FirebaseSyncService {
     _rateLimiter.recordOperation();
 
     final checksum = _calculateChecksum(tx);
-    final sentFingerprint = _txFingerprint(tx);
     final nowIso = DateTime.now().toIso8601String();
 
     try {
@@ -5647,15 +5660,7 @@ class FirebaseSyncService {
           .set(doc, SetOptions(merge: true))
           .timeout(const Duration(seconds: 60));
 
-      final cur = await db.query('transactions',
-          where: 'transaction_uuid = ?', whereArgs: [syncUuid], limit: 1);
-      if (cur.isNotEmpty && _txFingerprint(cur.first) == sentFingerprint) {
-        await db.update('transactions', {'is_uploaded': 1, 'last_uploaded_at': nowIso},
-            where: 'transaction_uuid = ?', whereArgs: [syncUuid]);
-      } else {
-        await db.update('transactions', {'is_uploaded': 0},
-            where: 'transaction_uuid = ?', whereArgs: [syncUuid]);
-      }
+      await _markTxUploadedIfUnchanged(db, syncUuid, tx, nowIso);
     } catch (e) {
       final retryData = Map<String, dynamic>.from(tx);
       retryData['customer_sync_uuid'] = customerSyncUuid;

@@ -84,7 +84,11 @@ class DocChangeMsg {
 
 class ListenerEvent {
   final String listenerId;
-  final List<DocSnap> docs;
+
+  /// اللقطة كاملة. null = فروق فقط تُطبَّق على آخر لقطة (كما يرسل Firestore
+  /// الفروق وحدها): إرسال كل المستندات مع كل تغيير يجعل الأداة نفسها بطيئة
+  /// بطءاً تربيعياً مع حجم البيانات.
+  final List<DocSnap>? docs;
   final List<DocChangeMsg> changes;
   const ListenerEvent(this.listenerId, this.docs, this.changes);
 }
