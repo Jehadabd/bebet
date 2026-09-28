@@ -3249,16 +3249,6 @@ class DatabaseService {
         print('⚠️ تعذّر إنشاء قيد فريد (يوجد تكرار قديم): $e');
       }
     }
-
-    // ⚡ فهرس ربط المعاملة بفاتورتها المحلية: الحارس المحاسبي وتعديل الفاتورة
-    // وحذفها يبحثون بـ invoice_id عدة مرات مع كل حفظ. بلا فهرس يُقرأ جدول
-    // المعاملات كله في كل مرة فيبطؤ الحفظ مع نمو البيانات (اختبار الحمل).
-    try {
-      await db.execute(
-          'CREATE INDEX IF NOT EXISTS idx_transactions_invoice_id ON transactions(invoice_id)');
-    } catch (e) {
-      print('⚠️ تعذّر إنشاء فهرس invoice_id: $e');
-    }
   }
 
   /// 🛡️ يدمج صفوف العملاء التي تحمل نفس sync_uuid في صف واحد، ثم ينشئ قيداً
