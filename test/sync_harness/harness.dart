@@ -533,6 +533,11 @@ class Harness {
     }
   }
 
+  /// مهلة استدعاءات التحقق مع الحجم الكبير: السحب الكامل يمرّ على كل مستندات
+  /// السحابة، ولقطة الحالة تنقل كل المعاملات. المهلة الافتراضية (3 دقائق) للعمليات.
+  static const kickTimeout = Duration(minutes: 60);
+  static const stateTimeout = Duration(minutes: 20);
+
   /// كل الأجهزة متصلة، ثم دورات مزامنة حتى تهدأ السحابة وتتطابق الأجهزة مع الحقيقة.
   Future<List<String>> settle({int rounds = 4}) async {
     for (final n in devices.keys.toList()) {
@@ -541,13 +546,17 @@ class Harness {
     List<String> errs = const [];
     for (var r = 0; r < rounds; r++) {
       await waitCloudQuiet();
+      final sw = Stopwatch()..start();
       await Future.wait([
         for (final h in devices.values)
-          h.call('kick').catchError((Object e) {
+          h.call('kick', const {}, kickTimeout).catchError((Object e) {
             opErrors.add('kick ${h.name}: $e');
             return null;
           })
       ]);
+      if (sw.elapsed.inSeconds >= 60) {
+        print('   ⏱️ استقرار (دورة ${r + 1}): مزامنة وسحب كامل على كل الأجهزة ${sw.elapsed.inSeconds}ث');
+      }
       await waitCloudQuiet();
       await _waitBootstraps();
       errs = await check();
@@ -563,7 +572,7 @@ class Harness {
     while (DateTime.now().isBefore(deadline)) {
       var busy = false;
       for (final h in devices.values) {
-        final st = (await h.call('state') as Map).cast<String, Object?>();
+        final st = (await h.call('state', const {}, stateTimeout) as Map).cast<String, Object?>();
         if (st['bootstrapping'] == true) busy = true;
       }
       if (!busy) return;
@@ -574,7 +583,7 @@ class Harness {
   Future<List<String>> check() async {
     final errs = <String>[];
     for (final h in devices.values) {
-      final st = (await h.call('state') as Map).cast<String, Object?>();
+      final st = (await h.call('state', const {}, stateTimeout) as Map).cast<String, Object?>();
       final rows = <String, Map<String, Object?>>{};
       for (final c in (st['customers'] as List).cast<Map>()) {
         final u = c['uuid'] as String?;

@@ -35,6 +35,7 @@ class _Listener {
   bool dirty = false;
   bool sentOnce = false;
   final Set<String> pending = {}; // تغيّرت أثناء انقطاع الجهاز (مستمع بسيط)
+  int total = 0; // عدد كل المطابق (للمستمع المحدود: هل بعد النافذة مستندات؟)
   _Listener(this.id, this.device, this.port, {this.docPath, this.query});
 
   /// استعلام بلا ترتيب ولا حدود ولا مؤشرات: تكفيه الفروق (ترتيبه بالمعرّف).
@@ -43,6 +44,18 @@ class _Listener {
     return q != null &&
         q.orderBy.isEmpty &&
         q.limit == null &&
+        q.limitToLast == null &&
+        q.startAt == null &&
+        q.startAfter == null &&
+        q.endAt == null &&
+        q.endBefore == null;
+  }
+
+  /// استعلام بحدّ (limit) بلا مؤشرات: تُحدَّث «نافذته» بما تغيّر وحده.
+  bool get windowed {
+    final q = query;
+    return q != null &&
+        q.limit != null &&
         q.limitToLast == null &&
         q.startAt == null &&
         q.startAfter == null &&
@@ -76,6 +89,33 @@ class FakeCloud {
 
   /// أخطاء غير متوقعة داخل السحابة (خلل في الأداة نفسها).
   final List<String> internalErrors = [];
+
+  /// زمن المعالجة داخل السحابة لكل بند (للقياس: أين يذهب الوقت مع نمو البيانات).
+  final Map<String, List<int>> costs = {}; // بند ← [عدد، مجموع µs، أقصى µs]
+  final Stopwatch _clock = Stopwatch()..start();
+  int busyMicros = 0; // كل وقت معالجة الطلبات (الإشعارات ضمنه)
+  void _cost(String k, int t0) {
+    final us = _clock.elapsedMicroseconds - t0;
+    final e = costs[k] ??= [0, 0, 0];
+    e[0]++;
+    e[1] += us;
+    if (us > e[2]) e[2] = us;
+  }
+
+  static String _label(CloudRequest r) {
+    final a = r.args;
+    switch (r.op) {
+      case 'get':
+        return 'get ${_parent(a['path'] as String)}';
+      case 'query':
+      case 'agg':
+        return '${r.op} ${(a['spec'] as QuerySpec).collection}';
+      case 'write':
+        final ops = (a['ops'] as List).cast<WriteOp>();
+        return 'write ${ops.isEmpty ? '' : _parent(ops.first.path)}${ops.length > 1 ? ' ×n' : ''}';
+    }
+    return r.op;
+  }
 
   SendPort get sendPort => _port.sendPort;
 
@@ -136,6 +176,7 @@ class FakeCloud {
   }
 
   void _handle(CloudRequest r) {
+    final t0 = _clock.elapsedMicroseconds;
     try {
       final value = _dispatch(r);
       r.replyTo.send(CloudReply(r.id, value));
@@ -144,6 +185,9 @@ class FakeCloud {
     } catch (e, st) {
       internalErrors.add('${r.op}: $e\n$st');
       r.replyTo.send(CloudReply(r.id, null, 'internal', '$e'));
+    } finally {
+      busyMicros += _clock.elapsedMicroseconds - t0;
+      _cost(_label(r), t0);
     }
   }
 
@@ -196,39 +240,49 @@ class FakeCloud {
     return [for (final p in paths) _snap(p)];
   }
 
-  List<String> _matchPaths(QuerySpec q) {
-    final out = <String>[];
-    for (final path in _byColl[q.collection] ?? const <String>{}) {
-      final d = docs[path]!;
-      if (!q.where.every((w) =>
-          _matches(path, d.data, w[0] as FieldPathSpec, w[1] as String, w[2]))) {
-        continue;
-      }
-      var hasOrderFields = true;
-      for (final o in q.orderBy) {
-        final f = o[0] as FieldPathSpec;
-        if (!_isDocId(f) && !_has(d.data, f)) hasOrderFields = false; // orderBy يستبعد من لا يملك الحقل
-      }
-      if (hasOrderFields) out.add(path);
+  /// شروط الاستعلام بلا المؤشرات والحدود: المرشّحات، ووجود حقول الترتيب.
+  bool _qualifies(QuerySpec q, String path, Map<String, Object?> data) {
+    for (final w in q.where) {
+      if (!_matches(path, data, w[0] as FieldPathSpec, w[1] as String, w[2])) return false;
     }
+    for (final o in q.orderBy) {
+      final f = o[0] as FieldPathSpec;
+      if (!_isDocId(f) && !_has(data, f)) return false; // orderBy يستبعد من لا يملك الحقل
+    }
+    return true;
+  }
+
+  static List<List<Object?>> _orders(QuerySpec q) {
     final orders = <List<Object?>>[...q.orderBy];
     if (orders.isEmpty || !_isDocId(orders.last[0] as FieldPathSpec)) {
       final dir = orders.isEmpty ? false : orders.last[1] as bool;
       orders.add([const ['__name__'], dir]);
     }
-    int cmpPaths(String a, String b) {
-      for (final o in orders) {
-        final f = o[0] as FieldPathSpec;
-        final desc = o[1] as bool;
-        final va = _isDocId(f) ? _id(a) : _get(docs[a]!.data, f);
-        final vb = _isDocId(f) ? _id(b) : _get(docs[b]!.data, f);
-        final c = _cmp(va, vb);
-        if (c != 0) return desc ? -c : c;
-      }
-      return 0;
-    }
+    return orders;
+  }
 
-    out.sort(cmpPaths);
+  int Function(String, String) _comparator(List<List<Object?>> orders) => (a, b) {
+        for (final o in orders) {
+          final f = o[0] as FieldPathSpec;
+          final desc = o[1] as bool;
+          final va = _isDocId(f) ? _id(a) : _get(docs[a]!.data, f);
+          final vb = _isDocId(f) ? _id(b) : _get(docs[b]!.data, f);
+          final c = _cmp(va, vb);
+          if (c != 0) return desc ? -c : c;
+        }
+        return 0;
+      };
+
+  List<String> _matchPaths(QuerySpec q) => _limited(q, _sortedMatches(q));
+
+  /// كل المطابق مرتّباً وبعد المؤشرات، قبل الحدود.
+  List<String> _sortedMatches(QuerySpec q) {
+    final out = <String>[
+      for (final path in _byColl[q.collection] ?? const <String>{})
+        if (_qualifies(q, path, docs[path]!.data)) path
+    ];
+    final orders = _orders(q);
+    out.sort(_comparator(orders));
 
     int cmpCursor(String path, List<Object?> cursor) {
       for (var i = 0; i < cursor.length && i < orders.length; i++) {
@@ -248,6 +302,10 @@ class FakeCloud {
     if (q.startAfter != null) res = res.where((p) => cmpCursor(p, q.startAfter!) > 0).toList();
     if (q.endAt != null) res = res.where((p) => cmpCursor(p, q.endAt!) <= 0).toList();
     if (q.endBefore != null) res = res.where((p) => cmpCursor(p, q.endBefore!) < 0).toList();
+    return res;
+  }
+
+  static List<String> _limited(QuerySpec q, List<String> res) {
     if (q.limit != null && res.length > q.limit!) res = res.sublist(0, q.limit!);
     if (q.limitToLast != null && res.length > q.limitToLast!) {
       res = res.sublist(res.length - q.limitToLast!);
@@ -306,7 +364,9 @@ class FakeCloud {
     }
     final now = _serverNow();
     final changed = <String>{};
+    final before = <String, Map<String, Object?>?>{}; // حالة كل مستند قبل هذه الكتابة
     for (final op in ops) {
+      before.putIfAbsent(op.path, () => docs[op.path]?.data);
       switch (op.kind) {
         case 'set':
           final prev = docs[op.path];
@@ -348,7 +408,7 @@ class FakeCloud {
       totalWrites++;
     }
     lastWriteAt = DateTime.now();
-    _notify(changed);
+    _notify(changed, before);
   }
 
   void _index(String path, bool present) {
@@ -439,7 +499,7 @@ class FakeCloud {
 
   // ───────────────────────── المستمعون ─────────────────────────
 
-  void _notify(Set<String> changed) {
+  void _notify(Set<String> changed, Map<String, Map<String, Object?>?> before) {
     for (final l in _listeners.values.toList()) {
       final rel = l.docPath != null
           ? (changed.contains(l.docPath) ? {l.docPath!} : const <String>{})
@@ -450,12 +510,118 @@ class FakeCloud {
         if (l.simple) l.pending.addAll(rel);
         continue;
       }
-      if (l.simple && l.sentOnce) {
+      final t0 = _clock.elapsedMicroseconds;
+      final String how;
+      if (l.docPath != null) {
+        _flush(l);
+        how = 'مستند';
+      } else if (l.simple && l.sentOnce) {
         _flushChanges(l, rel);
+        how = 'فرق';
+      } else if (l.windowed && l.sentOnce) {
+        how = _flushWindow(l, rel, before) ? 'نافذة' : 'نافذة ثم كامل';
+      } else if (l.sentOnce && _unaffected(l, rel)) {
+        how = 'لا يمسّه';
       } else {
         _flush(l);
+        how = 'كامل';
+      }
+      _cost('  ↳ إشعار ${l.docPath != null ? '' : l.query!.collection} $how', t0);
+    }
+  }
+
+  /// لا شيء مما تغيّر كان في النتيجة ولا صار يطابق الآن: النتيجة لا تتغير
+  /// (حذف مستند خارج النافذة لا يغيّرها، مع الحدود والمؤشرات).
+  bool _unaffected(_Listener l, Set<String> rel) {
+    for (final p in rel) {
+      if (l.lastSent.containsKey(p)) return false;
+      final d = docs[p];
+      if (d != null && _qualifies(l.query!, p, d.data)) return false;
+    }
+    return true;
+  }
+
+  /// مستمع بحدّ بلا مؤشرات: تُحدَّث النافذة (أول limit مستنداً بالترتيب) بما
+  /// تغيّر وحده، دون فرز المجموعة كلها مع كل كتابة. إن نقصت النافذة وبعدها
+  /// مستندات لا نعرف أيّها التالي، يُعاد الحساب كاملاً (يرجع false).
+  /// الترتيب بالمعرّف (بلا orderBy): تُرسل الفروق وحدها كالمستمع البسيط؛
+  /// الترتيب بحقل: تُرسل النافذة كاملة (صغيرة) ليبقى ترتيبها كما في Firestore.
+  bool _flushWindow(_Listener l, Set<String> rel, Map<String, Map<String, Object?>?> before) {
+    final q = l.query!;
+    final lim = q.limit!;
+    final cmp = _comparator(_orders(q));
+    final win = List<String>.of(l.lastOrder);
+    var beyond = l.total - win.length; // مطابقة خارج النافذة (بعدها)
+    var touched = false;
+    // 1) إخراج كل ما تغيّر بحالته السابقة
+    for (final p in rel) {
+      if (l.lastSent.containsKey(p)) {
+        win.remove(p);
+        touched = true;
+      } else {
+        final b = before[p];
+        if (b != null && _qualifies(q, p, b)) beyond--;
       }
     }
+    // 2) إدخال ما يطابق بحالته الجديدة في موضعه
+    for (final p in rel) {
+      final d = docs[p];
+      if (d == null || !_qualifies(q, p, d.data)) continue;
+      var lo = 0, hi = win.length;
+      while (lo < hi) {
+        final mid = (lo + hi) >> 1;
+        if (cmp(win[mid], p) < 0) {
+          lo = mid + 1;
+        } else {
+          hi = mid;
+        }
+      }
+      if (lo < win.length || (win.length < lim && beyond == 0)) {
+        win.insert(lo, p);
+        touched = true;
+        if (win.length > lim) {
+          win.removeLast();
+          beyond++;
+        }
+      } else if (win.length >= lim) {
+        beyond++; // بعد نافذة ممتلئة
+      } else {
+        _flush(l);
+        return false;
+      }
+    }
+    if (win.length < lim && beyond > 0) {
+      _flush(l);
+      return false;
+    }
+    l.total = win.length + beyond;
+    if (!touched) return true;
+    // 3) الفروق مقابل آخر ما أُرسل
+    final ordered = q.orderBy.isNotEmpty;
+    final oldIndex = ordered
+        ? {for (var i = 0; i < l.lastOrder.length; i++) l.lastOrder[i]: i}
+        : const <String, int>{};
+    final now = {for (final p in win) p: docs[p]!.version};
+    final changes = <DocChangeMsg>[];
+    for (var i = 0; i < win.length; i++) {
+      final p = win[i];
+      final was = l.lastSent[p];
+      if (was == null) {
+        changes.add(DocChangeMsg('added', -1, ordered ? i : -1, _snap(p)));
+      } else if (was != now[p]) {
+        changes.add(DocChangeMsg('modified', oldIndex[p] ?? -1, ordered ? i : -1, _snap(p)));
+      }
+    }
+    for (final p in l.lastSent.keys) {
+      if (!now.containsKey(p)) {
+        changes.add(DocChangeMsg('removed', oldIndex[p] ?? -1, -1, DocSnap(p, null, 0)));
+      }
+    }
+    l.lastOrder = win;
+    l.lastSent = now;
+    if (changes.isEmpty) return true;
+    l.port.send(ListenerEvent(l.id, ordered ? [for (final p in win) _snap(p)] : null, changes));
+    return true;
   }
 
   /// الفروق وحدها لمستمع بسيط: ما تغيّر من المستندات المعنيّة فقط.
@@ -498,7 +664,9 @@ class FakeCloud {
       l.port.send(ListenerEvent(l.id, [s], const []));
       return;
     }
-    final paths = _matchPaths(l.query!);
+    final sorted = _sortedMatches(l.query!);
+    final paths = _limited(l.query!, sorted);
+    l.total = sorted.length;
     final now = {for (final p in paths) p: docs[p]!.version};
     final changes = <DocChangeMsg>[];
     final oldIndex = {for (var i = 0; i < l.lastOrder.length; i++) l.lastOrder[i]: i};
@@ -640,10 +808,11 @@ class FakeCloud {
 
   void clearCollection(String name) {
     final paths = (_byColl[name] ?? const <String>{}).toList();
+    final before = <String, Map<String, Object?>?>{};
     for (final p in paths) {
-      docs.remove(p);
+      before[p] = docs.remove(p)?.data;
       _index(p, false);
     }
-    _notify(paths.toSet());
+    _notify(paths.toSet(), before);
   }
 }

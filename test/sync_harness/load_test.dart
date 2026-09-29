@@ -38,7 +38,7 @@ const _txEdits = int.fromEnvironment('TX_EDITS', defaultValue: 2);
 const _custDeletes = int.fromEnvironment('DELETES', defaultValue: 5); // لكل جهاز
 const _seed = int.fromEnvironment('SEED', defaultValue: 1);
 const _join = bool.fromEnvironment('JOIN', defaultValue: true);
-// الحجم الكامل يحتاج ساعات: كل تغيير وارد يكلّف بقدر كل المعاملات (استماع شامل)
+// حدّ زمني للاختبار كله: الحجم الكامل مع نقاط التحقق والسحب الكامل يطول
 const _timeoutHours = int.fromEnvironment('TIMEOUT_H', defaultValue: 16);
 
 const _solo = 'منفرد';
@@ -87,6 +87,10 @@ class _Load {
   final Map<String, int> txConverted = {};
   final List<String> deletedCustomers = [];
   final Stopwatch sw = Stopwatch()..start();
+  // قياس: زمن كل نوع عملية، ومجموع زمن عمليات كل جهاز، وانشغال السحابة
+  final Map<String, List<int>> opTime = {}; // عملية ← [عدد، مجموع ms، أقصى ms]
+  final Map<String, int> opMs = {};
+  final Map<String, List<int>> _lastMark = {}; // جهاز ← [زمن ms، مجموع زمن عملياته، انشغال السحابة µs]
 
   // ── نقاط تحقق حسابي أثناء العمل: كل الأجهزة تتوقف معاً، تتزامن، ويُدقَّق كل
   // شيء مقابل الحقيقة، ثم تكمل. إن انقطع الاختبار بعدها (إعادة تشغيل الخادم)
@@ -131,22 +135,37 @@ class _Load {
 
   /// عملية مستخدم: إعادة المحاولة عند المنع المؤقت (مزامنة/مطابقة حية جارية).
   Future<T?> op<T>(String dev, String what, Future<T> Function() f) async {
-    for (var attempt = 0; attempt < 40; attempt++) {
-      try {
-        final v = await f();
-        opsDone[dev] = (opsDone[dev] ?? 0) + 1;
-        return v;
-      } catch (e) {
-        if (_transient(e) && attempt < 39) {
-          retries[dev] = (retries[dev] ?? 0) + 1;
-          await Future<void>.delayed(Duration(milliseconds: 200 + rnd.nextInt(400)));
-          continue;
+    final t0 = sw.elapsedMilliseconds;
+    try {
+      for (var attempt = 0; attempt < 40; attempt++) {
+        try {
+          final v = await f();
+          opsDone[dev] = (opsDone[dev] ?? 0) + 1;
+          return v;
+        } catch (e) {
+          if (_transient(e) && attempt < 39) {
+            retries[dev] = (retries[dev] ?? 0) + 1;
+            await Future<void>.delayed(Duration(milliseconds: 200 + rnd.nextInt(400)));
+            continue;
+          }
+          (opErrors[dev] ??= []).add('$what: ${e.toString().split('\n').first}');
+          return null;
         }
-        (opErrors[dev] ??= []).add('$what: ${e.toString().split('\n').first}');
-        return null;
       }
+      return null;
+    } finally {
+      final ms = sw.elapsedMilliseconds - t0;
+      final k = what.startsWith('فاتورة: إنشاء')
+          ? 'فاتورة: إنشاء'
+          : what.startsWith('فاتورة:')
+              ? 'فاتورة: تعديل'
+              : what;
+      final e = opTime[k] ??= [0, 0, 0];
+      e[0]++;
+      e[1] += ms;
+      if (ms > e[2]) e[2] = ms;
+      opMs[dev] = (opMs[dev] ?? 0) + ms;
     }
-    return null;
   }
 
   void count(String dev, String kind) {
@@ -307,10 +326,20 @@ class _Load {
       if (sum == 0) break;
       steps++;
       for (var k = 0; k < checkpointAt.length; k++) {
-        if (steps == (total * checkpointAt[k]).floor()) await checkpoint(k);
+        if (steps == (total * checkpointAt[k]).floor()) {
+          await checkpoint(k);
+          // التدقيق يوصل كل الأجهزة؛ من كان في انقطاع يكمل انقطاعه
+          if (offlineLeft > 0) await h.setOnline(dev, false);
+        }
       }
       if (steps % 1000 == 0) {
-        log('$dev: $steps/$total عملية (أخطاء ${opErrors[dev]?.length ?? 0}، إعادات ${retries[dev] ?? 0})');
+        final now = [sw.elapsedMilliseconds, opMs[dev] ?? 0, h.cloud.busyMicros];
+        final last = _lastMark[dev] ?? [0, 0, 0];
+        _lastMark[dev] = now;
+        final wall = max(1, now[0] - last[0]);
+        log('$dev: $steps/$total عملية (أخطاء ${opErrors[dev]?.length ?? 0}، إعادات ${retries[dev] ?? 0}، '
+            'متوسط العملية ${(now[1] - last[1]) ~/ 1000}ms، انشغال السحابة '
+            '${((now[2] - last[2]) / 10 / wall).round()}%)');
       }
       // 📴 انقطاع الإنترنت أثناء العمل، ثم عودته
       if (offlineAt.contains(steps)) {
@@ -603,7 +632,8 @@ class _Load {
     final grand = custs.keys.fold(0.0, (s, u) => s + t.balance(u));
     print('── مجموع ديون كل العملاء الصحيح: ${money(grand)}');
     for (final dev in h.devices.keys) {
-      final st = (await h.d(dev).call('state') as Map).cast<String, Object?>();
+      final st = (await h.d(dev).call('state', const {}, Harness.stateTimeout) as Map)
+          .cast<String, Object?>();
       final sum = (st['customers'] as List)
           .cast<Map>()
           .where((c) => (c['del'] ?? 0) == 0)
@@ -621,6 +651,16 @@ class _Load {
       ];
       print('   مثال «$cat» ${c.name} (أنشأه ${c.creator}): ${parts.join('، ')} '
           '= ${money(t.balance(c.uuid))}');
+    }
+    print('── أبطأ العمليات (العدد، المتوسط، الأقصى):');
+    for (final e in (opTime.entries.toList()..sort((a, b) => b.value[1].compareTo(a.value[1]))).take(10)) {
+      print('   ${e.key}: ${e.value[0]}× متوسط ${e.value[1] ~/ max(1, e.value[0])}ms أقصى ${e.value[2]}ms');
+    }
+    print('── أثقل البنود في السحابة الوهمية (العدد، المجموع، الأقصى) — انشغالها الكلي '
+        '${(h.cloud.busyMicros / 1e6).round()}ث من ${sw.elapsed.inSeconds}ث:');
+    for (final e in (h.cloud.costs.entries.toList()..sort((a, b) => b.value[1].compareTo(a.value[1]))).take(16)) {
+      print('   ${e.key}: ${e.value[0]}× ${(e.value[1] / 1e6).toStringAsFixed(1)}ث '
+          '(أقصى ${(e.value[2] / 1000).round()}ms)');
     }
     print('═══════════════════════════════════════════════\n');
   }
@@ -663,7 +703,9 @@ void main() {
       }
 
       // 2) العمل اليومي بالتوازي
-      await Future.wait([for (final d in devs) L.worker(d, txPlan, invPlan[d] ?? const [])]);
+      // خلل في نقطة تحقق يوقف الاختبار فوراً (لا ساعات عمل فوق بيانات مختلفة)
+      await Future.wait([for (final d in devs) L.worker(d, txPlan, invPlan[d] ?? const [])],
+          eagerError: true);
       await L.verify('بعد العمل اليومي');
       await L.report();
       if (const bool.fromEnvironment('SQLSTATS')) {
