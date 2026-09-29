@@ -22,6 +22,7 @@
 //   flutter test test/sync_harness/load_test.dart --dart-define=CUSTOMERS=60 --dart-define=INVOICES=60
 // ignore_for_file: avoid_print
 
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -86,6 +87,29 @@ class _Load {
   final Map<String, int> txConverted = {};
   final List<String> deletedCustomers = [];
   final Stopwatch sw = Stopwatch()..start();
+
+  // ── نقاط تحقق حسابي أثناء العمل: كل الأجهزة تتوقف معاً، تتزامن، ويُدقَّق كل
+  // شيء مقابل الحقيقة، ثم تكمل. إن انقطع الاختبار بعدها (إعادة تشغيل الخادم)
+  // يبقى ما تحقّق حتى آخر نقطة نتيجةً مثبتة.
+  static const checkpointAt = [0.20, 0.40, 0.70, 0.95];
+  final Map<int, int> _arrived = {};
+  final Map<int, Completer<void>> _released = {};
+
+  Future<void> checkpoint(int k) async {
+    _arrived[k] = (_arrived[k] ?? 0) + 1;
+    final done = _released[k] ??= Completer<void>();
+    if (_arrived[k] == devs.length) {
+      final label = '${(checkpointAt[k] * 100).round()}% من العمل';
+      log('⏸️ نقطة تحقق عند $label: الأجهزة متوقفة للتدقيق');
+      try {
+        await verify('نقطة تحقق عند $label');
+        await report();
+      } finally {
+        done.complete();
+      }
+    }
+    await done.future;
+  }
 
   _Load(this.h, this.rnd, this.devs);
 
@@ -282,6 +306,9 @@ class _Load {
       final sum = w.fold(0.0, (a, b) => a + b);
       if (sum == 0) break;
       steps++;
+      for (var k = 0; k < checkpointAt.length; k++) {
+        if (steps == (total * checkpointAt[k]).floor()) await checkpoint(k);
+      }
       if (steps % 1000 == 0) {
         log('$dev: $steps/$total عملية (أخطاء ${opErrors[dev]?.length ?? 0}، إعادات ${retries[dev] ?? 0})');
       }
@@ -602,7 +629,8 @@ class _Load {
 void main() {
   test('اختبار الحمل: $_nDevices أجهزة × ($_nCustomers عميل + $_nInvoices فاتورة × $_invEdits تعديلات)',
       () async {
-    final h = Harness(seed: _seed);
+    final h = Harness(seed: _seed)
+      ..perDeviceSqlite = const bool.fromEnvironment('PER_DEVICE_SQLITE', defaultValue: true);
     final devs = [for (var i = 1; i <= _nDevices; i++) 'D$i'];
     final L = _Load(h, Random(_seed), devs);
     var failed = true;

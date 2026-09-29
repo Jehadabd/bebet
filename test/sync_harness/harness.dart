@@ -149,6 +149,12 @@ class Harness {
   int _marker = 0;
   static SqfliteIsolate? _sqlite; // خادم SQLite واحد لكل الاختبارات
 
+  /// كل جهاز بخادم SQLite خاص به (خيط مستقل) فيتوزع العمل على أنوية المعالج.
+  /// الافتراضي خادم مشترك: في بيئة اختبار ويندوز تُفسد مكتبة SQLite اتصالات
+  /// الخيوط إذا استُخدمت معاً.
+  bool perDeviceSqlite = false;
+  final Map<String, SqfliteIsolate> _sqliteByDevice = {};
+
   Harness({int seed = 0})
       : root = Directory.systemTemp.createTempSync('sync_harness_'),
         rnd = Random(seed);
@@ -172,7 +178,9 @@ class Harness {
     dir ??= '${root.path}${Platform.pathSeparator}$name';
     final h = DeviceHandle(name, dir, online);
     cloud.setOnline(name, online);
-    _sqlite ??= await createIsolate(sqfliteFfiInit);
+    final SqfliteIsolate sqliteServer = perDeviceSqlite
+        ? (_sqliteByDevice[name] ??= await createIsolate(sqfliteFfiInit))
+        : (_sqlite ??= await createIsolate(sqfliteFfiInit));
     h.isolate = await Isolate.spawn(
       deviceMain,
       DeviceBoot(
@@ -180,7 +188,7 @@ class Harness {
         dir: dir,
         cloud: cloud.sendPort,
         controller: h.replies.sendPort,
-        sqlite: _sqlite!.sendPort,
+        sqlite: sqliteServer.sendPort,
         prefs: prefs ?? basePrefs(),
         secure: secure ?? {'firebase_sync_device_id': 'dev_$name'},
         online: online,
