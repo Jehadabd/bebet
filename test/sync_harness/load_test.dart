@@ -40,6 +40,11 @@ const _seed = int.fromEnvironment('SEED', defaultValue: 1);
 const _join = bool.fromEnvironment('JOIN', defaultValue: true);
 // حدّ زمني للاختبار كله: الحجم الكامل مع نقاط التحقق والسحب الكامل يطول
 const _timeoutHours = int.fromEnvironment('TIMEOUT_H', defaultValue: 16);
+// وتيرة كل جهاز: عملية كل PACE_MS على الأكثر (250 = 4 عمليات/ث، أسرع بكثير من
+// أي مستخدم). التطبيق يحدّ الرفع بـ600 عملية/دقيقة و20000/ساعة لكل جهاز، وما
+// زاد يُؤجَّل للدورة التالية؛ بلا وتيرة (نحو 100 عملية/ث) يبني الاختبار طابوراً
+// لا يعيشه مستخدم حقيقي، ويبلغ حدّ الساعة فيتوقف الرفع حتى تمضي.
+const _paceMs = int.fromEnvironment('PACE_MS', defaultValue: 250);
 
 const _solo = 'منفرد';
 const _shared = 'مشترك';
@@ -312,6 +317,7 @@ class _Load {
       'دين محفوظة', 'نقد محفوظة', 'نقد محفوظة', 'معلّقة ثم محفوظة',
     ];
     var created = 0;
+    var nextAt = 0; // موعد الخطوة التالية (ms) — بلا تعويض بدفعة بعد توقف
 
     while (true) {
       final pendingInvEdits = invs.entries.where((e) => e.value.done < e.value.plan.length).toList();
@@ -324,6 +330,11 @@ class _Load {
       ];
       final sum = w.fold(0.0, (a, b) => a + b);
       if (sum == 0) break;
+      if (_paceMs > 0) {
+        final now = sw.elapsedMilliseconds;
+        if (nextAt > now) await Future<void>.delayed(Duration(milliseconds: nextAt - now));
+        nextAt = max(nextAt, sw.elapsedMilliseconds) + _paceMs;
+      }
       steps++;
       for (var k = 0; k < checkpointAt.length; k++) {
         if (steps == (total * checkpointAt[k]).floor()) {

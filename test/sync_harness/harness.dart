@@ -538,13 +538,31 @@ class Harness {
   static const kickTimeout = Duration(minutes: 60);
   static const stateTimeout = Duration(minutes: 20);
 
+  /// مجموع المعاملات المعلّقة للرفع على كل الأجهزة في آخر فحص.
+  int lastPending = 0;
+
   /// كل الأجهزة متصلة، ثم دورات مزامنة حتى تهدأ السحابة وتتطابق الأجهزة مع الحقيقة.
+  ///
+  /// حدّ الرفع في التطبيق (600 عملية/دقيقة لكل جهاز) يؤجّل ما زاد عنه إلى
+  /// الدورة التالية. فبعد [rounds] دورة تستمر الدورات ما دام المعلّق للرفع
+  /// يتناقص (حتى ساعة)؛ معلّق لم يتناقص 3 دقائق (أطول من نافذة الحدّ) = خلل حقيقي.
   Future<List<String>> settle({int rounds = 4}) async {
     for (final n in devices.keys.toList()) {
       await setOnline(n, true);
     }
     List<String> errs = const [];
-    for (var r = 0; r < rounds; r++) {
+    int? prevPending;
+    var progressAt = DateTime.now();
+    final deadline = DateTime.now().add(const Duration(minutes: 60));
+    bool draining() =>
+        lastPending > 0 &&
+        DateTime.now().difference(progressAt) < const Duration(minutes: 3) &&
+        DateTime.now().isBefore(deadline);
+    for (var r = 0; r < rounds || draining(); r++) {
+      if (r >= rounds && (r - rounds) % 5 == 0) {
+        print('   ⏳ استقرار (دورة ${r + 1}): ما زالت $lastPending معاملة بانتظار الرفع '
+            '(حدّ الرفع في التطبيق 600/دقيقة لكل جهاز)');
+      }
       await waitCloudQuiet();
       final sw = Stopwatch()..start();
       await Future.wait([
@@ -561,6 +579,8 @@ class Harness {
       await _waitBootstraps();
       errs = await check();
       if (errs.isEmpty) return errs;
+      if (prevPending == null || lastPending < prevPending) progressAt = DateTime.now();
+      prevPending = lastPending;
     }
     return errs;
   }
@@ -582,6 +602,7 @@ class Harness {
 
   Future<List<String>> check() async {
     final errs = <String>[];
+    lastPending = 0;
     for (final h in devices.values) {
       final st = (await h.call('state', const {}, stateTimeout) as Map).cast<String, Object?>();
       final rows = <String, Map<String, Object?>>{};
@@ -616,6 +637,7 @@ class Harness {
         }
       }
       final pend = st['pending'] as int? ?? 0;
+      lastPending += pend;
       if (pend > 0) {
         final rowsP = (st['txs'] as List).cast<Map>().where((t) =>
             (t['up'] == 0 || t['up'] == null) && (t['mine'] != 0 || t['del'] == 1));
